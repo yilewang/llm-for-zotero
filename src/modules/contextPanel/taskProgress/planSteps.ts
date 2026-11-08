@@ -162,6 +162,8 @@ const NOT_DONE_NAMED_TARGETS = 5;
 export type ChecklistRenderOptions = {
   /** A paper's "(creator, year)" label; a target it cannot name shows as written. */
   resolvePaperLabel?: (itemId: number) => string | null;
+  /** Inside a card already headed "Steps": the head names only the action. */
+  inStepsCard?: boolean;
 };
 
 /** How a not-done row names one target: a paper by its label, else as written. */
@@ -340,12 +342,16 @@ function buildChecklistContent(
   header.className = "llm-plan-header";
   const heading = doc.createElement("div");
   heading.className = "llm-plan-heading";
-  const title = doc.createElement("h4");
-  title.className = "llm-task-progress-steps-title";
-  title.textContent = checklist.title
-    ? `${t("Steps")} · ${checklist.title}`
-    : t("Steps");
-  heading.appendChild(title);
+  if (!options.inStepsCard || checklist.title) {
+    const title = doc.createElement("h4");
+    title.className = "llm-task-progress-steps-title";
+    title.textContent = options.inStepsCard
+      ? checklist.title
+      : checklist.title
+        ? `${t("Steps")} · ${checklist.title}`
+        : t("Steps");
+    heading.appendChild(title);
+  }
   const status = doc.createElement("span");
   status.className = "llm-plan-status";
   status.textContent = checklistStatusLabel(checklist);

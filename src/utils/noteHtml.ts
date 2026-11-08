@@ -25,8 +25,36 @@ const blocks = new Set([
   "hr",
 ]);
 
-/** Compare HTML meaning without erasing structure, assets, or citation metadata. */
-export function canonicalNoteHtml(html: string): string {
+/**
+ * The root citation registry reduced to the works it registers. Zotero's note
+ * editor rewrites each work's cached CSL data whenever the work changes, so
+ * only the URIs identify what the note cites.
+ */
+function registeredWorks(value: string): string {
+  try {
+    const entries = JSON.parse(decodeURIComponent(value));
+    if (!Array.isArray(entries)) return value;
+    return JSON.stringify(
+      entries
+        .map((entry) =>
+          Array.isArray(entry?.uris) ? [...entry.uris].map(String).sort() : [],
+        )
+        .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    );
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Compare HTML meaning without erasing structure, assets, or citation metadata.
+ * With `registryWorksOnly`, the root registry counts only by the works it
+ * registers; every chip and its own citation data still count in full.
+ */
+export function canonicalNoteHtml(
+  html: string,
+  options: { registryWorksOnly?: boolean } = {},
+): string {
   function children(
     nodes: Node[],
     preserve: boolean,
@@ -91,7 +119,12 @@ export function canonicalNoteHtml(html: string): string {
             !(schema && a.name === "data-schema-version") &&
             !(legacy && a.name === "class"),
         )
-        .map((a) => [a.name, a.value]),
+        .map((a) => [
+          a.name,
+          options.registryWorksOnly && a.name === "data-citation-items"
+            ? registeredWorks(a.value)
+            : a.value,
+        ]),
     );
     nodes = root.childNodes;
   }

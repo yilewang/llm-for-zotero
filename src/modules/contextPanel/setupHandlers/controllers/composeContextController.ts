@@ -185,6 +185,13 @@ function buildCreatorYearBase(paperContext: PaperContextRef): string {
   return creator ? (year ? `${creator}, ${year}` : creator) : "Paper";
 }
 
+/** "Creator, Year" for the paper, or "Paper" when it has no creator. */
+export function formatPaperCreatorYearLabel(
+  paperContext: PaperContextRef,
+): string {
+  return buildCreatorYearBase(paperContext);
+}
+
 function getPaperContextChipSourceLabel(
   contentSourceMode?: PaperContentSourceMode,
 ): string | null {

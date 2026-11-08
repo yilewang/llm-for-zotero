@@ -32,6 +32,7 @@
  * total, and `flush` catches everything and reports a boolean.
  */
 
+import { isEphemeralConversationKey } from "../shared/conversationKeySpace";
 import type { UsageStats } from "../shared/llm";
 import { appLogger } from "../core/logging";
 import {
@@ -100,6 +101,8 @@ function normalizeTokenCount(value: unknown): number {
 }
 
 function defaultIsWriteAllowed(identity: UsageTurnIdentity): boolean {
+  // A temporary side chat records no usage.
+  if (isEphemeralConversationKey(identity.conversationKey)) return false;
   if (areConversationWritesFrozen(identity.conversationKey)) return false;
   if (identity.conversationGeneration === undefined) return true;
   return isConversationWriteGenerationCurrent(

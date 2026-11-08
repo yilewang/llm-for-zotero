@@ -22,6 +22,16 @@ import { retentionJourney } from "./retention";
 import { deliveryJourney } from "./delivery";
 import { figureNoteJourney, figureCommandJourney } from "./figureNote";
 import {
+  literatureReviewDigestJourney,
+  literatureReviewLibraryJourney,
+} from "./literatureReviewDigest";
+import {
+  literatureReviewAmbiguousChatJourney,
+  literatureReviewOutsideCiteJourney,
+  literatureReviewOutsideImportJourney,
+  literatureReviewOutsideLaterImportJourney,
+} from "./literatureReviewOutside";
+import {
   assertConversationSummary,
   assertHumanCitationLabels,
 } from "./oracles";
@@ -141,6 +151,18 @@ export async function executeJourneyStep(
       await deliveryJourney(ctx);
     } else if (id === "conversation.retention") {
       await retentionJourney(ctx);
+    } else if (id === "skills.literature-review-digest") {
+      outcome = await literatureReviewDigestJourney(id, ctx);
+    } else if (id === "skills.literature-review-library") {
+      outcome = await literatureReviewLibraryJourney(id, ctx);
+    } else if (id === "skills.literature-review-outside-cite") {
+      outcome = await literatureReviewOutsideCiteJourney(id, ctx);
+    } else if (id === "skills.literature-review-outside-import") {
+      outcome = await literatureReviewOutsideImportJourney(id, ctx);
+    } else if (id === "skills.literature-review-outside-later-import") {
+      outcome = await literatureReviewOutsideLaterImportJourney(id, ctx);
+    } else if (id === "skills.literature-review-ambiguous-chat") {
+      outcome = await literatureReviewAmbiguousChatJourney(id, ctx);
     } else if (id === "semantic.create-file") {
       await createdDestinationWorkflow(ctx);
     } else if (id === "semantic.action-cases") {

@@ -13,7 +13,7 @@ import {
 } from "../src/utils/providerPresets";
 
 const base = "https://opencode.ai/zen/go/v1";
-const protocols = getProviderPreset("opencode").supportedProtocols;
+const protocols = getProviderPreset("opencode_go").supportedProtocols;
 
 describe("provider request contract across product entry points", function () {
   const originalZotero = globalThis.Zotero;

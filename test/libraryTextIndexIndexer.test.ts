@@ -11,6 +11,8 @@ import {
   snapshotTestGlobals,
   type TestGlobalSnapshot,
 } from "./helpers/retrievalCorpus";
+import { MANIFEST_STRUCTURE_VERSION } from "../src/services/mineru/mineruCache";
+import type { PdfContext } from "../src/services/paperContent/types";
 import { LibraryTextIndexStore } from "../src/services/libraryTextIndex/store";
 import { openLibraryTextIndexDb } from "../src/services/libraryTextIndex/db";
 import {
@@ -18,6 +20,7 @@ import {
   computeChunkerFingerprint,
   estimateDocumentBytes,
   indexAttachment,
+  indexSourceFingerprint,
 } from "../src/services/libraryTextIndex/indexer";
 import {
   INDEX_PRIORITY,
@@ -71,7 +74,7 @@ describe("library text indexer", function () {
       assert.equal(chunk.meta.sectionLabel, ctx.chunkMeta[i].sectionLabel);
     });
     assert.equal(doc.sourceType, "mineru");
-    assert.equal(doc.sourceFingerprint, ctx.chunkMeta[0].sourceFingerprint);
+    assert.equal(doc.sourceFingerprint, indexSourceFingerprint(ctx));
     assert.equal(doc.chunkerVersion, LIBRARY_TEXT_INDEX_CHUNKER_VERSION);
     assert.equal(doc.sourceMtime, 1234);
     assert.equal(doc.sourceSize, 4096);
@@ -127,6 +130,128 @@ describe("library text indexer", function () {
       "unchanged",
       "same fingerprint skips the rewrite",
     );
+  });
+
+  const longHeadings = (word: string) =>
+    [
+      "# 海马位置细胞的表征漂移",
+      "## 一、引言",
+      "## 二、实验方法",
+      "## 三、实验结果",
+    ]
+      .map((heading) => `${heading}\n\n${word.repeat(40)}`)
+      .join("\n\n");
+  const shortHeadings = () =>
+    ["# 海马位置细胞的表征漂移", "## 摘要", "## 结果"]
+      .map(
+        (heading) => `${heading}\n\n${"解码准确率高于随机水平。".repeat(30)}`,
+      )
+      .join("\n\n");
+
+  it("keeps an English MinerU paper's index fingerprint as it was before the structure version", async function () {
+    const english = await buildFixturePdfContext("bioSingleHash", 9001);
+    assert.equal(english.sourceType, "mineru");
+    // The formula before the branch: the text's own fingerprint.
+    assert.equal(
+      indexSourceFingerprint(english),
+      english.chunkMeta[0].sourceFingerprint,
+    );
+    const doc = buildIndexDocumentFromPdfContext({
+      attachmentId: 9001,
+      attachmentKey: "K9001",
+      libraryID: 1,
+      parentItemId: 100,
+      fileState: { path: "/x.pdf", size: 4096, mtime: 1234 },
+      ctx: english,
+    });
+    assert.equal(doc.sourceFingerprint, english.chunkMeta[0].sourceFingerprint);
+  });
+
+  it("keeps a Chinese MinerU paper's fingerprint when it has only long headings", async function () {
+    const ctx = await buildMarkdownPdfContext(longHeadings("位置细胞。"), 9101);
+    assert.equal(ctx.sourceType, "mineru");
+    assert.equal(
+      indexSourceFingerprint(ctx),
+      ctx.chunkMeta[0].sourceFingerprint,
+    );
+  });
+
+  it("gives a Chinese MinerU paper with a ## 结果 heading a new fingerprint, and not a PDF's", async function () {
+    const ctx = await buildMarkdownPdfContext(shortHeadings(), 9102);
+    assert.equal(ctx.sourceType, "mineru");
+    const now = indexSourceFingerprint(ctx);
+    assert.include(now, ctx.chunkMeta[0].sourceFingerprint!);
+    assert.notEqual(now, ctx.chunkMeta[0].sourceFingerprint);
+    assert.notEqual(
+      now,
+      indexSourceFingerprint(ctx, MANIFEST_STRUCTURE_VERSION - 1),
+    );
+    const pdf = { ...ctx, sourceType: "zotero-worker" as const };
+    assert.equal(
+      indexSourceFingerprint(pdf),
+      ctx.chunkMeta[0].sourceFingerprint,
+    );
+  });
+
+  it("gives a Chinese MinerU paper whose figure-label headings are now noise a new fingerprint", async function () {
+    for (const [index, label] of ["图12", "表 3", "圖4a"].entries()) {
+      const markdown = [
+        "# 海马位置细胞的表征漂移",
+        `## 一、引言\n\n${"位置细胞。".repeat(40)}`,
+        `## ${label}\n\n${"图注文字。".repeat(40)}`,
+        `## 二、讨论\n\n${"漂移与解码。".repeat(40)}`,
+      ].join("\n\n");
+      const ctx = await buildMarkdownPdfContext(markdown, 9110 + index);
+      assert.equal(ctx.sourceType, "mineru");
+      assert.notEqual(
+        indexSourceFingerprint(ctx),
+        ctx.chunkMeta[0].sourceFingerprint,
+        label,
+      );
+    }
+  });
+
+  it("re-indexes a Chinese MinerU document stored before the short headings were kept, and not an English one", async function () {
+    const upsertOld = async (id: number, ctx: PdfContext) => {
+      const doc = buildIndexDocumentFromPdfContext({
+        attachmentId: id,
+        attachmentKey: `K${id}`,
+        libraryID: 1,
+        parentItemId: 100,
+        fileState: { path: "/x.pdf", size: 4096, mtime: 1234 },
+        ctx,
+      });
+      // Stored before the branch: the text's own fingerprint.
+      await store.upsertDocument({
+        ...doc,
+        sourceFingerprint: ctx.chunkMeta[0].sourceFingerprint!,
+      });
+    };
+    const zh = await buildMarkdownPdfContext(shortHeadings(), 9102);
+    await upsertOld(9102, zh);
+    pdfTextCache.clear();
+    const chinese = await indexAttachment({
+      item: mockPdfAttachment(9102),
+      libraryID: 1,
+      store,
+      lane: "urgent",
+    });
+    assert.equal(chinese.status, "indexed");
+    assert.equal(
+      (await store.getDocument(9102))?.sourceFingerprint,
+      indexSourceFingerprint(zh),
+    );
+
+    const en = await buildFixturePdfContext("bioSingleHash", 9001);
+    await upsertOld(9001, en);
+    pdfTextCache.clear();
+    const english = await indexAttachment({
+      item: mockPdfAttachment(9001),
+      libraryID: 1,
+      store,
+      lane: "urgent",
+    });
+    assert.equal(english.status, "unchanged");
   });
 
   it("records a new file stat on an unchanged re-index so reconcile stops flagging it stale", async function () {

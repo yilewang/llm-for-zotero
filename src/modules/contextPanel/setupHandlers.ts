@@ -9,8 +9,29 @@ import {
   TASK_PROGRESS_OPEN_PASSAGE_EVENT,
   TASK_PROGRESS_REMOVE_PAPER_EVENT,
 } from "./taskProgress/view";
+import {
+  TASK_PROGRESS_OFFER_EVENT,
+  TASK_PROGRESS_OPEN_SOURCE_EVENT,
+  TASK_PROGRESS_SHOW_IN_ANSWER_EVENT,
+  type TaskProgressOfferDetail,
+  type TaskProgressOpenSourceDetail,
+  type TaskProgressShowInAnswerDetail,
+} from "./taskProgress/outsideView";
 import type { TaskPaperPassageTarget } from "./taskProgress/passageSource";
-import { navigateToTaskPaperPassage } from "./assistantCitationLinks";
+import {
+  findCitationChipForItem,
+  navigateToTaskPaperPassage,
+} from "./assistantCitationLinks";
+import { openWebSourceLink } from "./webSourcesSidePanel";
+import {
+  clearAnswerQuoteHighlights,
+  findAnswerRoots,
+  highlightAnswerQuote,
+  highlightAnswerQuoteCard,
+  highlightSentenceBeforeMark,
+  sentenceClosingMarks,
+  pulseAnswerQuote,
+} from "./answerQuoteHighlight";
 import { resolveTaskPaperScopeItemIds } from "../../agent/context/taskPaperScopeListing";
 import { libraryIndexService } from "../../services/libraryIndexService";
 import { createNoteConversationItem } from "../../services/notes/conversationItem";
@@ -18,7 +39,9 @@ import { createNoteConversationItem } from "../../services/notes/conversationIte
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
 import { observeHistoryActivity } from "./historyActivity";
+import { isLivePanelBody } from "./panelLiveness";
 import { revealLocalPath } from "../../utils/revealLocalPath";
+import { isReaderApiEntry } from "../../agent/reader/readerChoiceFromSelection";
 import { getAllSkills } from "../../agent/skills";
 import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
@@ -60,7 +83,14 @@ import {
   PREFERENCES_PANE_ID,
 } from "./constants";
 import { bindChatScrollLifecycle } from "./chatScrollLifecycle";
+import { getChatCoveredTop } from "./chatScrollGeometry";
+import {
+  isChatViewportVisible,
+  navigateChatToMessage,
+} from "./chatScrollSnapshots";
+import { flushPendingChatRender } from "./progressiveChatRender";
 import { bindChatLatestButton } from "./chatLatestButton";
+import { bindFloatingComposer } from "./chatFloatingComposer";
 import {
   createConversationTurnNavigator,
   disposeConversationTurnNavigator,
@@ -162,6 +192,7 @@ import {
   setLockedGlobalConversationKey,
 } from "./prefHelpers";
 import {
+  isTornSurface,
   recall,
   recallActive,
   remember,
@@ -199,14 +230,18 @@ import {
   editLatestUserMessageAndRetry,
   editUserTurnAndRetry,
   findLatestRetryPair,
+  registerContextPanelModelSync,
   type EditLatestTurnMarker,
 } from "./chat";
 import { scheduleConversationQuoteRevalidation } from "./quoteValidation/scheduling";
 import {
+  getWorkflowTestHistoryOpenFailure,
   getWorkflowTestSendInterceptor,
   notifyWorkflowTestSendSettled,
 } from "./workflowTestHooks";
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import {
+  bindSidePanelHost,
   bindStandalonePanelHost,
   bindTestPanelHost,
   canCommitPanelConversation,
@@ -217,6 +252,7 @@ import {
   isPanelOperationLeaseCurrent,
   renderPanelOwnershipBlocked,
   requireCurrentPanelOwnership,
+  isSidePanelBody,
   resolveSelectionSurfaceForBody,
   shouldOwnershipFenceSwallowEvent,
 } from "./panelHostOwnership";
@@ -227,6 +263,11 @@ import {
   unpublishPanelHandle,
   type PanelHandle,
 } from "./panelHandle";
+import {
+  resolveStandaloneConversationSwitch,
+  type StandaloneConversationSwitchDecision,
+} from "./standaloneConversationSwitch";
+import { createChatInputLock } from "./chatInputLock";
 import {
   getActiveContextAttachmentFromTabs,
   addSelectedTextContext,
@@ -244,6 +285,7 @@ import {
   setNoteContextExpanded,
   setSelectedTextContextEntries,
   setSelectedTextExpandedIndex,
+  updateSelectedTextContextQueryForItem,
 } from "./contextResolution";
 import {
   isTextLikeAttachmentSourceMode,
@@ -301,6 +343,18 @@ import {
   retainPinnedTextState as retainPinnedTextState_,
 } from "./contexts/textContextState";
 import { composeContextStore } from "./contexts/composeContextStore";
+import {
+  buildAttachedConversationRef,
+  formatAttachedConversationLabel,
+  isPastConversationEntry,
+  listPastConversationEntries,
+  searchPastConversationEntries,
+} from "./pastConversationSource";
+import { createHistorySearchPopupController } from "./setupHandlers/controllers/historySearchPopupController";
+import {
+  MAX_ATTACHED_CONVERSATIONS,
+  normalizeAttachedConversationRefs,
+} from "../../services/context/normalizers";
 import { optimizeImageDataUrl } from "./screenshot";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import {
@@ -330,6 +384,7 @@ import type {
   OtherContextRef,
   CollectionContextRef,
   TagContextRef,
+  AttachedConversationRef,
   PaperContextSendMode,
   PaperContentSourceMode,
   ResolvedContextSource,
@@ -410,14 +465,22 @@ import {
 } from "./setupHandlers/lifecycle";
 import { createWebChatFeature } from "./setupHandlers/features/webChat";
 import {
+  MENU_OPTION_SELECTED_CLASS,
   MODEL_MENU_OPEN_CLASS,
   REASONING_MENU_OPEN_CLASS,
   RETRY_MODEL_MENU_OPEN_CLASS,
   SLASH_MENU_OPEN_CLASS,
   isFloatingMenuOpen,
+  positionComposerMenu,
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import {
+  createReaderMenuController,
+  describeReaderSelection,
+  formatReaderTooltipLine,
+} from "./setupHandlers/controllers/readerMenuController";
+import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
 import {
   MENUS_CLOSED_BY_MODEL_MENU,
   MENUS_CLOSED_BY_REASONING_MENU,
@@ -499,7 +562,11 @@ import { createPdfPaperAttachmentResolver } from "./setupHandlers/controllers/pd
 import { createLocalPdfResourceResolver } from "./setupHandlers/controllers/localPdfResourceResolver";
 import { isZoteroPdfAttachmentCandidate } from "./setupHandlers/controllers/pdfAttachmentPolicy";
 import { resolvePdfModeModelInputs } from "./setupHandlers/controllers/pdfPaperModelInputController";
-import { attachFooterPermissionControl } from "./footerPermissionControl";
+import {
+  FOOTER_PERMISSION_MENU_OPEN_CLASS,
+  attachFooterPermissionControl,
+} from "./footerPermissionControl";
+import { resolveRuntimeBadgeState } from "./runtimeBadge";
 import { attachFooterQuotaControl } from "./footerQuotaControl";
 import { readFooterQuota } from "./footerQuotaReader";
 import { resolveQuotaTarget } from "../../providers/quota";
@@ -508,7 +575,9 @@ import {
   createHistoryLifecycleController,
   disposePendingDeletionSubscriptionForBody,
   disposeConversationCatalogSubscriptionForBody,
+  type RuntimeHistoryTarget,
 } from "./setupHandlers/controllers/historyLifecycleController";
+import { resolveUnifiedHistorySystems } from "./unifiedHistorySource";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
 import { updateHeaderSpacing } from "./setupHandlers/controllers/headerSpacing";
@@ -652,6 +721,17 @@ export type ContextPreviewRenderMetrics = {
 
 export type SetupHandlersHooks = {
   onConversationHistoryChanged?: () => void;
+  /**
+   * The panel moved to another conversation by itself (its own New chat
+   * button, a deleted chat's fallback). The standalone window adopts it, so
+   * its state and Miscellaneous view follow the chat the panel shows.
+   * Fired only when the key changed; a window-driven switch has already moved
+   * the window to this key, which makes the handler a no-op.
+   */
+  onConversationIdentityChanged?: (
+    item: Zotero.Item,
+    conversationKey: number,
+  ) => void;
   onDefaultContextRendered?: () => void;
   onContextPreviewRendered?: (metrics: ContextPreviewRenderMetrics) => void;
   onWebChatModeChanged?: (isWebChat: boolean) => void;
@@ -669,6 +749,12 @@ export type SetupHandlersHooks = {
   leaveWebChatMode?: () => Promise<boolean>;
   /** Called by standalone to resolve the currently selected model consistently. */
   getCurrentModelName?: () => string | null;
+  /**
+   * Called when the runtime badge menu picks a runtime. The standalone window
+   * owns its runtime and remounts the panel, so it switches itself (with a
+   * fresh draft). Without this hook the panel switches the sidebar runtime.
+   */
+  requestConversationSystem?: (system: ConversationSystem) => void;
 };
 
 const setupHandlersCleanupByBody = new WeakMap<Element, () => void>();
@@ -712,8 +798,17 @@ export function setupHandlers(
   // standalone window's own, or the one every sidebar panel shares.
   const selectionSurface = (): SelectionSurface =>
     resolveSelectionSurfaceForBody(body);
-  const isStandaloneSelectionSurface = () =>
-    selectionSurface() === "standalone";
+  // The window and its side chat: neither takes nor releases the sidebar's
+  // library lock. Only the sidebar (embedded) surface writes prefs.
+  const isStandaloneSelectionSurface = () => selectionSurface() !== "embedded";
+  // The window's temporary side chat (markSidePanelBody): API runtime only,
+  // never saved, and never a Zotero "Add as context" target.
+  const isSidePanel = isSidePanelBody(body);
+  // WebChat drives one browser session that only the sidebar and the
+  // standalone window use: a side chat is never saved, and a torn-off window
+  // never takes the session from the standalone window.
+  const offersWebChatModels = () =>
+    !isSidePanel && !isTornSurface(selectionSurface());
   // The model and backend this panel's surface has chosen (surfaceChoices.ts):
   // the sidebar's are the saved prefs; the window's live in memory.
   const panelChoices = bindSurfaceChoices(selectionSurface);
@@ -725,8 +820,17 @@ export function setupHandlers(
   const rawPanelItem =
     activeContextPanelRawItems.get(body) || initialItem || null;
   if (__env__ !== "production" && !getPanelHostBinding(body)) {
-    if (existingPanelRoot?.dataset.standalone === "true") {
-      bindStandalonePanelHost(body, rawPanelItem);
+    // A body declares its own surface (a torn window's "torn:<id>"); the
+    // standalone window's is the default.
+    const declaredSurface = selectionSurface();
+    if (isSidePanel) {
+      bindSidePanelHost(body, rawPanelItem);
+    } else if (existingPanelRoot?.dataset.standalone === "true") {
+      bindStandalonePanelHost(
+        body,
+        rawPanelItem,
+        isTornSurface(declaredSurface) ? declaredSurface : "standalone",
+      );
     } else {
       bindTestPanelHost(body, rawPanelItem);
     }
@@ -760,6 +864,7 @@ export function setupHandlers(
     modelMenu,
     reasoningBtn,
     runtimeModeBtn,
+    runtimeMenu,
     reasoningSlot,
     reasoningMenu,
     actionsRow,
@@ -799,8 +904,10 @@ export function setupHandlers(
     slashMenu,
     slashUploadOption,
     slashReferenceOption,
+    slashPastConversationOption,
     slashPdfPageOption,
     slashPdfMultiplePagesOption,
+    slashSideChatOption,
     imagePreview,
     contextPreviews,
     selectedContextList,
@@ -1059,9 +1166,15 @@ export function setupHandlers(
     });
   panelRoot.dataset.conversationSystem = currentConversationSystem;
   syncQueuedFollowUpRegistration();
-  const isClaudeModeAvailable = () => getClaudeCodeModeEnabled();
-  const isCodexModeAvailable = () => isCodexAppServerModeEnabled();
-  const isAntigravityModeAvailable = () => isAntigravityModeEnabled();
+  // A side chat is never saved, so it cannot use a runtime that keeps
+  // provider-side state (Claude Code, Codex, Antigravity): their switches
+  // stay hidden.
+  const isClaudeModeAvailable = () =>
+    !isSidePanel && getClaudeCodeModeEnabled();
+  const isCodexModeAvailable = () =>
+    !isSidePanel && isCodexAppServerModeEnabled();
+  const isAntigravityModeAvailable = () =>
+    !isSidePanel && isAntigravityModeEnabled();
   let claudeModelCatalogStatus: "idle" | "loading" | "ready" | "error" = "idle";
   let claudeModelCatalogError = "";
   let claudeModelCatalogModels: ClaudeModelCatalogEntry[] = [];
@@ -1130,7 +1243,7 @@ export function setupHandlers(
       closeModelMenu();
       return;
     }
-    positionFloatingMenu(body, modelMenu, modelBtn);
+    positionComposerMenu(body, modelMenu, modelBtn);
   };
   const ensureClaudeModelCatalogLoaded = (force = false): Promise<void> => {
     if (!isClaudeConversationSystem()) return Promise.resolve();
@@ -1243,7 +1356,7 @@ export function setupHandlers(
     updateReasoningButton();
     if (reasoningMenu && reasoningBtn && isFloatingMenuOpen(reasoningMenu)) {
       rebuildReasoningMenu();
-      positionFloatingMenu(body, reasoningMenu, reasoningBtn);
+      positionComposerMenu(body, reasoningMenu, reasoningBtn);
     }
     if (!modelMenu || !modelBtn || !isFloatingMenuOpen(modelMenu)) return;
     rebuildModelMenu();
@@ -1251,7 +1364,7 @@ export function setupHandlers(
       closeModelMenu();
       return;
     }
-    positionFloatingMenu(body, modelMenu, modelBtn);
+    positionComposerMenu(body, modelMenu, modelBtn);
   };
   const ensureCodexModelCatalogLoaded = (force = false): Promise<void> => {
     if (!isCodexConversationSystem()) return Promise.resolve();
@@ -1262,7 +1375,9 @@ export function setupHandlers(
     }
     if (codexModelCatalogInFlight && !pathChanged)
       return codexModelCatalogInFlight;
-    if (pathChanged) codexModelCatalogModels = [];
+    if (pathChanged) {
+      codexModelCatalogModels = [];
+    }
     const requestId = ++codexModelCatalogRequestId;
     const isCurrentRequest = () =>
       !setupHandlersCleaned &&
@@ -1348,17 +1463,11 @@ export function setupHandlers(
   };
   const getCurrentRuntimeMode = (): ChatRuntimeMode => {
     if (!item) return "chat";
-    const key = getConversationKey(item);
-    const noteSession = resolveCurrentNoteSession();
     return resolveRuntimeModeForConversation({
-      cachedMode: selectedRuntimeModeCache.get(key) || null,
       isRuntimeConversationSystem: isRuntimeConversationSystem(),
       runtimeConversationSystem: getConversationSystem(),
       isWebChat: isWebChatModeActive(),
       agentModeEnabled: getAgentModeEnabled(),
-      displayConversationKind: resolveDisplayConversationKind(item),
-      noteKind: noteSession?.noteKind || null,
-      lastUsedRuntimeMode: panelChoices.getLastUsedRuntimeMode(),
     });
   };
   let syncFooterPermissionControl = () => Promise.resolve();
@@ -1368,86 +1477,71 @@ export function setupHandlers(
     // Plain chat lists the scope only; Agent mode records reads.
     syncTaskProgressPanel(body);
   };
-  const updateRuntimeModeButtonState = () => {
-    void syncFooterPermissionControl();
-    if (!runtimeModeBtn) return;
-    const indicator = runtimeModeBtn.querySelector(
-      ".llm-agent-toggle-indicator",
-    ) as HTMLSpanElement | null;
-    if (isRuntimeConversationSystem()) {
-      const labelText = isCodexConversationSystem()
-        ? "Codex"
-        : isAntigravityConversationSystem()
-          ? "Antigravity"
-          : "Claude Code";
-      const staticMode: ChatRuntimeMode =
-        isCodexConversationSystem() || isAntigravityConversationSystem()
-          ? "chat"
-          : "agent";
-      runtimeModeBtn.style.display = "";
-      const label = runtimeModeBtn.querySelector(
-        ".llm-agent-toggle-label",
-      ) as HTMLSpanElement | null;
-      if (label) {
-        label.textContent = labelText;
-      }
-      runtimeModeBtn.classList.remove("llm-agent-toggle-enabled");
-      runtimeModeBtn.classList.add("llm-runtime-mode-static");
-      runtimeModeBtn.dataset.mode = staticMode;
-      runtimeModeBtn.dataset.system = getConversationSystem();
-      const runtimeTitle = isCodexConversationSystem()
-        ? "Codex native runtime"
-        : isAntigravityConversationSystem()
-          ? "Antigravity CLI runtime"
-          : labelText;
-      runtimeModeBtn.title = runtimeTitle;
-      runtimeModeBtn.setAttribute("aria-label", runtimeTitle);
-      runtimeModeBtn.setAttribute("aria-pressed", "false");
-      runtimeModeBtn.setAttribute("aria-disabled", "true");
-      runtimeModeBtn.disabled = true;
-      if (indicator) indicator.style.display = "none";
-      panelRoot.dataset.runtimeMode = staticMode;
-      return;
-    }
-    runtimeModeBtn.classList.remove("llm-runtime-mode-static");
-    delete runtimeModeBtn.dataset.system;
-    runtimeModeBtn.removeAttribute("aria-disabled");
-    runtimeModeBtn.disabled = false;
-    if (indicator) indicator.style.display = "";
-    const agentFeatureEnabled = getAgentModeEnabled();
-    // [webchat] Agent mode not available in webchat — hide toggle
+  const closeRuntimeMenu = () => {
+    if (!runtimeMenu) return;
+    setFloatingMenuOpen(runtimeMenu, FOOTER_PERMISSION_MENU_OPEN_CLASS, false);
+    runtimeMenu.replaceChildren();
+    runtimeModeBtn?.setAttribute("aria-expanded", "false");
+  };
+  const getRuntimeBadgeState = () => {
     let webChatActive = false;
     try {
       webChatActive = isWebChatModeActive();
     } catch {
       /* not ready */
     }
-    // Hide the entire toggle when agent feature is disabled or in webchat mode.
-    const shouldHide = !agentFeatureEnabled || webChatActive;
-    runtimeModeBtn.style.display = shouldHide ? "none" : "";
-    if (shouldHide) {
-      panelRoot.dataset.runtimeMode = "chat";
+    return resolveRuntimeBadgeState({
+      system: getConversationSystem(),
+      agentEnabled: getAgentModeEnabled(),
+      codexEnabled: isCodexModeAvailable(),
+      claudeEnabled: isClaudeModeAvailable(),
+      antigravityEnabled: isAntigravityModeAvailable(),
+      isWebChat: webChatActive,
+      isSideChat: isSidePanel,
+      isTornWindow: isTornSurface(selectionSurface()),
+    });
+  };
+  const updateRuntimeModeButtonState = () => {
+    void syncFooterPermissionControl();
+    if (!runtimeModeBtn) return;
+    const state = getRuntimeBadgeState();
+    const mode = getCurrentRuntimeMode();
+    panelRoot.dataset.runtimeMode = mode;
+    runtimeModeBtn.style.display = state.visible ? "" : "none";
+    if (!state.visible) {
+      closeRuntimeMenu();
       return;
     }
-    const mode = getCurrentRuntimeMode();
-    const enabled = mode === "agent";
     const label = runtimeModeBtn.querySelector(
       ".llm-agent-toggle-label",
     ) as HTMLSpanElement | null;
-    if (label) {
-      label.textContent = t("Agent (beta)");
-    }
-    runtimeModeBtn.classList.toggle("llm-agent-toggle-enabled", enabled);
+    if (label) label.textContent = state.label;
     runtimeModeBtn.dataset.mode = mode;
-    runtimeModeBtn.title = enabled
-      ? t("Agent mode ON. Click to switch to Chat mode")
-      : t("Agent mode OFF. Click to switch to Agent mode");
-    runtimeModeBtn.setAttribute(
-      "aria-label",
-      mode === "agent" ? t("Switch to Chat mode") : t("Switch to Agent mode"),
+    runtimeModeBtn.dataset.system = getConversationSystem();
+    runtimeModeBtn.classList.toggle(
+      "llm-runtime-mode-static",
+      !state.clickable,
     );
-    runtimeModeBtn.setAttribute("aria-pressed", enabled ? "true" : "false");
-    panelRoot.dataset.runtimeMode = mode;
+    runtimeModeBtn.disabled = !state.clickable;
+    if (state.clickable) {
+      runtimeModeBtn.removeAttribute("aria-disabled");
+      runtimeModeBtn.setAttribute("aria-haspopup", "menu");
+      if (!runtimeModeBtn.hasAttribute("aria-expanded")) {
+        runtimeModeBtn.setAttribute("aria-expanded", "false");
+      }
+      runtimeModeBtn.title = t("Switch runtime");
+      runtimeModeBtn.setAttribute(
+        "aria-label",
+        `${state.label}, ${t("Switch runtime")}`,
+      );
+    } else {
+      closeRuntimeMenu();
+      runtimeModeBtn.setAttribute("aria-disabled", "true");
+      runtimeModeBtn.removeAttribute("aria-haspopup");
+      runtimeModeBtn.removeAttribute("aria-expanded");
+      runtimeModeBtn.title = state.label;
+      runtimeModeBtn.setAttribute("aria-label", state.label);
+    }
   };
   const setCurrentRuntimeMode = (mode: ChatRuntimeMode) => {
     if (!item || isRuntimeConversationSystem()) {
@@ -1539,9 +1633,15 @@ export function setupHandlers(
   let refreshGlobalHistoryHeader: () => Promise<void> = async () => {};
   let switchGlobalConversation: (
     nextConversationKey: number,
+    options?: { quietHistory?: boolean },
   ) => Promise<boolean> = async () => false;
   let switchPaperConversation: (
     nextConversationKey?: number,
+    options?: {
+      paperItem?: Zotero.Item | null;
+      allowedCatalogPaperItemID?: number;
+      quietHistory?: boolean;
+    },
   ) => Promise<boolean | void> = async () => {};
   let createAndSwitchGlobalConversation: (
     forceFresh?: boolean,
@@ -1569,40 +1669,50 @@ export function setupHandlers(
   let clearForcedSkill = () => {};
   let renderWebChatHistoryMenu: () => Promise<void> = async () => {};
   let isWebChatMode = () => isWebChatModeActive();
+  /**
+   * Moves this panel to `nextSystem`. Without a target it opens that runtime's
+   * remembered conversation (or a fresh draft with `forceFresh`). With a
+   * `target` (a history row of that runtime) it opens the target directly and
+   * never loads the remembered conversation first. Resolves true when the
+   * panel ended on the requested runtime.
+   */
   const switchConversationSystem = async (
     nextSystem: ConversationSystem,
-    options?: { forceFresh?: boolean },
-  ) => {
+    options?: { forceFresh?: boolean; target?: RuntimeHistoryTarget },
+  ): Promise<boolean> => {
     if (
       !item ||
       !requireCurrentPanelOwnership(body, item, "switch-provider-system")
     ) {
-      return;
+      return false;
     }
     const ownershipLease = capturePanelOperationLease(body);
-    if (!ownershipLease) return;
+    if (!ownershipLease) return false;
     // WebChat is an upstream-only provider mode. Restore a non-webchat model
     // entry before the runtime changes so a later return to upstream (or the
     // next Zotero start) cannot silently re-enter webchat. The runtime switch
     // below replaces the conversation, so no paper conversation restore here.
     if (isWebChatModeActive()) {
       await leaveWebChatMode({ restoreConversation: false });
-      if (!isPanelOperationLeaseCurrent(ownershipLease)) return;
+      if (!isPanelOperationLeaseCurrent(ownershipLease)) return false;
     }
     const noteSession = resolveCurrentNoteSession();
     if (noteSession) {
+      // A note lists only its own runtime's chats, so no history row of
+      // another runtime can ask to open here.
+      if (options?.target) return false;
       const resolvedNextSystem = resolveNoteFocusSystemSwitch({
         nextSystem,
         codexAvailable: isCodexModeAvailable(),
         claudeAvailable: isClaudeModeAvailable(),
       });
-      if (!resolvedNextSystem) return;
-      if (resolvedNextSystem === getConversationSystem()) return;
+      if (!resolvedNextSystem) return false;
+      if (resolvedNextSystem === getConversationSystem()) return true;
       persistDraftInputForCurrentConversation();
       const nextKey = resolveConversationKeyForNoteFocus(item, {
         conversationSystem: resolvedNextSystem,
       });
-      if (!nextKey) return;
+      if (!nextKey) return false;
       const nextItem = createNoteConversationItem(
         item,
         resolvedNextSystem,
@@ -1616,7 +1726,7 @@ export function setupHandlers(
           ownershipLease,
         )
       )
-        return;
+        return false;
       item = nextItem;
       panelChoices.setConversationSystem(resolvedNextSystem);
       currentConversationSystem = resolvedNextSystem;
@@ -1632,7 +1742,7 @@ export function setupHandlers(
       updateRuntimeSystemToggles();
       if (options?.forceFresh === true) {
         await createAndSwitchPaperConversation(true);
-        return;
+        return true;
       }
       await ensureConversationLoaded(item, { body });
       restoreDraftInputForCurrentConversation();
@@ -1640,12 +1750,13 @@ export function setupHandlers(
       resetComposePreviewUI();
       updateModelButton();
       updateReasoningButton();
-      return;
+      return true;
     }
-    if (nextSystem === getConversationSystem()) return;
+    if (nextSystem === getConversationSystem()) return true;
     const libraryID = getCurrentLibraryID();
-    if (!libraryID) return;
+    if (!libraryID) return false;
     const forceFresh = options?.forceFresh === true;
+    const previousSystem = getConversationSystem();
     persistDraftInputForCurrentConversation();
     panelChoices.setConversationSystem(nextSystem);
     currentConversationSystem = nextSystem;
@@ -1664,10 +1775,89 @@ export function setupHandlers(
     if (nextSystem === "antigravity") {
       ensureAntigravityModelCatalogLoaded();
     }
+    const target = options?.target;
+    if (target) {
+      // The panel has not left its conversation yet: put the runtime back.
+      const restorePreviousSystem = () => {
+        panelChoices.setConversationSystem(previousSystem);
+        currentConversationSystem = previousSystem;
+        syncQueuedFollowUpRegistration();
+        updateRuntimeSystemToggles();
+        updateRuntimeModeButton();
+      };
+      if (target.kind === "global") {
+        const loaded = getWorkflowTestHistoryOpenFailure()?.({
+          system: nextSystem,
+          conversationKey: target.conversationKey,
+        })
+          ? false
+          : await switchGlobalConversation(target.conversationKey);
+        if (
+          !loaded &&
+          item &&
+          (resolveConversationSystemForItem(item) || "upstream") !== nextSystem
+        ) {
+          restorePreviousSystem();
+        }
+        return loaded;
+      }
+      const rawBaseItem = target.paperItem || resolveCurrentPaperBaseItem();
+      if (!rawBaseItem) {
+        restorePreviousSystem();
+        return false;
+      }
+      const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
+        conversationSystem: nextSystem,
+        surface: selectionSurface(),
+      });
+      const nextItem = resolvedState.item || item;
+      const nextBasePaperItem = resolvedState.basePaperItem || basePaperItem;
+      if (
+        !isPanelOperationLeaseCurrent(ownershipLease) ||
+        !canCommitPanelConversation(
+          body,
+          nextItem,
+          "switch-provider-system-commit",
+          ownershipLease,
+        ) ||
+        (nextBasePaperItem &&
+          !isPanelHostCompatibleWithPaper(body, nextBasePaperItem))
+      ) {
+        restorePreviousSystem();
+        return false;
+      }
+      const previousItem = item;
+      const previousBasePaperItem = basePaperItem;
+      item = nextItem;
+      basePaperItem = nextBasePaperItem;
+      syncConversationIdentity();
+      const loaded = await switchPaperConversation(target.conversationKey, {
+        paperItem: target.paperItem || nextBasePaperItem,
+        allowedCatalogPaperItemID: target.allowedCatalogPaperItemID,
+      });
+      if (loaded) return true;
+      // The target could not open. Put the previous runtime and chat back; the
+      // caller restores the remembered keys, so they agree with the panel.
+      if (!isPanelOperationLeaseCurrent(ownershipLease)) return false;
+      restorePreviousSystem();
+      item = previousItem;
+      basePaperItem = previousBasePaperItem;
+      syncConversationIdentity();
+      await ensureConversationLoaded(item as Zotero.Item, { body });
+      if (!isPanelOperationLeaseCurrent(ownershipLease)) return false;
+      restoreDraftInputForCurrentConversation();
+      refreshChatPreservingScroll();
+      resetComposePreviewUI();
+      updateModelButton();
+      updateReasoningButton();
+      updateRuntimeSystemToggles();
+      void refreshGlobalHistoryHeader();
+      return false;
+    }
     if (isGlobalMode()) {
       if (forceFresh) {
         await createAndSwitchGlobalConversation(true);
-        return;
+        return true;
       }
       const surface = selectionSurface();
       const nextConversationKey =
@@ -1683,7 +1873,7 @@ export function setupHandlers(
             : (() => {
                 // The library lock is the sidebar's; the window has none.
                 const lockedKey =
-                  surface === "standalone"
+                  surface !== "embedded"
                     ? null
                     : getLockedGlobalConversationKey(libraryID);
                 if (lockedKey !== null) return lockedKey;
@@ -1704,11 +1894,11 @@ export function setupHandlers(
       } else {
         await createAndSwitchGlobalConversation();
       }
-      return;
+      return true;
     }
     if (forceFresh) {
       const rawBaseItem = resolveCurrentPaperBaseItem();
-      if (!rawBaseItem) return;
+      if (!rawBaseItem) return false;
       const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
         conversationSystem: nextSystem,
         surface: selectionSurface(),
@@ -1726,16 +1916,16 @@ export function setupHandlers(
         (nextBasePaperItem &&
           !isPanelHostCompatibleWithPaper(body, nextBasePaperItem))
       ) {
-        return;
+        return false;
       }
       item = nextItem;
       basePaperItem = nextBasePaperItem;
       syncConversationIdentity();
       await createAndSwitchPaperConversation(true);
-      return;
+      return true;
     }
     const rawBaseItem = resolveCurrentPaperBaseItem();
-    if (!rawBaseItem) return;
+    if (!rawBaseItem) return false;
     const resolvedState = resolveInitialPanelItemState(rawBaseItem, {
       conversationSystem: nextSystem,
       surface: selectionSurface(),
@@ -1753,7 +1943,7 @@ export function setupHandlers(
       (nextBasePaperItem &&
         !isPanelHostCompatibleWithPaper(body, nextBasePaperItem))
     ) {
-      return;
+      return false;
     }
     item = nextItem;
     basePaperItem = nextBasePaperItem;
@@ -1762,7 +1952,7 @@ export function setupHandlers(
       warmClaudeModeCaches();
     }
     await ensureConversationLoaded(item as Zotero.Item, { body });
-    if (!isPanelOperationLeaseCurrent(ownershipLease)) return;
+    if (!isPanelOperationLeaseCurrent(ownershipLease)) return false;
     await renderShortcuts(
       body,
       item as Zotero.Item,
@@ -1775,6 +1965,7 @@ export function setupHandlers(
     updateReasoningButton();
     updateRuntimeSystemToggles();
     void refreshGlobalHistoryHeader();
+    return true;
   };
   const isClaudeConversationDraft = async (conversationKey: number) => {
     const summary = await conversationRepository.getCatalogEntry({
@@ -1953,7 +2144,14 @@ export function setupHandlers(
     if (historyToggleBtn) {
       historyToggleBtn.style.display = "";
     }
-    if (item && libraryID > 0 && mode && !noteSession) {
+    if (
+      item &&
+      libraryID > 0 &&
+      mode &&
+      !noteSession &&
+      // A side chat's ephemeral conversation is never remembered.
+      !isEphemeralConversationKey(Number(conversationKey))
+    ) {
       // Each runtime writes a different set here: Claude Code only the mode;
       // Codex and upstream also the library chat (map and pref) and the
       // paper chat (map only). All of it goes to this panel's own surface:
@@ -2006,8 +2204,9 @@ export function setupHandlers(
           currentBasePaperItemID > 0
         ) {
           // A sidebar panel back in Paper chat releases the sidebar's library
-          // lock. The window has no lock and must not release the sidebar's.
-          if (surface !== "standalone") {
+          // lock. The window (and its side chat) has no lock and must not
+          // release the sidebar's.
+          if (surface === "embedded") {
             const lockedGlobalKey = getLockedGlobalConversationKey(libraryID);
             if (lockedGlobalKey !== null) {
               setLockedGlobalConversationKey(libraryID, null);
@@ -2042,6 +2241,20 @@ export function setupHandlers(
     }
     updateRuntimeModeButton();
     updateRuntimeSystemToggles();
+    if (
+      item &&
+      !noteSession &&
+      previousConversationKey &&
+      conversationKey &&
+      conversationKey !== previousConversationKey &&
+      !isEphemeralConversationKey(Number(conversationKey))
+    ) {
+      try {
+        hooks?.onConversationIdentityChanged?.(item, conversationKey);
+      } catch (err) {
+        ztoolkit.log("LLM: conversation identity hook failed", err);
+      }
+    }
   };
   syncConversationIdentity();
   if (getConversationSystem() === "claude_code") {
@@ -2053,6 +2266,7 @@ export function setupHandlers(
   let cleanupPrefObservers: (() => void) | null = null;
   let cleanupMineruPaperSourceObservers: (() => void) | null = null;
   let cleanupModelCapabilitySubscription: (() => void) | null = null;
+  let cleanupModelProviderSync: (() => void) | null = null;
   let codexDirectController: CodexDirectModelReasoningController | null = null;
   {
     const agentPrefKey = `${config.prefsPrefix}.enableAgentMode`;
@@ -2083,6 +2297,10 @@ export function setupHandlers(
         system: "claude_code",
       },
       {
+        key: `${config.prefsPrefix}.claudeCodeBridgeMode`,
+        system: "claude_code",
+      },
+      {
         key: `${config.prefsPrefix}.agentClaudeConfigSource`,
         system: "claude_code",
       },
@@ -2092,6 +2310,10 @@ export function setupHandlers(
       },
       {
         key: `${config.prefsPrefix}.codexAppServerPath`,
+        system: "codex",
+      },
+      {
+        key: `${config.prefsPrefix}.codexHome`,
         system: "codex",
       },
     ];
@@ -2124,6 +2346,12 @@ export function setupHandlers(
     const isPanelUnavailable = () =>
       !(body as Element).isConnected ||
       body.ownerDocument?.defaultView?.closed === true;
+    // A follower window's panel stays on its chat when that chat's runtime
+    // is turned off: the window closes (standaloneWindow.ts).
+    const leaveTurnedOffRuntime = () => {
+      if (isTornSurface(selectionSurface())) return;
+      void switchConversationSystem("upstream");
+    };
     const onAgentPrefChange = () => {
       if (isPanelUnavailable()) {
         cleanupPrefObservers?.();
@@ -2148,7 +2376,7 @@ export function setupHandlers(
           });
         demoteConversationSystemOnEverySurface("claude_code");
         if (isClaudeConversationSystem()) {
-          void switchConversationSystem("upstream");
+          leaveTurnedOffRuntime();
           return;
         }
       }
@@ -2162,7 +2390,7 @@ export function setupHandlers(
       if (!isCodexAppServerModeEnabled()) {
         demoteConversationSystemOnEverySurface("codex");
         if (isCodexConversationSystem()) {
-          void switchConversationSystem("upstream");
+          leaveTurnedOffRuntime();
           return;
         }
       }
@@ -2282,10 +2510,6 @@ export function setupHandlers(
     persistChatScrollSnapshot(item, chatBox);
   };
 
-  const isChatViewportVisible = (box: HTMLDivElement): boolean => {
-    return box.clientHeight > 0 && box.getClientRects().length > 0;
-  };
-
   const cleanupChatScroll = chatBox
     ? bindChatScrollLifecycle(
         chatBox,
@@ -2305,6 +2529,21 @@ export function setupHandlers(
         onJumpToLatest: () => {
           if (item) requestChatScrollFollowBottom(body, item, chatBox);
         },
+      }),
+    );
+  }
+
+  const floatingPanel = body.querySelector<HTMLElement>("#llm-main");
+  const floatingShortcuts = body.querySelector<HTMLElement>("#llm-shortcuts");
+  const floatingComposer = floatingPanel?.querySelector<HTMLElement>(
+    ":scope > .llm-input-section",
+  );
+  if (floatingPanel && floatingShortcuts && floatingComposer) {
+    panelLifecycle.add(
+      bindFloatingComposer({
+        panel: floatingPanel,
+        shortcuts: floatingShortcuts,
+        composer: floatingComposer,
       }),
     );
   }
@@ -2856,10 +3095,14 @@ export function setupHandlers(
       cache.delete(normalizedKey);
     }
   };
-  const persistDraftInputForCurrentConversation = () => {
+  const persistDraftInputForCurrentConversation = (options?: {
+    resize?: boolean;
+  }) => {
     // Most programmatic composer updates already persist immediately. Keeping
     // sizing here makes those paths share the same behavior as typed input.
-    resizeTextareaToContent(inputBox);
+    // A conversation switch skips it: the next draft is restored and sized
+    // right after, and measuring here forces an extra layout of the window.
+    if (options?.resize !== false) resizeTextareaToContent(inputBox);
     // Don't persist the edit-mode text as a draft; the real draft was saved
     // with this panel's edit when edit mode was entered.
     if (!item || !inputBox || getInlineEditTarget(body)) return;
@@ -3105,6 +3348,18 @@ export function setupHandlers(
     }
     const activeReaderAttachment = getActiveContextAttachmentFromTabs();
     if (activeReaderAttachment) {
+      const ownerPaperId = sourceItem?.isAttachment?.()
+        ? sourceItem.parentID
+        : sourceItem?.id;
+      if (
+        sourceItem &&
+        ownerPaperId &&
+        activeReaderAttachment.id !== sourceItem.id &&
+        activeReaderAttachment.parentID !== ownerPaperId
+      ) {
+        // The reader shows another paper; resolve the panel's own paper.
+        return resolveContextSourceItem(sourceItem);
+      }
       return resolveContextSourceItem(activeReaderAttachment);
     }
     return null;
@@ -4428,6 +4683,61 @@ export function setupHandlers(
     list.appendChild(chip);
   };
 
+  const appendConversationChip = (
+    ownerDoc: Document,
+    list: HTMLDivElement,
+    ref: AttachedConversationRef,
+    removableIndex: number,
+  ) => {
+    const chip = createElement(
+      ownerDoc,
+      "div",
+      "llm-selected-context llm-conversation-context-chip",
+    );
+    chip.dataset.conversationIndex = `${removableIndex}`;
+    chip.classList.add("collapsed");
+
+    const chipHeader = createElement(
+      ownerDoc,
+      "div",
+      "llm-image-preview-header llm-selected-context-header llm-conversation-chip-header",
+    );
+    const labelText = formatAttachedConversationLabel(ref);
+    const chipLabel = createElement(
+      ownerDoc,
+      "span",
+      "llm-conversation-chip-label",
+      { title: labelText },
+    );
+    const chipIcon = createContextIcon(
+      ownerDoc,
+      "model",
+      "llm-conversation-chip-icon",
+    );
+    const chipTitle = createElement(
+      ownerDoc,
+      "span",
+      "llm-conversation-chip-title",
+      { textContent: labelText },
+    );
+    chipLabel.append(chipIcon, chipTitle);
+    const removeBtn = createElement(
+      ownerDoc,
+      "button",
+      "llm-remove-img-btn llm-conversation-clear",
+      {
+        type: "button",
+        textContent: "\u00D7",
+        title: `Remove ${ref.title}`,
+      },
+    ) as HTMLButtonElement;
+    removeBtn.dataset.conversationIndex = `${removableIndex}`;
+    removeBtn.setAttribute("aria-label", `Remove ${ref.title}`);
+    chipHeader.append(chipLabel, removeBtn);
+    chip.appendChild(chipHeader);
+    list.appendChild(chip);
+  };
+
   const updatePaperPreview = () => {
     renderPaperPreview();
     // Task progress lists what the context bar holds: follow every change.
@@ -4447,11 +4757,14 @@ export function setupHandlers(
     const selectedCollections =
       selectedCollectionContextCache.get(itemId) || [];
     const selectedTags = selectedTagContextCache.get(itemId) || [];
+    const selectedConversations =
+      composeContextStore.attachedConversations.list(itemId);
     const hasAnyContext =
       selectedPapers.length > 0 ||
       selectedOtherRefs.length > 0 ||
       selectedCollections.length > 0 ||
       selectedTags.length > 0 ||
+      selectedConversations.length > 0 ||
       !!autoLoadedPaperContext;
     if (!hasAnyContext) {
       paperPreview.style.display = "none";
@@ -4528,6 +4841,9 @@ export function setupHandlers(
     });
     selectedTags.forEach((ref, index) => {
       appendTagChip(ownerDoc, paperPreviewList, ref, index);
+    });
+    selectedConversations.forEach((ref, index) => {
+      appendConversationChip(ownerDoc, paperPreviewList, ref, index);
     });
   };
 
@@ -4931,6 +5247,204 @@ export function setupHandlers(
       },
     );
   });
+  // "Open page" on a scholarly paper or web page: the side panel's page view
+  // when the window has one, otherwise the default browser.
+  body.addEventListener(TASK_PROGRESS_OPEN_SOURCE_EVENT, (event: Event) => {
+    const source = (event as CustomEvent<TaskProgressOpenSourceDetail>).detail
+      ?.source;
+    if (!source?.url) return;
+    openWebSourceLink(body.ownerDocument, {
+      url: source.url,
+      title: source.title,
+      organization: source.organization,
+      hostname: source.hostname,
+      faviconUrl: source.faviconUrl,
+      ...(source.kind === "paper" ? { kind: "paper" as const } : {}),
+      runId: (event as CustomEvent<TaskProgressOpenSourceDetail>).detail.runId,
+    });
+  });
+  // "Show in answer": scroll the chat to the sentence that uses the source,
+  // light it, and flash its marker (or a library paper's quote chip).
+  let clearAnswerLight: ((event: Event) => void) | null = null;
+  body.addEventListener(TASK_PROGRESS_SHOW_IN_ANSWER_EVENT, (event: Event) => {
+    const detail = (event as CustomEvent<TaskProgressShowInAnswerDetail>)
+      .detail;
+    if (!detail?.key) return;
+    const chatBox = body.querySelector(
+      "#llm-chat-box",
+    ) as HTMLDivElement | null;
+    // Older turns of a long conversation may still be waiting to be drawn.
+    flushPendingChatRender(chatBox);
+    clearAnswerQuoteHighlights(body);
+    const roots = findAnswerRoots(body, detail.runId);
+    // A cited passage: every sentence that cites it, by its marks.
+    const passage = detail.citationId
+      ? lightCitedPassage(roots, detail.citationId, detail.texts || [])
+      : null;
+    const mark = passage ? passage.mark : findAnswerSourceMark(detail);
+    const lit = passage
+      ? passage.lit
+      : detail.text
+        ? highlightAnswerQuote(roots, detail.text, mark)
+        : [];
+    // Never a click that does nothing: without the sentence or its marker,
+    // the run's answer itself, and a line that says so.
+    const own = detail.runId ? roots[0] : undefined;
+    const target = lit[0] || mark || own;
+    if (!lit.length && !mark && status && (detail.text || detail.citationId))
+      setStatus(
+        status,
+        target
+          ? t("Couldn't find that sentence in the answer; showing the answer")
+          : t("Couldn't find that sentence in the chat"),
+        "warning",
+      );
+    if (!target) return;
+    const win = body.ownerDocument?.defaultView;
+    // Its start at the top of what shows of the chat: a long sentence reads
+    // down from there, above the chips and composer. As a navigation, so a
+    // chat that was following its last answer stops pulling back down.
+    const navigated =
+      chatBox &&
+      navigateChatToMessage({
+        conversationKey: Number(panelRoot.dataset.itemId),
+        chatBox,
+        targetElement: target,
+        behavior: win?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches
+          ? "auto"
+          : "smooth",
+        // Its first line below what covers the chat's top (the standalone
+        // window's title row runs over it), with the chat's own gap.
+        viewportOffsetTop:
+          (Number.parseFloat(
+            win?.getComputedStyle(chatBox)?.scrollPaddingTop || "0",
+          ) || 0) + getChatCoveredTop(chatBox),
+      });
+    if (!navigated) {
+      try {
+        target.scrollIntoView({ block: "start", behavior: "smooth" });
+      } catch {
+        target.scrollIntoView();
+      }
+    }
+    pulseAnswerQuote(lit);
+    if (mark) {
+      mark.classList.remove("llm-web-source-flash");
+      void mark.getBoundingClientRect();
+      mark.classList.add("llm-web-source-flash");
+      win?.setTimeout(
+        () => mark.classList.remove("llm-web-source-flash"),
+        1600,
+      );
+    }
+    if (lit.length) {
+      // The light stays until the next click in the chat, not on the
+      // scrollbar or the lit words (to select and copy them).
+      const chat = body.querySelector("#llm-chat-box") || body;
+      if (clearAnswerLight)
+        chat.removeEventListener("mousedown", clearAnswerLight);
+      const clear = (event: Event) => {
+        const hit = event.target as Element | null;
+        if (hit === chat || lit.some((node) => hit && node.contains(hit)))
+          return;
+        chat.removeEventListener("mousedown", clear);
+        clearAnswerLight = null;
+        clearAnswerQuoteHighlights(body);
+      };
+      clearAnswerLight = clear;
+      win?.setTimeout(() => {
+        if (clearAnswerLight === clear)
+          chat.addEventListener("mousedown", clear);
+      }, 0);
+    }
+  });
+  /**
+   * Light each sentence that cites a passage near the answer's marks that
+   * hold its id (the nth sentence by the mark that closes it); a sentence
+   * whose words are not found lights as its mark's own sentence. A passage the answer
+   * only quotes lights its card. In reading order, with its first mark.
+   */
+  const lightCitedPassage = (
+    roots: readonly HTMLElement[],
+    citationId: string,
+    texts: readonly string[],
+  ): { mark: HTMLElement | null; lit: HTMLElement[] } => {
+    const marks = roots.flatMap(
+      (root) =>
+        Array.from(
+          root.querySelectorAll(".llm-paper-cite-mark[data-citation-ids]"),
+        ) as HTMLElement[],
+    );
+    const own = marks.filter((node) =>
+      (node.dataset.citationIds || "").split(" ").includes(citationId),
+    );
+    const lit: HTMLElement[] = [];
+    const add = (nodes: readonly HTMLElement[]) => {
+      for (const node of nodes) if (!lit.includes(node)) lit.push(node);
+    };
+    // One mark per sentence, as `texts` has one entry per sentence.
+    const closing = sentenceClosingMarks(own);
+    texts.forEach((text, index) => {
+      const near = closing[index] || own[0] || null;
+      const found = text ? highlightAnswerQuote(roots, text, near) : [];
+      if (found.length) add(found);
+      else if (closing[index]) add(highlightSentenceBeforeMark(closing[index]));
+    });
+    if (!lit.length)
+      for (const node of own) add(highlightSentenceBeforeMark(node));
+    if (!lit.length) add(highlightAnswerQuoteCard(roots, citationId));
+    lit.sort((left, right) =>
+      left.compareDocumentPosition(right) & 4 ? -1 : 1,
+    );
+    return { mark: own[0] || null, lit };
+  };
+  const findAnswerSourceMark = (
+    detail: TaskProgressShowInAnswerDetail,
+  ): HTMLElement | null => {
+    const indicators = Array.from(
+      body.querySelectorAll(".llm-web-source-indicator"),
+    ) as HTMLElement[];
+    const ofRun = (node: HTMLElement, runId?: string) =>
+      !runId || node.dataset.runId === runId;
+    // The quote's own marker first.
+    if (detail.anchor !== undefined) {
+      const own =
+        indicators.find(
+          (node) =>
+            ofRun(node, detail.runId) &&
+            node.dataset.anchorIndex === String(detail.anchor),
+        ) || null;
+      if (own) return own;
+    }
+    const marks = (runId?: string) =>
+      indicators.find(
+        (node) =>
+          ofRun(node, runId) &&
+          node.dataset.placement !== "end" &&
+          (node.dataset.sourceKeys || "").split(" ").includes(detail.key),
+      ) || null;
+    const itemId = Number(detail.itemId);
+    const chip = (runId?: string) =>
+      itemId > 0 ? findCitationChipForItem(body, itemId, runId) : null;
+    // Only the run's own: another answer's chip would lead to that answer.
+    return marks(detail.runId) || chip(detail.runId);
+  };
+  // "Search scholarly sources too" / "Search the web too": ask it as a
+  // follow-up.
+  body.addEventListener(TASK_PROGRESS_OFFER_EVENT, (event: Event) => {
+    const what = (event as CustomEvent<TaskProgressOfferDetail>).detail?.what;
+    if (what !== "scholarly" && what !== "web") return;
+    if (!item || isRequestPending(getConversationKey(item))) return;
+    void doSend({
+      overrideText:
+        what === "web"
+          ? t("Yes, search the web too.")
+          : t("Yes, search scholarly sources too."),
+      // The composer's own draft stays; nothing to put back if it fails.
+      preserveInputDraft: true,
+      restoreQueuedInput: () => undefined,
+    });
+  });
   const removeTaskProgressPaper = async (event: Event) => {
     if (!item) return;
     const owner = item;
@@ -5030,6 +5544,14 @@ export function setupHandlers(
     }
     refreshConversationPanels(body, item);
   };
+  const refreshOwnChatPreservingScroll = () => {
+    if (!item) {
+      refreshChatPreservingScroll();
+      return;
+    }
+    chatDrawCount += 1;
+    refreshChat(body, item);
+  };
 
   resetComposePreviewUI = () => {
     updatePaperPreviewPreservingScroll();
@@ -5102,6 +5624,7 @@ export function setupHandlers(
     syncQueuedFollowUpRegistration,
     updateRuntimeModeButton,
     refreshChatPreservingScroll,
+    refreshOwnChatPreservingScroll,
     resetComposePreviewUI,
     updateModelButton: () => updateModelButton(),
     updateReasoningButton: () => updateReasoningButton(),
@@ -5135,6 +5658,26 @@ export function setupHandlers(
     moveToOwnWebChatSession: () => moveToOwnWebChatSession(),
     updateImagePreviewPreservingScroll,
     switchConversationSystem,
+    getHistorySystems: () =>
+      resolveUnifiedHistorySystems({
+        activeSystem: getConversationSystem(),
+        codexEnabled: isCodexModeAvailable(),
+        claudeEnabled: isClaudeModeAvailable(),
+        antigravityEnabled: isAntigravityModeAvailable(),
+        singleSystem: isSidePanel || isNoteSession(),
+      }),
+    isRuntimeSystemSwitchInFlight: () => runtimeSystemSwitchInFlight,
+    openHistoryEntryInSystem: (system, target) =>
+      openHistoryEntryInSystem(system, target),
+    setSurfaceConversationSystem: (system) => {
+      const previous = panelChoices.getConversationSystem();
+      panelChoices.setConversationSystem(system);
+      return () => {
+        if (panelChoices.getConversationSystem() === system) {
+          panelChoices.setConversationSystem(previous);
+        }
+      };
+    },
     setActiveEditSession: (value) => {
       activeEditSession = value;
     },
@@ -5194,17 +5737,20 @@ export function setupHandlers(
     syncConversationIdentity();
   };
 
+  /**
+   * Switches this panel's runtime to `targetSystem`. The header buttons resolve
+   * their toggle rule first (`resolveRuntimeSystemToggleTarget`); the runtime
+   * badge menu passes the picked system straight through.
+   */
   const switchRuntimeSystemFromControl = async (
-    clickedSystem: RuntimeConversationSystem,
+    targetSystem: ConversationSystem,
   ) => {
     if (
       runtimeSystemSwitchInFlight ||
       !item ||
-      (clickedSystem === "codex"
-        ? !isCodexModeAvailable()
-        : clickedSystem === "antigravity"
-          ? !isAntigravityModeAvailable()
-          : !isClaudeModeAvailable())
+      (targetSystem === "codex" && !isCodexModeAvailable()) ||
+      (targetSystem === "claude_code" && !isClaudeModeAvailable()) ||
+      (targetSystem === "antigravity" && !isAntigravityModeAvailable())
     ) {
       return;
     }
@@ -5212,16 +5758,44 @@ export function setupHandlers(
     runtimeSystemSwitchInFlight = true;
     updateRuntimeSystemToggles();
     try {
-      const nextSystem = resolveRuntimeSystemToggleTarget(
-        getConversationSystem(),
-        clickedSystem,
-      );
-      await switchConversationSystem(nextSystem, { forceFresh: true });
+      await switchConversationSystem(targetSystem, { forceFresh: true });
     } catch (err) {
       appLogger.warn("LLM: Failed to switch conversation runtime", err);
     } finally {
       runtimeSystemSwitchInFlight = false;
       updateRuntimeSystemToggles();
+    }
+  };
+  /**
+   * Opens a history row of another runtime: switches this panel to `system`
+   * and opens the row's conversation directly. Runs inside the same in-flight
+   * guard as the badge and the header buttons, so they show busy and a second
+   * row click is refused until this one ends.
+   */
+  const openHistoryEntryInSystem = async (
+    system: ConversationSystem,
+    target: RuntimeHistoryTarget,
+  ): Promise<boolean> => {
+    if (
+      runtimeSystemSwitchInFlight ||
+      !item ||
+      (system === "codex" && !isCodexModeAvailable()) ||
+      (system === "claude_code" && !isClaudeModeAvailable())
+    ) {
+      return false;
+    }
+    recoverDriftedPanelScopeForRuntimeToggle();
+    runtimeSystemSwitchInFlight = true;
+    updateRuntimeSystemToggles();
+    try {
+      return await switchConversationSystem(system, { target });
+    } catch (err) {
+      appLogger.warn("LLM: Failed to open a history row in its runtime", err);
+      return false;
+    } finally {
+      runtimeSystemSwitchInFlight = false;
+      updateRuntimeSystemToggles();
+      updateRuntimeModeButton();
     }
   };
   for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
@@ -5230,7 +5804,9 @@ export function setupHandlers(
     button.addEventListener("click", (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
-      void switchRuntimeSystemFromControl(system);
+      void switchRuntimeSystemFromControl(
+        resolveRuntimeSystemToggleTarget(getConversationSystem(), system),
+      );
     });
   }
 
@@ -5241,7 +5817,10 @@ export function setupHandlers(
         ? getCodexRuntimeModelEntries()
         : isAntigravityConversationSystem()
           ? getAntigravityRuntimeModelEntries()
-          : getAvailableModelEntries();
+          : getAvailableModelEntries().filter(
+              // Neither a side chat nor a torn-off window runs on WebChat.
+              (entry) => offersWebChatModels() || entry.authMode !== "webchat",
+            );
     const groupedChoices: Array<{
       providerLabel: string;
       entries: RuntimeModelEntry[];
@@ -5324,10 +5903,27 @@ export function setupHandlers(
     const { choices, currentModel, currentModelDisplay, currentModelHint } =
       getSelectedModelInfo();
     const modelLabel = `${currentModelDisplay || currentModel || "default"}`;
-    const modelHint =
+    const readerRuntime = readerRuntimeKeyForSystem(getConversationSystem());
+    // Only the tooltip names the reader; the button shows the main model.
+    const readerLine = formatReaderTooltipLine(
+      describeReaderSelection({
+        runtime: readerRuntime,
+        selection: panelChoices.getReaderSelection(readerRuntime),
+        lookupEntry: getModelEntryById,
+        runtimeEntries: isClaudeConversationSystem()
+          ? getClaudeRuntimeModelEntries()
+          : isCodexConversationSystem()
+            ? getCodexRuntimeModelEntries()
+            : [],
+      }),
+    );
+    const mainModelHint =
       choices.length > 1
         ? currentModelHint
         : currentModelHint || "Only one model is configured";
+    const modelHint = readerLine
+      ? `${mainModelHint}\n${readerLine}`
+      : mainModelHint;
     // A model can keep its name while its image-input capability changes in
     // settings. Keep that real change eligible for the preview refresh too.
     const { screenshotUnsupported } = getSelectedScreenshotSupport();
@@ -5337,20 +5933,23 @@ export function setupHandlers(
       (screenshotBtn.disabled !==
         (screenshotUnsupported || imageCount >= MAX_SELECTED_IMAGES) ||
         (screenshotUnsupported && imageCount > 0));
-    if (
-      onlyIfChanged &&
-      !screenshotStateChanged &&
-      modelBtn.dataset.modelLabel === modelLabel &&
-      modelBtn.dataset.modelHint === modelHint &&
-      modelBtn.disabled === !item
-    )
-      return;
+    const buttonChanged =
+      modelBtn.dataset.modelLabel !== modelLabel ||
+      modelBtn.dataset.modelHint !== modelHint ||
+      modelBtn.disabled !== !item;
+    if (onlyIfChanged && !screenshotStateChanged && !buttonChanged) return;
     withScrollGuard(chatBox, conversationKey, () => {
       modelBtn.dataset.modelLabel = modelLabel;
       modelBtn.dataset.modelHint = modelHint;
       modelBtn.disabled = !item;
       scheduleResponsiveLayoutSync();
-      updateImagePreviewPreservingScroll();
+      // The image preview shows the model's screenshot support and names the
+      // model in its disabled hint. Rebuilding every preview (paper chips,
+      // files, task progress) when neither changed made each model-menu open
+      // pay for a full panel-state refresh.
+      if (buttonChanged || screenshotStateChanged) {
+        updateImagePreviewPreservingScroll();
+      }
     });
   };
 
@@ -5440,6 +6039,10 @@ export function setupHandlers(
     onRetry: (event: Event) => void;
   }): boolean => {
     if (params.status === "loading") {
+      // A refresh of a list the menu already shows stays quiet: the menu
+      // updates in place when the new list lands. A status row here made the
+      // menu open with one size and jump to another a moment later.
+      if (params.modelCount > 0) return false;
       appendModelMenuEmptyState(params.menu, params.loadingMessage);
       return true;
     }
@@ -5567,36 +6170,89 @@ export function setupHandlers(
       .join("\n");
   };
 
+  /** The subagent card and page of the model menu. */
+  const readerMenu = createReaderMenuController({
+    doc: body.ownerDocument as Document,
+    getRuntime: () => readerRuntimeKeyForSystem(getConversationSystem()),
+    getSelection: (runtime) => panelChoices.getReaderSelection(runtime),
+    setSelection: (runtime, selection) =>
+      panelChoices.setReaderSelection(runtime, selection),
+    getApiEntries: () => getAvailableModelEntries().filter(isReaderApiEntry),
+    getRuntimeEntries: () =>
+      isClaudeConversationSystem()
+        ? getClaudeRuntimeModelEntries()
+        : isCodexConversationSystem()
+          ? getCodexRuntimeModelEntries()
+          : [],
+    lookupEntry: getModelEntryById,
+    appendRuntimeCatalogStatus: (menu) => {
+      appendClaudeModelCatalogStatus(menu);
+      appendCodexModelCatalogStatus(menu);
+    },
+    appendProviderSection: appendModelProviderSection,
+    optionTitle: (entry, own) =>
+      own
+        ? getModelOptionTitle(entry)
+        : `${entry.providerLabel} · ${entry.model}`,
+    isPrimaryPointerEvent,
+    onPageChange: () => {
+      if (!modelMenu || !modelBtn) return;
+      // The menu fits its names, and the two pages list different names.
+      // Keep the wider of the two widths while the menu is open, so turning
+      // the page never makes it jump narrower.
+      const widthBefore = modelMenu.getBoundingClientRect().width;
+      modelMenu.style.width = "";
+      rebuildModelMenu();
+      positionComposerMenu(body, modelMenu, modelBtn);
+      if (widthBefore > modelMenu.getBoundingClientRect().width) {
+        modelMenu.style.width = `${widthBefore}px`;
+        positionComposerMenu(body, modelMenu, modelBtn);
+      }
+    },
+    onPick: () => {
+      updateModelButton();
+    },
+  });
+
   const rebuildModelMenu = () => {
     if (!item || !modelMenu) return;
-    // Refresh cached provider catalogs when the picker is opened.  The current
-    // snapshot renders synchronously; a subsequent open reflects new models.
-    void refreshModelCapabilityRegistry();
-    void refreshConfiguredProviderModelCatalogs();
+    // No catalog refresh here: a refresh notifies capability listeners, which
+    // rebuild an open menu. openModelMenu starts the refresh once per open.
     const { groupedChoices, selectedEntryId } = getSelectedModelInfo();
 
+    // The menu itself is only a frame; its cards sit in one column inside it.
     modelMenu.innerHTML = "";
-    appendDropdownInstruction(
-      modelMenu,
-      t("Select model"),
-      "llm-model-menu-hint",
-    );
-    appendClaudeModelCatalogStatus(modelMenu);
-    appendCodexModelCatalogStatus(modelMenu);
-    appendAntigravityModelCatalogStatus(modelMenu);
+    const stack = createElement(
+      body.ownerDocument as Document,
+      "div",
+      "llm-model-menu-stack",
+    ) as HTMLDivElement;
+    modelMenu.appendChild(stack);
+    if (readerMenu.getPage() === "subagent") {
+      readerMenu.appendReaderList(stack);
+      return;
+    }
+    // Card 1: the subagent, small, on top. Card 2: the chat models.
+    readerMenu.appendSubagentCard(stack);
+    const list = readerMenu.createCard("llm-model-menu-list");
+    stack.appendChild(list);
+    readerMenu.appendCardTitle(list, t("Main Agent"));
+    appendClaudeModelCatalogStatus(list);
+    appendCodexModelCatalogStatus(list);
+    appendAntigravityModelCatalogStatus(list);
     codexDirectController?.appendCatalogStatus({
-      menu: modelMenu,
+      menu: list,
       renderStatus: appendModelCatalogStatus,
       appendEmptyState: appendModelMenuEmptyState,
       isPrimaryPointerEvent,
     });
     if (!groupedChoices.length) {
-      appendModelMenuEmptyState(modelMenu, t("No models configured yet."));
+      appendModelMenuEmptyState(list, t("No models configured yet."));
       return;
     }
 
     for (const group of groupedChoices) {
-      appendModelProviderSection(modelMenu, group.providerLabel);
+      appendModelProviderSection(list, group.providerLabel);
       for (const entry of group.entries) {
         const isSelected = entry.entryId === selectedEntryId;
         const option = createElement(
@@ -5605,12 +6261,11 @@ export function setupHandlers(
           "llm-response-menu-item llm-model-option",
           {
             type: "button",
-            textContent: isSelected
-              ? `\u2713 ${entry.displayModelLabel || "default"}`
-              : entry.displayModelLabel || "default",
+            textContent: entry.displayModelLabel || "default",
             title: getModelOptionTitle(entry),
           },
         );
+        option.classList.toggle(MENU_OPTION_SELECTED_CLASS, isSelected);
         option.dataset.entryId = entry.entryId;
         if (entry.catalogAvailability === "saved-unavailable") {
           option.disabled = true;
@@ -5816,7 +6471,7 @@ export function setupHandlers(
         };
         option.addEventListener("pointerdown", applyModelSelection);
         option.addEventListener("click", applyModelSelection);
-        modelMenu.appendChild(option);
+        list.appendChild(option);
       }
     }
   };
@@ -5869,12 +6524,11 @@ export function setupHandlers(
           "llm-response-menu-item llm-model-option",
           {
             type: "button",
-            textContent: isSelected
-              ? `\u2713 ${entry.displayModelLabel || "default"}`
-              : entry.displayModelLabel || "default",
+            textContent: entry.displayModelLabel || "default",
             title: getModelOptionTitle(entry),
           },
         );
+        option.classList.toggle(MENU_OPTION_SELECTED_CLASS, isSelected);
         if (entry.catalogAvailability === "saved-unavailable") {
           option.disabled = true;
           option.classList.add("llm-model-option-disabled");
@@ -6478,11 +7132,12 @@ export function setupHandlers(
         "llm-response-menu-item llm-reasoning-option",
         {
           type: "button",
-          textContent:
-            params.currentValue.toLowerCase() === choice.value.toLowerCase()
-              ? `\u2713 ${choice.label}`
-              : choice.label,
+          textContent: choice.label,
         },
+      );
+      option.classList.toggle(
+        MENU_OPTION_SELECTED_CLASS,
+        params.currentValue.toLowerCase() === choice.value.toLowerCase(),
       );
       const applySelection = (event: Event) => {
         if (!isPrimaryPointerEvent(event) || params.disabled) return;
@@ -6527,9 +7182,10 @@ export function setupHandlers(
           "llm-response-menu-item llm-reasoning-option",
           {
             type: "button",
-            textContent: isSelected ? `\u2713 ${mode.label}` : mode.label,
+            textContent: mode.label,
           },
         );
+        option.classList.toggle(MENU_OPTION_SELECTED_CLASS, isSelected);
         const applyMode = (e: Event) => {
           if (!isPrimaryPointerEvent(e)) return;
           e.preventDefault();
@@ -6557,11 +7213,6 @@ export function setupHandlers(
       return;
     }
 
-    appendDropdownInstruction(
-      reasoningMenu,
-      t("Reasoning level"),
-      "llm-reasoning-menu-section",
-    );
     if (isClaudeConversationSystem()) {
       const claudeModes: Array<{
         value: "auto" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -6582,9 +7233,12 @@ export function setupHandlers(
           "llm-response-menu-item llm-reasoning-option",
           {
             type: "button",
-            textContent:
-              currentMode === mode.value ? `\u2713 ${mode.label}` : mode.label,
+            textContent: mode.label,
           },
+        );
+        option.classList.toggle(
+          MENU_OPTION_SELECTED_CLASS,
+          currentMode === mode.value,
         );
         const applyClaudeSelection = (e: Event) => {
           if (!isPrimaryPointerEvent(e)) return;
@@ -6663,16 +7317,17 @@ export function setupHandlers(
         "llm-response-menu-item llm-reasoning-option",
         {
           type: "button",
-          textContent:
-            selectedLevel === level
-              ? `\u2713 ${getReasoningLevelDisplayLabel(level, provider, currentModel, options)}`
-              : getReasoningLevelDisplayLabel(
-                  level,
-                  provider,
-                  currentModel,
-                  options,
-                ),
+          textContent: getReasoningLevelDisplayLabel(
+            level,
+            provider,
+            currentModel,
+            options,
+          ),
         },
+      );
+      option.classList.toggle(
+        MENU_OPTION_SELECTED_CLASS,
+        selectedLevel === level,
       );
       if (optionState.enabled) {
         const applyReasoningSelection = (e: Event) => {
@@ -6726,6 +7381,12 @@ export function setupHandlers(
     if (setupHandlersCleaned) return;
     syncModelFromPrefs();
   });
+  // Settings edits to the saved providers: update the model and reasoning
+  // controls in place (chat.ts rebuilds the chat only when needed).
+  cleanupModelProviderSync = registerContextPanelModelSync(body, () => {
+    if (setupHandlersCleaned) return;
+    syncModelFromPrefs(true);
+  });
   codexDirectController = createCodexDirectModelReasoningController({
     getSelectedEntry: () =>
       item ? panelChoices.getSelectedModelEntry() : null,
@@ -6736,9 +7397,85 @@ export function setupHandlers(
   });
 
   let setupHandlersCleaned = false;
+  // Set once the panel's context actions are wired, further below.
+  let addItemsAsDefaultContextForHandle: (
+    zoteroItems: Zotero.Item[],
+  ) => Promise<void> = async () => undefined;
   // Latest in-place paper switch; only it may re-enable the chat box.
   let paperItemSwitchToken = 0;
+  let conversationInPlaceSwitchToken = 0;
+  const conversationSwitchInputLock = chatBox
+    ? createChatInputLock(chatBox)
+    : null;
+  /** See standaloneConversationSwitch.ts. */
+  const resolveConversationSwitchForPanel = (
+    nextItem: Zotero.Item,
+  ): StandaloneConversationSwitchDecision => {
+    const currentKind = item ? resolveDisplayConversationKind(item) : null;
+    const nextKind = resolveDisplayConversationKind(nextItem);
+    const panelAlive =
+      !setupHandlersCleaned && Boolean(item) && panelRoot.isConnected;
+    if (panelAlive && (!currentKind || !nextKind)) {
+      return { inPlace: false, reason: "mode-changed" };
+    }
+    const kindOrGlobal = (kind: "global" | "paper" | null) =>
+      kind === "paper" ? "paper" : "global";
+    const nextBasePaper =
+      nextKind === "paper" ? resolveConversationBaseItem(nextItem) : null;
+    const currentBasePaper =
+      currentKind === "paper" ? resolveCurrentPaperBaseItem() : null;
+    return resolveStandaloneConversationSwitch({
+      panelAlive,
+      standalonePanel: isStandalonePanel,
+      sidePanel: isSidePanel,
+      ownershipBlocked: Boolean(panelRoot.dataset.ownershipBlocked),
+      webChat: isWebChatModeActive(),
+      runtimeSwitchInFlight: runtimeSystemSwitchInFlight,
+      inlineEditOpen: Boolean(getInlineEditTarget(body)),
+      current: {
+        system: currentConversationSystem,
+        kind: kindOrGlobal(currentKind),
+        libraryID: getCurrentLibraryID(),
+        basePaperItemID: Number(currentBasePaper?.id || 0),
+        isNote: isNoteSession(),
+      },
+      next: {
+        system: resolveConversationSystemForItem(nextItem) || "upstream",
+        kind: kindOrGlobal(nextKind),
+        libraryID: Number(nextItem.libraryID || 0),
+        basePaperItemID: Number(nextBasePaper?.id || 0),
+        isNote: Boolean(resolveActiveNoteSession(nextItem)),
+      },
+    });
+  };
   const panelHandle: PanelHandle = {
+    addItemsAsDefaultContext: (zoteroItems) =>
+      addItemsAsDefaultContextForHandle(zoteroItems),
+    addTextContext: (text, options) => {
+      const textContextKey = getTextContextConversationKey();
+      if (setupHandlersCleaned || !item || !textContextKey) return false;
+      let outcome = "empty" as ReturnType<typeof addSelectedTextContext>;
+      withScrollGuard(chatBox, conversationKey, () => {
+        outcome = addSelectedTextContext(body, textContextKey, text, {
+          source: options.source,
+          focusInput: options.focusInput,
+        });
+      });
+      const question = String(options.question || "").trim();
+      const questionSet =
+        Boolean(question) &&
+        (outcome === "added" || outcome === "duplicate") &&
+        updateSelectedTextContextQueryForItem(
+          textContextKey,
+          text,
+          options.source,
+          null,
+          question,
+        );
+      if (outcome !== "added" && !questionSet) return false;
+      updateSelectedTextPreviewPreservingScroll();
+      return outcome === "added";
+    },
     refreshContextSourceForCurrentItem: () => {
       withScrollGuard(chatBox, conversationKey, () => {
         refreshAutoLoadedPaperContextForCurrentItem();
@@ -6759,6 +7496,7 @@ export function setupHandlers(
       if (
         setupHandlersCleaned ||
         isStandalonePanel ||
+        isSidePanel ||
         !item ||
         !panelRoot.isConnected ||
         panelRoot.dataset.ownershipBlocked ||
@@ -6776,7 +7514,7 @@ export function setupHandlers(
       }
       const lease = capturePanelOperationLease(body);
       if (!lease) return false;
-      persistDraftInputForCurrentConversation();
+      persistDraftInputForCurrentConversation({ resize: false });
       // The host is already bound to the next paper, so the mounted scope is
       // written before syncConversationIdentity runs its ownership check.
       item = nextItem;
@@ -6851,6 +7589,53 @@ export function setupHandlers(
         },
       });
       return true;
+    },
+    resolveConversationSwitch: (nextItem) =>
+      resolveConversationSwitchForPanel(nextItem),
+    switchConversationInPlace: async (nextItem) => {
+      if (!resolveConversationSwitchForPanel(nextItem).inPlace) return false;
+      const nextKey = getConversationKey(nextItem);
+      if (!Number.isFinite(nextKey) || nextKey <= 0) return false;
+      const isGlobal = resolveDisplayConversationKind(nextItem) === "global";
+      // The last conversation's messages stay on screen until the next one is
+      // drawn; they must not take input meanwhile (retry/edit would act on
+      // the next conversation's history). Only the latest switch clears it.
+      // (Not `inert`: that restyles every message of a long chat.)
+      const switchToken = ++conversationInPlaceSwitchToken;
+      conversationSwitchInputLock?.lock();
+      try {
+        const switched = isGlobal
+          ? await switchGlobalConversation(nextKey, { quietHistory: true })
+          : (await switchPaperConversation(nextKey, {
+              paperItem:
+                resolveConversationBaseItem(nextItem) ||
+                resolveCurrentPaperBaseItem(),
+              quietHistory: true,
+            })) === true;
+        if (
+          switched &&
+          status &&
+          switchToken === conversationInPlaceSwitchToken
+        ) {
+          // Status writes reach only panels showing the request's
+          // conversation, so the last conversation's status would linger.
+          // Start from the text a fresh mount shows, then let this
+          // conversation's own request state (if any) take over.
+          setStatus(
+            status,
+            isGlobal
+              ? t("No active paper context. Type / to add papers.")
+              : t("Ready"),
+            "ready",
+          );
+          syncRequestUiForCurrentConversation();
+        }
+        return switched;
+      } finally {
+        if (switchToken === conversationInPlaceSwitchToken) {
+          conversationSwitchInputLock?.unlock();
+        }
+      }
     },
   };
   publishPanelHandle(body, panelHandle);
@@ -7027,7 +7812,8 @@ export function setupHandlers(
     // conversation loading.  The parameter-less auto-fire would race with it
     // and resolve to a different (default) conversation, overwriting the
     // explicitly targeted one.
-    if (!isStandalonePanel) {
+    // A side chat's mount controller owns its ephemeral conversation too.
+    if (!isStandalonePanel && !isSidePanel) {
       void switchPaperConversation().catch((err) => {
         appLogger.warn(
           "LLM: Failed to restore paper conversation session",
@@ -7597,6 +8383,11 @@ export function setupHandlers(
       selectedCollectionContextCache.get(itemId) || [],
     getSelectedTagContexts: (itemId) =>
       selectedTagContextCache.get(itemId) || [],
+    getAttachedConversations: (itemId) =>
+      composeContextStore.attachedConversations.list(itemId),
+    clearAttachedConversations: (itemId) => {
+      composeContextStore.attachedConversations.delete(itemId);
+    },
     getFullTextPaperContexts: (currentItem, selectedPaperContexts) =>
       getEffectiveFullTextPaperContexts(currentItem, selectedPaperContexts),
     getPdfModePaperContexts: (currentItem, selectedPaperContexts) =>
@@ -7806,12 +8597,16 @@ export function setupHandlers(
         selectedTextNoteContexts,
         selectedCollectionContexts,
         selectedTagContexts,
+        attachedConversations,
       } = buildInlineEditRetryContextSnapshot({
         selectedContexts,
         selectedCollectionContexts: selectedCollectionContextCache.get(
           currentItem.id,
         ),
         selectedTagContexts: selectedTagContextCache.get(currentItem.id),
+        attachedConversations: composeContextStore.attachedConversations.list(
+          currentItem.id,
+        ),
       });
       const contextSource = await resolveAutoLoadedContextSourceAsync().catch(
         (error) => {
@@ -7979,6 +8774,7 @@ export function setupHandlers(
             selectedTextNoteContexts,
             selectedCollectionContexts,
             selectedTagContexts,
+            attachedConversations,
             screenshotImages: images,
             paperContexts: selectedPaperContexts,
             pdfPaperContexts: pdfModePapers,
@@ -8097,10 +8893,77 @@ export function setupHandlers(
     void executeSend();
   });
 
-  if (runtimeModeBtn) {
+  // The runtime badge opens a small menu above it; picking a runtime switches
+  // to it with a fresh draft, like the header buttons.
+  const pickRuntimeFromBadgeMenu = (system: ConversationSystem) => {
+    closeRuntimeMenu();
+    if (system === getConversationSystem()) return;
+    if (hooks?.requestConversationSystem) {
+      hooks.requestConversationSystem(system);
+      return;
+    }
+    void switchRuntimeSystemFromControl(system);
+  };
+  const renderRuntimeMenu = () => {
+    if (!runtimeMenu) return;
+    runtimeMenu.replaceChildren();
+    const state = getRuntimeBadgeState();
+    const currentSystem = getConversationSystem();
+    for (const entry of state.items) {
+      const selected = entry.system === currentSystem;
+      const row = runtimeMenu.ownerDocument.createElement("button");
+      row.type = "button";
+      row.className = "llm-permission-option";
+      row.dataset.runtimeSystem = entry.system;
+      row.setAttribute("role", "menuitemradio");
+      row.setAttribute("aria-checked", String(selected));
+      row.classList.toggle("llm-permission-option-selected", selected);
+      row.textContent = entry.label;
+      row.addEventListener("click", (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        pickRuntimeFromBadgeMenu(entry.system);
+        runtimeModeBtn?.focus();
+      });
+      runtimeMenu.appendChild(row);
+    }
+  };
+  const stopRuntimeMenuPointerEvent = (event: Event) => event.stopPropagation();
+  const onRuntimeMenuOutsidePointerDown = (event: Event) => {
+    if (!runtimeMenu || !isFloatingMenuOpen(runtimeMenu)) return;
+    const target = event.target as Node | null;
+    if (
+      target &&
+      (runtimeMenu.contains(target) || runtimeModeBtn?.contains(target))
+    ) {
+      return;
+    }
+    closeRuntimeMenu();
+  };
+  const onRuntimeMenuEscape = (event: Event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (
+      keyboardEvent.key !== "Escape" ||
+      !runtimeMenu ||
+      !isFloatingMenuOpen(runtimeMenu)
+    ) {
+      return;
+    }
+    closeRuntimeMenu();
+    runtimeModeBtn?.focus();
+    keyboardEvent.preventDefault();
+    keyboardEvent.stopPropagation();
+  };
+  const runtimeMenuDoc = body.ownerDocument;
+  if (runtimeModeBtn && runtimeMenu) {
     runtimeModeBtn.addEventListener("click", (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
+      if (runtimeModeBtn.disabled) return;
+      if (runtimeModeBtn.getAttribute("aria-expanded") === "true") {
+        closeRuntimeMenu();
+        return;
+      }
       // Same contract as the runtime-system toggles: the fence delivers this
       // click even on a drifted panel, so the handler repairs the drift instead
       // of refusing the only control that can end it.
@@ -8111,22 +8974,26 @@ export function setupHandlers(
       ) {
         return;
       }
-      const nextMode: ChatRuntimeMode =
-        getCurrentRuntimeMode() === "agent" ? "chat" : "agent";
-      setCurrentRuntimeMode(nextMode);
-      // Only an explicit toggle updates the sticky default, so implicit
-      // switches (/compact, skill selection) stay scoped to this conversation.
-      panelChoices.setLastUsedRuntimeMode(nextMode);
-      if (status) {
-        setStatus(
-          status,
-          nextMode === "agent"
-            ? t("Agent mode enabled")
-            : t("Chat mode enabled"),
-          "ready",
-        );
+      if (!getRuntimeBadgeState().clickable) return;
+      renderRuntimeMenu();
+      positionFloatingMenu(body, runtimeMenu, runtimeModeBtn, {
+        horizontalAlignment: "center",
+        verticalPlacement: "above",
+      });
+      if (runtimeMenu.scrollHeight <= runtimeMenu.clientHeight) {
+        runtimeMenu.style.overflowY = "hidden";
       }
+      setFloatingMenuOpen(runtimeMenu, FOOTER_PERMISSION_MENU_OPEN_CLASS, true);
+      runtimeModeBtn.setAttribute("aria-expanded", "true");
     });
+    runtimeMenu.addEventListener("pointerdown", stopRuntimeMenuPointerEvent);
+    runtimeMenu.addEventListener("mousedown", stopRuntimeMenuPointerEvent);
+    runtimeMenuDoc.addEventListener(
+      "pointerdown",
+      onRuntimeMenuOutsidePointerDown,
+      true,
+    );
+    runtimeMenuDoc.addEventListener("keydown", onRuntimeMenuEscape, true);
   }
 
   // Enter key (Shift+Enter for newline).
@@ -8284,6 +9151,53 @@ export function setupHandlers(
 
   attachFontScaleShortcutController(panelDoc);
 
+  // "Add past conversation": the history popup, listing chats of every system
+  // for this library. Picking a row attaches a reference chip to the composer.
+  const pastConversationPicker = createHistorySearchPopupController({
+    parent: panelRoot,
+    searchPlaceholder: t("Search past chats"),
+    showRuntimeLabel: true,
+    loadEntries: async () =>
+      await listPastConversationEntries({
+        libraryID: getCurrentLibraryID(),
+        excludeConversationKey: item ? getConversationKey(item) : null,
+      }),
+    loadDocument: async (entry) => createHistorySearchDocument(entry, []),
+    searchEntries: async (query) =>
+      await searchPastConversationEntries({
+        libraryID: getCurrentLibraryID(),
+        query,
+        excludeConversationKey: item ? getConversationKey(item) : null,
+      }),
+    onSelect: (entry) => {
+      if (!item || !isPastConversationEntry(entry)) return false;
+      const ref = buildAttachedConversationRef(entry, getCurrentLibraryID());
+      if (!ref) return false;
+      const current = composeContextStore.attachedConversations.list(item.id);
+      if (current.length >= MAX_ATTACHED_CONVERSATIONS) {
+        if (status) {
+          setStatus(status, t("Up to 3 past chats per message"), "warning");
+        }
+        return true;
+      }
+      composeContextStore.attachedConversations.replace(
+        item.id,
+        normalizeAttachedConversationRefs([...current, ref]),
+      );
+      updatePaperPreview();
+      return true;
+    },
+    translate: t,
+    log: (...args) => appLogger.warn("LLM: past conversation picker", args),
+    // Rows read exactly like the history search: "(Creator, year)" or
+    // "Library chat", the title, the small "Codex"/"Claude" label, and the
+    // paper title underneath.
+    resolveLabel: (entry) =>
+      historyLifecycleController.resolveHistoryScopeChipLabel(entry),
+    resolveScopeLabel: (entry) =>
+      historyLifecycleController.resolveHistoryScopeLabel(entry),
+  });
+
   attachComposeCaptureController({
     body,
     inputBox,
@@ -8293,8 +9207,16 @@ export function setupHandlers(
     slashMenu,
     slashUploadOption,
     slashReferenceOption,
+    slashPastConversationOption,
+    openPastConversationPicker: () => {
+      if (!item) return;
+      pastConversationPicker.open();
+    },
+    getAttachedConversationCount: () =>
+      item ? composeContextStore.attachedConversations.list(item.id).length : 0,
     slashPdfPageOption,
     slashPdfMultiplePagesOption,
+    slashSideChatOption,
     modelMenu,
     reasoningMenu,
     retryModelMenu,
@@ -8342,6 +9264,11 @@ export function setupHandlers(
     if (!modelMenu || !modelBtn) return;
     if ((modelBtn as HTMLButtonElement).disabled) return;
     menus.closeMany(MENUS_CLOSED_BY_MODEL_MENU);
+    // Refresh cached provider catalogs when the picker is opened.  The current
+    // snapshot renders synchronously; the menu updates when a changed list
+    // lands (failed refreshes back off inside the capability service).
+    void refreshModelCapabilityRegistry();
+    void refreshConfiguredProviderModelCatalogs();
     if (isCodexConversationSystem()) {
       // A loaded catalog can change while this chat stays mounted. Revalidate
       // on each user opening and update the menu when model/list returns.
@@ -8360,12 +9287,15 @@ export function setupHandlers(
     updateModelButton();
     flushResponsiveLayoutSyncNow();
     flushPanelStateRefreshNow();
+    // The menu always opens on the chat model page, at its own width.
+    readerMenu.resetPage();
+    modelMenu.style.width = "";
     rebuildModelMenu();
     if (!modelMenu.childElementCount) {
       closeModelMenu();
       return;
     }
-    positionFloatingMenu(body, modelMenu, modelBtn);
+    positionComposerMenu(body, modelMenu, modelBtn);
     setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, true);
   };
 
@@ -8389,7 +9319,7 @@ export function setupHandlers(
       closeReasoningMenu();
       return;
     }
-    positionFloatingMenu(body, reasoningMenu, reasoningBtn);
+    positionComposerMenu(body, reasoningMenu, reasoningBtn);
     setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, true);
   };
 
@@ -8492,55 +9422,69 @@ export function setupHandlers(
     },
   });
 
-  const unregisterContextSurfaceActions = registerContextSurfaceActionTarget(
-    body,
-    {
-      surfaceKind: isStandalonePanel ? "standalone" : "embedded",
-      addItemsAsDefaultContext: async (zoteroItems) => {
-        const result = await addZoteroItemsAsDefaultContext(
-          {
-            item,
-            resolveAutoLoadedPaperContext,
-            getManualPaperContextsForItem,
-            isPaperContextMineru,
-            getTextContextConversationKey,
-            updatePaperPreviewPreservingScroll,
-            updateSelectedTextPreviewPreservingScroll,
-          },
-          zoteroItems,
-        );
-        if (result.statusMessage && status) {
-          setStatus(
-            status,
-            result.statusMessage,
-            result.statusLevel || "ready",
-          );
-        }
-        inputBox.focus({ preventScroll: true });
-        return result;
+  // Adds Zotero items as default context to this panel's current
+  // conversation (no new conversation). The Zotero "Add as context" action
+  // and the panel handle both use it.
+  const addItemsAsDefaultContextForPanel = async (
+    zoteroItems: Zotero.Item[],
+  ) => {
+    const result = await addZoteroItemsAsDefaultContext(
+      {
+        item,
+        resolveAutoLoadedPaperContext,
+        getManualPaperContextsForItem,
+        isPaperContextMineru,
+        getTextContextConversationKey,
+        updatePaperPreviewPreservingScroll,
+        updateSelectedTextPreviewPreservingScroll,
       },
-      afterItemsAsDefaultContextAdded: (result) => {
-        if (!isStandalonePanel || !result.changed) return;
-        flushPanelStateRefreshNow();
-        hooks?.onDefaultContextRendered?.();
-      },
-      prepareItemsAsDefaultContextTarget: isStandalonePanel
-        ? hooks?.prepareItemsAsDefaultContextTarget
-        : async () => {
-            if (isNoteSession() || isWebChatMode()) return false;
-            const lease = capturePanelOperationLease(body);
-            const libraryID = getCurrentLibraryID();
-            if (!lease || !libraryID) return false;
-            const summary = await conversationRepository.createCatalogEntry({
-              system: getConversationSystem(),
-              kind: "global",
-              libraryID,
-            });
-            if (!summary || !isPanelOperationLeaseCurrent(lease)) return false;
-            return switchGlobalConversation(summary.conversationKey);
+      zoteroItems,
+    );
+    if (result.statusMessage && status) {
+      setStatus(status, result.statusMessage, result.statusLevel || "ready");
+    }
+    inputBox.focus({ preventScroll: true });
+    return result;
+  };
+  addItemsAsDefaultContextForHandle = async (zoteroItems) => {
+    if (setupHandlersCleaned || !item) return;
+    const result = await addItemsAsDefaultContextForPanel(zoteroItems);
+    if (result.changed) flushPanelStateRefreshNow();
+  };
+
+  // The side chat and a torn-off window never capture Zotero's "Add as
+  // context": that action always goes to the one standalone window (or a
+  // sidebar panel).
+  const unregisterContextSurfaceActions =
+    isSidePanel || isTornSurface(selectionSurface())
+      ? () => undefined
+      : registerContextSurfaceActionTarget(body, {
+          surfaceKind: isStandalonePanel ? "standalone" : "embedded",
+          addItemsAsDefaultContext: addItemsAsDefaultContextForPanel,
+          afterItemsAsDefaultContextAdded: (result) => {
+            if (!isStandalonePanel || !result.changed) return;
+            flushPanelStateRefreshNow();
+            hooks?.onDefaultContextRendered?.();
           },
-    },
-  );
+          prepareItemsAsDefaultContextTarget: isStandalonePanel
+            ? hooks?.prepareItemsAsDefaultContextTarget
+            : async () => {
+                if (isNoteSession() || isWebChatMode()) return false;
+                const lease = capturePanelOperationLease(body);
+                const libraryID = getCurrentLibraryID();
+                if (!lease || !libraryID) return false;
+                const summary = await conversationRepository.createCatalogEntry(
+                  {
+                    system: getConversationSystem(),
+                    kind: "global",
+                    libraryID,
+                  },
+                );
+                if (!summary || !isPanelOperationLeaseCurrent(lease))
+                  return false;
+                return switchGlobalConversation(summary.conversationKey);
+              },
+        });
 
   const cancelActiveAgentAction = (options?: {
     requireVisibleReviewCard?: boolean;
@@ -8665,9 +9609,17 @@ export function setupHandlers(
     quotaControl = null;
     disposeFooterPermissionControl?.();
     disposeFooterPermissionControl = null;
+    runtimeMenuDoc.removeEventListener(
+      "pointerdown",
+      onRuntimeMenuOutsidePointerDown,
+      true,
+    );
+    runtimeMenuDoc.removeEventListener("keydown", onRuntimeMenuEscape, true);
     cleanupMineruPaperSourceObservers?.();
     cleanupModelCapabilitySubscription?.();
     cleanupModelCapabilitySubscription = null;
+    cleanupModelProviderSync?.();
+    cleanupModelProviderSync = null;
     disposeHistoryActivity?.();
     // Before the panel's teardown, which would repaint the button.
     unbindTaskProgressToggle?.();
@@ -8693,8 +9645,9 @@ export function setupHandlers(
     queuedFollowUpBody.__llmQueuedFollowUpRegisteredThreadKey = null;
     activeContextPanelStateSync.delete(body);
     // Rebuilding the root of a still-mounted body must retain its raw paper
-    // identity. A detached body, however, owns no surviving UI registration.
-    if (!body.isConnected) {
+    // identity. A detached body, or one whose window closed, owns no
+    // surviving UI registration.
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       releaseInlineEdit(body);
     }

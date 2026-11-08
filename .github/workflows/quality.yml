@@ -54,10 +54,27 @@ jobs:
         run: npm ci
       - name: Run unit tests
         run: npm run test:unit
+      - name: Run timing-sensitive unit tests
+        # One at a time, so other tests running in parallel cannot slow them.
+        run: npm run test:unit:speed
+      - name: Run Claude bridge tests
+        run: npm run test:claude-bridge
 
   workflow:
-    name: Workflow tests
+    name: Workflow tests (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard reports, so one failure does not hide the others.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      # The scaffold would otherwise download the newest Zotero beta on every
+      # run, so a Zotero change could break tests unrelated to the code. We
+      # use the release channel and keep the download in the cache; bump
+      # ZOTERO_CACHE_VERSION to move to a newer Zotero on purpose.
+      ZOTERO_CHANNEL: release
+      ZOTERO_CACHE_VERSION: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,8 +85,25 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Restore Zotero
+        id: zotero-cache
+        uses: actions/cache@v4
+        with:
+          path: .scaffold/zotero-ci
+          key: zotero-linux-${{ env.ZOTERO_CHANNEL }}-v${{ env.ZOTERO_CACHE_VERSION }}
+      - name: Download Zotero
+        if: steps.zotero-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .scaffold/zotero-ci
+          wget -q -O .scaffold/zotero-ci/zotero.tar "https://www.zotero.org/download/client/dl?platform=linux-x86_64&channel=${ZOTERO_CHANNEL}"
+          tar -xf .scaffold/zotero-ci/zotero.tar -C .scaffold/zotero-ci
+          rm .scaffold/zotero-ci/zotero.tar
+      - name: Use the cached Zotero
+        run: |
+          echo "ZOTERO_PLUGIN_ZOTERO_BIN_PATH=$PWD/.scaffold/zotero-ci/Zotero_linux-x86_64/zotero" >> "$GITHUB_ENV"
+          find .scaffold/zotero-ci -name application.ini -exec grep -m1 '^Version=' {} \;
       - name: Run workflow tests
-        run: npm run test:workflow
+        run: npm run test:workflow -- --shard ${{ matrix.shard }}/3
 
   build:
     name: Build
@@ -93,7 +127,11 @@ jobs:
           path: .scaffold/build
 
   full-test:
+    # Kept under its old name so branch rules that require it still match.
+    # It used to run every test a second time; now it only checks that every
+    # job above passed.
     name: Full npm test gate
+    if: always()
     needs:
       - lint
       - typecheck
@@ -102,14 +140,14 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          cache: npm
-      - name: Install dependencies
-        run: npm ci
-      - name: Run complete test script
-        run: npm test
+      - name: Check every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "A required job did not pass."
+              exit 1
+            fi
+          done

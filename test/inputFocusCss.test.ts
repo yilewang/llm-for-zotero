@@ -29,7 +29,8 @@ describe("composer input focus CSS", function () {
     const inputRules = extractCssRules(css, ".llm-input");
     const focusRule = extractCssRule(css, ".llm-input:focus");
 
-    assert.include(inputRules.join("\n"), "border: none;");
+    // Its right and bottom insets are transparent borders.
+    assert.include(inputRules.join("\n"), "border-color: transparent;");
     assert.include(inputRules.join("\n"), "appearance: none;");
     assert.include(focusRule, "outline: none;");
     assert.include(focusRule, "box-shadow: none;");

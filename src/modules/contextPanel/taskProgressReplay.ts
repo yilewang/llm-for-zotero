@@ -34,7 +34,11 @@ import { composeContextStore } from "./contexts/composeContextStore";
 import { createStreamingResponse } from "./streamingResponse";
 import { waitForTaskProgressHydrationForTests } from "./taskProgress/history";
 import { flushTaskProgressPanels } from "./taskProgress/panel";
-import { clearTaskProgress, completeTaskRun } from "./taskProgress/store";
+import {
+  clearTaskProgress,
+  completeTaskRun,
+  syncTaskAnswerCitations,
+} from "./taskProgress/store";
 import type { Message } from "./types";
 
 type Panel = { body: HTMLElement; item: Zotero.Item };
@@ -145,6 +149,8 @@ export type CodexTaskProgressReplayHandle = {
   planUpdated: (steps: Array<{ content: string; status?: string }>) => void;
   read: (requestId: string, delta: TaskPaperLedgerDelta) => void;
   answer: (text: string) => void;
+  /** Text of one Codex agent message, as the app server streams it. */
+  agentMessage: (itemId: string, delta: string) => void;
   /** Finish, persist the run's trace and messages, and end the request. */
   finish: () => Promise<void>;
 };
@@ -236,6 +242,9 @@ export async function startCodexTaskProgressReplay(
       void callbacks.onDelta?.(text);
       response.flush("event");
     },
+    agentMessage: (itemId, delta) => {
+      void callbacks.onAgentMessageDelta?.({ itemId, delta });
+    },
     finish: async () => {
       if (finished) return;
       finished = true;
@@ -246,6 +255,7 @@ export async function startCodexTaskProgressReplay(
         runId,
         quoteCitations: assistant.quoteCitations,
       });
+      syncTaskAnswerCitations(key, { runId }, assistant);
       await trace.persist(key, generation, "completed");
       assistant.streaming = false;
       // Stored like a real turn, so the conversation can be reopened.

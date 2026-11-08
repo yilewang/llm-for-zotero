@@ -20,6 +20,7 @@ import {
   type CodexApprovalsReviewer,
   type CodexPermissionChoice,
   type CodexPermissionState,
+  withReadOnlyAsking,
 } from "./permissionState";
 import {
   readCodexPermissionStatePref,
@@ -635,7 +636,8 @@ export function buildCodexPermissionExecution(params: {
     );
   }
 
-  const state = preference.state;
+  // A read-only state saved before the rule still asks on the thread.
+  const state = withReadOnlyAsking(preference.state);
   const thread = {
     ...(state.boundary.kind === "profile"
       ? { permissions: state.boundary.profileId }

@@ -67,7 +67,7 @@ describe("library_read unified metadata", function () {
     globalThis.Zotero = originalZotero;
   });
 
-  function makeTool() {
+  function makeTool(noteText = "Note body") {
     const items = new Map<number, Zotero.Item>([
       [7, makeItem({ id: 7, kind: "regular", title: "Exact Paper" })],
       [
@@ -113,7 +113,7 @@ describe("library_read unified metadata", function () {
       getStandaloneNoteContent: ({ noteId }: { noteId: number }) => ({
         noteId,
         title: "Child Note",
-        noteText: "Note body",
+        noteText,
         wordCount: 2,
       }),
     };
@@ -155,6 +155,22 @@ describe("library_read unified metadata", function () {
       result.results["701"].annotations[0].text,
       "Annotation of 701",
     );
+  });
+
+  it("explains note placeholders once, only when a read note has them", async function () {
+    for (const [noteText, explained] of [
+      ["Turnover {{citation:3fa9c1 (Smith, 2020, p. 42)}}.", true],
+      ["Note body", false],
+    ] as const) {
+      const { tool } = makeTool(noteText);
+      const input = tool.validate({ itemIds: [801], sections: ["notes"] });
+      if (!input.ok) assert.fail(input.error);
+      const result = (await tool.execute(input.value, context)) as any;
+      assert.equal(
+        String(result.noteEmbeds || "").includes("{{citation:id"),
+        explained,
+      );
+    }
   });
 
   it("rejects explicitly supplied empty or malformed selectors", function () {

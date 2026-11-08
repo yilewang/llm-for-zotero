@@ -115,7 +115,8 @@ describe("agent adapters report provider usage", function () {
       2,
       "message_start and message_delta both report",
     );
-    assert.equal(samples[0].promptTokens, 32208);
+    // input_tokens leaves out the cached tokens; the prompt counts them.
+    assert.equal(samples[0].promptTokens, 32208 + 128);
     assert.equal(samples[0].cacheReadTokens, 128);
     const maxCompletion = Math.max(
       ...samples.map((sample) => sample.completionTokens || 0),
@@ -190,6 +191,42 @@ describe("agent adapters report provider usage", function () {
     assert.equal(samples[1].promptTokens, 1200);
     assert.equal(samples[1].completionTokens, 64);
     assert.equal(samples[1].totalTokens, 1264);
+  });
+
+  it("counts Gemini native thinking tokens as completion tokens", async function () {
+    const adapter = new GeminiNativeAgentAdapter();
+    const samples: UsageStats[] = [];
+    installFetch(() => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      body: makeSseStream([
+        'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1200,"candidatesTokenCount":64,"thoughtsTokenCount":500,"totalTokenCount":1764}}\n\n',
+      ]),
+      json: async () => ({}),
+      text: async () => "",
+    }));
+
+    await adapter.runStep({
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "Inspect this",
+        model: "gemini-2.5-pro",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "gemini-test",
+        providerProtocol: "gemini_native",
+      },
+      messages: [{ role: "user", content: "Say hello" }],
+      tools,
+      onUsage: (usage) => {
+        samples.push(usage);
+      },
+    });
+
+    assert.lengthOf(samples, 1);
+    assert.equal(samples[0].completionTokens, 564);
+    assert.equal(samples[0].totalTokens, 1764);
   });
 
   it("forwards OpenAI-compatible usage that trails the final delta before [DONE]", async function () {

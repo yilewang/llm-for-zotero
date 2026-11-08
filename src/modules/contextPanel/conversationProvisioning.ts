@@ -14,7 +14,10 @@ import {
   buildDefaultAntigravityGlobalConversationKey,
   buildDefaultAntigravityPaperConversationKey,
 } from "../../antigravity/constants";
-import { buildDefaultUpstreamGlobalConversationKey } from "../../shared/conversationKeySpace";
+import {
+  buildDefaultUpstreamGlobalConversationKey,
+  isEphemeralConversationKey,
+} from "../../shared/conversationKeySpace";
 import {
   getConversationKeyLedgerEntry,
   initConversationKeyLedgerStore,
@@ -622,6 +625,9 @@ export async function provisionConversationScopeForItem(params: {
   if (!storageSystem) return false;
   const scope = resolveProvisionScope(params.item, storageSystem);
   if (!scope) return false;
+  // A temporary side chat's key (reserved band) gets no catalog, registry,
+  // or ledger row; it is always "provisioned" in memory.
+  if (isEphemeralConversationKey(scope.conversationKey)) return true;
   try {
     const entry = await provisionConversationEntry(storageSystem, scope);
     if (entry && entry.conversationKey !== scope.conversationKey) {

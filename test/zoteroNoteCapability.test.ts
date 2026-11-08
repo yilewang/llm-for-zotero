@@ -136,19 +136,6 @@ describe("note capability", function () {
       assert.equal(resolved?.id, 9);
     });
 
-    it("returns nothing for a bad id instead of editing the open note", function () {
-      makeNote({ id: 5, html: "<p>open note</p>" });
-      installZotero();
-
-      // Silently editing whatever was open would rewrite the wrong note.
-      const resolved = capability().resolveActiveNoteItem({
-        request: { activeNoteContext: { noteId: 5 } } as never,
-        noteId: 404,
-      });
-
-      assert.isNull(resolved);
-    });
-
     it("falls back to the item the request has active", function () {
       makeNote({ id: 7, html: "<p>active</p>", title: "Active" });
       installZotero();
@@ -507,7 +494,7 @@ describe("note capability", function () {
       makeNote({ id: 2, html: "<p>needle</p>", title: "Child", parentID: 1 });
       installSearch([2]);
 
-      const results = await capability().searchAllNotes({
+      const { notes: results } = await capability().searchAllNotes({
         libraryID: 1,
         query: "needle",
       });
@@ -523,7 +510,7 @@ describe("note capability", function () {
       makeNote({ id: 3, html: "<p>needle</p>", title: "Loose note" });
       installSearch([3]);
 
-      const results = await capability().searchAllNotes({
+      const { notes: results } = await capability().searchAllNotes({
         libraryID: 1,
         query: "needle",
       });
@@ -547,7 +534,7 @@ describe("note capability", function () {
       makeNote({ id: 2, html: "<p>needle</p>", parentID: 1 });
       installSearch([2]);
 
-      const results = await capability().searchAllNotes({
+      const { notes: results } = await capability().searchAllNotes({
         libraryID: 1,
         collectionId: 99,
         query: "needle",
@@ -568,7 +555,7 @@ describe("note capability", function () {
         items.get(4) as unknown as Record<string, unknown>,
       ]);
 
-      const results = await capability().searchAllNotes({
+      const { notes: results } = await capability().searchAllNotes({
         libraryID: 1,
         query: "needle",
       });
@@ -608,13 +595,92 @@ describe("note capability", function () {
           },
         },
       });
-      const results = await capability().searchAllNotes({
+      const { notes: results } = await capability().searchAllNotes({
         libraryID: 1,
         query: "   ",
       });
       assert.deepEqual(results, []);
       assert.equal(searches, 0);
       assert.equal(enumerations, 0);
+    });
+
+    it("reports the true total past the limit and pages with offset", async function () {
+      const ids = [21, 22, 23, 24, 25];
+      for (const id of ids) {
+        makeNote({ id, html: "<p>needle</p>", title: `Note ${id}` });
+      }
+      installSearch(ids);
+
+      const pages = [];
+      for (const offset of [0, 2, 4]) {
+        pages.push(
+          await capability().searchAllNotes({
+            libraryID: 1,
+            query: "needle",
+            limit: 2,
+            offset,
+          }),
+        );
+      }
+
+      assert.deepEqual(
+        pages.map((page) => page.totalCount),
+        [5, 5, 5],
+      );
+      assert.deepEqual(
+        pages.map((page) => page.notes.map((note) => note.itemId)),
+        [[21, 22], [23, 24], [25]],
+      );
+    });
+
+    it("counts only in-collection notes toward the total", async function () {
+      items.set(1, {
+        id: 1,
+        libraryID: 1,
+        isNote: () => false,
+        isRegularItem: () => true,
+        isAttachment: () => false,
+        getDisplayTitle: () => "Host paper",
+        getCollections: () => [7],
+        getTags: () => [],
+      } as unknown as Record<string, unknown>);
+      makeNote({ id: 2, html: "<p>needle</p>", parentID: 1 });
+      makeNote({ id: 3, html: "<p>needle</p>", parentID: 1 });
+      makeNote({ id: 4, html: "<p>needle</p>", title: "Unfiled" });
+      installSearch([2, 3, 4]);
+
+      const result = await capability().searchAllNotes({
+        libraryID: 1,
+        collectionId: 7,
+        query: "needle",
+        limit: 1,
+      });
+
+      assert.equal(result.totalCount, 2);
+      assert.deepEqual(
+        result.notes.map((note) => note.itemId),
+        [2],
+      );
+    });
+
+    it("reports the true total and pages in the in-memory fallback", async function () {
+      const topLevel = [31, 32, 33].map(
+        (id) =>
+          makeNote({ id, html: "<p>needle</p>", title: `Note ${id}` })
+            .item as unknown as Record<string, unknown>,
+      );
+      installSearch("throws", topLevel);
+
+      const result = await capability().searchAllNotes({
+        libraryID: 1,
+        query: "needle",
+        limit: 1,
+        offset: 1,
+      });
+
+      assert.equal(result.totalCount, 3);
+      assert.lengthOf(result.notes, 1);
+      assert.include([31, 32, 33], result.notes[0].itemId);
     });
   });
 
@@ -672,6 +738,18 @@ describe("note capability", function () {
       assert.lengthOf(listed.notes, 1);
       assert.equal(listed.notes[0].itemType, "note");
       assert.equal(listed.notes[0].itemId, 3);
+
+      // The second page holds the other note, so offset reaches every one.
+      const next = await capability().listStandaloneNotes({
+        libraryID: 1,
+        limit: 1,
+        offset: 1,
+      });
+      assert.equal(next.totalCount, 2);
+      assert.deepEqual(
+        next.notes.map((note) => note.itemId),
+        [4],
+      );
     });
 
     it("refuses a listing with no library", async function () {

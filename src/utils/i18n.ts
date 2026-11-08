@@ -13,6 +13,7 @@
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  "Not in library": "不在文献库中",
   "Web search provider": "网页搜索服务",
   "AnySearch API key (optional)": "AnySearch API 密钥（可选）",
   "Test search (sends a public query)": "测试搜索（发送公开查询）",
@@ -44,6 +45,76 @@ const zhCN: Record<string, string> = {
     "AnySearch 会接收搜索词和请求的公开网址。密钥保存在本地 Zotero 偏好设置中。请勿发送凭据或私密文献库文本。不会自动重试或回退到其他服务。",
   "General search and bounded page extraction only. No depth, topic, date/domain filters, query-focused extraction, or PDF/Office/media extraction. Usage credits are not reported.":
     "仅支持通用搜索和有数量限制的网页正文提取。不支持深度、主题、日期或域名过滤、按问题聚焦提取以及 PDF、Office 或媒体提取。不报告积分用量。",
+  "DeepSeek key": "DeepSeek 密钥",
+  "Key from your DeepSeek model profile": "密钥来自你的 DeepSeek 模型配置",
+  "Add a DeepSeek model profile with the official API address (api.deepseek.com) to use DeepSeek search. Keys from other hosts do not work.":
+    "请添加使用官方 API 地址（api.deepseek.com）的 DeepSeek 模型配置以使用 DeepSeek 搜索。其他地址的密钥无法使用。",
+  "$0.75 per 1,000 successful searches or page fetches; failed or empty calls are not billed. Search queries and requested URLs are sent to DeepSeek.":
+    "每 1,000 次成功的搜索或网页读取收费 0.75 美元；失败或无结果的调用不收费。搜索词和请求的网址会发送给 DeepSeek。",
+  "Uses the key of your first DeepSeek model profile with the official API address; calls are billed to that DeepSeek account. Queries are limited to 128 characters, including site and date filters. No depth, topic, or query-focused page reading.":
+    "使用第一个采用官方 API 地址的 DeepSeek 模型配置中的密钥；费用从该 DeepSeek 账户扣除。搜索词最多 128 个字符，包括网站和日期过滤条件。不支持深度、主题或按问题聚焦的网页读取。",
+  "Select DeepSeek before testing.": "请先选择 DeepSeek 再测试。",
+  "DeepSeek results": "DeepSeek 结果",
+  "DeepSeek test search failed.": "DeepSeek 测试搜索失败。",
+  "DeepSeek returned an invalid response.": "DeepSeek 返回了无效响应。",
+  "DeepSeek returned an invalid results list.": "DeepSeek 返回了无效结果列表。",
+  "DeepSeek returned no page content.": "DeepSeek 未返回网页内容。",
+  "DeepSeek rejected this page URL.": "DeepSeek 拒绝了该网页地址。",
+  "DeepSeek rejected the search request parameters.":
+    "DeepSeek 拒绝了搜索请求参数。",
+  "DeepSeek rejected the API key. Check the key in your DeepSeek model profile.":
+    "DeepSeek 拒绝了该 API 密钥。请检查 DeepSeek 模型配置中的密钥。",
+  "DeepSeek balance is insufficient. Top up at platform.deepseek.com.":
+    "DeepSeek 余额不足。请在 platform.deepseek.com 充值。",
+  "DeepSeek refused the search request.": "DeepSeek 拒绝了搜索请求。",
+  "DeepSeek refused to fetch this page under its security policy.":
+    "DeepSeek 依据其安全策略拒绝读取该网页。",
+  "DeepSeek could not get usable content from this page.":
+    "DeepSeek 无法从该网页获取可用内容。",
+  "DeepSeek request failed.": "DeepSeek 请求失败。",
+  "DeepSeek request failed or returned an invalid response.":
+    "DeepSeek 请求失败或返回了无效响应。",
+  "DeepSeek request timed out.": "DeepSeek 请求超时。",
+  "DeepSeek request was cancelled.": "DeepSeek 请求已取消。",
+  "DeepSeek search rate limit reached. Try again later.":
+    "DeepSeek 搜索请求已被限流，请稍后重试。",
+  "DeepSeek fetch rate limit reached for this site. Try again later.":
+    "DeepSeek 对该网站的读取请求已被限流，请稍后重试。",
+  "DeepSeek search is temporarily unavailable. Try again later.":
+    "DeepSeek 搜索暂时不可用，请稍后重试。",
+  "DeepSeek search needs the API key of an official DeepSeek model profile.":
+    "DeepSeek 搜索需要官方 DeepSeek 模型配置中的 API 密钥。",
+  // ── Built-in action and skill descriptions (display only) ───────────────
+  "Scan the active library for bibliographic metadata issues, then fetch canonical metadata and page through review cards for supported fixes.":
+    "扫描当前文库中的书目元数据问题，获取权威元数据，并逐页展示可支持的修复供你审核。",
+  "Find unfiled Zotero items and page through batch-assignment dialogs to move them into collections. The agent proposes destinations from fresh collection data; the user reviews each page before edits are applied.":
+    "查找未分类的 Zotero 条目，分批审核并移入分类。助手根据最新分类信息推荐目标位置，每页修改均由你审核后应用。",
+  "Suggest tags for Zotero bibliographic items and page through editable batch tag-review dialogs. A click with no explicit scope starts on the active library with native review.":
+    "为 Zotero 文献条目建议标签，并分批展示可编辑的标签供你审核。未指定范围时，点击后从当前文库开始，在 Zotero 内审核。",
+  "Find papers related to a specific Zotero item using OpenAlex recommendations, references, or citations. Presents results for review and imports the selected papers.":
+    "通过 OpenAlex 推荐、参考文献或引用查找与指定 Zotero 条目相关的论文。展示结果供你审核，并导入选中的论文。",
+  "Audit targeted papers for missing bibliographic metadata, fetch canonical metadata from external sources, and open one review card with the proposed field updates.":
+    "检查目标论文缺失的书目元数据，从外部来源获取权威元数据，并在审核卡片中展示建议的字段更新。",
+  "Analyze your whole library or collection with statistics":
+    "对整个文库或指定分类进行统计分析",
+  "Compare selected papers or collection papers by theme, methodology, or findings":
+    "按主题、研究方法或研究发现比较选中论文或分类中的论文",
+  "Extract, crop, or analyze figures, tables, and diagrams from papers":
+    "提取、裁剪或分析论文中的图片、表格和示意图",
+  "Retrieve missing evidence for specific methods, results, or verification questions in selected papers or collections. Clarification or translation of sufficient supplied text needs no retrieval workflow.":
+    "为选中论文或分类中的具体方法、结果或核实问题检索缺失证据。若已提供足够文本，仅作解释或翻译时无需检索。",
+  "Create, save, or edit a Zotero note or Markdown note, including requested figures or an existing answer. Use only when the user explicitly requests a note.":
+    "创建、保存或编辑 Zotero 笔记或 Markdown 笔记，可包含所需图片或已有回答。仅在你明确要求生成笔记时使用。",
+  "Structured scientific review with thematic synthesis and citations":
+    "撰写结构化学术综述，综合主题并标注文献引用",
+  "Import cited papers into your Zotero library by DOI":
+    "通过 DOI 将引用的论文导入 Zotero 文库",
+  "Sort papers into folders or tags": "按分类或标签整理论文",
+  "Write a zotero_script that changes the library, including copying or moving items to another library":
+    "编写修改文库的 zotero_script，包括在文库之间复制或移动条目",
+  "Compact the current Codex context.": "压缩当前 Codex 上下文。",
+  "Compact the current agent context.": "压缩当前助手上下文。",
+
   // ── Shortcut actions ────────────────────────────────────────────────────
   Summarize: "摘要",
   "Key Points": "要点",
@@ -134,11 +205,61 @@ const zhCN: Record<string, string> = {
   "Upload files": "上传文件",
   "Add documents or images": "添加文档或图片",
   "Select references": "选择参考文献",
+  "Add past conversation": "添加过往对话",
+  "Use an earlier chat as context": "将之前的对话用作上下文",
+  "Search past chats": "搜索过往对话",
+  "Deleted chat": "已删除的对话",
+  "Up to 3 past chats per message": "每条消息最多添加 3 个过往对话",
+  Chat: "对话",
   "Add papers from your library": "从你的文献库添加论文",
   "Send current PDF page": "发送当前 PDF 页面",
   "Capture the visible page as an image": "将可见页面截图发送",
   "Send multiple PDF pages": "发送多个 PDF 页面",
   "Select pages from the open PDF": "选择打开 PDF 中的页面",
+  "Add side chat": "添加侧边对话",
+  "Start a side chat first": "请先开始侧边对话",
+  "Attach \u201c{title}\u201d as context": "将\u201c{title}\u201d附加为上下文",
+  "Open side panel": "打开侧边面板",
+  "Close side panel": "关闭侧边面板",
+  "Resize side panel": "调整侧边面板宽度",
+  "Side panel": "侧边面板",
+  "Side panel tabs": "侧边面板标签页",
+  "New tab": "新标签页",
+  "Close tab": "关闭标签页",
+  "The side panel holds {count} tabs. Close one to open another.":
+    "侧边面板最多容纳 {count} 个标签页。请先关闭一个再打开新的。",
+  "Close the side panel? 1 side chat is not saved, so its messages will be gone.":
+    "关闭侧边面板？有 1 个侧边对话未保存，其消息将会消失。",
+  "Close the side panel? {count} side chats are not saved, so their messages will be gone.":
+    "关闭侧边面板？有 {count} 个侧边对话未保存，其消息将会消失。",
+  "Side chat": "侧边对话",
+  "Ask a quick side question. Not saved.": "快速提一个旁支问题，不会保存。",
+  "Read another past chat, read-only": "以只读方式查看另一个过往对话",
+  "Ask on the side, or read a past chat": "在侧边提问，或查看过往对话",
+  "Read a past chat": "查看过往对话",
+  History: "历史记录",
+  "Read-only": "只读",
+  "Quote in main chat": "在主对话中引用",
+  "Add this paper to main chat": "将此文献添加到主对话",
+  "Open as main chat": "作为主对话打开",
+  "This chat is read-only. Open it as your main chat to keep going.":
+    "此对话为只读。将其作为主对话打开即可继续。",
+  Temporary: "临时",
+  "Clear side chat": "清空侧边对话",
+  "Send to main chat": "发送到主对话",
+  "Ask in side chat": "在侧边对话中提问",
+  "Ask a side question about this paper...": "就这篇文献提一个旁支问题…",
+  "Ask a side question about your library...": "就你的文库提一个旁支问题…",
+  "this paper": "这篇文献",
+  "Context switched to {paper}. New questions use this paper.":
+    "上下文已切换到 {paper}。新问题将使用这篇文献。",
+  "Context switched to My Library. New questions use your whole library.":
+    "上下文已切换到我的文库。新问题将使用整个文库。",
+  "Close this side chat? It is not saved, so these messages will be gone.":
+    "关闭此侧边对话？它不会被保存，这些消息将会消失。",
+  "Keep it open": "保持打开",
+  "Send last answer to main chat": "将最后一条回答发送到主对话",
+  "Close and discard": "关闭并丢弃",
   "Select collection": "选择文献集",
   "Add a Zotero collection as context": "将 Zotero 文献集添加为上下文",
   "Literature review": "文献综述",
@@ -155,9 +276,7 @@ const zhCN: Record<string, string> = {
   "Select PDF pages": "选择 PDF 页面",
   "Send current entire PDF": "发送当前整个 PDF",
   "Add the open PDF file to context": "将打开的 PDF 文件添加到上下文",
-  "Switch to Agent mode": "切换到 Agent 模式",
-  "Agent mode": "Agent 模式",
-  // "Agent (beta)" — intentionally not translated, keep English
+  "Switch runtime": "切换运行时",
   "Agent actions": "Agent 操作",
   "Base actions": "基础操作",
   "Selected screenshot preview": "已选截图预览",
@@ -177,6 +296,7 @@ const zhCN: Record<string, string> = {
   Reasoning: "推理",
   "Coming later": "即将推出",
   "Context window:": "上下文窗口：",
+  "Cache hit": "缓存命中",
   "Context window usage unavailable": "上下文窗口使用量不可用",
   "Estimated active context window usage": "预计活动上下文窗口使用量",
   "Active context window usage": "活动上下文窗口使用量",
@@ -301,13 +421,6 @@ const zhCN: Record<string, string> = {
     "参考文献选择器已就绪。浏览分类或输入搜索论文。",
   "Tip: Enable Agent mode in Preferences for a better library chat experience.":
     "提示：在偏好设置中启用 Agent 模式以获得更好的文献库对话体验。",
-  "Agent mode enabled": "Agent 模式已启用",
-  "Chat mode enabled": "对话模式已启用",
-  "Agent mode ON. Click to switch to Chat mode":
-    "Agent 模式已开启。点击切换到对话模式",
-  "Agent mode OFF. Click to switch to Agent mode":
-    "Agent 模式已关闭。点击切换到 Agent 模式",
-  "Switch to Chat mode": "切换到对话模式",
   "Paper mode only accepts text from this paper":
     "论文模式仅接受来自此论文的文本",
   "Edit target changed. Please edit latest prompt again.":
@@ -436,8 +549,8 @@ const zhCN: Record<string, string> = {
   "Disable this if you prefer not to show the Add Text option in Zotero's text selection popup menu.":
     '如果你不想在 Zotero 文本选区弹出菜单中显示"添加文本"选项，请禁用此项。',
   "Enable Agent Mode (Beta)": "启用 Agent 模式（测试版）",
-  'Shows the "Agent (beta)" toggle in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
-    '在上下文栏显示"Agent（测试版）"切换按钮，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',
+  'Shows the "Agent" runtime in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
+    '在上下文栏显示"Agent"运行时，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',
   "Original Agent Mode": "原生 Agent 模式",
   "This panel configures the in-plugin Original Agent. Its permissions are independent from the native permission controls for Claude Code and Codex.":
     "此面板用于配置插件内的原生 Agent。其权限与 Claude Code 和 Codex 的原生权限控制彼此独立。",
@@ -476,11 +589,11 @@ const zhCN: Record<string, string> = {
   "Tavily is temporarily unavailable. Try again later.":
     "Tavily 暂时不可用。请稍后重试。",
   "View web sources": "查看网页来源",
+  "View sources": "查看来源",
   "Web sources": "网页来源",
   "Supporting passages": "支持段落",
+  "Supporting passages {numbers}": "支持段落 {numbers}",
   "Quote {number}": "引文 {number}",
-  "{number} Quote": "{number} 条引文",
-  "{number} Quotes": "{number} 条引文",
   "Open web source": "打开网页来源",
   "MinerU PDF Parsing": "MinerU PDF 解析",
   "Extract high-quality structured text from PDFs with preserved math formulas, tables, and figures. MinerU dramatically improves how the AI understands your papers.":
@@ -543,6 +656,26 @@ const zhCN: Record<string, string> = {
   "Enter your MinerU API key first": "请先输入 MinerU API 密钥",
   "Use local MinerU server": "使用本地 MinerU 服务",
   "Local API Base URL": "本地 API URL",
+  "Server start command (optional)": "服务器启动命令（可选）",
+  "Idle shutdown timeout (minutes)": "空闲关闭时间（分钟）",
+  "Automatically stops the MinerU server after this many minutes of inactivity to release memory and GPU VRAM.":
+    "无解析任务达到此分钟数后，自动停止本地 MinerU 服务以释放内存和显存。",
+  "Server:": "服务状态：",
+  "Start Server": "启动服务",
+  "Stop Server": "停止服务",
+  Running: "运行中",
+  Stopped: "已停止",
+  "Starting…": "启动中…",
+  "Stopping…": "停止中…",
+  "Local MinerU server is ready.": "本地 MinerU 服务已就绪。",
+  "Starting local MinerU server…": "正在启动本地 MinerU 服务…",
+  "Checking local MinerU server…": "正在检查本地 MinerU 服务…",
+  "No MinerU server start command configured.":
+    "未配置 MinerU 服务器启动命令。",
+  "Port %s is already in use by another process. Stop the existing process first.":
+    "端口 %s 已被其他进程占用。请先停止现有进程。",
+  "Optional command to launch the MinerU server. When set, the plugin can automatically start and stop the local server.":
+    "启动 MinerU 服务器的可选命令（例如 mineru-api）。设置后插件可自动拉起与关闭本地服务。",
   "Uses a self-hosted mineru-api server. Test Connection only checks that the server process is reachable.":
     "使用本地 mineru-api 服务。测试连接仅检查服务进程是否可访问。",
   Backend: "后端模型",
@@ -811,6 +944,12 @@ const zhCN: Record<string, string> = {
   "Could not load Codex models. Showing current model only.":
     "无法加载 Codex 模型。仅显示当前模型。",
   "Retry loading Codex models": "重试加载 Codex 模型",
+  Subagent: "子代理",
+  "Main Agent": "主代理",
+  "Same as main agent": "与主代理相同",
+  "Back to main agent": "返回主代理",
+  "Reads many papers in parallel for the main agent, for library-wide questions and full-paper reads. Pick a fast, low-cost model.":
+    "为主代理并行阅读多篇论文，用于全库问题和整篇精读。建议选择快速、低成本的模型。",
   "Codex did not return any available models.": "Codex 未返回任何可用模型。",
   "Fetch Models": "获取模型",
   WebChat: "WebChat",
@@ -830,6 +969,8 @@ const zhCN: Record<string, string> = {
     "预设使用 GLM 面向 Agent 工具调用的 Claude 兼容端点。",
   "Gateway for a curated set of models from several vendors, billed on one key.":
     "多家服务商精选模型的聚合网关，统一使用一个密钥计费。",
+  "Subscription plan for a curated set of open coding models, billed on one key.":
+    "精选开源编程模型的订阅套餐，统一使用一个密钥计费。",
   "Preset uses DeepSeek's Anthropic-compatible endpoint for reliable agent tool use.":
     "预设使用 DeepSeek 面向稳定 Agent 工具调用的 Anthropic 兼容端点。",
   "Preset uses xAI's official Responses endpoint.":
@@ -1062,8 +1203,8 @@ const zhCN: Record<string, string> = {
   Runtimes: "运行时",
   "Original Agent": "原生 Agent",
   "Built in · Beta": "内置 · 测试版",
-  'The agent that ships with the plugin. Turning it on adds the "Agent (beta)" toggle to the chat context bar, which runs the multi-step assistant inside Zotero. Its library permissions are independent from the permission controls for Claude Code and Codex.':
-    "插件自带的 Agent。开启后会在聊天上下文栏显示“Agent（测试版）”切换按钮，多步骤助手将完全在 Zotero 内运行。它的文献库权限与 Claude Code 和 Codex 的权限控制彼此独立。",
+  'The agent that ships with the plugin. Turning it on makes "Agent" the built-in runtime in the chat context bar, which runs the multi-step assistant inside Zotero. Its library permissions are independent from the permission controls for Claude Code and Codex.':
+    "插件自带的 Agent。开启后聊天上下文栏中的内置运行时为“Agent”，多步骤助手将完全在 Zotero 内运行。它的文献库权限与 Claude Code 和 Codex 的权限控制彼此独立。",
   Permissions: "权限",
   "Web search": "网页搜索",
   "Runs the Codex CLI as a local app server. Run":
@@ -1076,6 +1217,11 @@ const zhCN: Record<string, string> = {
   Advanced: "高级",
   "Codex CLI path": "Codex CLI 路径",
   "Leave blank to search your PATH.": "留空则从 PATH 中查找。",
+  "Codex home folder": "Codex 主目录",
+  "Optional absolute path to a Codex home folder":
+    "可选，Codex 主目录的绝对路径",
+  "Leave blank to use the default (~/.codex). A separate folder needs its own codex login and its own MCP setup.":
+    "留空则使用默认目录（~/.codex）。单独的目录需要单独执行 codex login，并单独配置 MCP。",
   "Runs the embedded Claude runtime against your library. When enabled, Zotero adds a Claude Code button to the chat header; you enter Claude Code mode from there, not from settings. Codex and Claude Code can both be enabled; only the selected runtime is active.":
     "在你的文献库上运行内嵌的 Claude 运行时。启用后，Zotero 会在聊天标题栏添加 Claude Code 按钮；你从那里进入 Claude Code 模式，而不是在设置中切换。Codex 和 Claude Code 可以同时启用；只有所选的运行时会生效。",
   "Default model": "默认模型",
@@ -1323,6 +1469,28 @@ const zhCN: Record<string, string> = {
   "Reset statistics": "重置统计",
   "Export usage statistics": "导出用量统计",
   "Preparing export…": "正在准备导出…",
+  "What's new in v{version}": "v{version} 的更新内容",
+  "See what's new in v{version}": "查看 v{version} 的更新内容",
+  "Update to v{version}": "更新到 v{version}",
+  "Updating to v{version}…": "正在更新到 v{version}…",
+  "Update failed. Try again.": "更新失败，请重试。",
+  "Updated to v{version}": "已更新到 v{version}",
+  "From GitHub releases": "来自 GitHub 发布页",
+  "Open on GitHub": "在 GitHub 上打开",
+  "Close (Esc)": "关闭 (Esc)",
+  "What's new": "更新内容",
+  Installed: "已安装",
+  "Show earlier releases": "显示更早的版本",
+  "No release notes yet.": "暂无更新说明。",
+  "Loading…": "加载中…",
+  "Could not load the release notes. Check your connection, or open them on GitHub.":
+    "无法加载更新说明。请检查网络连接，或在 GitHub 上打开。",
+  "Update to v{version}?": "更新到 v{version}？",
+  "The plugin reloads. This window closes and opens again on the same chat.":
+    "插件会重新加载。此窗口将关闭，并在同一对话上重新打开。",
+  "The reply being written now will stop.": "正在生成的回复将会中止。",
+  "Not now": "暂不更新",
+  Update: "更新",
   "Could not open a save dialog.": "无法打开保存对话框。",
   "Exported {count} row.": "已导出 {count} 行。",
   "Exported {count} rows.": "已导出 {count} 行。",
@@ -1348,6 +1516,44 @@ const zhCN: Record<string, string> = {
   "Resize Task progress": "调整任务进度的高度",
   "Show task progress": "显示任务进度",
   "Hide task progress": "隐藏任务进度",
+  "Move task progress back to chat": "将任务进度移回对话",
+  "Move back to chat": "移回对话",
+  "No new reads": "没有新的阅读",
+  found: "已找到",
+  Cited: "已引用",
+  "Answered from earlier reading. No papers were opened again.":
+    "根据之前的阅读作答，没有再次打开论文。",
+  "Steps and papers the agent works through": "智能体正在进行的步骤和论文",
+  "Web pages the agent found in this chat": "智能体在此对话中找到的网页",
+  "Opens in the side panel · {key}-click opens your browser":
+    "在侧边面板中打开 · {key}-点击在浏览器中打开",
+  Back: "返回",
+  "Copy link": "复制链接",
+  "Open in default browser": "在默认浏览器中打开",
+  "What the agent read": "智能体读到的内容",
+  "No web pages in this chat yet": "此对话中还没有网页",
+  "Question {n}": "问题 {n}",
+  "1 page": "1 个网页",
+  "{count} pages": "{count} 个网页",
+  "{count} opened": "已打开 {count} 个",
+  "The agent opened this page": "智能体打开过此网页",
+  "The agent only saw this page in search results":
+    "智能体只在搜索结果中看到过此网页",
+  "This page cannot be shown here.": "此网页无法在这里显示。",
+  "The agent did not read this page. It only appears as a link in the answer.":
+    "智能体没有读过此网页，它只是回答中的一个链接。",
+  "The agent read this whole page.": "智能体读完了整个页面。",
+  "The parts of this page the agent read. It did not read the whole page.":
+    "智能体读过的本页部分。它没有读完整个页面。",
+  "The agent only looked at this page's outline (its headings).":
+    "智能体只看了本页的大纲（各级标题）。",
+  "The parts of this page the agent got: the passages that matched its question, not the whole page.":
+    "智能体从此网页获得的部分：与它的问题相关的段落，而不是整个网页。",
+  "The agent only saw this short search result. It did not open the page.":
+    "智能体只看到了这段简短的搜索结果，没有打开此网页。",
+  "Back to the previous page": "返回上一个网页",
+  "Back to Web sources": "返回网页来源",
+  "Link copied": "链接已复制",
   "Reads are recorded in Agent mode. This list shows the papers in scope.":
     "阅读记录仅在 Agent 模式下生成。此列表显示范围内的论文。",
   "Reads are recorded in Agent mode.": "阅读记录仅在 Agent 模式下生成。",
@@ -1360,6 +1566,9 @@ const zhCN: Record<string, string> = {
   "{count} cited": "引用 {count}",
   "{count} read in depth": "精读 {count}",
   "{count} found": "检索到 {count}",
+  Decision: "决定",
+  Excluded: "已排除",
+  Deferred: "已搁置",
   "{count} matched": "匹配 {count}",
   "{count} read": "已读 {count}",
   "Preparing the scope…": "正在准备范围…",
@@ -1369,6 +1578,10 @@ const zhCN: Record<string, string> = {
   "Question {number}": "第 {number} 个问题",
   "Papers ({count})": "论文（{count}）",
   "Cited in answer": "回答中的引用",
+  "In the answer": "回答中",
+  "Read, not cited ({count})": "已读但未引用（{count}）",
+  "Named in the answer, no passage": "回答中提到，未引用段落",
+  "p. {page}": "第 {page} 页",
   "Cited in document": "文档中的引用",
   "Listed in scope; not read for this question.": "在范围内；本问题未阅读。",
   "Matched by title or abstract; text not opened.":
@@ -1390,7 +1603,6 @@ const zhCN: Record<string, string> = {
   Page: "页面",
   "PDF text": "PDF 文本",
   "No text": "无文本",
-  "title/abstract": "标题/摘要",
   "1 passage": "1 段",
   Summary: "总结",
   "Summary failed": "总结失败",
@@ -1407,7 +1619,6 @@ const zhCN: Record<string, string> = {
   "{count} passages": "{count} 段",
   outline: "大纲",
   abstract: "摘要",
-  "cited {count}": "引用 {count}",
   listed: "已列出",
   matched: "已匹配",
   skimmed: "已略读",
@@ -1452,6 +1663,22 @@ const zhCN: Record<string, string> = {
     "分析论文的模型没有可安全使用的推理设置",
   "Too little text to analyze": "文本太少，无法分析",
   "The analysis could not be prepared": "无法准备分析",
+  "The reader could not choose the named sections":
+    "阅读模型未能选出指定的章节",
+  "No notes": "没有笔记",
+  // A scoped read that found nothing the scope names (readScope.ts).
+  "No abstract in the Zotero record or the PDF":
+    "Zotero 条目和 PDF 中都没有摘要",
+  "None of the named sections were found": "未找到指定的章节",
+  "None of the named pages have text": "指定的页面没有文本",
+  // How much of a paper a digest read (Task progress, beside its heading).
+  Full: "全文",
+  Part: "部分",
+  Sections: "章节",
+  Pages: "页面",
+  "pages {range}": "第 {range} 页",
+  "page {range}": "第 {range} 页",
+  Record: "条目",
   // The same reasons as rows saved before schema 2 name them.
   "The model did not return a usable summary": "模型未返回可用的总结",
   "The model returned an empty summary": "模型返回的总结为空",
@@ -1487,6 +1714,9 @@ const zhCN: Record<string, string> = {
   "No PDF for this paper": "这篇论文没有 PDF",
   "Could not open the paper.": "无法打开论文。",
   "Opened the paper": "已打开论文",
+  "Couldn't find that sentence in the answer; showing the answer":
+    "在回答中找不到这句话，已显示该回答",
+  "Couldn't find that sentence in the chat": "在对话中找不到这句话",
 
   // ── Language setting ────────────────────────────────────────────────────
   Language: "语言",
@@ -1504,8 +1734,123 @@ const zhCN: Record<string, string> = {
   Add: "添加",
   "Question attached to the selected text": "问题已附加到选中文字",
   "Quote selected text": "引用选中文字",
+  "Quote in side chat": "在侧边对话中引用",
+  "Quote selected text in a side chat": "在侧边对话中引用选中文字",
   "Show all of the selected text": "显示全部选中文字",
   "Show less of the selected text": "收起选中文字",
+  // Side panel items, Miscellaneous tab, HTML preview.
+  "Move to side panel": "移到侧边面板",
+  "Wrap long lines": "长行自动换行",
+  "Copy code": "复制代码",
+  "Show all {count} lines": "显示全部 {count} 行",
+  "Show fewer lines": "收起",
+  "Show code": "显示代码",
+  "Hide code": "隐藏代码",
+  "Copy SVG": "复制 SVG",
+  "Copy HTML": "复制 HTML",
+  "Save as image": "另存为图片",
+  "Copy image": "复制图片",
+  "Save image": "保存图片",
+  "Go to page": "转到页面",
+  "Copy table": "复制表格",
+  "Save as CSV": "另存为 CSV",
+  "Copy LaTeX": "复制 LaTeX",
+  "Show the whole page": "显示整个页面",
+  "Show less": "收起",
+  Drawing: "绘图",
+  "Mermaid diagram": "Mermaid 图表",
+  "Back to Miscellaneous": "返回杂项",
+  "Back to History": "返回历史记录",
+  "HTML page": "HTML 页面",
+  Code: "代码",
+  Plan: "计划",
+  Document: "文档",
+  "Paper figure": "论文图片",
+  Diagram: "图表",
+  HTML: "HTML",
+  "Runs in a safe box: no internet, no access to Zotero":
+    "在安全沙箱中运行：无法联网，也无法访问 Zotero",
+  Copied: "已复制",
+  "Could not save the note": "无法保存笔记",
+  "Run again": "重新运行",
+  "Ran again": "已重新运行",
+  // Files the agent saved to disk.
+  File: "文件",
+  "Show in folder": "在文件夹中显示",
+  "More actions": "更多操作",
+  "Web page": "网页",
+  "Markdown note": "Markdown 笔记",
+  Picture: "图片",
+  PDF: "PDF",
+  "Word document": "Word 文档",
+  "{type} file": "{type} 文件",
+  "opens in default app": "用默认应用打开",
+  "Moved or deleted": "已移动或删除",
+  "Open in side panel": "在侧边栏中打开",
+  "Open full view": "打开完整视图",
+  "Open in default app": "用默认应用打开",
+  "Show in Finder": "在访达中显示",
+  "Copy file path": "复制文件路径",
+  "Copy where it was": "复制原位置",
+  "This file is no longer there. It may have been moved, renamed, or deleted.":
+    "此文件已不在原处，可能已被移动、重命名或删除。",
+  "This kind of file can't be shown here. Use Show in folder.":
+    "此类文件无法在这里显示，请使用“在文件夹中显示”。",
+  "This file is too big to show here. Use Show in folder.":
+    "此文件太大，无法在这里显示，请使用“在文件夹中显示”。",
+  "This file could not be read.": "无法读取此文件。",
+  "Load again from disk": "从磁盘重新载入",
+  "Loaded again": "已重新载入",
+  // Settings > Saved files.
+  "Left over: its paper was deleted": "残留：对应文献已删除",
+  "Its paper is in the trash": "对应文献在回收站中",
+  Paper: "文献",
+  "Not made by the plugin": "并非插件创建",
+  "Files already saved stay where they are; new files go here.":
+    "已保存的文件保留在原处；新文件保存到这里。",
+  "Default:": "默认：",
+  "Enter a full folder path, such as /Users/me/Documents/LLM files.":
+    "请输入完整的文件夹路径，例如 /Users/me/Documents/LLM files。",
+  "No saved files yet.": "还没有保存的文件。",
+  folders: "个文件夹",
+  file: "个文件",
+  files: "个文件",
+  "Checking…": "正在检查…",
+  "Delete the selected folders and every file in them? This cannot be undone.":
+    "删除所选文件夹及其中的所有文件？此操作无法撤销。",
+  "Could not delete:": "无法删除：",
+  "Show in chat": "在对话中显示",
+  "Smaller text": "缩小文字",
+  "Larger text": "放大文字",
+  "Open in its own window": "在单独窗口中打开",
+  "The document window could not be opened": "无法打开文档窗口",
+  "The source message is not in the main chat now.":
+    "来源消息当前不在主对话中。",
+  "Saved as note": "已保存为笔记",
+  "Note already saved": "笔记已保存过",
+  Miscellaneous: "杂项",
+  "View what the model made in these chats": "查看模型在这些对话中生成的内容",
+  "Made for this paper": "为这篇论文生成的内容",
+  "Made in library chats": "文库对话中生成的内容",
+  "Nothing made for this paper yet": "还没有为这篇论文生成内容",
+  "Nothing made in library chats yet": "文库对话中还没有生成内容",
+  "This chat": "此对话",
+  "Go to chat": "前往对话",
+  "Go to the chat it came from": "前往它所在的对话",
+  "open now": "当前打开",
+  "Looking through the other chats...": "正在查看其他对话…",
+  "Open HTML preview viewer": "打开 HTML 预览查看器",
+  "HTML preview": "HTML 预览",
+  "HTML preview viewer controls": "HTML 预览查看器控件",
+  "Close HTML preview viewer": "关闭 HTML 预览查看器",
+  "Preview stopped: the page tried to leave.":
+    "预览已停止：该页面试图跳转离开。",
+  "Not linked to the PDF reader": "未与 PDF 阅读器关联",
+  "This chat keeps its own context. Switching PDF tabs in Zotero does not change it.":
+    "此对话保留自己的上下文。在 Zotero 中切换 PDF 标签页不会改变它。",
+  "Show in library": "在文献库中显示",
+  "Open in New Window": "在新窗口中打开",
+  "Open in main window": "在主窗口中打开",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────

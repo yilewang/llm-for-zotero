@@ -11,6 +11,8 @@ import {
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SCOPE_HEADER,
+  ZOTERO_MCP_TOOL_TIMEOUT_SEC,
+  type CodexZoteroMcpWriteApprovalMode,
 } from "../agent/mcp/server";
 import { MCP_METHODS } from "../agent/mcp/protocol";
 import {
@@ -630,6 +632,30 @@ export async function ensureCodexZoteroMcpConfig(
   await installOrUpdateCodexZoteroMcpConfig(params);
 }
 
+/**
+ * The user-level Zotero MCP entry, turned off for one plugin thread.
+ *
+ * Installing the MCP config writes `mcp_servers.llm_for_zotero` into the
+ * user's own Codex config with writes run unasked, and Codex loads it into
+ * every thread. A plugin thread reaches Zotero through its own scoped
+ * server, so a write the user declined there could be retried through the
+ * user-level one without a prompt. The plugin turns that entry off in its
+ * threads and leaves the user's file alone. The entry names its URL:
+ * Codex refuses a thread whose override names a server with no transport
+ * when the user has no such entry (checked against Codex 0.164).
+ */
+export function buildDisabledUserLevelZoteroMcpServer(): Record<
+  string,
+  unknown
+> {
+  return {
+    [ZOTERO_MCP_SERVER_NAME]: {
+      url: getZoteroMcpServerUrl(),
+      enabled: false,
+    },
+  };
+}
+
 export function buildCodexZoteroMcpThreadConfig(params: {
   profileSignature?: string;
   scopeToken?: string;
@@ -637,6 +663,8 @@ export function buildCodexZoteroMcpThreadConfig(params: {
   enableShellTool?: boolean;
   rawPdfMode?: boolean;
   enabled?: boolean;
+  /** From the thread's permission chip (`codexZoteroMcpWriteApprovalMode`). */
+  writeApprovalMode?: CodexZoteroMcpWriteApprovalMode;
 }): { serverName: string; config: Record<string, unknown> } {
   const serverName = getZoteroMcpServerName(params.profileSignature);
   return {
@@ -646,11 +674,15 @@ export function buildCodexZoteroMcpThreadConfig(params: {
         shell_tool: params.enableShellTool === true,
       },
       mcp_servers: {
+        ...(serverName !== ZOTERO_MCP_SERVER_NAME
+          ? buildDisabledUserLevelZoteroMcpServer()
+          : {}),
         [serverName]: buildZoteroMcpConfigValue({
           scopeToken: params.scopeToken,
           required: params.required,
           rawPdfMode: params.rawPdfMode,
           enabled: params.enabled,
+          writeApprovalMode: params.writeApprovalMode,
         }),
       },
     },
@@ -684,6 +716,10 @@ export function buildClaudeZoteroMcpServerConfig(params: {
         type: "http",
         url: serverUrl,
         headers: getConfigHeaders(configValue),
+        // Claude Code's per-server tool-call timeout in milliseconds. Without
+        // it an HTTP tool call ends after 60 s, before a paper_digest or a
+        // paper_read full call can finish.
+        timeout: ZOTERO_MCP_TOOL_TIMEOUT_SEC * 1000,
       },
     },
     allowedTools: buildClaudeZoteroMcpAllowedToolNames(
@@ -693,14 +729,20 @@ export function buildClaudeZoteroMcpServerConfig(params: {
   };
 }
 
+/**
+ * The Zotero tools Claude Code runs without asking: the safe reads, in
+ * raw-PDF turns only those the raw-PDF surface exposes. Write tools stay on
+ * the server and go through the chip's permission mode, as in every turn.
+ */
 export function buildClaudeZoteroMcpAllowedToolNames(
   serverName: string,
   rawPdfMode = false,
 ): string[] {
-  return (
-    rawPdfMode
-      ? getZoteroMcpDirectPdfToolNames()
-      : [...ZOTERO_MCP_SAFE_READ_TOOL_NAMES]
+  const directPdfToolNames = rawPdfMode
+    ? new Set(getZoteroMcpDirectPdfToolNames())
+    : null;
+  return ZOTERO_MCP_SAFE_READ_TOOL_NAMES.filter(
+    (toolName) => !directPdfToolNames || directPdfToolNames.has(toolName),
   ).map((toolName) => qualifyZoteroMcpToolName(serverName, toolName));
 }
 

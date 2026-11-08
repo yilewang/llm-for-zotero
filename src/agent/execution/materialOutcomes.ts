@@ -185,7 +185,9 @@ export async function loadMaterialOutcomesForConversation(
         });
         continue;
       }
-      entries.push(entry);
+      const outsidePaperCount =
+        stored.citationBundle.outsidePapers?.length || 0;
+      entries.push(outsidePaperCount ? { ...entry, outsidePaperCount } : entry);
     } catch (error) {
       dropped.push({
         documentId: entry.materialRef.documentId,
@@ -195,6 +197,18 @@ export async function loadMaterialOutcomesForConversation(
     }
   }
   return { entries, dropped };
+}
+
+/**
+ * Where an entry that cites outside papers can have them imported. The
+ * library_import guidance says why the documentId, not the DOIs; this only
+ * names the call for this document.
+ */
+function outsidePaperImportNote(count: number | undefined): string {
+  if (!count) return "";
+  const papers = count === 1 ? "1 outside paper" : `${count} outside papers`;
+  const them = count === 1 ? "it" : "them";
+  return ` \u2014 cites ${papers}; if the user asks to import ${them}, call library_import kind:'document_citations' with this documentId`;
 }
 
 /**
@@ -216,7 +230,7 @@ export function formatMaterialOutcomeRecoveryLines(
           entry.status === "write_failed"
             ? " \u2014 a previous save of this material failed"
             : ""
-        }`,
+        }${outsidePaperImportNote(entry.outsidePaperCount)}`,
     ),
     "If the user asks to save it, call note_write with that documentId; do not regenerate it.",
   ];

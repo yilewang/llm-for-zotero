@@ -289,7 +289,8 @@ function normalized(value: unknown): string {
 function matchesPrefix(value: string, prefix: string): boolean {
   if (!value.startsWith(prefix)) return false;
   const next = value[prefix.length];
-  return !next || /[._:/@-]/.test(next);
+  // "[" admits Claude Code's context tags, such as "claude-opus-4-7[1m]".
+  return !next || /[._:/@[-]/.test(next);
 }
 
 export function findRegistryEntry(

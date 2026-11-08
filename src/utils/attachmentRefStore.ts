@@ -1,3 +1,4 @@
+import { isEphemeralConversationKey } from "../shared/conversationKeySpace";
 import { appLogger } from "../core/logging";
 import {
   ATTACHMENT_BLOBS_TABLE,
@@ -73,35 +74,36 @@ function normalizeHashes(hashes: readonly string[]): string[] {
 
 async function ensureAttachmentRefTables(): Promise<void> {
   if (!refStoreInitTask) {
-    refStoreInitTask = (async () => {
-      try {
-        await Zotero.DB.queryAsync(
-          `CREATE TABLE IF NOT EXISTS ${ATTACHMENT_BLOBS_TABLE} (
+    const task = (async () => {
+      await Zotero.DB.queryAsync(
+        `CREATE TABLE IF NOT EXISTS ${ATTACHMENT_BLOBS_TABLE} (
           hash TEXT PRIMARY KEY,
           path TEXT NOT NULL UNIQUE,
           size_bytes INTEGER NOT NULL,
           created_at INTEGER NOT NULL
         )`,
-        );
-        await Zotero.DB.queryAsync(
-          `CREATE TABLE IF NOT EXISTS ${ATTACHMENT_REFS_TABLE} (
+      );
+      await Zotero.DB.queryAsync(
+        `CREATE TABLE IF NOT EXISTS ${ATTACHMENT_REFS_TABLE} (
           owner_type TEXT NOT NULL CHECK(owner_type IN ('conversation', 'note')),
           owner_id INTEGER NOT NULL,
           blob_hash TEXT NOT NULL,
           updated_at INTEGER NOT NULL,
           PRIMARY KEY(owner_type, owner_id, blob_hash)
         )`,
-        );
-        await Zotero.DB.queryAsync(
-          `CREATE INDEX IF NOT EXISTS ${ATTACHMENT_REFS_BLOB_INDEX}
+      );
+      await Zotero.DB.queryAsync(
+        `CREATE INDEX IF NOT EXISTS ${ATTACHMENT_REFS_BLOB_INDEX}
          ON ${ATTACHMENT_REFS_TABLE} (blob_hash)`,
-        );
-        await installConversationKeyLedgerAgentTriggers();
-      } catch (err) {
-        refStoreInitTask = null;
-        throw err;
-      }
+      );
+      await installConversationKeyLedgerAgentTriggers();
     })();
+    // Forget a failed setup so the next call tries again. This runs after
+    // the assignment, so it also covers a throw before the first await.
+    refStoreInitTask = task;
+    task.catch(() => {
+      if (refStoreInitTask === task) refStoreInitTask = null;
+    });
   }
   await refStoreInitTask;
 }
@@ -149,6 +151,13 @@ export async function replaceOwnerAttachmentRefs(
 ): Promise<void> {
   const normalizedOwnerId = normalizeOwnerId(ownerId);
   if (!normalizedOwnerId) return;
+  // A temporary side chat owns no attachment refs; its blobs are collected.
+  if (
+    ownerType === "conversation" &&
+    isEphemeralConversationKey(normalizedOwnerId)
+  ) {
+    return;
+  }
   const generation =
     ownerType === "conversation"
       ? Number.isFinite(Number(expectedGeneration))

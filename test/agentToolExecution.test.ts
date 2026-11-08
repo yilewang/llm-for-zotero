@@ -34,6 +34,9 @@ import type {
   ExecutionTaskStatus,
 } from "../src/agent/types";
 import { createSubmitDocumentTool } from "../src/agent/tools/control/submitDocument";
+import { paperSourceId } from "../src/webAccess/paperSources";
+import { setOutsidePaperPrefetchLookup } from "../src/agent/context/outsidePaperRecords";
+import { createRecordPaperDecisionsTool } from "../src/agent/tools/control/recordPaperDecisions";
 import {
   initPlanDocumentStore,
   loadPlanDocument,
@@ -385,6 +388,21 @@ type Harness = {
   toolResultReadAvailable: { value: boolean };
 };
 
+/** Items 5 to 7 are papers of library 1; item 8 is a note. */
+const paperLookup = {
+  getItem: (itemId: number | undefined) =>
+    itemId && itemId >= 5 && itemId <= 8
+      ? ({
+          id: itemId,
+          libraryID: 1,
+          getField: (field: string) =>
+            field === "title" ? `Paper ${itemId}` : "",
+        } as unknown as Zotero.Item)
+      : null,
+  resolveBibliographicItem: (item: Zotero.Item | null | undefined) =>
+    item && Number(item.id) !== 8 ? item : null,
+};
+
 async function createHarness(registry: AgentToolRegistry): Promise<Harness> {
   const events: AgentEvent[] = [];
   const emit = async (event: AgentEvent) => {
@@ -552,6 +570,90 @@ describe("agent tool execution collaborator", function () {
         "a read finalizes no material",
       );
     } finally {
+      restoreDb();
+    }
+  });
+
+  it("records the outside papers literature_search and literature_read return on the run's request", async function () {
+    const restoreDb = installMockDb();
+    const prefetched: string[] = [];
+    setOutsidePaperPrefetchLookup(async (doi) => {
+      prefetched.push(doi);
+      return { volume: "7" };
+    });
+    try {
+      const registry = new AgentToolRegistry(createTestActionContractService());
+      const register = (name: string, content: unknown) =>
+        registry.register({
+          spec: {
+            name,
+            description: name,
+            inputSchema: { type: "object" },
+            executionClass: "read",
+            workCategory: "retrieval",
+          },
+          validate: (args: unknown) => ({ ok: true, value: args as never }),
+          execute: async () => ({ content }),
+        } as never);
+      register("literature_search", {
+        mode: "search",
+        results: [
+          {
+            title: "Drift",
+            authors: ["Ada Lovelace"],
+            year: 2021,
+            doi: "10.1000/drift",
+          },
+          { title: "Stable", authors: [], arxivId: "2101.00001" },
+        ],
+      });
+      register("literature_read", {
+        paper: {
+          title: "Drift",
+          authors: ["Ada Lovelace"],
+          doi: "10.1000/drift",
+        },
+        fullText: { status: "open_access" },
+        passages: [{ section: "1 Results", text: "Tuning drifts." }],
+      });
+      register("web_search", {
+        results: [{ title: "A blog", url: "https://example.com/blog" }],
+      });
+      const harness = await createHarness(registry);
+      const toolExecution = createToolExecution(harness.deps);
+      for (const [index, name] of [
+        "literature_search",
+        "literature_read",
+        "web_search",
+      ].entries()) {
+        await toolExecution.executeToolWorkflow(
+          { id: `call-${index}`, name, arguments: {} },
+          index + 1,
+          { modelCallId: `call-${index}` },
+        );
+      }
+      assert.deepEqual(
+        harness.request.outsidePaperRecords?.map((paper) => [
+          paper.paperId,
+          paper.depth,
+        ]),
+        [
+          [paperSourceId("doi:10.1000/drift"), "body"],
+          [paperSourceId("arxiv:2101.00001"), "metadata"],
+        ],
+        "one record per paper at its deepest read; web pages are never recorded",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepEqual(
+        prefetched,
+        ["10.1000/drift"],
+        "the paper read in full is looked up in the background; search rows are not",
+      );
+      assert.deepEqual(harness.request.outsidePaperLookupCache, {
+        "10.1000/drift": { volume: "7" },
+      });
+    } finally {
+      setOutsidePaperPrefetchLookup(null);
       restoreDb();
     }
   });
@@ -1012,6 +1114,7 @@ describe("agent tool execution collaborator", function () {
             clusters: [],
             bibliographyEntries: [],
           }),
+          ...paperLookup,
         } as unknown as ZoteroGateway),
       );
       const harness = await createHarness(registry);
@@ -1074,10 +1177,104 @@ describe("agent tool execution collaborator", function () {
       assert.deepEqual(part.exceptions, [
         { targets: ["item:5", "item:6"], reason: OUTCOME_REASONS.notCovered },
       ]);
+      // The paper left out is also the agent's exclude decision, recorded
+      // once, right after the call's result, as record_paper_decisions'.
+      const ledgerUpdates = harness.events.filter(
+        (event) => event.type === "paper_ledger_update",
+      ) as Array<Extract<AgentEvent, { type: "paper_ledger_update" }>>;
+      assert.lengthOf(ledgerUpdates, 1);
+      assert.equal(
+        harness.events.indexOf(ledgerUpdates[0]),
+        harness.events.indexOf(result!) + 1,
+      );
+      assert.deepInclude(ledgerUpdates[0].delta, {
+        callId: "call-submit",
+        runId: "run-collaborator",
+        toolName: "submit_document",
+        reads: [],
+      });
+      assert.deepEqual(
+        ledgerUpdates[0].delta.papers.map((paper) => [
+          paper.key,
+          paper.state,
+          paper.decision,
+        ]),
+        [["1:7", "listed", { value: "exclude", reason, origin: "agent" }]],
+      );
     } finally {
       restoreDocuments();
       restoreDb();
     }
+  });
+
+  it("emits record_paper_decisions' decisions as the call's ledger update after its result", async function () {
+    const registry = new AgentToolRegistry(createTestActionContractService());
+    registry.register(createRecordPaperDecisionsTool(paperLookup));
+    const harness = await createHarness(registry);
+    const toolExecution = createToolExecution(harness.deps);
+    await toolExecution.executeToolWorkflow(
+      {
+        id: "call-decide",
+        name: "record_paper_decisions",
+        arguments: {
+          decisions: [
+            {
+              target: "item:7",
+              decision: "include",
+              relevance: "high",
+              reason: "Measures drift.",
+            },
+            { target: "8", decision: "exclude", reason: "Not a paper." },
+          ],
+        },
+      },
+      1,
+      { modelCallId: "call-decide" },
+    );
+    const result = harness.events.find(
+      (event) => event.type === "tool_result",
+    ) as Extract<AgentEvent, { type: "tool_result" }> | undefined;
+    assert.isTrue(result?.ok, JSON.stringify(result?.content));
+    assert.deepEqual(result!.content, {
+      ok: true,
+      recorded: 1,
+      decisions: { include: 1, exclude: 0, defer: 0 },
+      rejected: [{ row: 2, target: "8", reason: "This item is not a paper." }],
+    });
+    const ledgerUpdates = harness.events.filter(
+      (event) => event.type === "paper_ledger_update",
+    ) as Array<Extract<AgentEvent, { type: "paper_ledger_update" }>>;
+    assert.lengthOf(ledgerUpdates, 1);
+    assert.equal(
+      harness.events.indexOf(ledgerUpdates[0]),
+      harness.events.indexOf(result!) + 1,
+    );
+    assert.deepEqual(ledgerUpdates[0], {
+      type: "paper_ledger_update",
+      callId: "call-decide",
+      delta: {
+        version: 1,
+        callId: "call-decide",
+        runId: "run-collaborator",
+        toolName: "record_paper_decisions",
+        reads: [],
+        papers: [
+          {
+            key: "1:7",
+            libraryID: 1,
+            itemId: 7,
+            title: "Paper 7",
+            state: "listed",
+            decision: {
+              value: "include",
+              relevance: "high",
+              reason: "Measures drift.",
+              origin: "agent",
+            },
+          },
+        ],
+      },
+    });
   });
 
   it("hands an accepted document back while declared parts beyond the answer remain open, naming only those", async function () {

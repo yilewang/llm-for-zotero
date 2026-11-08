@@ -1,4 +1,5 @@
 import { copyTextToClipboard, refreshConversationPanels } from "../../chat";
+import { openWebSourceLink } from "../../webSourcesSidePanel";
 import { closeShortcutMenu, isShortcutMenuVisible } from "../../shortcuts";
 import {
   clearPromptMenuTargetsContaining,
@@ -279,6 +280,21 @@ export function attachFloatingMenuInteractionController(
         event.preventDefault();
         event.stopPropagation();
         const href = linkTarget.href?.trim();
+        // A web page opens in the standalone window's side panel (⌘-click:
+        // the default browser); other links keep opening as before.
+        if (
+          href &&
+          openWebSourceLink(
+            body.ownerDocument,
+            {
+              url: href,
+              title: (linkTarget.textContent || "").trim() || undefined,
+            },
+            event as MouseEvent,
+          )
+        ) {
+          return;
+        }
         if (href) {
           try {
             const launch = (

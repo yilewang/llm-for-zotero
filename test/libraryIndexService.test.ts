@@ -1761,7 +1761,7 @@ describe("LibraryIndexService", function () {
     }
   });
 
-  it("batches 50k-index updates into one fast atomic publication", async function () {
+  it("batches 50k-index updates into one fast atomic publication @speed", async function () {
     this.timeout(15_000);
     const itemCount = 50_000;
     const topLevel = Array.from({ length: itemCount }, (_, offset) => ({

@@ -6,6 +6,7 @@ import type {
   PaperContextRef,
   QuoteCitation,
   TagContextRef,
+  AttachedConversationRef,
   GeneratedChatImage,
   GlobalConversationSummary,
   PaperConversationSummary,
@@ -19,6 +20,7 @@ import {
   buildDefaultUpstreamGlobalConversationKey,
   isConversationKeyFor,
   isConversationKeyForKind,
+  isEphemeralConversationKey,
   UPSTREAM_GLOBAL_ALLOCATED_CONVERSATION_KEY_BASE,
   UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
 } from "../shared/conversationKeySpace";
@@ -92,6 +94,7 @@ import {
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
+  normalizeAttachedConversationRefs,
 } from "../services/context/normalizers";
 import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
 import {
@@ -177,6 +180,7 @@ export type StoredChatMessage = {
   quoteCitations?: QuoteCitation[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  attachedConversations?: AttachedConversationRef[];
   screenshotImages?: string[];
   attachments?: StoredChatAttachment[];
   modelAttachments?: StoredChatAttachment[];
@@ -265,6 +269,7 @@ const CHAT_MESSAGE_SELECT_COLUMNS_SQL = `id,
             quote_citations_json AS quoteCitationsJson,
             collection_contexts_json AS collectionContextsJson,
             tag_contexts_json AS tagContextsJson,
+            attached_conversations_json AS attachedConversationsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
             model_attachments_json AS modelAttachmentsJson,
@@ -488,6 +493,7 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "quote_citations_json",
   "collection_contexts_json",
   "tag_contexts_json",
+  "attached_conversations_json",
   "screenshot_images",
   "attachments_json",
   "model_attachments_json",
@@ -809,8 +815,16 @@ function isUpstreamPaperConversationKey(conversationKey: number): boolean {
   return isConversationKeyForKind("upstream", "paper", conversationKey);
 }
 
+/**
+ * Whether the upstream store owns rows for this key. A key from the reserved
+ * ephemeral band (a temporary side chat) never has rows: every read returns
+ * nothing and every write is skipped.
+ */
 function isUpstreamStoreConversationKey(conversationKey: number): boolean {
-  return isConversationKeyFor("upstream", conversationKey);
+  return (
+    isConversationKeyFor("upstream", conversationKey) &&
+    !isEphemeralConversationKey(conversationKey)
+  );
 }
 
 /** The upstream store as the shared deletion kernel sees it. */
@@ -975,6 +989,7 @@ async function getNextAvailableGlobalConversationKey(
     normalizedPreferred &&
     normalizedPreferred !== currentKey &&
     isUpstreamGlobalConversationKey(normalizedPreferred) &&
+    !isEphemeralConversationKey(normalizedPreferred) &&
     !(await getGlobalConversationKeyInUse(normalizedPreferred)) &&
     !(await getConversationKeyLedgerEntry(normalizedPreferred))
   ) {
@@ -1324,6 +1339,7 @@ export async function initChatStore(): Promise<void> {
         quote_citations_json TEXT,
         collection_contexts_json TEXT,
         tag_contexts_json TEXT,
+        attached_conversations_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
         model_attachments_json TEXT,
@@ -1598,6 +1614,12 @@ export async function initChatStore(): Promise<void> {
       messageColumns,
       "tag_contexts_json",
       "tag_contexts_json TEXT",
+    );
+    await ensureColumn(
+      CHAT_MESSAGES_TABLE,
+      messageColumns,
+      "attached_conversations_json",
+      "attached_conversations_json TEXT",
     );
     const hasScreenshotImagesColumn = Boolean(
       columns?.some((column) => column?.name === "screenshot_images"),
@@ -2145,6 +2167,7 @@ export async function loadConversation(
         quoteCitationsJson?: unknown;
         collectionContextsJson?: unknown;
         tagContextsJson?: unknown;
+        attachedConversationsJson?: unknown;
         screenshotImages?: unknown;
         attachmentsJson?: unknown;
         modelAttachmentsJson?: unknown;
@@ -2371,6 +2394,21 @@ export async function loadConversation(
         selectedTagContexts = undefined;
       }
     }
+    let attachedConversations: AttachedConversationRef[] | undefined;
+    if (
+      typeof row.attachedConversationsJson === "string" &&
+      row.attachedConversationsJson
+    ) {
+      try {
+        const parsed = JSON.parse(row.attachedConversationsJson) as unknown;
+        const normalized = normalizeAttachedConversationRefs(parsed);
+        if (normalized.length) {
+          attachedConversations = normalized;
+        }
+      } catch (_err) {
+        attachedConversations = undefined;
+      }
+    }
     let screenshotImages: string[] | undefined;
     if (typeof row.screenshotImages === "string" && row.screenshotImages) {
       try {
@@ -2467,6 +2505,7 @@ export async function loadConversation(
       quoteCitations,
       selectedCollectionContexts,
       selectedTagContexts,
+      attachedConversations,
       screenshotImages,
       attachments,
       modelAttachments,
@@ -2603,6 +2642,9 @@ export async function appendMessage(
   const selectedTagContexts = normalizeTagContextRefs(
     message.selectedTagContexts,
   );
+  const attachedConversations = normalizeAttachedConversationRefs(
+    message.attachedConversations,
+  );
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : [];
@@ -2652,8 +2694,8 @@ export async function appendMessage(
         const identityPlaceholder = identityAvailable ? ", ?" : "";
         await Zotero.DB.queryAsync(
           `INSERT INTO ${CHAT_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id${identityColumn})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, attached_conversations_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id${identityColumn})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
           [
             conversationID,
             normalizedKey,
@@ -2693,6 +2735,9 @@ export async function appendMessage(
               : null,
             selectedTagContexts.length
               ? JSON.stringify(selectedTagContexts)
+              : null,
+            attachedConversations.length
+              ? JSON.stringify(attachedConversations)
               : null,
             screenshotImages.length ? JSON.stringify(screenshotImages) : null,
             attachments.length ? JSON.stringify(attachments) : null,
@@ -2773,6 +2818,7 @@ export async function updateLatestUserMessage(
     | "citationPaperContexts"
     | "selectedCollectionContexts"
     | "selectedTagContexts"
+    | "attachedConversations"
     | "screenshotImages"
     | "attachments"
     | "modelAttachments"
@@ -2824,6 +2870,9 @@ export async function updateLatestUserMessage(
   const selectedTagContexts = normalizeTagContextRefs(
     message.selectedTagContexts,
   );
+  const attachedConversations = normalizeAttachedConversationRefs(
+    message.attachedConversations,
+  );
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : [];
@@ -2870,6 +2919,7 @@ export async function updateLatestUserMessage(
            citation_paper_contexts_json = ?,
            collection_contexts_json = ?,
            tag_contexts_json = ?,
+           attached_conversations_json = ?,
            screenshot_images = ?,
            attachments_json = ?,
            model_attachments_json = ?,
@@ -2914,6 +2964,9 @@ export async function updateLatestUserMessage(
           ? JSON.stringify(selectedCollectionContexts)
           : null,
         selectedTagContexts.length ? JSON.stringify(selectedTagContexts) : null,
+        attachedConversations.length
+          ? JSON.stringify(attachedConversations)
+          : null,
         screenshotImages.length ? JSON.stringify(screenshotImages) : null,
         attachments.length ? JSON.stringify(attachments) : null,
         hasExplicitModelAttachments ? JSON.stringify(modelAttachments) : null,
@@ -3462,7 +3515,9 @@ export async function createPaperConversation(
     const preferredKey = normalizeConversationKey(options.conversationKey || 0);
     if (
       preferredKey &&
-      !isConversationKeyForKind("upstream", "paper", preferredKey)
+      (!isConversationKeyForKind("upstream", "paper", preferredKey) ||
+        // The reserved band holds never-persisted side-chat keys only.
+        isEphemeralConversationKey(preferredKey))
     ) {
       throw new Error(
         "Preferred upstream paper conversation key is outside its range",
@@ -3806,7 +3861,9 @@ export async function createGlobalConversation(
     const preferredKey = normalizeConversationKey(options.conversationKey || 0);
     if (
       preferredKey &&
-      !isConversationKeyForKind("upstream", "global", preferredKey)
+      (!isConversationKeyForKind("upstream", "global", preferredKey) ||
+        // The reserved band holds never-persisted side-chat keys only.
+        isEphemeralConversationKey(preferredKey))
     ) {
       throw new Error(
         "Preferred upstream global conversation key is outside its range",

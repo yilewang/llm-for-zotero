@@ -3,7 +3,10 @@ import type {
   AgentActionProposal,
   AgentActionReceipt,
 } from "../contracts/types";
-import { receiptOperationLabel } from "../contracts/operationCatalog";
+import {
+  receiptIntentLabel,
+  receiptOperationLabel,
+} from "../contracts/operationCatalog";
 import type { MaterialRef } from "../documents/materialRef";
 import {
   materialRefKey,
@@ -18,6 +21,7 @@ import type {
   RunEndState,
 } from "../execution/types";
 import type { PaperDigestFailure } from "../digests/paperDigestWorker";
+import { readScopeKey, type ReadScope } from "../digests/readScope";
 import type { RunStopRule } from "./stopRules";
 
 /**
@@ -46,7 +50,9 @@ import type { RunStopRule } from "./stopRules";
  * the part settled. Once every paper is one or the other the part completes
  * when any is done, and is skipped with the first reason when none is. The
  * answer does not complete a digest part, and the long-job pager never pages
- * one.
+ * one. A digest part reads each paper for the scope it declared (`readScope`,
+ * per paper `readOverrides`; the full text when absent), so a part declared
+ * for abstracts completes on abstracts.
  *
  * Selection. An artifact or a reasoning part delivers a synthesis from the
  * papers it names, and the model may leave some out with its reason
@@ -82,6 +88,13 @@ export type OutcomeDeclaration = {
   scope?: boolean;
   /** A digest part's user request, as `task_update` captured it. */
   question?: string;
+  /**
+   * A digest part's read scope; absent on a repeat keeps the part's own, and
+   * a new part without one reads the full text.
+   */
+  readScope?: ReadScope;
+  /** A digest part's per-paper scopes, as `item:N` targets. */
+  readOverrides?: readonly { target: string; read: ReadScope }[];
   /** The local or qualified taskId of the pending part this one replaces. */
   replaces?: string;
   /** Why it replaces that part; required with `replaces`. */
@@ -189,13 +202,15 @@ export const OUTCOME_REASONS = Object.freeze({
 /**
  * Stops that keep the run's work and leave the rest for "continue", with or
  * without outcome evidence (`turnBoundary.ts`, Rules 3 and 4): a safety
- * limit, a lost connection, a prompt that stays too long after compaction.
+ * limit, a lost connection, a prompt that stays too long after compaction,
+ * an answer the model left empty twice.
  */
 const RESUMABLE_INCIDENT_STOP_RULES: ReadonlySet<RunStopRule> =
   new Set<RunStopRule>([
     "budget_reached",
     "connection_lost",
     "prompt_budget_exceeded",
+    "empty_answer",
   ]);
 
 /** The refusal of an exclusion without its reason. */
@@ -391,6 +406,21 @@ function isNoteContent(receipt: AgentActionReceipt): boolean {
     receipt.verification === "verified" &&
     DONE_RECEIPT_STATUSES.has(receipt.status)
   );
+}
+
+/**
+ * Whether a saved note stands for the whole of artifact part `task` beside
+ * the write part it binds: the part names no papers, or the note is on every
+ * paper it names. A note on one paper of a review over many is that paper's
+ * note, not the review.
+ */
+function noteCovers(task: Task, receipt: AgentActionReceipt): boolean {
+  const papers = (task.targets || []).filter(isPaperTarget);
+  const written = [
+    ...receipt.appliedTargets,
+    ...receipt.alreadySatisfiedTargets,
+  ];
+  return papers.every((paper) => resolveTarget(paper, written) !== undefined);
 }
 
 /** A read is not a write, so it neither closes a mutation nor becomes one. */
@@ -724,6 +754,13 @@ function bindReceipt(
   const { exceptions: _previous, ...rest } = task;
   const bound: Task = {
     ...rest,
+    // The host named its own part by the work it set out to do; a receipt
+    // that proves the work names what was done.
+    ...(proves &&
+    task.origin === "host" &&
+    task.description === receiptIntentLabel(receipt)
+      ? { description: receiptOperationLabel(receipt) }
+      : {}),
     verifiedReceiptIds:
       proves && receipt.verification === "verified"
         ? union(task.verifiedReceiptIds, [receipt.id])
@@ -974,20 +1011,25 @@ function applyReceipt(
     for (const index of targeted.length ? targeted : candidates.slice(0, 1))
       chosen.set(index, { write });
   }
+  // Written content saved as a note is the artifact a part asked for, also
+  // when a write part takes the note, as the answer never delivers one.
+  const artifact = isNoteContent(receipt)
+    ? checkpoint.tasks.findIndex(
+        (task, index) =>
+          task.status === "pending" &&
+          task.effect === "artifact" &&
+          (!chosen.size || (!chosen.has(index) && noteCovers(task, receipt))),
+      )
+    : -1;
   if (chosen.size) {
     return mapTasks(checkpoint, now, (task, index) => {
+      if (index === artifact) return bindReceipt(task, receipt, now);
       const binding = chosen.get(index);
       return binding
         ? bindReceipt(task, binding.write, now, binding.papers)
         : undefined;
     });
   }
-  // Written content saved as a note is the artifact a part asked for.
-  const artifact = isNoteContent(receipt)
-    ? checkpoint.tasks.findIndex(
-        (task) => task.status === "pending" && task.effect === "artifact",
-      )
-    : -1;
   if (artifact >= 0) {
     return mapTasks(checkpoint, now, (task, index) =>
       index === artifact ? bindReceipt(task, receipt, now) : undefined,
@@ -997,7 +1039,9 @@ function applyReceipt(
   const host: Task = {
     ...newTask(
       hostReceiptTaskId(checkpoint, receipt.id),
-      receiptOperationLabel(receipt),
+      // A receipt that did not apply names the work it set out to do;
+      // `bindReceipt` turns it to the past tense once a receipt proves it.
+      receiptIntentLabel(receipt),
       now,
     ),
     effect: "mutation",
@@ -1010,8 +1054,9 @@ function applyReceipt(
 }
 
 /*
- * Delivered content. A document, or the accepted answer, is the artifact a
- * part asked for. A part that names papers is accounted per paper: the papers
+ * Delivered content. A document is the artifact a part asked for, and so is
+ * a saved note (`applyReceipt`); the accepted answer is not (`applyAnswer`).
+ * A part that names papers is accounted per paper: the papers
  * the content cites are done, and the rest become exceptions unless the model
  * excluded them, so "12/12" means twelve papers were covered. A part that
  * names none completes.
@@ -1359,7 +1404,7 @@ function applyDeclined(
     {
       ...newTask(
         freeTaskId(checkpoint, (attempt) => `host-declined-${attempt}`),
-        receiptOperationLabel(first),
+        receiptIntentLabel(first),
         now,
       ),
       status: "blocked",
@@ -1473,26 +1518,25 @@ function applyDigest(
   });
 }
 
+/**
+ * The accepted answer delivers a reasoning part: it completes whole, and a
+ * paper the answer cites is not one it left out. An artifact part asked for
+ * content the host can point to, so only a document (`applyMaterial`) or a
+ * saved note (`applyReceipt`) delivers it; the answer leaves it pending.
+ */
 function applyAnswer(
   checkpoint: ExecutionCheckpoint,
   evidence: Extract<OutcomeEvidence, { kind: "answer" }>,
   now: number,
 ): EvidenceResult {
-  // Content written in the accepted answer is the artifact a part asked for.
   return mapTasks(checkpoint, now, (task) => {
     if (task.status !== "pending") return undefined;
-    // A reasoning part completes whole, and a paper the answer cites is not
-    // one it left out.
     if (!task.effect || task.effect === "answer")
       return {
         ...withoutCitedExclusions(task, evidence.citedTargets),
         status: "completed",
         updatedAt: now,
       };
-    // The runtime passes the papers the answer cites; unknown (undefined)
-    // completes the part whole.
-    if (task.effect === "artifact")
-      return coverTargets(task, evidence.citedTargets, now);
     return undefined;
   });
 }
@@ -1577,7 +1621,36 @@ export function declarationChanges(
     description !== prior.description ||
     declaredEffect(declaration) !== (prior.effect || "answer") ||
     capabilityChanges(prior, declaration.capability) ||
-    !samePapers
+    !samePapers ||
+    readScopeChanges(prior, declaration)
+  );
+}
+
+/** The per-paper scopes as one comparable value, in target order. */
+function overridesKey(
+  overrides: readonly { target: string; read: ReadScope }[] | undefined,
+): string {
+  return (overrides || [])
+    .map((entry) => `${entry.target}=${readScopeKey(entry.read)}`)
+    .sort()
+    .join(";");
+}
+
+/**
+ * Whether a declaration reads the part's papers otherwise: another scope,
+ * or other per-paper scopes. A declaration that names neither keeps the
+ * part's own.
+ */
+export function readScopeChanges(
+  prior: Pick<Task, "readScope" | "readOverrides">,
+  declaration: Pick<OutcomeDeclaration, "readScope" | "readOverrides">,
+): boolean {
+  return (
+    (declaration.readScope !== undefined &&
+      readScopeKey(declaration.readScope) !== readScopeKey(prior.readScope)) ||
+    (declaration.readOverrides !== undefined &&
+      overridesKey(declaration.readOverrides) !==
+        overridesKey(prior.readOverrides))
   );
 }
 
@@ -1665,6 +1738,16 @@ export function declareOutcomes(
       effect === "digest"
         ? declaration.question?.trim() || prior?.question
         : undefined;
+    // A digest part keeps its read scope unless the declaration names one;
+    // a full scope is stored as none, as parts declared before scopes.
+    const readScope =
+      effect === "digest"
+        ? (declaration.readScope ?? prior?.readScope)
+        : undefined;
+    const readOverrides =
+      effect === "digest"
+        ? (declaration.readOverrides ?? prior?.readOverrides)
+        : undefined;
     // The papers it excluded, of those it still names.
     const excludedTargets =
       prior && SELECTING_EFFECTS.has(effect)
@@ -1684,6 +1767,10 @@ export function declareOutcomes(
       ...(targets.length ? { targets } : {}),
       ...(declaration.scope && targets.length ? { scope: true as const } : {}),
       ...(question ? { question } : {}),
+      ...(readScope && readScopeKey(readScope) !== "full" ? { readScope } : {}),
+      ...(readOverrides?.length
+        ? { readOverrides: readOverrides.map((entry) => ({ ...entry })) }
+        : {}),
       ...(excludedTargets.length ? { excludedTargets } : {}),
     };
     if (declaration.replaces !== undefined) {
@@ -2226,6 +2313,31 @@ export function closeOpenOutcomes(
       open.has(task.taskId)
         ? { ...task, status: "skipped", reason, updatedAt: now }
         : task,
+    ),
+    updatedAt: now,
+  };
+}
+
+/**
+ * A completed run's declined writes, settled as skipped.
+ *
+ * A decline is the user's own word. While the run goes on the part stays
+ * blocked, so a re-proposal the user approves can still complete it; once
+ * the run has answered, the part is skipped with the decline as its reason
+ * and does not hold the run in "blocked". The caller decides the end state
+ * from the checkpoint this returns, and only for a run that completed.
+ */
+export function settleDeclinedOutcomes(
+  checkpoint: ExecutionCheckpoint,
+  now: number,
+): ExecutionCheckpoint {
+  const declined = (task: Task) =>
+    task.status === "blocked" && task.reason === OUTCOME_REASONS.declined;
+  if (!checkpoint.tasks.some(declined)) return checkpoint;
+  return {
+    ...checkpoint,
+    tasks: checkpoint.tasks.map((task) =>
+      declined(task) ? { ...task, status: "skipped", updatedAt: now } : task,
     ),
     updatedAt: now,
   };

@@ -23,6 +23,13 @@ import {
   validateReportLocation,
 } from "../test-behavior/evidence";
 import {
+  HEARTBEAT_STALE_MS,
+  RESUME_GAP_MS,
+  STARTUP_GRACE_MS,
+  launcherLivenessError,
+  quitRecordedAt,
+} from "../test-behavior/liveness";
+import {
   assertConversationSummary,
   assertHumanCitationLabels,
   snapshotFiles,
@@ -460,6 +467,101 @@ describe("manually invoked behavior suite contract", function () {
     assert.throws(
       () => exactFieldChange(before, otherLibrary, item, "title", "New"),
       /Unexpected native changes/,
+    );
+  });
+});
+
+describe("behavior runner liveness", function () {
+  const launchedAt = Date.UTC(2026, 9, 29, 10, 0, 0);
+
+  it("reports a quit recorded by the dev profile after launch", function () {
+    const quitAt = launchedAt + 60_000;
+    const message = launcherLivenessError({
+      now: quitAt + 5_000,
+      launchedAt,
+      heartbeatAt: quitAt - 1_000,
+      quitRecordedAt: quitAt,
+    });
+    assert.include(message, "Zotero quit during the run at");
+    assert.include(message, new Date(quitAt).toISOString());
+  });
+
+  it("ignores a checkpoint file from a previous session", function () {
+    const quit = { "quit-application-granted": true };
+    assert.isUndefined(quitRecordedAt(quit, launchedAt - 1, launchedAt));
+    assert.isUndefined(quitRecordedAt({}, launchedAt + 1, launchedAt));
+    assert.isUndefined(quitRecordedAt(null, launchedAt + 1, launchedAt));
+    assert.equal(
+      quitRecordedAt(quit, launchedAt + 1, launchedAt),
+      launchedAt + 1,
+    );
+  });
+
+  it("accepts a fresh heartbeat", function () {
+    assert.isUndefined(
+      launcherLivenessError({
+        now: launchedAt + 3_600_000,
+        launchedAt,
+        heartbeatAt: launchedAt + 3_600_000 - 15_000,
+      }),
+    );
+  });
+
+  it("reports a heartbeat older than two minutes", function () {
+    const heartbeatAt = launchedAt + 30_000;
+    const message = launcherLivenessError({
+      now: heartbeatAt + HEARTBEAT_STALE_MS + 1,
+      launchedAt,
+      heartbeatAt,
+    });
+    assert.include(message, "Zotero stopped responding: no heartbeat since");
+    assert.include(message, new Date(heartbeatAt).toISOString());
+  });
+
+  it("allows a full stale window after the machine resumes from sleep", function () {
+    const heartbeatAt = launchedAt + 30_000;
+    const resumedAt = heartbeatAt + 300_000;
+    assert.isAbove(resumedAt - heartbeatAt, RESUME_GAP_MS);
+    assert.isUndefined(
+      launcherLivenessError({
+        now: resumedAt,
+        launchedAt,
+        heartbeatAt,
+        resumedAt,
+      }),
+    );
+    assert.isUndefined(
+      launcherLivenessError({
+        now: resumedAt + HEARTBEAT_STALE_MS,
+        launchedAt,
+        heartbeatAt,
+        resumedAt,
+      }),
+    );
+    assert.include(
+      launcherLivenessError({
+        now: resumedAt + HEARTBEAT_STALE_MS + 1,
+        launchedAt,
+        heartbeatAt,
+        resumedAt,
+      }),
+      "no heartbeat since",
+    );
+  });
+
+  it("waits for the startup grace period before blaming a missing heartbeat", function () {
+    assert.isUndefined(
+      launcherLivenessError({
+        now: launchedAt + STARTUP_GRACE_MS,
+        launchedAt,
+      }),
+    );
+    assert.include(
+      launcherLivenessError({
+        now: launchedAt + STARTUP_GRACE_MS + 1,
+        launchedAt,
+      }),
+      "never started the suite",
     );
   });
 });

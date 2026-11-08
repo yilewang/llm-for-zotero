@@ -26,6 +26,41 @@ export type SettingsCapabilityDeps = {
   getItem(itemId: number | undefined): Zotero.Item | null;
 };
 
+/**
+ * One work a structured citation cluster cites: a Zotero item by its id, or
+ * an outside paper's CSL item by its CSL id.
+ */
+export type StructuredCitationItem =
+  | { itemId: number; pageIndex?: number }
+  | { outsideId: string };
+
+/**
+ * A CSL-JSON item formatted beside the library's items. Its id is never all
+ * digits (Zotero items' CSL ids are) and never contains "/".
+ */
+export type OutsideCslItem = Readonly<{ id: string }> &
+  Readonly<Record<string, unknown>>;
+
+/** A bibliography entry, paired with its Zotero item or outside CSL item. */
+export type StructuredBibliographyEntry =
+  | { itemId: number; text: string; html: string }
+  | { outsideId: string; text: string; html: string };
+
+type CiteProcEngine = {
+  free?: () => void;
+  sys?: { retrieveItem?: (id: string | number) => unknown };
+  updateItems?: (ids: Array<number | string>) => void;
+  previewCitationCluster?: (
+    citation: unknown,
+    citationsPre: Array<[string, number]>,
+    citationsPost: Array<[string, number]>,
+    format: string,
+  ) => string;
+  makeBibliography?: () =>
+    | [{ entry_ids?: Array<Array<string | number>> }, string[]]
+    | false;
+};
+
 export class SettingsCapability {
   constructor(private readonly deps: SettingsCapabilityDeps) {}
 
@@ -207,12 +242,12 @@ export class SettingsCapability {
     // Deliberately synchronous and static: the async translator listing is a
     // separate call shape, and these are the formats users actually name.
     return [
-      { id: "14763d24-8ba0-45df-8f52-b8d1108e7ac9", label: "BibTeX" },
-      { id: "9cb70025-a888-4a29-a210-93ec52da40d4", label: "BibLaTeX" },
+      { id: "9cb70025-a888-4a29-a210-93ec52da40d4", label: "BibTeX" },
+      { id: "b6e39b57-8942-4d11-8259-342c46ce395f", label: "BibLaTeX" },
       { id: "32d59d2d-b65a-4da4-b0a3-bdd3cfb979e7", label: "RIS" },
       { id: "bc03b4fe-436d-4a1f-ba59-de4d2d7a63f7", label: "CSL JSON" },
-      { id: "14763d25-8ba0-45df-8f52-b8d1108e7ac9", label: "Zotero RDF" },
-      { id: "b8f9f5e6-b6a9-4b0e-a3f0-9e29ff9e14cf", label: "Simple Evernote" },
+      { id: "14763d24-8ba0-45df-8f52-b8d1108e7ac9", label: "Zotero RDF" },
+      { id: "18dd188a-9afc-4cd6-8775-1980c3ce0fbf", label: "Simple Evernote" },
     ];
   }
 
@@ -251,6 +286,8 @@ export class SettingsCapability {
       translate: () => void;
       string?: string;
     };
+    // Zotero's item getter consumes the array it is given, so count first.
+    const itemCount = items.length;
     translation.setItems(items);
     translation.setTranslator(params.translatorId);
 
@@ -266,7 +303,7 @@ export class SettingsCapability {
         }
         resolve({
           output: String(translation.string || ""),
-          itemCount: items.length,
+          itemCount,
         });
       });
       try {
@@ -439,12 +476,18 @@ export class SettingsCapability {
    * Formats document citation clusters and keeps bibliography entries paired
    * with their Zotero items. Unlike formatBibliography(), this preserves the
    * structure needed for source navigation and multi-surface serialization.
+   *
+   * Outside papers (`outsideItems`, cited by `outsideId`) are formatted in
+   * the same engine run, so the bibliography is one list in the style's
+   * order. They need an engine of their own: the cached engine is shared
+   * per style and locale, so its item lookup is never wrapped.
    */
   formatStructuredCitations(params: {
     clusters: Array<{
       citationId: string;
-      items: Array<{ itemId: number; pageIndex?: number }>;
+      items: StructuredCitationItem[];
     }>;
+    outsideItems?: readonly OutsideCslItem[];
     styleId?: string;
     locale?: string;
   }): {
@@ -452,11 +495,7 @@ export class SettingsCapability {
     styleTitle: string;
     locale: string;
     clusters: Array<{ citationId: string; text: string; html: string }>;
-    bibliographyEntries: Array<{
-      itemId: number;
-      text: string;
-      html: string;
-    }>;
+    bibliographyEntries: StructuredBibliographyEntry[];
   } {
     const Styles = (
       Zotero as unknown as {
@@ -483,19 +522,7 @@ export class SettingsCapability {
         locale: string,
         format: string,
         options?: { cache?: boolean },
-      ) => {
-        free?: () => void;
-        updateItems?: (ids: number[]) => void;
-        previewCitationCluster?: (
-          citation: unknown,
-          citationsPre: Array<[string, number]>,
-          citationsPost: Array<[string, number]>,
-          format: string,
-        ) => string;
-        makeBibliography?: () =>
-          | [{ entry_ids?: Array<Array<string | number>> }, string[]]
-          | false;
-      };
+      ) => CiteProcEngine;
     };
     if (!style?.getCiteProc) {
       throw new Error(`Citation style "${styleId}" is not installed`);
@@ -503,28 +530,86 @@ export class SettingsCapability {
     const itemIds = Array.from(
       new Set(
         params.clusters.flatMap((cluster) =>
-          cluster.items.map((item) => Number(item.itemId)),
+          cluster.items.flatMap((item) =>
+            "itemId" in item ? [Number(item.itemId)] : [],
+          ),
         ),
       ),
     ).filter((itemId) => Number.isInteger(itemId) && itemId > 0);
-    if (!itemIds.length) {
+    const outsideById = new Map(
+      (params.outsideItems || []).map((item) => [String(item.id), item]),
+    );
+    for (const id of outsideById.keys()) {
+      // A digit-only id is a Zotero item's; a "/" breaks citeproc's ids.
+      if (!id || /^\d+$/.test(id) || id.includes("/")) {
+        throw new Error(`Outside citation item id "${id}" is invalid`);
+      }
+    }
+    const outsideIds = Array.from(
+      new Set(
+        params.clusters.flatMap((cluster) =>
+          cluster.items.flatMap((item) =>
+            "outsideId" in item ? [String(item.outsideId)] : [],
+          ),
+        ),
+      ),
+    );
+    for (const id of outsideIds) {
+      if (!outsideById.has(id)) {
+        throw new Error(`Outside citation item "${id}" was not supplied`);
+      }
+    }
+    if (!itemIds.length && !outsideIds.length) {
       throw new Error("A structured citation bundle requires citable items");
     }
+    const citeProc = (outputFormat: "text" | "html"): CiteProcEngine => {
+      if (!outsideIds.length)
+        return style.getCiteProc!(locale, outputFormat, { cache: true });
+      const engine = style.getCiteProc!(locale, outputFormat, {
+        cache: false,
+      });
+      const sys = engine.sys;
+      const retrieveItem = sys?.retrieveItem;
+      if (!sys || typeof retrieveItem !== "function") {
+        engine.free?.();
+        throw new Error(
+          "Zotero's citation engine cannot format papers outside the library",
+        );
+      }
+      // citeproc asks for every id as a string; each answer is a fresh copy
+      // because the engine annotates the items it is given.
+      sys.retrieveItem = (id: string | number) => {
+        const outside = outsideById.get(String(id));
+        return outside
+          ? JSON.parse(JSON.stringify(outside))
+          : retrieveItem.call(sys, id);
+      };
+      return engine;
+    };
     const format = (outputFormat: "text" | "html") => {
-      const engine = style.getCiteProc!(locale, outputFormat, { cache: true });
+      const engine = citeProc(outputFormat);
       try {
-        engine.updateItems?.(itemIds);
+        engine.updateItems?.(
+          outsideIds.length ? [...itemIds, ...outsideIds] : itemIds,
+        );
         const clusters = params.clusters.map((cluster) => {
           const output =
             engine.previewCitationCluster?.(
               {
                 citationID: cluster.citationId,
-                citationItems: cluster.items.map((item) => ({
-                  id: item.itemId,
-                  ...(typeof item.pageIndex === "number"
-                    ? { locator: String(item.pageIndex + 1), label: "page" }
-                    : {}),
-                })),
+                citationItems: cluster.items.map((item) =>
+                  "outsideId" in item
+                    ? { id: item.outsideId }
+                    : {
+                        id: item.itemId,
+                        ...(typeof item.pageIndex === "number"
+                          ? {
+                              locator: String(item.pageIndex + 1),
+                              label: "page",
+                            }
+                          : {}),
+                      },
+                ),
                 properties: { noteIndex: 0 },
               },
               // previewCitationCluster() does not register the previewed
@@ -547,13 +632,16 @@ export class SettingsCapability {
         }
         const [metadata, entries] = bibliography;
         const entryIds = metadata.entry_ids || [];
+        // Entries pair by their CSL id as a string: a Zotero item's digits,
+        // or an outside item's own id.
         const bibliographyEntries = entries.map((output, index) => ({
-          itemId: Number(entryIds[index]?.[0] || 0),
+          id: String(entryIds[index]?.[0] ?? ""),
           output,
         }));
+        const expected = new Set([...itemIds.map(String), ...outsideIds]);
         if (
-          bibliographyEntries.length !== itemIds.length ||
-          bibliographyEntries.some((entry) => !entry.itemId)
+          bibliographyEntries.length !== expected.size ||
+          bibliographyEntries.some((entry) => !expected.has(entry.id))
         ) {
           throw new Error(
             "Zotero's citation engine returned an unresolvable bibliography",
@@ -573,10 +661,7 @@ export class SettingsCapability {
       ]),
     );
     const htmlEntries = new Map(
-      htmlOutput.bibliographyEntries.map((entry) => [
-        entry.itemId,
-        entry.output,
-      ]),
+      htmlOutput.bibliographyEntries.map((entry) => [entry.id, entry.output]),
     );
     return {
       styleId,
@@ -587,11 +672,12 @@ export class SettingsCapability {
         text: cluster.output,
         html: htmlClusters.get(cluster.citationId) || cluster.output,
       })),
-      bibliographyEntries: textOutput.bibliographyEntries.map((entry) => ({
-        itemId: entry.itemId,
-        text: entry.output,
-        html: htmlEntries.get(entry.itemId) || entry.output,
-      })),
+      bibliographyEntries: textOutput.bibliographyEntries.map((entry) => {
+        const html = htmlEntries.get(entry.id) || entry.output;
+        return outsideById.has(entry.id)
+          ? { outsideId: entry.id, text: entry.output, html }
+          : { itemId: Number(entry.id), text: entry.output, html };
+      }),
     };
   }
 }

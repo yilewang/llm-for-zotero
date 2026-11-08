@@ -108,4 +108,59 @@ describe("note editing selection tracking lifecycle", function () {
     assert.equal(lateDocument.listenerCount("selectionchange"), 0);
     assert.equal(timeoutCallbacks.size, 0);
   });
+
+  it("polls slowly and re-checks shortly after a click or key press", function () {
+    let nextTimerId = 1;
+    const intervals = new Map<number, number>();
+    const timeouts = new Map<number, { callback: () => void; delay: number }>();
+    const timerHost = {
+      setInterval(_callback: () => void, delay: number): number {
+        const timerId = nextTimerId++;
+        intervals.set(timerId, delay);
+        return timerId;
+      },
+      clearInterval(timerId: number): void {
+        intervals.delete(timerId);
+      },
+      setTimeout(callback: () => void, delay: number): number {
+        const timerId = nextTimerId++;
+        timeouts.set(timerId, { callback, delay });
+        return timerId;
+      },
+      clearTimeout(timerId: number): void {
+        timeouts.delete(timerId);
+      },
+    };
+    const runNextTimeout = (): number => {
+      const [timerId, timer] = [...timeouts.entries()][0]!;
+      timeouts.delete(timerId);
+      timer.callback();
+      return timer.delay;
+    };
+    let refreshCount = 0;
+    const lifecycle = createNoteEditingSelectionTrackingLifecycle({
+      timerHost,
+      refresh: () => {
+        refreshCount += 1;
+      },
+    });
+    // The interval is a safety net for changes no event reports.
+    assert.deepEqual([...intervals.values()], [2000]);
+
+    const doc = new TrackingDocument();
+    lifecycle.trackSelectionDocument(doc as unknown as Document);
+    doc.dispatch("mouseup");
+    doc.dispatch("keyup");
+    // A burst keeps one pending check.
+    assert.equal(timeouts.size, 1);
+
+    // A note editor can mount after the click that opened it.
+    const delays: number[] = [];
+    while (timeouts.size) delays.push(runNextTimeout());
+    assert.deepEqual(delays, [0, 250, 750]);
+    assert.equal(refreshCount, 3);
+
+    lifecycle.dispose();
+    assert.equal(intervals.size, 0);
+  });
 });

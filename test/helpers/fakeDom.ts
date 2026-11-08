@@ -165,7 +165,15 @@ export class FakeElement {
     }
     if (isClassSelector(selector))
       return this.findAllByClass(selector.slice(1));
+    if (/^[a-z]+$/.test(selector)) return this.findAllByTag(selector);
     return [];
+  }
+
+  replaceWith(...nodes: FakeElement[]): void {
+    const parent = this.parentElement;
+    if (!parent) return;
+    for (const node of nodes) parent.insertBefore(node, this);
+    this.remove();
   }
 
   /** The nearest element at or above this one that carries the class asked for. */

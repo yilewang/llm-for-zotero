@@ -118,8 +118,12 @@ describe("Claude conversation write locking", function () {
       DB: {
         queryAsync: async () => [],
       },
+      // A bridge the test answers through fetch, not one the plugin starts.
       Prefs: {
-        get: () => "http://127.0.0.1:19787",
+        get: (key: string) =>
+          key.endsWith(".claudeCodeBridgeMode")
+            ? "custom"
+            : "http://127.0.0.1:19787",
       },
       debug: () => undefined,
       Profile: { dir: "/tmp/llm-for-zotero-claude-invalidation-lock-test" },

@@ -1,6 +1,7 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
 import { settleExternalTurn } from "./execution/externalTurnSettlement";
+import { createClaudeTurnStageTracker } from "./claudeTurnStages";
 import { config } from "../../package.json";
 import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
@@ -17,6 +18,11 @@ import {
   type ClaudeModelCatalogRequestContext,
 } from "../claudeCode/modelCatalog";
 import { getClaudeProfileSignature } from "../claudeCode/projectSkills";
+import {
+  claudeBridgeFetch,
+  isManagedClaudeBridgeActive,
+  isManagedClaudeBridgeIdle,
+} from "../claudeCode/bridgeProcess";
 import { buildScopedConversationKey } from "../shared/conversationScopedKey";
 import { getClaudeConversationSummary } from "../claudeCode/store";
 import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
@@ -33,6 +39,7 @@ import {
 } from "../codexAppServer/mcpSetup";
 import { dbg, dbgError } from "../utils/debugLogger";
 import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
+import { buildAgentFilesInstructionForScope } from "../utils/agentFilesDirectory";
 import {
   externalRuntimeCommandEffect,
   externalRuntimeFileEffect,
@@ -102,6 +109,16 @@ import {
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
 import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
 import { loadLatestDocumentForRun } from "./documents/store";
+import { rememberOutsidePapers } from "./context/outsidePaperRecords";
+import { resolveAgentPromptBudgetLimits } from "./context/promptBudget";
+import {
+  renderAgentPastChatMessageText,
+  type PastConversationSource,
+} from "../services/pastConversations/pastConversationLoader";
+import {
+  isSlashCommandText,
+  normalizeAttachedConversationScope,
+} from "../services/pastConversations/pastConversationText";
 import {
   AgentEventLocalDocumentStreamRedactor,
   acquireLocalDocumentPathLease,
@@ -557,7 +574,7 @@ function supportsClaudeBridgeLocalPdfPaths(payload: unknown): boolean {
 async function assertClaudeBridgeLocalPdfCapability(
   baseUrl: string,
 ): Promise<void> {
-  const response = await fetch(getBridgeHealthUrl(baseUrl));
+  const response = await claudeBridgeFetch(getBridgeHealthUrl(baseUrl));
   if (!response.ok) {
     throw new Error(`Bridge HTTP ${response.status}`);
   }
@@ -584,8 +601,11 @@ export function supportsClaudeBridgeLocalPdfPathsForTests(
 }
 
 export function getBridgeQuickFixHint(baseUrl?: string): string {
+  if (isManagedClaudeBridgeActive()) {
+    return "Open the plugin settings, Claude Code section, to see the bridge status and log, or press Restart bridge.";
+  }
   const healthUrl = getBridgeHealthUrl(baseUrl);
-  return `Bridge not running. Try: launchctl stop com.toha.ccbridge && launchctl start com.toha.ccbridge ; curl -fsS ${healthUrl}`;
+  return `Your own Claude Code bridge is not answering. Check that it is running and that the Bridge URL matches it: curl -fsS ${healthUrl}`;
 }
 
 function formatBridgeUserError(
@@ -679,6 +699,20 @@ function buildAgentPermissionMetadata(): {
   return { permissionMode };
 }
 
+/**
+ * The Claude Code bridge's map from the search-routing source families
+ * (SEARCH_ROUTING_CONTRACT) to its own tools: the Zotero MCP tools for the
+ * turn's papers, the library and scholarly sources, and Claude Code's
+ * WebSearch and WebFetch for the web (user decision 2a, 2026-10-20). The
+ * bridge allows WebFetch and WebSearch by default (start-bridge-server.ts
+ * --default-allowed-tools), but extra bridge arguments, the user's Claude
+ * settings or the model provider can remove them, so the line says "when
+ * available". Native web search has no tool description that carries the
+ * query-language rule, so the line states it.
+ */
+export const CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES =
+  "Search tools: the Zotero MCP tools, when listed, read the turn's papers (paper_read), search the library (library_retrieve, library_search) search scholarly sources (literature_search) and read a found paper's abstract and open-access text (literature_read); Claude Code's WebSearch and WebFetch search and read the web when available. Write web search queries in the user's language by default.";
+
 function buildOriginalAgentModeInstructionBlock(): string {
   return [
     "## Original agent-mode Zotero behavior",
@@ -702,6 +736,8 @@ function buildClaudeBridgeNotesDirectoryInstruction(): string {
 function buildClaudeBridgeCustomInstruction(
   options: {
     rawPdfMode?: boolean;
+    /** Where saved files go and when to show a page in the answer instead. */
+    agentFilesInstruction?: string;
   } = {},
 ): string {
   return [
@@ -710,12 +746,14 @@ function buildClaudeBridgeCustomInstruction(
     options.rawPdfMode
       ? "Claude Code receives Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
       : "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
+    CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES,
     'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", "inside this folder", and "this tag" against those selected Zotero scopes. Do not ask the user which folder or tag they mean unless no selected scope is present or multiple selected scopes make the reference genuinely ambiguous.',
     // Unconditional on purpose: where notes belong is a property of Zotero, not
     // of whether this user happens to have configured a notes directory. The
     // directory block below only carves out the file writes that are not notes.
     "A note you are asked to write is a Zotero note: use the Zotero note_write tool, not Claude Code's Write tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note, so a note written straight to disk leaves the host with no record of what changed.",
     buildClaudeBridgeNotesDirectoryInstruction(),
+    options.rawPdfMode ? "" : options.agentFilesInstruction || "",
     options.rawPdfMode ? RAW_PDF_TRANSPORT_POLICY_BLOCK : "",
   ]
     .map((entry) => entry.trim())
@@ -905,7 +943,9 @@ async function updateExternalRuntimeRetention(params: {
 }): Promise<RuntimeRetentionResponse | null> {
   const normalized = normalizeBaseUrl(params.baseUrl);
   if (!normalized) return null;
-  const response = await fetch(`${normalized}/runtime-retention`, {
+  // No managed bridge running means no warm session to keep or release.
+  if (isManagedClaudeBridgeIdle(normalized)) return null;
+  const response = await claudeBridgeFetch(`${normalized}/runtime-retention`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -933,7 +973,7 @@ async function invalidateExternalBridgeSession(params: {
 }): Promise<SessionInvalidationResponse | null> {
   const normalized = normalizeBaseUrl(params.baseUrl);
   if (!normalized) return null;
-  const response = await fetch(`${normalized}/invalidate-session`, {
+  const response = await claudeBridgeFetch(`${normalized}/invalidate-session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1054,9 +1094,77 @@ async function streamBridgeLines(
   }
 }
 
+/**
+ * The text a Claude Code turn sends the bridge: the turn's past-chat block,
+ * a blank line, then the user's text; the user's text alone when the turn
+ * delivers no past chat (request.deliveredConversations) or is a slash
+ * message. The block is the built-in agent's past-chat message, rendered
+ * under the same memo key as the resume-fallback history
+ * (agentMode/pastChatHistory.ts), so a later replay sends the same bytes.
+ * The bridge needs no change: it reads userText as the prompt.
+ *
+ * request.userText itself stays unchanged, for the MCP scope and skill
+ * routing. Never fails the turn.
+ */
+async function buildClaudeBridgeUserText(
+  request: AgentRuntimeRequest,
+  source?: PastConversationSource,
+): Promise<string> {
+  const userText = request.userText || "";
+  const refs = normalizeAttachedConversationScope(
+    request.deliveredConversations,
+  );
+  // A slash message goes to Claude Code's command handling as it is.
+  if (!refs.length || isSlashCommandText(userText)) return userText;
+  try {
+    let contextWindowTokens: number | undefined;
+    try {
+      contextWindowTokens = resolveAgentPromptBudgetLimits({
+        model: request.model,
+        inputTokenCap: request.advanced?.inputTokenCap,
+        apiBase: request.apiBase,
+        providerProtocol: request.providerProtocol,
+        authMode: request.authMode,
+        profileOverride: request.advanced?.profileOverride,
+        outputTokenLimit: request.advanced?.outputTokenLimit,
+      }).contextWindow;
+    } catch {
+      contextWindowTokens = undefined;
+    }
+    const block = await renderAgentPastChatMessageText({
+      conversationKey: request.conversationKey,
+      userMessageTimestamp: request.metadata?.sourceMessageTimestamp,
+      refs,
+      libraryID: request.libraryID,
+      contextWindowTokens,
+      source,
+    });
+    if (!block) return userText;
+    // The fallback history applies the same redaction to the same text.
+    const redacted = new LocalDocumentPathStreamRedactor(
+      request.conversationKey,
+    ).redactTerminalText(block);
+    return `${redacted}\n\n${userText}`;
+  } catch (error) {
+    appLogger.warn(
+      "Claude Code bridge: rendering the attached past chats failed",
+      error,
+    );
+    return userText;
+  }
+}
+
+export function buildClaudeBridgeUserTextForTests(
+  request: AgentRuntimeRequestInput,
+  source?: PastConversationSource,
+): Promise<string> {
+  return buildClaudeBridgeUserText(resolveAgentRuntimeRequest(request), source);
+}
+
 async function runExternalBridgeTurn(
   baseUrl: string,
   params: ResolvedRunTurnParams & {
+    pastConversationSource?: PastConversationSource;
     contextEnvelope?: ContextEnvelope;
     runtimeRequest?: BridgeRuntimeRequest;
     allowedTools?: string[];
@@ -1096,15 +1204,26 @@ async function runExternalBridgeTurn(
             : undefined;
   const debugModeEnabled = false;
 
-  const userTextRaw = params.request.userText || "";
   const probeRequested =
     debugModeEnabled && params.request.metadata?.testPermissionProbe === true;
-  const userTextForBridge = userTextRaw;
+  const userTextForBridge = await buildClaudeBridgeUserText(
+    params.request,
+    params.pastConversationSource,
+  );
 
   const requestMetadata =
     params.request.metadata && typeof params.request.metadata === "object"
       ? params.request.metadata
       : undefined;
+  const agentFilesInstruction = await buildAgentFilesInstructionForScope({
+    conversationKind:
+      params.request.conversationKind === "paper" ? "paper" : "global",
+    libraryID: resolveFallbackLibraryId(params.request),
+    paperItemId: (
+      getActiveTurnPaper(params.request.turnPaperScope) ||
+      params.request.turnPaperScope.papers[0]?.paper
+    )?.itemId,
+  });
   const providerIdentityStack = await buildClaudeProviderIdentityStack();
   const providerIdentity = hashProviderIdentityStack(providerIdentityStack);
   const providerSessionIdHint = await resolveClaudeProviderSessionHint(
@@ -1130,6 +1249,7 @@ async function runExternalBridgeTurn(
       ...buildAgentPermissionMetadata(),
       customInstruction: buildClaudeBridgeCustomInstruction({
         rawPdfMode: requestLocalDocuments(params.request).length > 0,
+        agentFilesInstruction,
       }),
       providerIdentity,
       providerIdentityStack,
@@ -1146,7 +1266,7 @@ async function runExternalBridgeTurn(
   };
 
   await params.onEvent?.(makeProfilingEvent("frontend.bridge_fetch.dispatch"));
-  const response = await fetch(url, {
+  const response = await claudeBridgeFetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -1388,6 +1508,8 @@ function buildClaudeZoteroMcpScope(
     clarificationHistory: request.clarificationHistory,
     documentReadObservations: request.documentReadObservations,
     documentArtifactObservations: request.documentArtifactObservations,
+    outsidePaperRecords: request.outsidePaperRecords,
+    outsidePaperSelection: request.outsidePaperSelection,
     profileSignature,
     conversationGeneration: request.conversationGeneration,
     conversationKey: normalizePositiveInt(request.conversationKey),
@@ -1406,10 +1528,51 @@ function buildClaudeZoteroMcpScope(
     libraryName: resolveLibraryName(libraryID),
     title: selectedPaper?.title,
     userText: request.userText,
-    exhaustiveReadBackend: "unavailable",
+    // The chat's own model and reasoning, as the Codex scope carries them:
+    // paper_read's full mode reads with this model through the bridge.
+    model: resolveClaudeBridgeModelForMetadata(request.model),
+    reasoning: request.reasoning,
+    exhaustiveReadBackend: "claude_bridge",
+    // The reader model the user picked for Claude Code, by entry ID or name.
+    readerSelection: request.readerSelection,
+    attachedConversationScope: request.attachedConversationScope,
     turnPaperScope: request.turnPaperScope,
     turnPaperScopeWarnings: request.turnPaperScopeWarnings,
   };
+}
+
+export function buildClaudeZoteroMcpScopeForTests(
+  request: AgentRuntimeRequestInput,
+  profileSignature: string,
+): ZoteroMcpActiveScope {
+  return buildClaudeZoteroMcpScope(
+    resolveAgentRuntimeRequest(request),
+    profileSignature,
+  );
+}
+
+/**
+ * Copies what a successful Zotero MCP call Claude made attested back into the
+ * run's request: its read observations and the outside papers it returned.
+ */
+export function copyMcpCallEvidenceToRequest(
+  request: AgentRuntimeRequest,
+  event: ZoteroMcpToolActivityEvent,
+): void {
+  if (event.phase !== "completed" || !event.ok) return;
+  if (event.readObservations?.length) {
+    const merged = new Map(
+      (request.documentReadObservations || []).map((entry) => [
+        entry.observationId,
+        entry,
+      ]),
+    );
+    for (const observation of event.readObservations) {
+      merged.set(observation.observationId, observation);
+    }
+    request.documentReadObservations = [...merged.values()];
+  }
+  rememberOutsidePapers(request, event.outsidePapers || []);
 }
 
 /**
@@ -1418,10 +1581,18 @@ function buildClaudeZoteroMcpScope(
  * The receipts travel with the row: they are what the verification chip reads,
  * so a write the connected client ran over MCP would otherwise reach the trace
  * with no verdict at all — indistinguishable from one nobody verified.
+ *
+ * A completed call's passage citations travel with it too, so the panel adds
+ * them to the answer's citations as the Codex panel does, whatever text the
+ * client relays as the tool's result.
  */
 export function buildClaudeMcpToolActivityEvent(
   event: ZoteroMcpToolActivityEvent,
 ): AgentEvent {
+  const quoteCitations =
+    event.phase === "completed" && event.ok && event.quoteCitations?.length
+      ? event.quoteCitations
+      : undefined;
   return {
     type: "codex_tool_activity",
     itemId: `mcp:${event.requestId || `${event.toolName}:${event.timestamp}`}`,
@@ -1436,6 +1607,7 @@ export function buildClaudeMcpToolActivityEvent(
     actionReceipts: event.actionReceipts,
     workCategory: event.workCategory,
     mutability: event.mutability,
+    ...(quoteCitations ? { quoteCitations } : {}),
   };
 }
 
@@ -2047,7 +2219,7 @@ async function fetchExternalTools(
   baseUrl: string,
   encodedSources: string,
 ): Promise<ExternalToolDescriptor[]> {
-  const response = await fetch(
+  const response = await claudeBridgeFetch(
     `${normalizeBaseUrl(baseUrl)}/tools?settingSources=${encodedSources}`,
     {
       method: "GET",
@@ -2112,7 +2284,7 @@ async function fetchExternalEfforts(
     const scopeLabel = context.scopeLabel?.trim();
     if (scopeLabel) query.set("scopeLabel", scopeLabel);
   }
-  const response = await fetch(
+  const response = await claudeBridgeFetch(
     `${normalizeBaseUrl(baseUrl)}/efforts?${query}`,
     {
       method: "GET",
@@ -2137,7 +2309,7 @@ async function fetchExternalCommands(
   encodedSources: string,
 ): Promise<ExternalSlashCommandDescriptor[]> {
   try {
-    const response = await fetch(
+    const response = await claudeBridgeFetch(
       `${normalizeBaseUrl(baseUrl)}/commands?settingSources=${encodedSources}`,
       {
         method: "GET",
@@ -2261,7 +2433,7 @@ export async function fetchExternalBridgeSessionInfo(params: {
     if (candidate.scopeLabel) qs.set("scopeLabel", candidate.scopeLabel);
     const url = `${baseUrl}/session-info?${qs.toString()}`;
     try {
-      const response = await fetch(url, {
+      const response = await claudeBridgeFetch(url, {
         method: "GET",
         headers: { Accept: "application/json" },
       });
@@ -2335,31 +2507,34 @@ async function runExternalBridgeAction(
     metadata?: Record<string, unknown>;
   },
 ): Promise<BridgeTurnOutcome> {
-  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/run-action`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      conversationKey: params.conversationKey,
-      toolName: params.toolName,
-      args: params.args,
-      libraryID: params.libraryID,
-      approved: Boolean(params.approved),
-      scopeType:
-        typeof params.metadata?.scopeType === "string"
-          ? params.metadata.scopeType
-          : undefined,
-      scopeId:
-        typeof params.metadata?.scopeId === "string"
-          ? params.metadata.scopeId
-          : undefined,
-      scopeLabel:
-        typeof params.metadata?.scopeLabel === "string"
-          ? params.metadata.scopeLabel
-          : undefined,
-      metadata: params.metadata,
-    }),
-    signal: params.signal,
-  });
+  const response = await claudeBridgeFetch(
+    `${normalizeBaseUrl(baseUrl)}/run-action`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversationKey: params.conversationKey,
+        toolName: params.toolName,
+        args: params.args,
+        libraryID: params.libraryID,
+        approved: Boolean(params.approved),
+        scopeType:
+          typeof params.metadata?.scopeType === "string"
+            ? params.metadata.scopeType
+            : undefined,
+        scopeId:
+          typeof params.metadata?.scopeId === "string"
+            ? params.metadata.scopeId
+            : undefined,
+        scopeLabel:
+          typeof params.metadata?.scopeLabel === "string"
+            ? params.metadata.scopeLabel
+            : undefined,
+        metadata: params.metadata,
+      }),
+      signal: params.signal,
+    },
+  );
   if (!response.ok) {
     throw new Error(`Bridge HTTP ${response.status}`);
   }
@@ -2416,8 +2591,13 @@ export function bindClaudeBridgeConversationSystem(
 export function createExternalBackendBridgeRuntime(options: {
   coreRuntime: AgentRuntime;
   getBridgeUrl: () => string;
+  /**
+   * Where attached past chats are read from; the conversation stores unless
+   * a test supplies a fake.
+   */
+  pastConversationSource?: PastConversationSource;
 }): AgentRuntimeLike {
-  const { coreRuntime, getBridgeUrl } = options;
+  const { coreRuntime, getBridgeUrl, pastConversationSource } = options;
   let cachedTools: ExternalToolDescriptor[] = [];
   let cacheExpiresAt = 0;
   let refreshInFlight: Promise<void> | null = null;
@@ -2823,11 +3003,20 @@ export function createExternalBackendBridgeRuntime(options: {
         conversationContextSignature.clear();
         return null;
       }
-      const response = await fetch(`${bridgeUrl}/invalidate-all-hot-runtimes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
+      // Warm sessions live only in a running bridge.
+      if (isManagedClaudeBridgeIdle(bridgeUrl)) {
+        conversationScopeByKey.clear();
+        conversationContextSignature.clear();
+        return { invalidated: true };
+      }
+      const response = await claudeBridgeFetch(
+        `${bridgeUrl}/invalidate-all-hot-runtimes`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        },
+      );
       if (!response.ok) {
         throw new Error(
           `Failed to invalidate all hot runtimes (${response.status})`,
@@ -3216,10 +3405,13 @@ export function createExternalBackendBridgeRuntime(options: {
             );
           },
         );
+        const stageTurnEvent = createClaudeTurnStageTracker();
         const emitTurnEvent = async (event: AgentEvent): Promise<void> => {
-          for (const redactedEvent of eventStreamRedactor.process(event)) {
-            await appendPersistedEvent(redactedEvent);
-            await notifyIfLive(redactedEvent);
+          for (const staged of stageTurnEvent(event)) {
+            for (const redactedEvent of eventStreamRedactor.process(staged)) {
+              await appendPersistedEvent(redactedEvent);
+              await notifyIfLive(redactedEvent);
+            }
           }
         };
         const pendingMcpActivity: Promise<void>[] = [];
@@ -3292,23 +3484,7 @@ export function createExternalBackendBridgeRuntime(options: {
                   return;
                 if (event.phase === "completed")
                   hostReceipts.push(...(event.actionReceipts || []));
-                if (
-                  event.phase === "completed" &&
-                  event.ok &&
-                  event.readObservations?.length
-                ) {
-                  const merged = new Map(
-                    (params.request.documentReadObservations || []).map(
-                      (entry) => [entry.observationId, entry],
-                    ),
-                  );
-                  for (const observation of event.readObservations) {
-                    merged.set(observation.observationId, observation);
-                  }
-                  params.request.documentReadObservations = [
-                    ...merged.values(),
-                  ];
-                }
+                copyMcpCallEvidenceToRequest(params.request, event);
                 const pending = (async () => {
                   await emitTurnEvent(buildClaudeMcpToolActivityEvent(event));
                   // What the read read from each paper, persisted right after
@@ -3351,7 +3527,7 @@ export function createExternalBackendBridgeRuntime(options: {
           }
           const resolveExternalConfirmation: ResolveExternalConfirmation =
             async (requestId, resolution) => {
-              const response = await fetch(
+              const response = await claudeBridgeFetch(
                 `${normalizeBaseUrl(bridgeUrl)}/resolve-confirmation`,
                 {
                   method: "POST",
@@ -3405,6 +3581,7 @@ export function createExternalBackendBridgeRuntime(options: {
             runExternalBridgeTurn(bridgeUrl, {
               ...params,
               request,
+              pastConversationSource,
               onStart: async (runId) => {
                 if (scopedMcpToken) {
                   updateScopedZoteroMcpScope(scopedMcpToken, { runId });

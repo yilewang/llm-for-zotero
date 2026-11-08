@@ -19,6 +19,7 @@ import {
 } from "../../store/batchJobStore";
 import {
   createJournalId,
+  inJournalTransaction,
   isAgentChangeJournalAvailable,
   prepareJournalAction,
   updateJournalAction,
@@ -288,17 +289,21 @@ export function createLibraryBatchTool(deps: {
       if (isAgentChangeJournalAvailable()) {
         journalActionId = createJournalId("action");
         try {
-          await prepareJournalAction({
-            actionId: journalActionId,
-            runId: context.runId || prepared.jobId,
-            conversationKey: context.request.conversationKey,
-            toolName: context.journalToolName || "library_batch",
-            description: `${prepared.resumed ? "Resume" : "Run"} ${prepared.job} batch job`,
-            effect: "write",
-            reversibility: "partial",
-            recovery:
-              "The durable batch checkpoint and each applied mutation step are recorded separately.",
-          });
+          const actionId = journalActionId;
+          // Its own transaction, so another flow's rollback cannot drop the row.
+          await inJournalTransaction(() =>
+            prepareJournalAction({
+              actionId,
+              runId: context.runId || prepared.jobId,
+              conversationKey: context.request.conversationKey,
+              toolName: context.journalToolName || "library_batch",
+              description: `${prepared.resumed ? "Resume" : "Run"} the ${quoteJobName(prepared.job)} batch job`,
+              effect: "write",
+              reversibility: "partial",
+              recovery:
+                "The durable batch checkpoint and each applied mutation step are recorded separately.",
+            }),
+          );
         } catch (error) {
           await store.finishBatchJob({
             jobId: prepared.jobId,
@@ -331,33 +336,39 @@ export function createLibraryBatchTool(deps: {
         const uncertain = journalOutcomes.some(
           (outcome) => outcome.status === "uncertain",
         );
-        await updateJournalAction({
-          actionId: journalActionId,
-          status: failed
-            ? affectedCount > 0
-              ? "partially_applied"
-              : uncertain
-                ? "uncertain"
-                : "failed"
-            : effect === "none"
-              ? "no_effect"
-              : effect === "partial"
+        const actionId = journalActionId;
+        // Its own transaction, so another flow's rollback cannot drop it.
+        // Every caller is this tool's own flow, outside the batch store's
+        // transactions, and it prepared the action in one above.
+        await inJournalTransaction(() =>
+          updateJournalAction({
+            actionId,
+            status: failed
+              ? affectedCount > 0
                 ? "partially_applied"
-                : reversibility === "none"
-                  ? "irreversible"
-                  : "applied",
-          reversibility,
-          affectedCount,
-          error:
-            failed && error !== undefined
-              ? error instanceof Error
-                ? error.message
-                : String(error)
+                : uncertain
+                  ? "uncertain"
+                  : "failed"
+              : effect === "none"
+                ? "no_effect"
+                : effect === "partial"
+                  ? "partially_applied"
+                  : reversibility === "none"
+                    ? "irreversible"
+                    : "applied",
+            reversibility,
+            affectedCount,
+            error:
+              failed && error !== undefined
+                ? error instanceof Error
+                  ? error.message
+                  : String(error)
+                : undefined,
+            recovery: failed
+              ? "Previously applied batch steps retain their durable inverses; inspect any uncertain step before retrying."
               : undefined,
-          recovery: failed
-            ? "Previously applied batch steps retain their durable inverses; inspect any uncertain step before retrying."
-            : undefined,
-        });
+          }),
+        );
         journalFinalized = true;
       };
       const checkpoint = async (value: ActionCheckpoint): Promise<void> => {
@@ -550,6 +561,11 @@ async function prepareBatchRun(params: {
     totalCount: record.totalCount,
     resumed: true,
   };
+}
+
+/** A job's registry name in words: organize_unfiled -> "organize unfiled". */
+function quoteJobName(job: string): string {
+  return `"${job.replace(/[_-]+/gu, " ").trim()}"`;
 }
 
 function availableJobNames(deps: { actionRegistry: ActionRegistry }): string {

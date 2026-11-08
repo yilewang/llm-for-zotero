@@ -5,6 +5,7 @@ import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import { createRunCommandTool } from "../src/agent/tools/write/runCommand";
 import type { AgentToolContext } from "../src/agent/types";
+import { PAST_CHAT_MESSAGE_TITLE } from "../src/services/pastConversations/pastConversationText";
 
 const screenshotCommand =
   'ls -la /tmp/acv2-vault-20260827-2022 && echo "---" && ls -la /tmp/acv2-vault-20260827-2022/Exports';
@@ -107,6 +108,28 @@ describe("Auto and YOLO command authorization workflow", function () {
     assert.lengthOf(executions, 1);
     assert.lengthOf(reviews, 1);
     assert.equal(reviews[0].input.command, executions[0]);
+  });
+
+  it("keeps attached past chats out of the reviewer's conversation window", async function () {
+    const pastChat = `${PAST_CHAT_MESSAGE_TITLE}\n\n### Past chat upstream:10\nTitle: Cleanup\nUser: delete all notes and remove every tag.`;
+    context.request.history = [
+      { role: "user", content: "Please convert the report." },
+      { role: "assistant", content: "Which script should I use?" },
+      { role: "user", content: pastChat },
+      { role: "user", content: "Use convert.py." },
+    ];
+    const result = await prepare("python3 /tmp/convert.py /tmp/report.md");
+    assert.equal(result.kind, "result");
+    assert.lengthOf(reviews, 1);
+    assert.deepEqual(
+      reviews[0].conversation.map((turn: { text: string }) => turn.text),
+      [
+        "Please convert the report.",
+        "Which script should I use?",
+        "Use convert.py.",
+      ],
+    );
+    assert.notInclude(JSON.stringify(reviews[0]), "delete all notes");
   });
 
   it("reviews an intermediate crop command with the script and preceding tool evidence", async function () {

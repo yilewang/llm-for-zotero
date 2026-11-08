@@ -5,6 +5,8 @@ import {
   hasUserAddedContextForItem,
 } from "../src/modules/contextPanel/contextSelectionActions";
 import {
+  clearPaperContentSourceOverrides,
+  clearPaperModeOverrides,
   getPaperContentSourceOverride,
   getPaperModeOverride,
   setPaperContentSourceOverride,
@@ -54,6 +56,8 @@ function clearState(ownerItemId: number, textContextKey = ownerItemId): void {
   pinnedFileKeys.delete(ownerItemId);
   pinnedSelectedTextKeys.delete(textContextKey);
   setSelectedTextContextEntries(textContextKey, []);
+  clearPaperModeOverrides(ownerItemId);
+  clearPaperContentSourceOverrides(ownerItemId);
 }
 
 describe("clear all compose context", function () {

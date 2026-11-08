@@ -1,8 +1,6 @@
 import {
   ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
   ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX,
-  ACTION_LAYOUT_MODEL_FULL_MAX_LINES,
-  ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS,
   REASONING_COMPACT_LABEL,
   SCREENSHOT_COMPACT_LABEL,
   SELECT_TEXT_COMPACT_LABEL,
@@ -11,8 +9,11 @@ import {
 } from "../../constants";
 
 type ActionLabelMode = "icon" | "full";
-type ModelLabelMode = "icon" | "full-single" | "full-wrap2";
+type ModelLabelMode = "icon" | "full-single";
 type ActionLayoutMode = "icon" | "half" | "full";
+/** Extra width a wider action-row state needs before it replaces a narrower one. */
+const ACTION_LAYOUT_GROW_MARGIN_PX = 4;
+
 type ActionRevealState = {
   send: ActionLabelMode;
   reasoning: ActionLabelMode;
@@ -103,6 +104,18 @@ export function createActionLayoutController(
     );
   })();
 
+  // The last applied layout: what it was computed from and what it wrote.
+  // updateImagePreview and every layout flush call this; most calls change
+  // nothing, and the full pass writes then measures up to five states.
+  let lastLayout: {
+    inputs: string;
+    modelText: string | null;
+    reasoningText: string | null;
+    mode: string | undefined;
+  } | null = null;
+  // The state the last pass applied, as "send/reasoning/model".
+  let appliedStateKey: string | null = null;
+
   const applyResponsiveActionButtonsLayout = () => {
     if (
       !body.isConnected ||
@@ -113,9 +126,6 @@ export function createActionLayoutController(
       return;
     const modelLabel = modelBtn.dataset.modelLabel || "default";
     const modelHint = modelBtn.dataset.modelHint || "";
-    const modelCanUseTwoLineWrap =
-      [...(modelLabel || "").trim()].length >
-      ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS;
     const reasoningLabel =
       reasoningBtn?.dataset.reasoningLabel ||
       reasoningBtn?.textContent ||
@@ -132,6 +142,42 @@ export function createActionLayoutController(
     // Retained native tabs can stay hidden indefinitely. Their ResizeObserver
     // requests layout when they become measurable again; do not poll frames.
     if (immediateAvailableWidth <= 0) return;
+
+    const layoutInputs = [
+      modelLabel,
+      modelHint,
+      reasoningLabel,
+      reasoningHint,
+      immediateAvailableWidth,
+      panelRoot.clientWidth || 0,
+      Math.ceil(
+        (body as HTMLElement | null)?.getBoundingClientRect?.().width || 0,
+      ),
+      Math.ceil(
+        (uploadBtn?.parentElement || uploadBtn)?.getBoundingClientRect?.()
+          .width || 0,
+      ),
+      // Font changes (Zotero font size, the panel's font scale) change the
+      // measured label widths without changing the row width.
+      body.ownerDocument?.defaultView?.getComputedStyle(modelBtn)?.font || "",
+    ].join("\u0001");
+    if (
+      lastLayout &&
+      lastLayout.inputs === layoutInputs &&
+      lastLayout.modelText === modelBtn.textContent &&
+      lastLayout.reasoningText === (reasoningBtn?.textContent ?? null) &&
+      lastLayout.mode === panelRoot.dataset.llmActionLayoutMode
+    ) {
+      return;
+    }
+    const rememberLayout = () => {
+      lastLayout = {
+        inputs: layoutInputs,
+        modelText: modelBtn.textContent,
+        reasoningText: reasoningBtn?.textContent ?? null,
+        mode: panelRoot.dataset.llmActionLayoutMode,
+      };
+    };
 
     const getComputedSizePx = (
       style: CSSStyleDeclaration | null | undefined,
@@ -173,40 +219,24 @@ export function createActionLayoutController(
     const getButtonNaturalWidth = (
       button: HTMLButtonElement | null,
       label: string,
-      maxLines = 1,
     ) => {
       if (!button) return 0;
       const view = body.ownerDocument?.defaultView;
       const style = view?.getComputedStyle(button);
-      const textWidth = measureLabelTextWidth(button, label);
-      const normalizedMaxLines = Math.max(1, Math.floor(maxLines));
-      const wrappedTextWidth =
-        normalizedMaxLines > 1
-          ? (() => {
-              const segments = label
-                .split(/[\s._-]+/g)
-                .map((segment) => segment.trim())
-                .filter(Boolean);
-              const longestSegmentWidth = segments.reduce((max, segment) => {
-                return Math.max(max, measureLabelTextWidth(button, segment));
-              }, 0);
-              return Math.max(
-                textWidth / normalizedMaxLines,
-                longestSegmentWidth,
-              );
-            })()
-          : textWidth;
-      const paddingWidth =
-        getComputedSizePx(style, "padding-left") +
-        getComputedSizePx(style, "padding-right");
       const borderWidth =
         getComputedSizePx(style, "border-left-width") +
         getComputedSizePx(style, "border-right-width");
-      const chevronAllowance =
-        button === modelBtn || button === reasoningBtn ? 16 : 0;
-      return Math.ceil(
-        wrappedTextWidth + paddingWidth + borderWidth + chevronAllowance,
-      );
+      // The measurement baseline shows the full label, so its laid-out width
+      // is exact; canvas text runs about 10% wide for the system-ui font.
+      // scrollWidth drops the fraction, so add a pixel.
+      if (button.textContent === label && button.scrollWidth > 0) {
+        return Math.ceil(button.scrollWidth + borderWidth) + 1;
+      }
+      const textWidth = measureLabelTextWidth(button, label);
+      const paddingWidth =
+        getComputedSizePx(style, "padding-left") +
+        getComputedSizePx(style, "padding-right");
+      return Math.ceil(textWidth + paddingWidth + borderWidth);
     };
 
     const getSlotWidthBounds = (slot: HTMLElement | null) => {
@@ -228,10 +258,9 @@ export function createActionLayoutController(
       slot: HTMLElement | null,
       button: HTMLButtonElement | null,
       label: string,
-      maxLines = 1,
     ) => {
       if (!button) return 0;
-      const naturalWidth = getButtonNaturalWidth(button, label, maxLines);
+      const naturalWidth = getButtonNaturalWidth(button, label);
       if (!slot) return naturalWidth;
       const { minWidth, maxWidth } = getSlotWidthBounds(slot);
       return Math.min(maxWidth, Math.max(minWidth, naturalWidth));
@@ -266,14 +295,7 @@ export function createActionLayoutController(
     const getModelWidth = (mode: ModelLabelMode) => {
       if (!modelBtn) return 0;
       if (mode === "icon") return ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX;
-      const maxLines =
-        mode === "full-wrap2" ? ACTION_LAYOUT_MODEL_FULL_MAX_LINES : 1;
-      return getFullSlotRequiredWidth(
-        modelSlot,
-        modelBtn,
-        modelLabel,
-        maxLines,
-      );
+      return getFullSlotRequiredWidth(modelSlot, modelBtn, modelLabel);
     };
 
     const getReasoningWidth = (mode: ActionLabelMode) => {
@@ -284,7 +306,12 @@ export function createActionLayoutController(
     };
 
     const getSendWidth = (_mode: ActionLabelMode) =>
-      sendBtn ? ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX : 0;
+      sendBtn
+        ? getRenderedWidthPx(
+            sendBtn.parentElement as HTMLElement | null,
+            ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX,
+          )
+        : 0;
 
     const getRequiredWidth = (state: ActionRevealState) => {
       const leftSlotWidths = [
@@ -310,9 +337,6 @@ export function createActionLayoutController(
       const rowGap = getElementGapPx(actionsRow);
       return leftRequiredWidth + rightRequiredWidth + rowGap;
     };
-
-    const doesStateFit = (state: ActionRevealState) =>
-      getAvailableRowWidth() + 1 >= getRequiredWidth(state);
 
     const getPanelLayoutMode = (state: ActionRevealState): ActionLayoutMode => {
       if (
@@ -354,7 +378,6 @@ export function createActionLayoutController(
 
       modelBtn.classList.toggle("llm-model-btn-collapsed", false);
       modelSlot?.classList.toggle("llm-model-dropdown-collapsed", false);
-      modelBtn.classList.toggle("llm-model-btn-wrap-2line", false);
       modelBtn.textContent = modelLabel;
       modelBtn.title = modelHint;
 
@@ -369,7 +392,10 @@ export function createActionLayoutController(
       }
     };
 
-    const applyState = (state: ActionRevealState) => {
+    const applyState = (
+      state: ActionRevealState,
+      layoutMode: ActionLayoutMode,
+    ) => {
       setActionButtonLabel(
         uploadBtn,
         UPLOAD_FILE_EXPANDED_LABEL,
@@ -395,10 +421,6 @@ export function createActionLayoutController(
       modelSlot?.classList.toggle(
         "llm-model-dropdown-collapsed",
         modelCollapsed,
-      );
-      modelBtn.classList.toggle(
-        "llm-model-btn-wrap-2line",
-        state.model === "full-wrap2",
       );
       if (modelCollapsed) {
         modelBtn.textContent = "";
@@ -429,7 +451,7 @@ export function createActionLayoutController(
         }
       }
 
-      setPanelActionLayoutMode(getPanelLayoutMode(state));
+      setPanelActionLayoutMode(layoutMode);
     };
 
     const fullState: ActionRevealState = {
@@ -437,6 +459,8 @@ export function createActionLayoutController(
       reasoning: "full",
       model: "full-single",
     };
+    // Only sizes the context cards ("half" mode); the buttons never show
+    // effort text beside a model icon.
     const reasoningState: ActionRevealState = {
       send: "full",
       reasoning: "full",
@@ -453,25 +477,47 @@ export function createActionLayoutController(
       model: "icon",
     };
 
+    // Model name and effort show as text together on one line, or both
+    // show as icons.
     const candidateStates: ActionRevealState[] = [
       fullState,
-      reasoningState,
       sendState,
       iconOnlyState,
     ];
 
-    if (modelCanUseTwoLineWrap) {
-      candidateStates.splice(1, 0, { ...fullState, model: "full-wrap2" });
-    }
+    const stateKey = (state: ActionRevealState) =>
+      `${state.send}/${state.reasoning}/${state.model}`;
+    const appliedIndex = candidateStates.findIndex(
+      (state) => stateKey(state) === appliedStateKey,
+    );
+    const applyChosenState = (state: ActionRevealState) => {
+      const layoutMode =
+        state.model === "icon" &&
+        getAvailableRowWidth() + 1 >= getRequiredWidth(reasoningState)
+          ? "half"
+          : getPanelLayoutMode(state);
+      applyState(state, layoutMode);
+      appliedStateKey = stateKey(state);
+      rememberLayout();
+    };
 
     applyMeasurementBaseline();
-    for (const state of candidateStates) {
-      if (!doesStateFit(state)) continue;
-      applyState(state);
+    for (const [index, state] of candidateStates.entries()) {
+      // A wider state than the applied one must fit with room to spare.
+      // Switching states can move the row's width by a pixel; with no margin
+      // the two states took turns on every frame, and each switch made the
+      // whole panel lay out and measure again.
+      const margin =
+        appliedIndex >= 0 && index < appliedIndex
+          ? ACTION_LAYOUT_GROW_MARGIN_PX
+          : 0;
+      if (getAvailableRowWidth() + 1 < getRequiredWidth(state) + margin)
+        continue;
+      applyChosenState(state);
       return;
     }
 
-    applyState(iconOnlyState);
+    applyChosenState(iconOnlyState);
   };
 
   return {

@@ -135,11 +135,11 @@ describe("chatStore note contexts", function () {
     });
 
     const insert = findChatMessageInsert(queries);
-    assert.lengthOf(insert.params, 38);
-    assert.equal(insert.params[29], "incomplete");
-    assert.equal(insert.params[30], "output_limit");
-    assert.equal(insert.params[35], 1234);
-    assert.equal(insert.params[36], 200000);
+    assert.lengthOf(insert.params, 39);
+    assert.equal(insert.params[30], "incomplete");
+    assert.equal(insert.params[31], "output_limit");
+    assert.equal(insert.params[36], 1234);
+    assert.equal(insert.params[37], 200000);
   });
 
   it("persists forced skill ids when appending a user message", async function () {
@@ -343,7 +343,7 @@ describe("chatStore note contexts", function () {
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "generated_images_json");
     assert.equal(
-      insert.params[24],
+      insert.params[25],
       JSON.stringify([
         {
           id: "img-1",
@@ -354,7 +354,7 @@ describe("chatStore note contexts", function () {
       ]),
     );
     assert.equal(
-      insert.params[21],
+      insert.params[22],
       JSON.stringify(["data:image/png;base64,user-input"]),
     );
   });
@@ -448,11 +448,22 @@ describe("chatStore note contexts", function () {
           normalizedName: "stability",
         },
       ],
+      attachedConversations: [
+        {
+          system: "upstream",
+          conversationKey: 77,
+          conversationID: "conv-77",
+          title: "Earlier chat",
+          libraryID: 1,
+          kind: "global",
+        },
+      ],
     });
 
     const insert = findChatMessageInsert(queries);
     assert.include(insert.sql, "collection_contexts_json");
     assert.include(insert.sql, "tag_contexts_json");
+    assert.include(insert.sql, "attached_conversations_json");
     assert.equal(
       insert.params[19],
       JSON.stringify([
@@ -471,6 +482,19 @@ describe("chatStore note contexts", function () {
           libraryID: 1,
           normalizedName: "stability",
           includeAutomatic: false,
+        },
+      ]),
+    );
+    assert.equal(
+      insert.params[21],
+      JSON.stringify([
+        {
+          system: "upstream",
+          conversationKey: 77,
+          conversationID: "conv-77",
+          title: "Earlier chat",
+          libraryID: 1,
+          kind: "global",
         },
       ]),
     );
@@ -507,6 +531,14 @@ describe("chatStore note contexts", function () {
                 name: "Stability",
                 libraryID: 1,
                 normalizedName: "stability",
+              },
+            ]),
+            attachedConversationsJson: JSON.stringify([
+              {
+                system: "claude_code",
+                conversationKey: 9,
+                title: "Past chat",
+                libraryID: 1,
               },
             ]),
             modelAttachmentsJson: JSON.stringify([]),
@@ -552,6 +584,14 @@ describe("chatStore note contexts", function () {
         normalizedName: "stability",
         scope: undefined,
         includeAutomatic: false,
+      },
+    ]);
+    assert.deepEqual(messages[0]?.attachedConversations, [
+      {
+        system: "claude_code",
+        conversationKey: 9,
+        title: "Past chat",
+        libraryID: 1,
       },
     ]);
     assert.deepEqual(messages[0]?.modelAttachments, []);

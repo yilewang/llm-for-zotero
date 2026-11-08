@@ -544,6 +544,24 @@ describe("per-paper retrieval callers", function () {
       assert.equal(calls[2].paperContext.contextItemId, 9204);
     });
 
+    it("passes per-paper chunk indexes to both builder arguments and keys on them", async function () {
+      const { service, calls } = buildService();
+      const question = "How is calibration drift measured?";
+      const ask = (chunks: number[]) =>
+        service.retrieveEvidence({
+          papers: [papers[0]],
+          question,
+          chunkIndexesByPaper: new Map([[papers[0].contextItemId, chunks]]),
+        });
+      await ask([2, 5]);
+      assert.deepEqual(calls[0].options?.chunkIndexes, [2, 5]);
+      assert.deepEqual(calls[0].apiOverrides?.chunkIndexes, [2, 5]);
+      await ask([2, 5]);
+      assert.lengthOf(calls, 1, "the same chunk scope hits the cache");
+      await ask([3]);
+      assert.lengthOf(calls, 2, "another chunk scope misses");
+    });
+
     it("propagates a candidate failure and caches nothing for that paper", async function () {
       let fail = true;
       const { service, calls } = buildService((call) => {

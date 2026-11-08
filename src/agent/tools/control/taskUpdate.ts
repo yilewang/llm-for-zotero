@@ -23,6 +23,13 @@ import {
   type DigestJobHostDeps,
   type DigestRunResult,
 } from "../../digests/digestJobHost";
+import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
+import {
+  READ_SCOPE_JSON_SCHEMA,
+  READ_SCOPE_OVERRIDES_JSON_SCHEMA,
+  parseReadScope,
+  type ReadScope,
+} from "../../digests/readScope";
 import {
   capabilityChanges,
   declarationChanges,
@@ -30,6 +37,7 @@ import {
   excludeOutcomeTargets,
   isOutcomeTargetId,
   markOutcomes,
+  readScopeChanges,
   redeclarable,
   replaceable,
   type OutcomeDeclaration,
@@ -37,6 +45,11 @@ import {
   type OutcomeModelMark,
 } from "../../loop/outcomes";
 import { isExplicitContinueCommand } from "../../continuation/continueCommand";
+import { skillGuidance } from "../guidance";
+import {
+  exclusionPaperDecisions,
+  type PaperDecisionLookup,
+} from "./recordPaperDecisions";
 
 type ExpectedEffect = "read" | "artifact" | "mutation" | "reasoning" | "digest";
 
@@ -53,6 +66,10 @@ type TaskDeclaration = {
   replaces?: string;
   /** Why it replaces that part; required with `replaces`. */
   reason?: string;
+  /** A digest part only: what of each paper it reads. */
+  read?: ReadScope;
+  /** A digest part only: papers read for a scope of their own. */
+  overrides?: Array<{ target: string; read: ReadScope }>;
 };
 
 /** A declared part that cannot be done, and why. */
@@ -95,6 +112,12 @@ const DECLARATION_SCHEMA = {
     scope: { type: "boolean" },
     replaces: { type: "string" },
     reason: { type: "string" },
+    read: {
+      ...READ_SCOPE_JSON_SCHEMA,
+      description:
+        "Digest only: what of each paper to read, as the user asked; default full, 'abstract' needs no model, sections as the user named them in any language, pages [{from,to}].",
+    },
+    overrides: READ_SCOPE_OVERRIDES_JSON_SCHEMA,
   },
 } as const;
 
@@ -222,6 +245,27 @@ function skipRefusedNote(ids: readonly string[]): string {
   const list = ids.join(", ");
   return `Skip refused for ${list}: nothing was delivered for ${ids.length === 1 ? "it" : "them"} in this run (no document, note, or read evidence is bound to it). Produce it with the tools, or, if it truly cannot be done, list it under blocked with the concrete obstacle.`;
 }
+const READ_NEEDS_DIGEST =
+  "read and overrides say what a digest part reads of each paper: use them only with expectedEffect:'digest'.";
+/** The note for overrides naming papers outside the part. */
+function overridesOutsideNote(targets: readonly string[]): string {
+  return `overrides names papers the part does not: ${targets.join(", ")}. Name only the part's own papers, or add them to its targetIds.`;
+}
+/** Overrides for papers the part names only. */
+function checkOverrides(
+  overrides: readonly { target: string }[] | undefined,
+  targets: readonly string[] | undefined,
+): void {
+  if (!overrides?.length) return;
+  const held = new Set(
+    (targets || []).map((id) => (/^[1-9]\d*$/.test(id) ? `item:${id}` : id)),
+  );
+  const outside = overrides
+    .map((entry) => entry.target)
+    .filter((target) => !held.has(target));
+  if (outside.length)
+    throw new ToolInputRejection(overridesOutsideNote(outside));
+}
 const NO_SCOPE_PAPERS =
   "This turn states no paper scope to cover; name the part's papers in targetIds.";
 /**
@@ -326,6 +370,35 @@ function parseDeclaration(
       `${label} needs a reason with replaces: why it replaces that part`,
     );
   }
+  let read: ReadScope | undefined;
+  if (raw.read !== undefined) {
+    const parsed = parseReadScope(raw.read, `${label}.read`);
+    if (!parsed.ok) return fail(parsed.error);
+    read = parsed.scope;
+  }
+  let overrides: Array<{ target: string; read: ReadScope }> | undefined;
+  if (raw.overrides !== undefined) {
+    if (!Array.isArray(raw.overrides) || !raw.overrides.length)
+      return fail(`${label}.overrides must be a non-empty array`);
+    overrides = [];
+    for (const [index, entry] of raw.overrides.entries()) {
+      const where = `${label}.overrides[${index}]`;
+      const record = validateObject<Record<string, unknown>>(entry)
+        ? entry
+        : null;
+      const match = /^(?:item:)?([1-9]\d*)$/.exec(
+        String(record?.itemId ?? "").trim(),
+      );
+      if (!record || !match)
+        return fail(`${where} needs an itemId (12 or item:12) and a read`);
+      const parsed = parseReadScope(record.read, `${where}.read`);
+      if (!parsed.ok) return fail(parsed.error);
+      const target = `item:${match[1]}`;
+      if (overrides.some((known) => known.target === target))
+        return fail(`${where} names ${target} twice`);
+      overrides.push({ target, read: parsed.scope });
+    }
+  }
   return ok({
     taskId,
     description: optionalText(raw.description),
@@ -337,6 +410,8 @@ function parseDeclaration(
     ...(raw.scope === true ? { scope: true } : {}),
     // A reason without replaces explains nothing the host keeps.
     ...(replaces ? { replaces, reason } : {}),
+    ...(read ? { read } : {}),
+    ...(overrides ? { overrides } : {}),
   });
 }
 
@@ -693,6 +768,17 @@ export function applyOrdinaryTaskUpdates(
           );
         replacing.set(old, taskId);
       }
+      const asksScope =
+        request.read !== undefined || request.overrides !== undefined;
+      if (
+        asksScope &&
+        (effectiveEffect || prior?.effect || "answer") !== "digest"
+      )
+        throw new ToolInputRejection(READ_NEEDS_DIGEST);
+      const scopeFields = {
+        ...(request.read ? { readScope: request.read } : {}),
+        ...(request.overrides ? { readOverrides: request.overrides } : {}),
+      };
       if (!prior) {
         const effect = requestedEffect;
         if (!effect) throw new ToolInputRejection(EXPECTED_EFFECT_REQUIRED);
@@ -702,6 +788,7 @@ export function applyOrdinaryTaskUpdates(
           takenEffect(effect, capability),
         );
         checkDigestPapers(effect, effectiveEffect, targets);
+        checkOverrides(request.overrides, targets);
         if (effect === "digest") digestRuns.push({ taskId });
         declarations.push({
           taskId,
@@ -711,6 +798,7 @@ export function applyOrdinaryTaskUpdates(
           targets,
           ...(scope ? { scope } : {}),
           ...(question ? { question } : {}),
+          ...scopeFields,
           ...(request.replaces !== undefined
             ? { replaces: request.replaces, reason: request.reason }
             : {}),
@@ -723,7 +811,14 @@ export function applyOrdinaryTaskUpdates(
         request.description !== prior.description;
       const newCapability =
         capability !== undefined && capabilityChanges(prior, capability);
-      const reframes = newEffect || newDescription || newCapability;
+      const reframes =
+        newEffect ||
+        newDescription ||
+        newCapability ||
+        readScopeChanges(prior, {
+          readScope: request.read,
+          readOverrides: request.overrides,
+        });
       if (priorEffect === "digest" && !reframes) {
         digestRuns.push({ taskId, targetIds: request.targetIds });
         continue;
@@ -752,6 +847,7 @@ export function applyOrdinaryTaskUpdates(
         targets,
         ...(scope ? { scope } : {}),
         ...(question ? { question } : {}),
+        ...scopeFields,
       };
       if (!declarationChanges(prior, declaration)) {
         if (!marked.has(taskId)) ignored = true;
@@ -764,6 +860,7 @@ export function applyOrdinaryTaskUpdates(
         newEffect ? effectiveEffect : priorEffect,
         targets,
       );
+      checkOverrides(request.overrides ?? prior.readOverrides, targets);
       if (effect === "digest") digestRuns.push({ taskId });
       changed.add(taskId);
       declarations.push(declaration);
@@ -838,12 +935,74 @@ export function applyOrdinaryTaskUpdates(
   }
 }
 
+/**
+ * The skills' part, digest, and retry rules. They live here, not in the skill
+ * bodies, because task_update is the in-plugin Agent's own tool: an external
+ * runtime (Codex reading SKILL.md, Claude Code through load_skill) never sees
+ * it, so a body that named it would send that runtime to a tool it lacks
+ * (#541). Each item reaches the plugin's Agent only with its skill active.
+ * The rule for when a review takes a digest or a read part lives in
+ * task_update's description, because it holds with or without the skill.
+ */
+export const LITERATURE_REVIEW_PARTS_GUIDANCE = skillGuidance(
+  "literature-review",
+  [
+    "Literature review parts: when task_update is available, these parts hand the papers to the host in place of the skill's first read.",
+    "Declare the parts with `task_update` before reading; with nothing attached, after `library_retrieve` has chosen the papers.",
+    "When the user asked for something per paper (summaries, each paper's method, a table with a row per paper), declare a digest part, and do not also declare a read part over the same papers.",
+    "Declare a review's digest part as `{ taskId:'papers', description:'For the review question \"<question>\": summarize each paper and judge how it bears on the question', expectedEffect:'digest', scope:true }` (or explicit `targetIds`); when the user limited what to read, add that `read`, e.g. `read:{ source:'abstract' }` or `read:{ source:'sections', sections:['abstract','results'] }`.",
+    "Then declare the review (`expectedEffect:'artifact'`) unless the user asked for a chat answer, and, only when the user asked to save it, the note (`expectedEffect:'mutation'`, `expectedCapability:'zotero.notes'`).",
+    "The host marks each part done from the tools' results.",
+    "Pass the `taskId` of the review part to `submit_document`.",
+    "List each paper you leave out of an answer without a document under `excluded` in `task_update`, with a one-sentence reason.",
+  ].join(" "),
+);
+
+export const LITERATURE_REVIEW_DIGEST_GUIDANCE = skillGuidance(
+  "literature-review",
+  [
+    "Literature review digest results: each result the host returns for a digest part has the answer to the part's description, a relevance line when the description names a question, facets, verified quotes with section labels, gaps, a text line that says whether it read the whole text, and a handle to the digest record.",
+    "Read a digested paper again only with `paper_read({ mode:'targeted', query:'...' })`: to verify a decisive cross-paper claim, test an apparent contradiction, or close a gap its result names that the review needs; never re-read it in overview mode, or in full mode unless the user asks for its whole text.",
+    'A paper that failed with "No readable text" has no text to read: name it as not read, and do not retry it, read it with `paper_read`, or look for it outside the library.',
+    "If the host reports other digest failures, declare the part again once with `targetIds` of those papers only.",
+    "Then a paper whose digest failed twice may be read with an overview `paper_read` instead; name it as not read only if that read fails too.",
+    "If the part is still open after a Stop and the user says continue, call `task_update` again with the same `taskId` and no description to finish the remaining papers.",
+    "In the 'Paper summaries' section, write each paper's paragraph from that paper's digest.",
+    "In Scope and limitations, name each paper whose digest failed and the reason the host gave.",
+  ].join(" "),
+);
+
+export const COMPARE_PAPERS_DIGEST_GUIDANCE = skillGuidance(
+  "compare-papers",
+  [
+    "Compare papers: when task_update is available and there are three or more papers, compare through a digest part instead of reading the papers with `paper_read`, unless the user asked for full reads.",
+    "Before reading, declare the digest part whose description names the comparison dimensions (`task_update` with `expectedEffect:'digest'` over the papers), for example \"For each paper, report: question, species or system, method, main finding\".",
+    "When the user limited what to read, give the part that `read`, e.g. `read:{ source:'abstract' }`.",
+    "Each result returns facets with those labels; they become the comparison's rows.",
+    "Read further only for a dimension the results leave open.",
+  ].join(" "),
+);
+
+export const REORGANIZE_LIBRARY_PARTS_GUIDANCE = skillGuidance(
+  "reorganize-library",
+  [
+    "Sort papers into folders or tags: declare the changes with `task_update` as one part: `expectedEffect:'mutation'`, `expectedCapability:'zotero.collections'` for folders or `'zotero.tags'` for tags, and `scope:true` when the turn's paper scope is exactly the papers to sort, or their `targetIds` otherwise.",
+    "Declare no read part for the survey: metadata and abstracts never complete a part that reads papers.",
+  ].join(" "),
+);
+
 export type TaskUpdateToolDeps = {
   /**
    * The host that runs a declared digest part. Without it a digest part is
    * declared and tracked, and nothing digests it.
    */
   digests?: DigestJobHostDeps;
+  /**
+   * Item lookups for the papers `excluded` names, so each is also recorded
+   * as the agent's exclude decision (record_paper_decisions' path). Without
+   * it the exclusions only move the parts.
+   */
+  papers?: PaperDecisionLookup;
 };
 
 type TaskUpdateResult = {
@@ -862,7 +1021,7 @@ export function createTaskUpdateTool(
     spec: {
       name: "task_update",
       description:
-        "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason.",
+        "Declare a compound request's parts for the host to track: expectedCapability such as zotero.notes for a write; targetIds, or scope:true for the whole Paper scope; expectedEffect 'digest' asks the host to answer the part's description for each named paper and return the results. A digest reads each paper's whole text unless its read names a source; when the user limits what to read (abstracts, sections, pages, notes), set read to that, e.g. {source:'abstract'}. The host marks parts done; list one that cannot be done under skipped or blocked, with the reason. List papers a review or answer leaves out under excluded, with the reason. To change a part that has progress, declare a new part with replaces and a reason. A literature review or synthesis of more than four papers declares a digest part, not a reasoning or read part: scope:true for the attached papers, or targetIds for papers you chose. The host analyzes each paper inside that call, so do not read those papers with paper_read first; write from the results it returns. A literature review of four papers or fewer declares a read part over their targetIds, unless the user asked for something per paper.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -883,8 +1042,17 @@ export function createTaskUpdateTool(
      * trace's own plumbing.
      */
     presentation: { hiddenInTrace: true },
+    guidance: [
+      LITERATURE_REVIEW_PARTS_GUIDANCE,
+      LITERATURE_REVIEW_DIGEST_GUIDANCE,
+      COMPARE_PAPERS_DIGEST_GUIDANCE,
+      REORGANIZE_LIBRARY_PARTS_GUIDANCE,
+    ],
     isAvailable: (request) =>
       request.executionContext?.permissionOwner === "original_agent",
+    // The model cites a digest quote by the id beside it; the citation
+    // records stay with the host.
+    modelContent: (result) => withoutDigestQuoteCitations(result),
     validate: validateTaskUpdateInput,
     planInvocation: () =>
       readOnlyInvocationPlan({
@@ -950,11 +1118,19 @@ export function createTaskUpdateTool(
       };
       // A refused skip is the note the model must act on; it outranks the
       // reminder that progress needs no call.
-      if (refused.length)
-        return { ...reported, note: skipRefusedNote(refused), ...digests };
-      return ignored
-        ? { ...reported, note: HOST_MARKS_DONE, ...digests }
-        : { ...reported, ...digests };
+      const content: TaskUpdateResult = refused.length
+        ? { ...reported, note: skipRefusedNote(refused), ...digests }
+        : ignored
+          ? { ...reported, note: HOST_MARKS_DONE, ...digests }
+          : { ...reported, ...digests };
+      // The papers the parts leave out are the agent's exclude decisions,
+      // recorded once, as record_paper_decisions records them.
+      const paperDecisions = exclusionPaperDecisions(
+        input.excluded,
+        context.request.libraryID,
+        deps.papers,
+      );
+      return paperDecisions.length ? { content, paperDecisions } : content;
     },
   };
 }

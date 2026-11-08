@@ -2,6 +2,7 @@ import { assert } from "chai";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
+import { toolGuidanceItems } from "../src/agent/tools/guidance";
 
 /**
  * Pins the agent tool vocabulary: which tools the model sees, which stay
@@ -25,13 +26,10 @@ const fixture = JSON.parse(
 
 /**
  * Guidance allowed past the cap, pinned at its current size so it cannot grow.
- * zotero_script's guidance is its sandbox API reference plus the undo-safety
- * rules (snapshot before mutating, shouldStop in long loops); it is not plan
- * workflow prose and has no other owner yet.
+ * None today: zotero_script's sandbox API reference and undo rules, the last
+ * exception, moved to the zotero-script skill on 2026-10-31.
  */
-const GUIDANCE_CAP_EXCEPTIONS: ReadonlyMap<string, number> = new Map([
-  ["zotero_script", 5136],
-]);
+const GUIDANCE_CAP_EXCEPTIONS: ReadonlyMap<string, number> = new Map();
 
 const stub: any = new Proxy(function () {}, {
   get: () => stub,
@@ -73,20 +71,29 @@ describe("agent tool vocabulary", function () {
       .map((t) => `${t.spec.name}: ${t.spec.description.length}`);
     assert.deepEqual(over, []);
   });
+  // A tool with several guidance items renders each alone, so the cap
+  // applies to each item.
+  const longestGuidance = (guidance: unknown) =>
+    Math.max(
+      0,
+      ...toolGuidanceItems(guidance as never).map(
+        (item) => item.instruction.length,
+      ),
+    );
   it("no tool guidance exceeds 2500 characters", function () {
     const over = registry
       .listToolDefinitions()
       .filter((t) => {
-        const length = t.guidance?.instruction.length ?? 0;
+        const length = longestGuidance(t.guidance);
         const pinned = GUIDANCE_CAP_EXCEPTIONS.get(t.spec.name);
         return pinned === undefined ? length > 2500 : length > pinned;
       })
-      .map((t) => `${t.spec.name}: ${t.guidance!.instruction.length}`);
+      .map((t) => `${t.spec.name}: ${longestGuidance(t.guidance)}`);
     assert.deepEqual(over, []);
   });
   it("every guidance cap exception is still needed", function () {
     for (const [name] of GUIDANCE_CAP_EXCEPTIONS) {
-      const length = registry.getTool(name)?.guidance?.instruction.length ?? 0;
+      const length = longestGuidance(registry.getTool(name)?.guidance);
       assert.isAbove(length, 2500, `${name} fits the cap; drop its exception`);
     }
   });

@@ -56,9 +56,14 @@ describe("workflow: task progress button", function () {
     return {
       win: standaloneWindow(),
       root,
-      actions: Array.from(
-        doc.querySelectorAll(".llm-standalone-content-title-actions > button"),
-      ) as HTMLButtonElement[],
+      // The buttons a person sees: Pin this paper is hidden in a Library chat.
+      actions: (
+        Array.from(
+          doc.querySelectorAll(
+            ".llm-standalone-content-title-actions > button",
+          ),
+        ) as HTMLButtonElement[]
+      ).filter((node) => !node.hidden),
       button: doc.querySelector(
         `.llm-standalone-content-title-actions ${BUTTON}`,
       ) as HTMLButtonElement,
@@ -320,14 +325,30 @@ describe("workflow: task progress button", function () {
       "the standalone window shows Library chat",
     );
     // A new Library chat (or the empty draft the button takes up again).
+    // Wait for a fresh completion announcement, not the kind, which is
+    // already "global": switching away from a heavy Library chat left by an
+    // earlier test can outlast a fixed delay, and a click on the old chat is
+    // then dropped when the switch lands.
     const win = standaloneWindow();
-    (rootOf().querySelector("#llm-history-new") as HTMLElement).dispatchEvent(
-      new win.MouseEvent("click", { bubbles: true, cancelable: true }),
-    );
-    await until(
-      () => rootOf()?.dataset.conversationKind === "global",
-      "a new Library chat opens",
-    );
+    const status = rootOf().querySelector("#llm-status")!;
+    let opened = false;
+    const observer = new win.MutationObserver(() => {
+      if (/^(Reused existing new|Started new)/.test(status.textContent || ""))
+        opened = true;
+    });
+    observer.observe(status, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    try {
+      (rootOf().querySelector("#llm-history-new") as HTMLElement).dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      await until(() => opened, "a new Library chat opens");
+    } finally {
+      observer.disconnect();
+    }
     await Zotero.Promise.delay(300);
     await api.setTaskProgressComposerContexts({ surface: "standalone" });
     const library = conversationKey();

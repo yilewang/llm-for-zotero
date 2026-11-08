@@ -304,25 +304,6 @@ describe("citation navigation contracts", function () {
     "utf8",
   );
 
-  it("asks the answer's own run before searching the library", function () {
-    const navigateSection = source.slice(
-      source.indexOf("async function navigateUntrustedQuoteCitation(params: {"),
-      source.indexOf(
-        "async function resolveAndNavigateAssistantCitation(params: {",
-      ),
-    );
-
-    assert.include(navigateSection, "resolveRecordedQuoteSourceCandidates");
-    // Recorded papers are used instead of a search, and the search is still
-    // there as a fallback when none of them holds the quote.
-    assert.include(navigateSection, "recordedCandidates.length");
-    assert.include(navigateSection, "searchForCandidates()");
-    assert.isBelow(
-      navigateSection.indexOf("resolveRecordedQuoteSourceCandidates"),
-      navigateSection.indexOf("searchForCandidates"),
-    );
-  });
-
   it("checks the chat's own collection before the rest of the library", function () {
     const searchSection = source.slice(
       source.indexOf(

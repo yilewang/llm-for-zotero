@@ -34,6 +34,7 @@ describe("mineruFigureBlocks", function () {
   it("normalizes figure and table panel labels to base labels", function () {
     assert.equal(getManifestFigureBaseLabel("Fig. 1a"), "Figure 1");
     assert.equal(getManifestFigureBaseLabel("Figure 1B"), "Figure 1");
+    assert.equal(getManifestFigureBaseLabel("Figure 1"), "Figure 1");
     assert.equal(getManifestFigureBaseLabel("figure-1"), "Figure 1");
     assert.equal(getManifestFigureBaseLabel("fig_2"), "Figure 2");
     assert.equal(getManifestFigureBaseLabel("Table 2c"), "Table 2");

@@ -118,9 +118,11 @@ describe("standalone custom title bar CSS", function () {
 
     // The leading slot holds a different set of controls in each state, so a
     // fixed side column would shift the tabs whenever the sidebar collapses.
+    // The trailing track keeps the side panel toggle's width; Prettier
+    // wraps the template, so compare it without the wrap spaces.
     assert.include(
-      tabRow,
-      "grid-template-columns: minmax(max-content, 1fr) max-content minmax(0, 1fr)",
+      tabRow.replace(/\( /g, "(").replace(/ \)/g, ")"),
+      "grid-template-columns: minmax(max-content, 1fr) max-content minmax(max-content, 1fr)",
     );
   });
 

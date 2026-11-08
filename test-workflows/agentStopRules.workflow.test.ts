@@ -424,4 +424,57 @@ describe("workflow: agent stop rules", function () {
       assert.include(result.recovering.chatText, "Not confirmed", recovering);
     });
   });
+
+  it("18. twenty read-only scripts with new results get no checkpoint; twenty with the same result still reach it", async function () {
+    await withPanel(async (panelId) => {
+      const result = (await scenario(panelId, "scripted_analysis")) as any;
+      const distinct = JSON.stringify(brief(result.distinct));
+      assert.equal(result.distinct.steps, 21, distinct);
+      assert.deepEqual(result.distinct.boundaries, [], distinct);
+      assert.isTrue(
+        result.distinct.rounds
+          .filter((round: any) => round.kind !== "no_tools")
+          .every((round: any) => round.kind === "progress"),
+        distinct,
+      );
+      assert.equal(result.distinct.stopRule, "final_answer", distinct);
+      assert.equal(result.distinct.runStatus, "completed", distinct);
+      const repeated = JSON.stringify(brief(result.repeated));
+      // The first result is new; the 18 navigation rounds after it fill the
+      // window (W rounds, S = 18 calls) at round 19.
+      assert.deepEqual(
+        result.repeated.boundaries.map((entry: any) => [
+          entry.action,
+          entry.round,
+        ]),
+        [["checkpoint", 19]],
+        repeated,
+      );
+    });
+  });
+
+  it("19. a step past its tool-call limit runs the first eight, a write among them, and not the ninth; the next step makes it", async function () {
+    await withPanel(async (panelId, paper) => {
+      const result = (await scenario(panelId, "step_past_tool_limit")) as any;
+      const report = JSON.stringify({ ...result, turn: brief(result.turn) });
+      assert.include(result.tagsAfterFirstStep, result.withinTag, report);
+      assert.notInclude(result.tagsAfterFirstStep, result.pastTag, report);
+      assert.equal(
+        result.pastResult,
+        JSON.stringify({
+          error:
+            "Not run: this step allows 8 tool calls; call it again in the next step.",
+        }),
+        report,
+      );
+      assert.equal(result.turn.steps, 3, report);
+      assert.equal(result.turn.stopRule, "final_answer", report);
+      assert.equal(result.turn.runStatus, "completed", report);
+      // Native readback, independent of the turn's record.
+      const reread = (await Zotero.Items.getAsync(paper.id)) as Zotero.Item;
+      await reread.reload(undefined as never, true);
+      const tags = reread.getTags().map((entry) => entry.tag);
+      assert.includeMembers(tags, [result.withinTag, result.pastTag], report);
+    });
+  });
 });

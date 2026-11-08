@@ -8,6 +8,7 @@ import {
   claimJournalAction,
   claimJournalStep,
   createJournalId,
+  inJournalTransaction,
   isAgentChangeJournalAvailable,
   prepareJournalAction,
   prepareJournalStep,
@@ -126,38 +127,42 @@ export async function executeJournaledStep<T>(params: {
     const action = params.prepareAction?.(plan);
     if (actionId && stepId) {
       try {
-        if (action && !params.resume) {
-          await prepareJournalAction({
-            actionId,
-            ...action,
-            effect: "write",
-          });
-        }
-        if (!params.resume)
-          await prepareJournalStep({
-            stepId,
-            actionId,
-            sequence,
-            operation: plan.operation,
-            forward: plan.forward,
-            inverse: plan.inverse,
-            precondition: plan.precondition,
-            reversibility: plan.reversibility,
-            status: "prepared",
-            error: plan.reason,
-          });
-        await registerJournalRecoveryPayloads({
-          actionId,
-          stepId,
-          value: plan.forward,
-        });
-        if (plan.inverse !== undefined) {
+        // Its own transaction: rows written inside another flow's
+        // transaction vanish with its rollback, and the claim then fails.
+        await inJournalTransaction(async () => {
+          if (action && !params.resume) {
+            await prepareJournalAction({
+              actionId,
+              ...action,
+              effect: "write",
+            });
+          }
+          if (!params.resume)
+            await prepareJournalStep({
+              stepId,
+              actionId,
+              sequence,
+              operation: plan.operation,
+              forward: plan.forward,
+              inverse: plan.inverse,
+              precondition: plan.precondition,
+              reversibility: plan.reversibility,
+              status: "prepared",
+              error: plan.reason,
+            });
           await registerJournalRecoveryPayloads({
             actionId,
             stepId,
-            value: plan.inverse,
+            value: plan.forward,
           });
-        }
+          if (plan.inverse !== undefined) {
+            await registerJournalRecoveryPayloads({
+              actionId,
+              stepId,
+              value: plan.inverse,
+            });
+          }
+        });
         const claimed = await claimJournalStep({
           stepId,
           from: params.resume
@@ -195,19 +200,25 @@ export async function executeJournaledStep<T>(params: {
         }
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        await updateJournalStep({
-          stepId,
-          status: "failed",
-          reversibility: "full",
-          error: reason,
-        }).catch(() => undefined);
-        if (action) {
-          await updateJournalAction({
-            actionId,
+        // Its own transaction, so another flow's rollback cannot drop the
+        // failure markers. This flow just ran the prepare in its own
+        // transaction and the claims in inTransaction above, so it holds none
+        // here; if it did, the prepare would have stalled first.
+        await inJournalTransaction(async () => {
+          await updateJournalStep({
+            stepId,
             status: "failed",
+            reversibility: "full",
             error: reason,
-          }).catch(() => undefined);
-        }
+          });
+          if (action) {
+            await updateJournalAction({
+              actionId,
+              status: "failed",
+              error: reason,
+            });
+          }
+        }).catch(() => undefined);
         throw error;
       }
     }
@@ -235,21 +246,26 @@ export async function executeJournaledStep<T>(params: {
               ? "irreversible"
               : "applied";
       if (actionId && stepId) {
-        if (outcome.inverse !== undefined && outcome.inverse !== null) {
-          await registerJournalRecoveryPayloads({
-            actionId,
+        // Its own transaction, so another flow's rollback cannot drop the
+        // outcome. This flow claimed the step in a transaction above, and the
+        // native write has finished, so it holds no transaction here.
+        await inJournalTransaction(async () => {
+          if (outcome.inverse !== undefined && outcome.inverse !== null) {
+            await registerJournalRecoveryPayloads({
+              actionId,
+              stepId,
+              value: outcome.inverse,
+            });
+          }
+          await updateJournalStep({
             stepId,
-            value: outcome.inverse,
+            status,
+            inverse: finalInverse,
+            expectedPostcondition: outcome.expectedPostcondition,
+            result: outcome.result,
+            reversibility,
+            error: recoveryReason,
           });
-        }
-        await updateJournalStep({
-          stepId,
-          status,
-          inverse: finalInverse,
-          expectedPostcondition: outcome.expectedPostcondition,
-          result: outcome.result,
-          reversibility,
-          error: recoveryReason,
         });
       }
       parentScope?.recordStep({
@@ -294,14 +310,16 @@ export async function executeJournaledStep<T>(params: {
       const failureStatus =
         failure instanceof MutationNoEffectError ? "failed" : "uncertain";
       if (actionId && stepId) {
-        await updateJournalStep({
-          stepId,
-          // Once the Zotero call has started, a throw cannot prove that no
-          // object committed. Startup/recovery must inspect this step.
-          status: failureStatus,
-          reversibility: plan.reversibility,
-          error: reason,
-        }).catch(() => undefined);
+        await inJournalTransaction(() =>
+          updateJournalStep({
+            stepId,
+            // Once the Zotero call has started, a throw cannot prove that no
+            // object committed. Startup/recovery must inspect this step.
+            status: failureStatus,
+            reversibility: plan.reversibility,
+            error: reason,
+          }),
+        ).catch(() => undefined);
       }
       parentScope?.recordStep({
         effect: "none",
@@ -386,19 +404,24 @@ export async function executeExternalMutation<T>(params: {
       affectedCount: executed.affectedCount,
     };
     if (actionId && ownsAction) {
-      await updateJournalAction({
-        actionId,
-        status:
-          executed.effect === "none"
-            ? "no_effect"
-            : executed.effect === "partial"
-              ? "partially_applied"
-              : executed.reversibility === "none"
-                ? "irreversible"
-                : "applied",
-        reversibility: executed.reversibility,
-        affectedCount: executed.effect !== "none" ? executed.affectedCount : 0,
-      });
+      // Its own transaction, like the step's outcome above; the same flow
+      // just wrote that outcome in one, so it holds none here.
+      await inJournalTransaction(() =>
+        updateJournalAction({
+          actionId,
+          status:
+            executed.effect === "none"
+              ? "no_effect"
+              : executed.effect === "partial"
+                ? "partially_applied"
+                : executed.reversibility === "none"
+                  ? "irreversible"
+                  : "applied",
+          reversibility: executed.reversibility,
+          affectedCount:
+            executed.effect !== "none" ? executed.affectedCount : 0,
+        }),
+      );
     }
     const content =
       executed.result && typeof executed.result === "object"
@@ -435,19 +458,21 @@ export async function executeExternalMutation<T>(params: {
       const uncertain =
         error instanceof MutationMayHaveAppliedError ||
         Boolean(verifiedOutcome);
-      await updateJournalAction({
-        actionId,
-        status: uncertain ? "uncertain" : "failed",
-        reversibility:
-          error instanceof MutationMayHaveAppliedError
-            ? error.reversibility
-            : verifiedOutcome?.reversibility,
-        affectedCount: verifiedOutcome?.affectedCount || 0,
-        error: error instanceof Error ? error.message : String(error),
-        recovery: uncertain
-          ? "Inspect the affected object before retrying; the forward operation had already started."
-          : undefined,
-      }).catch(() => undefined);
+      await inJournalTransaction(() =>
+        updateJournalAction({
+          actionId,
+          status: uncertain ? "uncertain" : "failed",
+          reversibility:
+            error instanceof MutationMayHaveAppliedError
+              ? error.reversibility
+              : verifiedOutcome?.reversibility,
+          affectedCount: verifiedOutcome?.affectedCount || 0,
+          error: error instanceof Error ? error.message : String(error),
+          recovery: uncertain
+            ? "Inspect the affected object before retrying; the forward operation had already started."
+            : undefined,
+        }),
+      ).catch(() => undefined);
     }
     if (actionId && error instanceof Error)
       Object.assign(error, { journalActionId: actionId });

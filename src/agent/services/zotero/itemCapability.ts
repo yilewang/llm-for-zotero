@@ -21,6 +21,8 @@ import type {
   EditableArticleMetadataField,
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
+  ItemTypeChangePlan,
+  ItemTypeRecord,
 } from "../libraryMutation/valueTypes";
 import type { AgentRuntimeRequest } from "../../types";
 import {
@@ -30,6 +32,7 @@ import {
   resolveMatrixItem,
   resolveRegularItem,
 } from "./internal/itemResolution";
+import type { LibrarySortKey, LibrarySortOrder } from "../librarySortKeys";
 import {
   buildAgentLibrarySearch,
   indexItemMatchesType,
@@ -71,9 +74,13 @@ export type RelatedPaperResult = LibraryPaperTarget & {
   matchReasons: string[];
 };
 
+/**
+ * One set of items Zotero considers duplicates. `papers` holds every regular
+ * item in the set, with or without an attachment.
+ */
 export type DuplicateGroup = {
   matchReason: string;
-  papers: LibraryPaperTarget[];
+  papers: LibraryItemTarget[];
 };
 
 /**
@@ -187,6 +194,53 @@ export class ItemCapability {
     );
     if (byActiveItem) return byActiveItem;
     return resolveRegularItem(params.item || null);
+  }
+
+  /**
+   * The object a metadata write lands on, or why it may not.
+   *
+   * `resolveMetadataItem` is a read resolver: it turns a PDF into its paper
+   * and falls back to the open item when the id names nothing it likes. On
+   * the write path that meant a child attachment's title edit rewrote the
+   * parent, and a standalone note's id edited whatever paper was open. A
+   * named id is therefore taken exactly as named, and refused rather than
+   * redirected; only a write that names no id keeps the paper-context and
+   * open-item path.
+   */
+  resolveMetadataWriteTarget(params: {
+    request?: AgentRuntimeRequest;
+    item?: Zotero.Item | null;
+    itemId?: number;
+    paperContext?: PaperContextRef | null;
+  }): { item: Zotero.Item } | { refusal: string } {
+    const itemId = Number(params.itemId);
+    if (Number.isFinite(itemId) && itemId > 0) {
+      const resolution = resolveMatrixItem(
+        this.deps.getItem(itemId),
+        itemId,
+        "update",
+      );
+      if ("refusal" in resolution) return resolution;
+      const target = resolution.item;
+      if (target.isNote?.()) {
+        return {
+          refusal: `Item ${itemId} is a note, which has no metadata fields; edit its text with note_write instead`,
+        };
+      }
+      if (target.isAnnotation?.()) {
+        return {
+          refusal: `Item ${itemId} is an annotation, which has no metadata fields`,
+        };
+      }
+      return { item: target };
+    }
+    const fallback = this.resolveMetadataItem({ ...params, itemId: undefined });
+    return fallback
+      ? { item: fallback }
+      : {
+          refusal:
+            "No item to update: name an itemId, or open the paper whose metadata should change",
+        };
   }
 
   getEditableArticleMetadata(
@@ -415,6 +469,13 @@ export class ItemCapability {
    * - **Never omit the library.** A `Zotero.Search` with no `libraryID`
    *   searches *every* library, including group libraries the user did not ask
    *   about.
+   *
+   * The simple `filters` (collection, unfiled, item type, author, tag, year)
+   * narrow the result by intersection with their own search, never by adding
+   * clauses to the condition search: a `fulltextContent` clause matches the
+   * child PDF while `collectionID` matches the parent paper, so one
+   * joinMode-all search would match nothing. `hasPdf` is not a search clause
+   * and is refused rather than ignored.
    */
   async searchItemsByConditions(params: {
     libraryID: number;
@@ -422,6 +483,7 @@ export class ItemCapability {
     joinMode?: "all" | "any";
     resolveToParents?: boolean;
     includeTrashed?: boolean;
+    filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
   }): Promise<{
@@ -447,6 +509,22 @@ export class ItemCapability {
         .join("; ");
       throw new Error(`Invalid search conditions: ${detail}`);
     }
+    const filters = params.filters || {};
+    if (filters.hasPdf !== undefined) {
+      throw new Error(
+        "filters.hasPdf cannot be combined with search conditions, because it is applied outside Zotero's search engine.",
+      );
+    }
+    const narrowsByFilters = Boolean(
+      filters.collectionId ||
+      filters.unfiled ||
+      filters.itemType ||
+      filters.author ||
+      filters.tag ||
+      filters.yearFrom != null ||
+      filters.yearTo != null,
+    );
+    const narrowsByYear = filters.yearFrom != null || filters.yearTo != null;
 
     const search = new Zotero.Search({ libraryID });
     for (const step of planSearchConditions(params)) {
@@ -467,8 +545,11 @@ export class ItemCapability {
       if (!item) continue;
       let targetId = Number(id);
       if (params.resolveToParents) {
-        const parentID = (item as { parentID?: number | false }).parentID;
-        if (parentID) targetId = Number(parentID);
+        // Walk to the top-level item: an annotation's parent is its PDF, and
+        // the paper is one level further up. Stopping after one step
+        // returned the attachment, which neither deduped with the paper's own
+        // match nor passed a collection or tag filter.
+        targetId = topLevelItemId(item);
       } else if (
         (item as { parentID?: number | false }).parentID ||
         item.isAnnotation?.()
@@ -478,6 +559,36 @@ export class ItemCapability {
       if (seen.has(targetId)) continue;
       seen.add(targetId);
       resolved.push(targetId);
+    }
+
+    let matching = resolved;
+    if (narrowsByFilters) {
+      const filterSearch = buildAgentLibrarySearch(libraryID, {
+        ...filters,
+        deleted: params.includeTrashed === true,
+      });
+      const allowed = new Set<number>();
+      for (const id of (await filterSearch.search()) as number[]) {
+        const item = Zotero.Items.get(id);
+        // Top-level rows only, as the filtered list keeps them.
+        if (!item || item.parentID || item.isAnnotation?.()) continue;
+        allowed.add(Number(id));
+      }
+      matching = matching.filter((id) => allowed.has(id));
+    }
+    // The SQL date clause only narrows; the exact year bound needs the parsed
+    // year, so those targets are built here and reused for the page.
+    const prebuilt = new Map<number, LibraryItemTarget>();
+    if (narrowsByYear) {
+      matching = matching.filter((id) => {
+        const item = this.deps.getItem(id);
+        const target = item ? buildItemTargetFromItem(item) : null;
+        if (!target || !libraryItemTargetMatchesYear(target, filters)) {
+          return false;
+        }
+        prebuilt.set(id, target);
+        return true;
+      });
     }
 
     const offset =
@@ -495,10 +606,15 @@ export class ItemCapability {
     );
     // The window is taken on ids, so enrichment only runs for what is
     // actually returned.
-    const page = resolved.slice(offset, offset + limit);
+    const page = matching.slice(offset, offset + limit);
 
     const items: LibraryItemTarget[] = [];
     for (const itemId of page) {
+      const cached = prebuilt.get(itemId);
+      if (cached) {
+        items.push(cached);
+        continue;
+      }
       const item = this.deps.getItem(itemId);
       if (!item) continue;
       const target = buildItemTargetFromItem(item);
@@ -508,10 +624,10 @@ export class ItemCapability {
     const nextOffset = offset + page.length;
     return {
       items,
-      totalCount: resolved.length,
+      totalCount: matching.length,
       returnedCount: items.length,
       offset,
-      nextOffset: nextOffset < resolved.length ? nextOffset : undefined,
+      nextOffset: nextOffset < matching.length ? nextOffset : undefined,
     };
   }
 
@@ -822,6 +938,41 @@ export class ItemCapability {
   }
 
   /**
+   * The items an item is linked to under Zotero's "Related" box, from its own
+   * `relatedItems` keys. A key whose item is gone is skipped; a linked item in
+   * the trash is kept and marked `deleted: true`.
+   */
+  getRelatedItemLinks(itemId: number): Array<{
+    itemId: number;
+    key: string;
+    title: string;
+    deleted?: true;
+  }> {
+    const item = this.deps.getItem(itemId);
+    if (!item) return [];
+    const links: Array<{
+      itemId: number;
+      key: string;
+      title: string;
+      deleted?: true;
+    }> = [];
+    for (const key of item.relatedItems || []) {
+      const other = Zotero.Items.getByLibraryAndKey(item.libraryID, key);
+      if (!other) continue;
+      links.push({
+        itemId: other.id,
+        key,
+        title:
+          normalizeText(other.getField?.("title")) ||
+          normalizeText(other.getDisplayTitle?.()) ||
+          `Item ${other.id}`,
+        ...(other.deleted ? { deleted: true as const } : {}),
+      });
+    }
+    return links;
+  }
+
+  /**
    * Adds or removes Zotero's "Related" links between items.
    *
    * Relations are bidirectional in Zotero, so both sides are saved together;
@@ -982,8 +1133,8 @@ export class ItemCapability {
     filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
@@ -1062,8 +1213,8 @@ export class ItemCapability {
     filters?: AgentLibraryFilters;
     limit?: number;
     offset?: number;
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     const filters = params.filters || {};
     const snapshot = await libraryIndexService.getSnapshot(params.libraryID);
@@ -1121,6 +1272,7 @@ export class ItemCapability {
     filters?: AgentLibraryFilters;
     allowedItemIds?: number[];
     limit?: number;
+    offset?: number;
   }): Promise<{ items: LibraryItemTarget[]; totalCount: number }> {
     const libraryID = Number.isFinite(params.libraryID)
       ? Math.floor(params.libraryID)
@@ -1129,6 +1281,10 @@ export class ItemCapability {
       return { items: [], totalCount: 0 };
     }
     const normalizedLimit = normalizeResultLimit(params.limit) || 50;
+    const offset =
+      Number.isFinite(params.offset) && Number(params.offset) > 0
+        ? Math.floor(Number(params.offset))
+        : 0;
     const allowedItemIds = Array.isArray(params.allowedItemIds)
       ? new Set(
           params.allowedItemIds
@@ -1154,7 +1310,9 @@ export class ItemCapability {
       for (const id of rawIds) {
         const item = Zotero.Items.get(id);
         if (!item) continue;
-        const topId = (item.parentID as number | false | undefined) || id;
+        // An annotation sits two levels down (annotation -> PDF -> paper), so
+        // a single parent hop would name the PDF, not the paper.
+        const topId = topLevelItemId(item);
         if (allowedItemIds && !allowedItemIds.has(topId)) continue;
         if (!seen.has(topId)) {
           seen.add(topId);
@@ -1175,10 +1333,7 @@ export class ItemCapability {
         }
       }
       return {
-        items:
-          normalizedLimit && targets.length > normalizedLimit
-            ? targets.slice(0, normalizedLimit)
-            : targets,
+        items: targets.slice(offset, offset + normalizedLimit),
         totalCount: targets.length,
       };
     } catch (error) {
@@ -1284,9 +1439,23 @@ export class ItemCapability {
     };
   }
 
+  /**
+   * Duplicate groups as Zotero's own Duplicate Items view finds them.
+   *
+   * Grouping is `Zotero.Duplicates`: same ISBN (books), same DOI, or same
+   * normalised title with a shared creator and a year within one, never
+   * across a conflicting DOI or ISBN; trashed items are excluded. It runs
+   * over every regular item, so a metadata-only record and its PDF-backed
+   * twin land in one group. The scan this replaced walked PDF-backed papers
+   * only and reported the capped page size as the total.
+   *
+   * Groups are ordered by their lowest item id so `offset` pages stably;
+   * `totalGroups` counts every group, not the page.
+   */
   async detectDuplicatesInLibrary(params: {
     libraryID: number;
     limit?: number;
+    offset?: number;
   }): Promise<{
     totalGroups: number;
     groups: DuplicateGroup[];
@@ -1299,54 +1468,55 @@ export class ItemCapability {
       Number.isFinite(params.limit) && (params.limit as number) > 0
         ? Math.floor(params.limit as number)
         : 20;
-    const snapshot = await libraryIndexService.getSnapshot(libraryID);
-    const byDoi = new Map<string, LibraryPaperTarget[]>();
-    const byNormalizedTitle = new Map<string, LibraryPaperTarget[]>();
-    for (const candidateId of orderedGatewayPaperIds(snapshot)) {
-      const item = this.deps.resolveBibliographicItem(
-        this.deps.getItem(candidateId),
-      );
-      if (!item) continue;
-      const target = buildPaperTargetFromItem(item);
-      if (!target) continue;
-      const doi = normalizeText(
-        String(item.getField?.("DOI") ?? ""),
-      ).toLowerCase();
-      if (doi) {
-        const existing = byDoi.get(doi) || [];
-        existing.push(target);
-        byDoi.set(doi, existing);
-      }
-      const normalizedTitle = normalizeText(target.title)
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, "")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (normalizedTitle.length > 10) {
-        const existing = byNormalizedTitle.get(normalizedTitle) || [];
-        existing.push(target);
-        byNormalizedTitle.set(normalizedTitle, existing);
-      }
+    const offset =
+      Number.isFinite(params.offset) && Number(params.offset) > 0
+        ? Math.floor(Number(params.offset))
+        : 0;
+
+    const idSets = await findZoteroDuplicateSets(libraryID);
+    const groupIds: number[][] = [];
+    for (const ids of idSets) {
+      const members = ids.filter((id) => {
+        const item = this.deps.getItem(id);
+        return Boolean(item?.isRegularItem?.() && !item.deleted);
+      });
+      if (members.length >= 2) groupIds.push(members);
     }
+
     const groups: DuplicateGroup[] = [];
-    const seenItemIds = new Set<number>();
-    for (const [doi, papers] of byDoi) {
-      if (papers.length < 2) continue;
-      if (groups.length >= limit) break;
-      const newPapers = papers.filter((p) => !seenItemIds.has(p.itemId));
-      if (newPapers.length < 2) continue;
-      groups.push({ matchReason: `Same DOI: ${doi}`, papers: newPapers });
-      for (const p of newPapers) seenItemIds.add(p.itemId);
+    for (const ids of groupIds.slice(offset, offset + limit)) {
+      const members = ids
+        .map((id) => this.deps.getItem(id))
+        .filter((item): item is Zotero.Item => Boolean(item));
+      const papers = members
+        .map((item) => buildItemTargetFromItem(item))
+        .filter((target): target is LibraryItemTarget => Boolean(target));
+      groups.push({ matchReason: duplicateMatchReason(members), papers });
     }
-    for (const [, papers] of byNormalizedTitle) {
-      if (papers.length < 2) continue;
-      if (groups.length >= limit) break;
-      const newPapers = papers.filter((p) => !seenItemIds.has(p.itemId));
-      if (newPapers.length < 2) continue;
-      groups.push({ matchReason: "Same title", papers: newPapers });
-      for (const p of newPapers) seenItemIds.add(p.itemId);
-    }
-    return { totalGroups: groups.length, groups };
+    return { totalGroups: groupIds.length, groups };
+  }
+
+  /**
+   * Why this patch cannot be written on this very item, or null when it can.
+   *
+   * It is the check `updateArticleMetadata` runs before it touches the item,
+   * asked earlier so a review card is never offered for a write that will then
+   * be refused: a model often names a PDF's id, and a patch of `DOI` and
+   * `publicationTitle`, or of `creators`, renders rows on an attachment that
+   * takes none of them. It asks the item itself, never its parent.
+   */
+  metadataPatchRefusal(
+    item: Zotero.Item,
+    patch: EditableArticleMetadataPatch,
+  ): string | null {
+    const refusals = [
+      unsupportedMetadataFieldsRefusal(
+        item,
+        Object.keys(patch).filter((fieldName) => fieldName !== "creators"),
+      ),
+      Array.isArray(patch.creators) ? unsupportedCreatorsRefusal(item) : null,
+    ].filter((refusal): refusal is string => Boolean(refusal));
+    return refusals.length ? refusals.join(" ") : null;
   }
 
   async updateArticleMetadata(params: {
@@ -1377,19 +1547,10 @@ export class ItemCapability {
     const fieldNames = Object.keys(params.metadata).filter(
       (fieldName) => fieldName !== "creators",
     );
-    const unsupportedFields = fieldNames.filter(
-      (fieldName) => !isFieldValidForItemType(item, fieldName),
-    );
-    if (unsupportedFields.length) {
-      const itemTypeName = getItemTypeName(item) || "this item type";
-      const available = listEditableFieldsForItem(item);
-      throw new Error(
-        `Unsupported metadata fields for ${itemTypeName}: ${unsupportedFields.join(", ")}.` +
-          (available.length
-            ? ` Fields this item type accepts: ${available.join(", ")}.`
-            : ""),
-      );
-    }
+    // Before the first setField: a refused patch must leave no unsaved
+    // change on the item Zotero keeps cached.
+    const unsupported = this.metadataPatchRefusal(item, params.metadata);
+    if (unsupported) throw new Error(unsupported);
 
     const rejectedFields: string[] = [];
     for (const fieldName of fieldNames) {
@@ -1417,21 +1578,6 @@ export class ItemCapability {
     }
 
     if (Array.isArray(params.metadata.creators)) {
-      const creatorTypes = (
-        Zotero as unknown as {
-          CreatorTypes?: {
-            itemTypeHasCreators?: (itemTypeId: number) => boolean;
-          };
-        }
-      ).CreatorTypes;
-      const supportsCreators =
-        typeof creatorTypes?.itemTypeHasCreators === "function"
-          ? creatorTypes.itemTypeHasCreators(item.itemTypeID)
-          : true;
-      if (!supportsCreators) {
-        const itemTypeName = getItemTypeName(item) || "this item type";
-        throw new Error(`Creators are not supported for ${itemTypeName}`);
-      }
       item.setCreators(
         params.metadata.creators as Array<
           _ZoteroTypes.Item.CreatorJSON | _ZoteroTypes.Item.Creator
@@ -1452,6 +1598,136 @@ export class ItemCapability {
       title: snapshot?.title || `Item ${item.id}`,
       changedFields,
     };
+  }
+
+  /** The item's type with its exact non-empty fields and creators. */
+  readItemTypeRecord(item: Zotero.Item): ItemTypeRecord {
+    const native = item as Zotero.Item & {
+      getUsedFields: (asNames: true) => string[];
+    };
+    const fields: Record<string, string> = {};
+    for (const name of native.getUsedFields(true)) {
+      const value = String(item.getField(name as _ZoteroTypes.Item.ItemField));
+      if (value) fields[name] = value;
+    }
+    return {
+      itemType: getItemTypeName(item),
+      fields,
+      creators: (item.getCreatorsJSON?.() || []) as ItemTypeRecord["creators"],
+    };
+  }
+
+  /**
+   * What changing a regular item's type does, worked out on an unsaved copy
+   * so the item is untouched: the fields that lose their value, and the
+   * record after Zotero moves base-mapped fields and remaps creator types.
+   */
+  planItemTypeChange(
+    item: Zotero.Item | null | undefined,
+    itemType: string,
+  ): ItemTypeChangePlan | { refusal: string } {
+    if (!item || item.deleted || !item.isRegularItem())
+      return {
+        refusal: `Item ${item?.id ?? "?"} is not a regular item; only a regular item's type can change.`,
+      };
+    const typeID = Zotero.ItemTypes.getID(itemType);
+    if (
+      !typeID ||
+      ["note", "attachment", "annotation"].includes(itemType) ||
+      Zotero.ItemTypes.getName(typeID) !== itemType
+    )
+      return {
+        refusal: `"${itemType}" is not a regular Zotero item type; library_search entity:'itemTypes' lists them.`,
+      };
+    const before = this.readItemTypeRecord(item);
+    // The fields and creators `clone()` copies, without its tags and
+    // relations: the change touches neither.
+    const copy = new Zotero.Item(
+      getItemTypeName(item) as ConstructorParameters<typeof Zotero.Item>[0],
+    );
+    copy.libraryID = item.libraryID;
+    for (const fieldID of item.getUsedFields())
+      copy.setField(fieldID, item.getField(fieldID));
+    copy.setCreators(item.getCreators());
+    copy.setType(typeID);
+    const after = this.readItemTypeRecord(copy);
+    const obsolete = new Set(
+      (item.getFieldsNotInType(typeID, true) || []).map((fieldID) =>
+        Zotero.ItemFields.getName(fieldID),
+      ),
+    );
+    // Zotero also empties some fields both types have (a book section's
+    // title moves to bookTitle), so a value the copy lost counts as dropped.
+    // That over-reports in one case: a book section with an empty bookTitle
+    // changed to a book has its title moved into `title`, yet `bookTitle` is
+    // listed. An over-report only makes the card more cautious.
+    // A base-mapped field such as publicationTitle on a type that maps it
+    // (bookSection's bookTitle) is not obsolete and is not listed.
+    const droppedFields = Object.keys(before.fields).filter(
+      (name) =>
+        obsolete.has(name) ||
+        (Zotero.ItemFields.isValidForType(name, typeID) && !after.fields[name]),
+    );
+    return {
+      fromType: before.itemType,
+      toType: itemType,
+      droppedFields,
+      after,
+    };
+  }
+
+  /** Change the item's type; Zotero drops the fields the plan named. */
+  async changeItemType(params: {
+    item: Zotero.Item;
+    itemType: string;
+  }): Promise<void> {
+    const typeID = Zotero.ItemTypes.getID(params.itemType);
+    if (!typeID)
+      throw new Error(`Item type "${params.itemType}" is unknown to Zotero`);
+    params.item.setType(typeID);
+    await params.item.saveTx();
+  }
+
+  /**
+   * Put the type, every field and every creator back exactly as recorded.
+   * Any value Zotero refuses throws: a partial restore must not pass as an
+   * undo.
+   */
+  async restoreItemTypeRecord(params: {
+    item: Zotero.Item;
+    record: ItemTypeRecord;
+  }): Promise<void> {
+    const { item, record } = params;
+    const typeID = Zotero.ItemTypes.getID(record.itemType);
+    if (!typeID)
+      throw new Error(`Item type "${record.itemType}" is unknown to Zotero`);
+    if (item.itemTypeID !== typeID) item.setType(typeID);
+    const itemFields = Zotero.ItemFields as unknown as {
+      getItemTypeFields: (itemTypeID: number) => number[];
+      getName: (fieldID: number) => string;
+    };
+    const typeFields = itemFields
+      .getItemTypeFields(typeID)
+      .map((fieldID) => itemFields.getName(fieldID));
+    const foreign = Object.keys(record.fields).filter(
+      (name) => !typeFields.includes(name),
+    );
+    if (foreign.length)
+      throw new Error(
+        `Fields ${foreign.join(", ")} do not exist on ${record.itemType}; the item was not restored.`,
+      );
+    for (const name of typeFields) {
+      const value = record.fields[name] ?? "";
+      item.setField(name as _ZoteroTypes.Item.ItemField, value);
+      if (String(item.getField(name as _ZoteroTypes.Item.ItemField)) !== value)
+        throw new Error(
+          `Zotero rejected the recorded value of ${name}; the item was not restored.`,
+        );
+    }
+    item.setCreators(record.creators as _ZoteroTypes.Item.CreatorJSON[], {
+      strict: true,
+    });
+    await item.saveTx();
   }
 
   async trashItems(params: { itemIds: number[] }): Promise<{
@@ -1531,6 +1807,50 @@ export class ItemCapability {
   }
 
   // ── Merge duplicates ──────────────────────────────────────────────
+
+  /**
+   * Why these duplicate groups may not be merged, or null when they may.
+   *
+   * Every item must exist, be a regular item, be out of the trash, and sit in
+   * the one library all the groups share: Zotero cannot merge across
+   * libraries, and a duplicate already in the trash is what an earlier merge
+   * leaves, so re-running a group that already merged is refused here rather
+   * than merged twice. A group also holds one item type: Zotero's duplicate
+   * search can pair a journal article with a conference paper by DOI, but its
+   * own merge pane refuses that, since the merge would trash the other record
+   * with its children.
+   */
+  mergeRefusal(
+    groups: ReadonlyArray<{ masterItemId: number; otherItemIds: number[] }>,
+  ): string | null {
+    let libraryID: number | undefined;
+    for (const group of groups) {
+      for (const itemId of [group.masterItemId, ...group.otherItemIds]) {
+        const role =
+          itemId === group.masterItemId ? "Master item" : "Duplicate item";
+        const item = this.deps.getItem(itemId);
+        if (!item) {
+          return `${role} ${itemId} no longer exists, so its group (master ${group.masterItemId}) cannot be merged.`;
+        }
+        if (item.isRegularItem?.() !== true) {
+          return `${role} ${itemId} is not a regular item (notes, attachments and annotations cannot be merged).`;
+        }
+        if ((item as Zotero.Item & { deleted?: boolean }).deleted) {
+          return `${role} ${itemId} is already in the trash, as a merged duplicate is; leave it out, or restore it before merging.`;
+        }
+        const itemLibraryID = Number(item.libraryID);
+        if (libraryID === undefined) libraryID = itemLibraryID;
+        if (itemLibraryID !== libraryID) {
+          return `Item ${itemId} is in a different library than the other items, and Zotero cannot merge across libraries.`;
+        }
+        const master = this.deps.getItem(group.masterItemId);
+        if (master && item.itemTypeID !== master.itemTypeID) {
+          return `Item ${itemId} is a ${getItemTypeName(item) || item.itemTypeID} but its group's master ${group.masterItemId} is a ${getItemTypeName(master) || master.itemTypeID}; Zotero merges only items of the same type, so that group cannot be merged.`;
+        }
+      }
+    }
+    return null;
+  }
 
   /**
    * Merges duplicates, delegating to Zotero's own merge.
@@ -1615,4 +1935,172 @@ export class ItemCapability {
       trashedIds,
     };
   }
+}
+
+/**
+ * The refusal for the metadata fields the item's type cannot take, naming
+ * the fields it can; null when every field is valid for it.
+ */
+function unsupportedMetadataFieldsRefusal(
+  item: Zotero.Item,
+  fieldNames: string[],
+): string | null {
+  const unsupportedFields = fieldNames.filter(
+    (fieldName) => !isFieldValidForItemType(item, fieldName),
+  );
+  if (!unsupportedFields.length) return null;
+  const itemTypeName = getItemTypeName(item) || "this item type";
+  const available = listEditableFieldsForItem(item);
+  return (
+    `Unsupported metadata fields for ${itemTypeName}: ${unsupportedFields.join(", ")}.` +
+    (available.length
+      ? ` Fields this item type accepts: ${available.join(", ")}.`
+      : "")
+  );
+}
+
+/**
+ * The refusal for creators on an item type that has none (an attachment or
+ * a note); null when the item's own type takes them.
+ */
+function unsupportedCreatorsRefusal(item: Zotero.Item): string | null {
+  const creatorTypes = (
+    Zotero as unknown as {
+      CreatorTypes?: {
+        itemTypeHasCreators?: (itemTypeId: number) => boolean;
+      };
+    }
+  ).CreatorTypes;
+  const supportsCreators =
+    typeof creatorTypes?.itemTypeHasCreators === "function"
+      ? creatorTypes.itemTypeHasCreators(item.itemTypeID)
+      : true;
+  if (supportsCreators) return null;
+  return `Creators are not supported for ${getItemTypeName(item) || "this item type"}.`;
+}
+
+/**
+ * The id of the top-level item above `item`: the paper for an annotation
+ * (annotation -> PDF -> paper), a note or attachment's parent, or the item
+ * itself when it has no parent. The visited set stops a corrupt parent cycle.
+ */
+function topLevelItemId(item: Zotero.Item): number {
+  let current: Zotero.Item = item;
+  const visited = new Set<number>([Number(current.id)]);
+  for (;;) {
+    const parentID = Number(
+      (current as { parentID?: number | false }).parentID || 0,
+    );
+    if (!parentID || visited.has(parentID)) break;
+    const parent = Zotero.Items.get(parentID) as Zotero.Item | false | null;
+    if (!parent) return parentID;
+    visited.add(parentID);
+    current = parent;
+  }
+  return Number(current.id);
+}
+
+type ZoteroDuplicatesEngine = {
+  getSearchObject(): Promise<{
+    conditions?: Record<
+      string,
+      { condition?: string; operator?: string; value?: unknown }
+    >;
+    search(): Promise<number[]>;
+  }>;
+  getSetItemsByItemID(itemID: number): number[];
+};
+
+/**
+ * Every duplicate set in the library, from Zotero's own engine, each sorted
+ * by item id and the sets ordered by their lowest id.
+ *
+ * `getSearchObject` runs the matching and backs its search with a temporary
+ * table that Zotero's own caller drops when the view closes, so it is
+ * dropped here once the ids are read.
+ */
+async function findZoteroDuplicateSets(libraryID: number): Promise<number[][]> {
+  const Duplicates = (
+    Zotero as unknown as {
+      Duplicates?: new (libraryID: number) => ZoteroDuplicatesEngine;
+    }
+  ).Duplicates;
+  if (typeof Duplicates !== "function") {
+    throw new Error(
+      "This Zotero build does not expose Zotero.Duplicates, so duplicates cannot be detected.",
+    );
+  }
+  const duplicates = new Duplicates(libraryID);
+  const search = await duplicates.getSearchObject();
+  let ids: number[];
+  try {
+    ids = (await search.search()).map(Number);
+  } finally {
+    const tempTable = Object.values(search.conditions || {}).find(
+      (condition) => condition?.condition === "tempTable",
+    )?.value;
+    if (typeof tempTable === "string" && /^\w+$/.test(tempTable)) {
+      try {
+        // Not cached, as Zotero's own drop of this table is: a cached
+        // statement would hold a handle on the table it just removed.
+        await Zotero.DB.queryAsync(
+          `DROP TABLE IF EXISTS ${tempTable}`,
+          undefined,
+          {
+            noCache: true,
+          },
+        );
+      } catch (error) {
+        appLogger.warn("Could not drop the duplicates temp table", error);
+      }
+    }
+  }
+  const live = new Set(ids);
+  const assigned = new Set<number>();
+  const sets: number[][] = [];
+  for (const id of [...live].sort((a, b) => a - b)) {
+    if (assigned.has(id)) continue;
+    const members = duplicates
+      .getSetItemsByItemID(id)
+      .map(Number)
+      .filter((member) => live.has(member) && !assigned.has(member))
+      .sort((a, b) => a - b);
+    for (const member of members) assigned.add(member);
+    if (members.length >= 2) sets.push(members);
+  }
+  return sets;
+}
+
+/**
+ * Why a set matched, from the fields Zotero's engine compares: a DOI or ISBN
+ * two members share, otherwise the title rule.
+ */
+function duplicateMatchReason(items: Zotero.Item[]): string {
+  const shared = (read: (item: Zotero.Item) => string): string | undefined => {
+    const seen = new Set<string>();
+    for (const item of items) {
+      const value = read(item);
+      if (!value) continue;
+      if (seen.has(value)) return value;
+      seen.add(value);
+    }
+    return undefined;
+  };
+  const field = (item: Zotero.Item, name: string): string => {
+    try {
+      return normalizeText(String(item.getField?.(name) ?? ""));
+    } catch {
+      // getField throws for a field the item type does not have.
+      return "";
+    }
+  };
+  const doi = shared((item) => field(item, "DOI").toLowerCase());
+  if (doi) return `Same DOI: ${doi}`;
+  const isbn = shared((item) =>
+    field(item, "ISBN")
+      .replace(/[^0-9X]/gi, "")
+      .toUpperCase(),
+  );
+  if (isbn) return `Same ISBN: ${isbn}`;
+  return "Same title";
 }

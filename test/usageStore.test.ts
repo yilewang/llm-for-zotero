@@ -23,8 +23,7 @@ import {
   toLocalDateKey,
 } from "../src/utils/usageStore";
 import { createTurnUsageRecorder } from "../src/utils/usageTurnRecorder";
-import { resetConversationForkLinksStoreInitForTests } from "../src/shared/conversationForkLinks";
-import { resetConversationRegistryStoreInitForTests } from "../src/shared/conversationRegistry";
+import { resetConversationStoreProcessStateForTests } from "./helpers/conversationStoreDb";
 import {
   appendMessage,
   createGlobalConversation,
@@ -579,12 +578,9 @@ describe("usage rows cascade with conversation deletion", function () {
   const prefs = new Map<string, unknown>();
 
   beforeEach(function () {
-    resetUsageStoreForTests();
-    resetConversationWriteFenceForTests();
-    // Other suites already ran these one-shot schema passes against their own
+    // Other suites already ran the one-shot schema passes against their own
     // database; this suite installs a fresh one and needs the tables created.
-    resetConversationForkLinksStoreInitForTests();
-    resetConversationRegistryStoreInitForTests();
+    resetConversationStoreProcessStateForTests();
     db = new DatabaseSync(":memory:");
     const bindable = (params: unknown[] | undefined) =>
       (Array.isArray(params)

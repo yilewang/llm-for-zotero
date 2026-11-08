@@ -1,4 +1,5 @@
 import { clearStandaloneSelection } from "./conversationSelection";
+import { setStandaloneSidePanelSlideDurationForTest } from "./standaloneSidePanel";
 import {
   clearStandaloneSurfaceChoices,
   getSelectedModelEntryForSurface,
@@ -10,6 +11,7 @@ import { getRecentRetrievalTimings } from "../../services/retrieval/retrievalTim
 import type { ZoteroGateway } from "../../agent/services/zoteroGateway";
 import { createAgentModelAdapter } from "../../agent/model/factory";
 import { resolveAgentRuntimeRequest } from "../../agent/context/resolvedAgentRequest";
+import { latestTaskPaperDecision } from "../../agent/context/taskPaperLedger";
 import { createProviderRequestScope } from "../../utils/providerTransport";
 import { waitForElementGeometrySettled } from "./workflowLayout";
 import { getChatScrollSnapshot } from "./chatScrollSnapshots";
@@ -55,6 +57,10 @@ import {
   exerciseLongJobReplay,
 } from "./longJobReplay";
 import { exerciseAgentStopRules } from "./stopRulesReplay";
+import {
+  callScopedMcpToolForConversation,
+  exercisePaperDecisionsTurn,
+} from "./paperDecisionsReplay";
 import { mountPanelShell } from "./panelMount";
 import { getAgentRuntime } from "../../agent";
 import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
@@ -74,14 +80,17 @@ import {
   chatHistory,
   selectedRuntimeModeCache,
   loadedConversationKeys,
+  readOnlyBorrowedConversationKeys,
   webChatIsolatedConversationKeys,
   paperContextModeOverrides,
   paperContentSourceOverrides,
   selectedPaperContextCache,
   selectedCollectionContextCache,
   selectedTagContextCache,
+  attachedConversationCache,
   initializedConversationComposeContextKeys,
   isRequestPending,
+  selectedTextCache,
 } from "./state";
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
 import type {
@@ -101,9 +110,11 @@ import type {
   WorkflowTestReaderPopupStandaloneRoutingDiagnostics,
   WorkflowTestReaderSelectionTrackingDiagnostics,
   WorkflowTestRuntimeGeometry,
+  WorkflowTestRuntimeBadge,
   WorkflowTestRuntimeSystemToggle,
   WorkflowTestStandaloneComposerResizeDiagnostics,
   WorkflowTestStandaloneDiagnostics,
+  WorkflowTestChatWindowEntry,
   WorkflowTestStandaloneNoteFixture,
   WorkflowTestTargetedQuoteRefreshResult,
   WorkflowTestChatTurnLifecycleState,
@@ -117,9 +128,21 @@ import type {
   WorkflowTestPermissionSurfaceDiagnostics,
   WorkflowTestConfirmationDialogDiagnostics,
   WorkflowTestHistoryRow,
+  WorkflowTestHistorySearchOpen,
   WorkflowTestHistorySearchResult,
+  WorkflowTestRapidHistoryClicks,
+  WorkflowTestSeededHistoryConversation,
   WorkflowTestSeededTurn,
   WorkflowTestConversationPersistenceSnapshot,
+  WorkflowTestEphemeralConversationRowCounts,
+  WorkflowTestSidePanel,
+  WorkflowTestStandaloneSidePanelControl,
+  WorkflowTestStandaloneSidePanelSlideFrame,
+  WorkflowTestStandaloneSidePanelDiagnostics,
+  WorkflowTestStandalonePinnedPapers,
+  WorkflowTestComposerMetrics,
+  WorkflowTestSegmentedTabMetrics,
+  WorkflowTestHistoryChipColors,
   WorkflowTestCrossPaperHistoryIsolationResult,
   WorkflowTestStaleAgentTraceIsolationResult,
 } from "./workflowTestTypes";
@@ -166,24 +189,42 @@ import {
   setSelectedTextExpandedIndex,
 } from "./contextResolution";
 import {
+  createGlobalPortalItem,
+  createPaperPortalItem,
   resolveConversationBaseItem,
   resolveInitialPanelItemState,
 } from "./portalScope";
+import {
+  allocateEphemeralGlobalConversationKey,
+  allocateEphemeralPaperConversationKey,
+  discardEphemeralConversation,
+  setEphemeralBackgroundContextProvider,
+} from "./ephemeralConversations";
+import { startSideSurfaceChoicesFromStandalone } from "./surfaceChoices";
 import { syncNoteEditingSelectedText } from "./noteEditing/selectionController";
 import {
   decorateAssistantCitationLinks,
   renderQuoteCitationPlaceholders,
 } from "./assistantCitationLinks";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
+import { setPluginUpdateDepsForTest } from "../pluginUpdateAdapters";
 import { openStandalonePlanDocumentWindow } from "./standalonePlanDocumentWindow";
 import { renderPlanDocumentContent } from "./planDocumentPresentation";
 import {
+  isStandaloneWindowActive,
   notifyStandaloneItemChanged as notifyStandaloneItemChangedRuntime,
   openStandaloneChat,
+  openTornChatWindow,
 } from "./standaloneWindow";
+import {
+  closeAllTornChatWindows,
+  getTornChatWindows,
+  type TornChatIdentity,
+} from "./tornChatWindows";
 import {
   getWorkflowTestSendSettledSequence,
   getWorkflowTestSendInterceptor,
+  setWorkflowTestHistoryOpenFailure,
   getWorkflowTestFinalRequestInterceptor,
   setWorkflowTestFinalRequestInterceptor,
   setWorkflowTestSendInterceptor,
@@ -195,10 +236,21 @@ import {
   getPaperConversation,
   loadConversation,
 } from "../../utils/chatStore";
-import { appendCodexMessage } from "../../codexAppServer/store";
+import {
+  appendCodexMessage,
+  loadCodexConversation,
+} from "../../codexAppServer/store";
 import { setCodexAppServerModelCatalogLoaderForTests } from "../../codexAppServer/modelCatalog";
+import {
+  resetCodexDirectCatalogForTests,
+  setCodexDirectCatalogDependenciesForTests,
+} from "../../codexAuth/modelCatalog";
 import type { WorkflowTestCodexModelCatalogResponse } from "./workflowTestTypes";
-import { appendClaudeMessage } from "../../claudeCode/store";
+import {
+  appendClaudeMessage,
+  loadClaudeConversation,
+} from "../../claudeCode/store";
+import { notifyPastChatAttached } from "../../services/pastConversations/attachSink";
 import {
   ensureMarkedReaderSelectionTrackingListener,
   READER_TEXT_SELECTION_POPUP_EVENT,
@@ -214,13 +266,18 @@ import type { RuntimeConversationSystem } from "./runtimeSystemControls";
 import { collectReaderSelectionDocuments } from "../../services/pdf/readerSelection";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import { closeReaderSelectionPromptOverlay } from "./selectionPrompt/readerSelectionPromptOverlay";
-import type { ConversationSystem } from "../../shared/types";
+import type {
+  AttachedConversationRef,
+  ConversationSystem,
+} from "../../shared/types";
 import { clearPaperRestoreTargetsForWorkflowTests } from "../../shared/paperConversationRestore";
 import { relayGetStateSnapshot } from "../../webchat/relayServer";
+import { conversationRepository } from "../../core/conversations/repository";
 import {
   bindEmbeddedPanelHost,
   bindTestPanelHost,
   capturePanelOperationLease,
+  markSidePanelBody,
   resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
 import {
@@ -244,6 +301,58 @@ import {
 let resolveDelayedCodexPermissionCatalog: (() => void) | null = null;
 let resolveDelayedCodexModelCatalog: (() => void) | null = null;
 let codexModelCatalogRequests: string[] = [];
+let codexDirectCatalogRequests: string[] = [];
+
+function configureCodexDirectCatalog(input: {
+  cachedClientVersion?: string;
+  liveAuthPath?: string;
+}): void {
+  assertWorkflowTestEnabled();
+  resetCodexDirectCatalogForTests();
+  codexDirectCatalogRequests = [];
+  if (input.liveAuthPath) {
+    setCodexDirectCatalogDependenciesForTests({ authPath: input.liveAuthPath });
+    return;
+  }
+  setCodexDirectCatalogDependenciesForTests({
+    authPath: "/workflow/codex/auth.json",
+    readText: async (path) =>
+      path.endsWith("models_cache.json")
+        ? JSON.stringify({ client_version: input.cachedClientVersion })
+        : JSON.stringify({
+            tokens: {
+              access_token: "workflow-token",
+              account_id: "workflow-account",
+            },
+          }),
+    fetchFn: (async (url: string | URL | Request) => {
+      codexDirectCatalogRequests.push(String(url));
+      const version =
+        new URL(String(url)).searchParams.get("client_version") || "";
+      const [major, minor] = version.split(".").map(Number);
+      const models = [
+        {
+          slug: "gpt-6-astra",
+          display_name: "GPT-6-Astra",
+          visibility: "list",
+          priority: 1,
+        },
+      ];
+      if (major > 0 || minor >= 153) {
+        models.push({
+          slug: "gpt-6.1-sol",
+          display_name: "GPT-6.1-Sol",
+          visibility: "list",
+          priority: 2,
+        });
+      }
+      return new Response(JSON.stringify({ models }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as typeof fetch,
+  });
+}
 
 function configureCodexModelCatalogs(
   responses: WorkflowTestCodexModelCatalogResponse[],
@@ -537,6 +646,91 @@ async function appendWorkflowStoredMessage(
     return;
   }
   await appendMessage(conversationKey, message);
+}
+
+function readRuntimeBadge(
+  root: ParentNode | null | undefined,
+): WorkflowTestRuntimeBadge | undefined {
+  const button = root?.querySelector(
+    "#llm-runtime-mode-toggle",
+  ) as HTMLButtonElement | null;
+  if (!button) return undefined;
+  const menu = root?.querySelector("#llm-runtime-menu") as HTMLElement | null;
+  const menuOpen = Boolean(menu && menu.style.display !== "none");
+  return {
+    visible: button.style.display !== "none",
+    label: (
+      button.querySelector(".llm-agent-toggle-label")?.textContent || ""
+    ).trim(),
+    clickable: !button.disabled,
+    menuOpen,
+    menuItems: menuOpen
+      ? (
+          Array.from(
+            menu?.querySelectorAll("[data-runtime-system]") || [],
+          ) as HTMLElement[]
+        ).map((option) => ({
+          system: option.dataset.runtimeSystem || "",
+          label: (option.textContent || "").trim(),
+          selected: option.classList.contains("llm-permission-option-selected"),
+        }))
+      : [],
+  };
+}
+
+function dispatchRuntimeMenuClick(element: HTMLElement): void {
+  const eventCtor = element.ownerDocument.defaultView?.MouseEvent;
+  if (eventCtor) {
+    element.dispatchEvent(
+      new eventCtor("click", { bubbles: true, cancelable: true }),
+    );
+  } else {
+    element.click();
+  }
+}
+
+/** Opens the badge menu under `root` if it is closed, and reads it. */
+async function openRuntimeMenuIn(
+  root: ParentNode,
+  owner: string,
+): Promise<WorkflowTestRuntimeBadge> {
+  const button = root.querySelector(
+    "#llm-runtime-mode-toggle",
+  ) as HTMLButtonElement | null;
+  if (!button) throw new Error(`${owner} runtime badge was not rendered`);
+  if (button.style.display === "none") {
+    throw new Error(`${owner} runtime badge is hidden`);
+  }
+  if (button.disabled) {
+    throw new Error(`${owner} runtime badge is not clickable`);
+  }
+  if (readRuntimeBadge(root)?.menuOpen !== true) {
+    dispatchRuntimeMenuClick(button);
+    await Zotero.Promise.delay(100);
+  }
+  const badge = readRuntimeBadge(root);
+  if (!badge?.menuOpen) {
+    throw new Error(`${owner} runtime menu did not open`);
+  }
+  return badge;
+}
+
+/** Opens the badge menu under `root` if needed and clicks one option. */
+async function clickRuntimeMenuOptionIn(
+  root: ParentNode,
+  owner: string,
+  system: ConversationSystem,
+): Promise<void> {
+  await openRuntimeMenuIn(root, owner);
+  const option = root.querySelector(
+    `#llm-runtime-menu [data-runtime-system='${system}']`,
+  ) as HTMLElement | null;
+  if (!option) {
+    throw new Error(
+      `${owner} runtime menu has no ${system} option: ${JSON.stringify(readRuntimeBadge(root))}`,
+    );
+  }
+  dispatchRuntimeMenuClick(option);
 }
 
 function readRuntimeSystemToggles(
@@ -1040,7 +1234,10 @@ async function createItemNoteFixture(input: {
   note.libraryID = Zotero.Libraries.userLibraryID;
   note.parentID = fixture.parentItemId;
   note.setNote(input.noteHtml);
-  const savedNoteItemId = await note.saveTx();
+  // A selected note opens in Zotero's own note editor, which rewrites its
+  // HTML in its own format; whether Zotero selects a new item depends on
+  // what earlier tests left selected.
+  const savedNoteItemId = await note.saveTx({ skipSelect: true });
   const noteItemId = Math.floor(Number(savedNoteItemId));
   if (!Number.isFinite(noteItemId) || noteItemId <= 0) {
     throw new Error("Failed to save workflow test note");
@@ -1072,6 +1269,151 @@ async function createStandaloneNoteFixture(input: {
 
 async function renderPanelForItem(itemId: number): Promise<WorkflowTestPanel> {
   return renderPanelForItemInternal(itemId);
+}
+
+/**
+ * Mounts a temporary side chat the way the window's side panel does: a full
+ * panel on a fresh ephemeral key, marked as a side body before it is built,
+ * on a paper portal item (Paper chat) or a global portal item (Library chat).
+ */
+async function renderSidePanelForItem(input: {
+  itemId: number;
+  mode: "paper" | "global";
+  /** Background text the side chat's model reads (the main chat). */
+  backgroundContext?: string;
+}): Promise<WorkflowTestSidePanel> {
+  assertWorkflowTestEnabled();
+  const item = Zotero.Items.get(input.itemId);
+  if (!item) throw new Error(`Unable to find Zotero item ${input.itemId}`);
+  const basePaper = resolveConversationBaseItem(item) || item;
+  const conversationKey =
+    input.mode === "global"
+      ? allocateEphemeralGlobalConversationKey()
+      : allocateEphemeralPaperConversationKey();
+  const sideItem =
+    input.mode === "global"
+      ? createGlobalPortalItem(item.libraryID, conversationKey)
+      : createPaperPortalItem(basePaper, conversationKey, 1);
+  if (input.backgroundContext !== undefined) {
+    const text = input.backgroundContext;
+    setEphemeralBackgroundContextProvider(conversationKey, () => text);
+  }
+  startSideSurfaceChoicesFromStandalone();
+  const doc = getWorkflowDocument();
+  const body = appendHost(doc);
+  const panelId = `workflow-side-panel-${++panelCounter}`;
+  body.dataset.workflowPanelId = panelId;
+  markSidePanelBody(body);
+  mountPanelShell({
+    body,
+    renderItem: sideItem,
+    getMountedItem: () => sideItem,
+    rawItem: item,
+    setupItem: sideItem,
+    beforeRegister: () => markSidePanelBody(body, sideItem),
+  });
+  await ensureConversationLoaded(sideItem, { body });
+  refreshChat(body, sideItem);
+  await Zotero.Promise.delay(50);
+  const contextSnapshot = await resolveContextSourceItemAsync(sideItem);
+  activeContextPanelStateSync.get(body)?.();
+  panels.set(panelId, { id: panelId, body, item: sideItem, contextSnapshot });
+  const root = body.querySelector("#llm-main") as HTMLElement | null;
+  return {
+    panelId,
+    itemId: input.itemId,
+    contextSnapshot,
+    conversationKey,
+    surface: resolveSelectionSurfaceForBody(body),
+    mountedConversationKey: Math.floor(Number(root?.dataset.itemId || 0)),
+    conversationSystem: root?.dataset.conversationSystem || "",
+  };
+}
+
+/** Drops a side chat's in-memory state (what closing the side chat does). */
+function discardSidePanelConversation(conversationKey: number): void {
+  assertWorkflowTestEnabled();
+  discardEphemeralConversation(conversationKey);
+}
+
+/**
+ * Rows any store holds for one conversation key, across the catalog,
+ * registry, ledger, message, search, fork, deletion, agent, document,
+ * attachment, and usage tables. A side chat's key must have none.
+ */
+async function getEphemeralConversationRowCounts(
+  conversationKey: number,
+  runIds: string[] = [],
+): Promise<WorkflowTestEphemeralConversationRowCounts> {
+  assertWorkflowTestEnabled();
+  const key = Math.floor(Number(conversationKey));
+  const count = async (
+    table: string,
+    whereSql: string,
+    params: unknown[],
+  ): Promise<number> => {
+    try {
+      return await countWorkflowRows(table, whereSql, params);
+    } catch (error) {
+      // A store that never initialized has no table, so it holds no rows.
+      if (/no such table/i.test(String(error))) return 0;
+      throw error;
+    }
+  };
+  const byKey = (table: string) => count(table, "conversation_key = ?", [key]);
+  return {
+    globalCatalog: await byKey("llm_for_zotero_global_conversations"),
+    paperCatalog: await byKey("llm_for_zotero_paper_conversations"),
+    messages: await byKey("llm_for_zotero_chat_messages"),
+    registry: await count(
+      "llm_for_zotero_conversation_registry",
+      "legacy_conversation_key = ?",
+      [key],
+    ),
+    searchIndex: await count(
+      "llm_for_zotero_conversation_search_index",
+      "legacy_conversation_key = ?",
+      [key],
+    ),
+    ledger: await byKey("llm_for_zotero_conversation_key_ledger"),
+    forkLinks: await count(
+      "llm_for_zotero_conversation_fork_links",
+      "source_conversation_key = ? OR target_conversation_key = ?",
+      [key, key],
+    ),
+    pendingDeletions: await byKey(PENDING_DELETIONS_TABLE),
+    agentRuns: await byKey("llm_for_zotero_agent_runs"),
+    // Events of a run row for the key, or of a run the caller names (an
+    // agent answer's run ID), in case events were written without a run row.
+    agentRunEvents: await count(
+      "llm_for_zotero_agent_run_events",
+      `run_id IN (SELECT run_id FROM llm_for_zotero_agent_runs WHERE conversation_key = ?)${
+        runIds.length
+          ? ` OR run_id IN (${runIds.map(() => "?").join(", ")})`
+          : ""
+      }`,
+      [key, ...runIds],
+    ),
+    agentTranscript: await byKey("llm_for_zotero_agent_transcript"),
+    agentToolResultHandles: await byKey(
+      "llm_for_zotero_agent_tool_result_handles",
+    ),
+    agentMemory: await byKey("llm_for_zotero_agent_memory"),
+    agentEvidence: await byKey("llm_for_zotero_agent_evidence"),
+    agentCoverage: await count(
+      "llm_for_zotero_agent_coverage",
+      "origin_conversation_key = ?",
+      [key],
+    ),
+    planDocuments: await byKey("llm_for_zotero_plan_documents"),
+    planDocumentOwners: await byKey("llm_for_zotero_plan_document_owners"),
+    attachmentRefs: await count(
+      "llm_for_zotero_attachment_refs",
+      "owner_type = 'conversation' AND owner_id = ?",
+      [key],
+    ),
+    usageEvents: await byKey("llm_for_zotero_usage_events"),
+  };
 }
 
 async function exerciseBackgroundAgentPublication(input: {
@@ -1197,6 +1539,7 @@ function clearWorkflowConversationRuntimeState(): void {
   selectedPaperContextCache.clear();
   selectedCollectionContextCache.clear();
   selectedTagContextCache.clear();
+  attachedConversationCache.clear();
   initializedConversationComposeContextKeys.clear();
   paperContextModeOverrides.clear();
   paperContentSourceOverrides.clear();
@@ -1928,6 +2271,7 @@ async function seedPanelStoredUserMessage(
     | "fullTextPaperContexts"
     | "selectedCollectionContexts"
     | "selectedTagContexts"
+    | "attachedConversations"
   > = {},
 ): Promise<WorkflowTestDiagnostics> {
   assertWorkflowTestEnabled();
@@ -2051,30 +2395,37 @@ async function clickPanelSystemTogglesRapidly(
   return getDiagnostics(panelId);
 }
 
-async function clickPanelRuntimeModeToggle(
+async function openPanelRuntimeMenu(
   panelId: string,
+): Promise<WorkflowTestRuntimeBadge> {
+  assertWorkflowTestEnabled();
+  return openRuntimeMenuIn(getPanel(panelId).body, "Panel");
+}
+
+async function pickPanelRuntime(
+  panelId: string,
+  system: ConversationSystem,
 ): Promise<WorkflowTestDiagnostics> {
   assertWorkflowTestEnabled();
   const panel = getPanel(panelId);
-  const button = panel.body.querySelector(
-    "#llm-runtime-mode-toggle",
-  ) as HTMLButtonElement | null;
-  if (!button) {
-    throw new Error("Panel runtime mode toggle was not rendered");
+  await clickRuntimeMenuOptionIn(panel.body, "Panel", system);
+  const deadline = Date.now() + 15000;
+  let diagnostics = await getDiagnostics(panelId);
+  while (Date.now() < deadline) {
+    if (
+      diagnostics.conversationSystem === system &&
+      diagnostics.runtimeSystemToggles
+        .filter((toggle) => toggle.visible)
+        .every((toggle) => !toggle.disabled)
+    ) {
+      return diagnostics;
+    }
+    await Zotero.Promise.delay(25);
+    diagnostics = await getDiagnostics(panelId);
   }
-  if (button.style.display === "none") {
-    throw new Error("Panel runtime mode toggle is hidden");
-  }
-  const eventCtor = panel.body.ownerDocument.defaultView?.MouseEvent;
-  if (eventCtor) {
-    button.dispatchEvent(
-      new eventCtor("click", { bubbles: true, cancelable: true }),
-    );
-  } else {
-    button.click();
-  }
-  await Zotero.Promise.delay(150);
-  return getDiagnostics(panelId);
+  throw new Error(
+    `Timed out waiting for panel runtime ${system} after a badge pick: ${JSON.stringify(diagnostics)}`,
+  );
 }
 
 async function measurePanelRuntimeGeometry(
@@ -2210,6 +2561,10 @@ async function measurePanelFooterLayout(
     return rect;
   };
 
+  const statusBar = status.parentElement as HTMLElement;
+  const inputSection = panel.body.querySelector(
+    "#llm-main > .llm-input-section",
+  ) as HTMLElement | null;
   const previousWidth = panel.body.style.width;
   const previousStatusText = status.textContent;
   panel.body.style.width = `${input.width}px`;
@@ -2240,6 +2595,10 @@ async function measurePanelFooterLayout(
         textGlyphsAligned &&
         permissionTextRect.top < statusRect.top + statusLineHeight,
       textGlyphsAligned,
+      statusBarHeight: statusBar.getBoundingClientRect().height,
+      spaceAboveStatus: inputSection
+        ? statusRect.top - inputSection.getBoundingClientRect().bottom
+        : Number.NaN,
     };
   } finally {
     panel.body.style.width = previousWidth;
@@ -2782,7 +3141,7 @@ async function startPanelChatSend(
   text: string,
   overrides: Pick<
     SendQuestionOptions,
-    "forcedSkillIds" | "selectedTagContexts"
+    "forcedSkillIds" | "selectedTagContexts" | "attachedConversations"
   > = {},
 ): Promise<{ conversationKey: number; sendSettledSequenceBefore: number }> {
   assertWorkflowTestEnabled();
@@ -3565,6 +3924,7 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
       doc,
       ".llm-standalone-runtime-system-controls",
     ),
+    runtimeBadge: readRuntimeBadge(contentArea),
     lastSend,
     lastFinalRequest,
   };
@@ -3751,6 +4111,25 @@ async function waitForStandaloneConversationSystem(
   return diagnostics;
 }
 
+async function openStandaloneRuntimeMenu(): Promise<WorkflowTestRuntimeBadge> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const content = doc.querySelector(".llm-standalone-content");
+  if (!content) throw new Error("Standalone content area was not rendered");
+  return openRuntimeMenuIn(content, "Standalone");
+}
+
+async function pickStandaloneRuntime(
+  system: ConversationSystem,
+): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const content = doc.querySelector(".llm-standalone-content");
+  if (!content) throw new Error("Standalone content area was not rendered");
+  await clickRuntimeMenuOptionIn(content, "Standalone", system);
+  return waitForStandaloneConversationSystem(system);
+}
+
 async function clickStandaloneSystemTogglesRapidly(
   systems: RuntimeConversationSystem[],
 ): Promise<WorkflowTestStandaloneDiagnostics> {
@@ -3847,6 +4226,33 @@ async function exerciseStandaloneComposerManualResize(): Promise<WorkflowTestSta
     throw new Error("Standalone composer resize controls were not rendered");
   }
 
+  const computed = win.getComputedStyle(input);
+  const oneLineHeight = computed
+    ? Number.parseFloat(computed.lineHeight) +
+      Number.parseFloat(computed.paddingTop) +
+      Number.parseFloat(computed.paddingBottom) +
+      Number.parseFloat(computed.borderTopWidth) +
+      Number.parseFloat(computed.borderBottomWidth)
+    : 0;
+  const resizeHandleTargets = Array.from(
+    doc.querySelectorAll(
+      ".llm-standalone-content .llm-standalone-resize-handle",
+    ),
+    (element) => (element as HTMLElement).dataset.resizeTarget || "",
+  );
+  const modeLabel = input
+    .closest(".llm-input-section")
+    ?.querySelector(".llm-agent-toggle-label") as HTMLElement | null;
+  const textLeft =
+    input.getBoundingClientRect().left +
+    (computed ? Number.parseFloat(computed.paddingLeft) : 0);
+  const modeLabelRect = modeLabel?.getBoundingClientRect();
+  // Null when the mode label is not shown in this chat mode.
+  const textOffsetFromModeLabel =
+    modeLabelRect && modeLabelRect.width > 0
+      ? textLeft - modeLabelRect.left
+      : null;
+  const nativeResize = computed?.resize || "";
   const heightBeforeDrag = input.getBoundingClientRect().height;
   const startScreenY = 500;
   handle.dispatchEvent(
@@ -3870,6 +4276,10 @@ async function exerciseStandaloneComposerManualResize(): Promise<WorkflowTestSta
   const heightAfterInput = Number.parseFloat(input.style.height || "0") || 0;
 
   return {
+    oneLineHeight,
+    resizeHandleTargets,
+    textOffsetFromModeLabel,
+    nativeResize,
     heightBeforeDrag,
     heightAfterDrag,
     heightAfterInput,
@@ -3905,6 +4315,13 @@ async function startNewStandaloneConversation(): Promise<WorkflowTestStandaloneD
   assertWorkflowTestEnabled();
   const { contentArea } = await ensureStandaloneWorkflowPanelReady();
   const before = readStandaloneDiagnostics();
+  // New chat keeps a chat that has no messages yet, so an empty one is
+  // already the new conversation a caller asks for.
+  if (
+    before.conversationKey &&
+    !contentArea.querySelector("#llm-chat-box .llm-message-wrapper")
+  )
+    return before;
   dispatchWorkflowClick(contentArea, "#llm-history-new", "New chat button");
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
@@ -4217,6 +4634,1220 @@ async function closeStandalone(): Promise<void> {
   }
 }
 
+/** Starts opening (or focuses) the standalone window without waiting. */
+function beginOpenStandaloneForTest(itemId: number): void {
+  assertWorkflowTestEnabled();
+  const item = Zotero.Items.get(itemId) || null;
+  openStandaloneChat({ initialItem: item });
+}
+
+function isStandaloneWindowActiveForTest(): boolean {
+  assertWorkflowTestEnabled();
+  return isStandaloneWindowActive();
+}
+
+// ---------------------------------------------------------------------------
+// Torn-off chat windows
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a torn-off window on the chat and waits until its panel shows the
+ * conversation, as openStandaloneForItem does for the standalone window.
+ */
+async function openTornChatWindowForTest(
+  identity: TornChatIdentity,
+  placement?: { screenX: number; screenY: number },
+): Promise<{ surface: string }> {
+  assertWorkflowTestEnabled();
+  const win = openTornChatWindow(identity, placement);
+  if (!win) throw new Error("The torn-off chat window did not open");
+  const startedAt = Date.now();
+  let contentArea: HTMLElement | null = null;
+  let item: Zotero.Item | null = null;
+  while (Date.now() - startedAt < 7000) {
+    contentArea =
+      (win.document?.querySelector(
+        ".llm-standalone-content",
+      ) as HTMLElement | null) || null;
+    const panelRoot = contentArea?.querySelector(
+      "#llm-main",
+    ) as HTMLElement | null;
+    item = contentArea
+      ? activeContextPanels.get(contentArea)?.() || null
+      : null;
+    if (panelRoot?.dataset.handlersInitialized && item) break;
+    await Zotero.Promise.delay(25);
+  }
+  if (!contentArea || !item) {
+    throw new Error("Timed out waiting for the torn-off chat window");
+  }
+  await ensureConversationLoaded(item);
+  item = activeContextPanels.get(contentArea)?.() || item;
+  refreshChat(contentArea, item);
+  return { surface: contentArea.dataset.selectionSurface || "" };
+}
+
+function getTornChatWindowsForTest(): Window[] {
+  assertWorkflowTestEnabled();
+  return getTornChatWindows();
+}
+
+async function closeTornChatWindowsForTest(): Promise<void> {
+  assertWorkflowTestEnabled();
+  closeAllTornChatWindows();
+  const startedAt = Date.now();
+  while (getTornChatWindows().length && Date.now() - startedAt < 3000) {
+    await Zotero.Promise.delay(25);
+  }
+}
+
+/** Every open chat window document (standalone or torn-off). */
+function listChatWindowsForTest(): WorkflowTestChatWindowEntry[] {
+  assertWorkflowTestEnabled();
+  const entries: WorkflowTestChatWindowEntry[] = [];
+  const enumerator = (Services as any).wm.getEnumerator(null);
+  while (enumerator.hasMoreElements()) {
+    const win = enumerator.getNext() as Window;
+    if (win.closed) continue;
+    const doc = win.document;
+    if (!doc?.getElementById("llmforzotero-standalone-chat-root")) continue;
+    entries.push({
+      name: win.name || "",
+      torn:
+        doc.documentElement?.getAttribute("windowtype") === "llmforzotero:chat",
+    });
+  }
+  return entries;
+}
+
+// ---------------------------------------------------------------------------
+// Standalone side panel (History / Side chat column)
+// ---------------------------------------------------------------------------
+
+/** Box metrics of a segmented tab group and of its tabs. */
+function segmentedMetrics(
+  win: Window | null,
+  group: HTMLElement | null,
+): WorkflowTestSegmentedTabMetrics | null {
+  if (!win || !group || !group.getClientRects().length) return null;
+  const groupStyle = win.getComputedStyle(group);
+  const tabs = Array.from(
+    group.querySelectorAll(".llm-standalone-tab"),
+  ) as HTMLElement[];
+  return {
+    groupPadding: groupStyle?.padding || "",
+    groupGap: groupStyle?.columnGap || "",
+    groupRadius: groupStyle?.borderRadius || "",
+    groupHeightPx: group.getBoundingClientRect().height,
+    tabs: tabs.map((tab) => {
+      const style = win.getComputedStyle(tab);
+      return {
+        paddingLeft: style?.paddingLeft || "",
+        paddingRight: style?.paddingRight || "",
+        paddingTop: style?.paddingTop || "",
+        minWidth: style?.minWidth || "",
+        heightPx: tab.getBoundingClientRect().height,
+        widthPx: tab.getBoundingClientRect().width,
+        fontSize: style?.fontSize || "",
+        radius: style?.borderRadius || "",
+        active: tab.classList.contains("active"),
+        fontWeight: style?.fontWeight || "",
+        background: style?.backgroundColor || "",
+        color: style?.color || "",
+      };
+    }),
+  };
+}
+
+/** The first visible history chip of each label type, with its colours. */
+function readHistoryChipColors(
+  win: Window | null,
+  root: ParentNode | null,
+): WorkflowTestHistoryChipColors[] {
+  if (!win || !root) return [];
+  const seen = new Set<string>();
+  const out: WorkflowTestHistoryChipColors[] = [];
+  for (const chip of Array.from(
+    root.querySelectorAll(".llm-standalone-search-label[data-label-type]"),
+  ) as HTMLElement[]) {
+    const type = chip.dataset.labelType || "";
+    if (seen.has(type) || !chip.getClientRects().length) continue;
+    seen.add(type);
+    const item = chip.closest(".llm-standalone-search-item");
+    const meta = item?.querySelector(
+      ".llm-standalone-search-meta, .llm-standalone-search-preview",
+    ) as HTMLElement | null;
+    const title = item?.querySelector(
+      ".llm-standalone-search-title",
+    ) as HTMLElement | null;
+    const style = win.getComputedStyle(chip);
+    out.push({
+      type,
+      color: style?.color || "",
+      background: style?.backgroundColor || "",
+      metaColor: (meta && win.getComputedStyle(meta)?.color) || "",
+      titleColor: (title && win.getComputedStyle(title)?.color) || "",
+    });
+  }
+  return out.sort((a, b) => a.type.localeCompare(b.type));
+}
+
+async function readStandaloneSearchPopupChipColors(): Promise<
+  WorkflowTestHistoryChipColors[]
+> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const win = doc.defaultView!;
+  const opener = doc
+    .querySelector(".llm-standalone-sidebar .llm-standalone-nav-icon-search")
+    ?.closest(
+      "button, [role='button'], .llm-standalone-nav-row",
+    ) as HTMLElement | null;
+  if (!opener) throw new Error("The Search history nav row was not rendered");
+  opener.click();
+  const overlaySelector = ".llm-standalone-search-overlay";
+  const deadline = Date.now() + 5000;
+  let chips: WorkflowTestHistoryChipColors[] = [];
+  while (Date.now() < deadline) {
+    const overlay = Array.from(doc.querySelectorAll(overlaySelector)).find(
+      (element) => (element as HTMLElement).style.display !== "none",
+    ) as HTMLElement | undefined;
+    chips = readHistoryChipColors(win, overlay || null);
+    if (chips.length) break;
+    await Zotero.Promise.delay(50);
+  }
+  const input = doc.querySelector(
+    `${overlaySelector} .llm-standalone-search-input`,
+  ) as HTMLElement | null;
+  input?.dispatchEvent(
+    new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  await Zotero.Promise.delay(150);
+  return chips;
+}
+
+function readComposerMetrics(
+  win: Window | null,
+  body: HTMLElement | null,
+): WorkflowTestComposerMetrics | null {
+  if (!win || !body) return null;
+  const section = body.querySelector(
+    ".llm-input-section",
+  ) as HTMLElement | null;
+  if (!section || !section.getClientRects().length) return null;
+  const shown = (element: Element | null): element is HTMLElement =>
+    Boolean(
+      element &&
+      (element as HTMLElement).getClientRects().length &&
+      win.getComputedStyle(element as HTMLElement)?.display !== "none" &&
+      win.getComputedStyle(element as HTMLElement)?.visibility !== "hidden",
+    );
+  const height = (element: Element | null) =>
+    shown(element) ? element.getBoundingClientRect().height : 0;
+  const input = section.querySelector("#llm-input") as HTMLElement | null;
+  const actions = section.querySelector(".llm-actions");
+  const toolButtons = (
+    Array.from(actions?.querySelectorAll("button") || []) as HTMLElement[]
+  ).filter(shown);
+  const status = body.querySelector("#llm-status") as HTMLElement | null;
+  const modelButton = section.querySelector(
+    "#llm-model-toggle",
+  ) as HTMLElement | null;
+  let placeholderFontStyle = "";
+  try {
+    placeholderFontStyle =
+      (input && win.getComputedStyle(input, "::placeholder")?.fontStyle) || "";
+  } catch {
+    placeholderFontStyle = "";
+  }
+  return {
+    boxHeightPx: section.getBoundingClientRect().height,
+    contextRowHeightPx: height(section.querySelector(".llm-context-previews")),
+    inputHeightPx: height(input),
+    toolRowHeightPx: height(actions),
+    placeholderFontStyle,
+    contextChips: (
+      Array.from(
+        section.querySelectorAll(
+          ".llm-context-previews .llm-paper-context-chip-label",
+        ),
+      ) as HTMLElement[]
+    )
+      .filter(shown)
+      .map((chip) => (chip.textContent || "").trim()),
+    toolButtons: toolButtons.map((button) => (button.textContent || "").trim()),
+    toolButtonHeightsPx: toolButtons.map(
+      (button) => button.getBoundingClientRect().height,
+    ),
+    statusText: (status?.textContent || "").trim(),
+    statusClass: status?.className || "",
+    statusColor: (status && win.getComputedStyle(status)?.color) || "",
+    modelNameShown: shown(modelButton)
+      ? !modelButton.classList.contains("llm-model-btn-collapsed") &&
+        Boolean((modelButton.textContent || "").trim())
+      : null,
+  };
+}
+
+function readStandaloneSidePanelDiagnostics(): WorkflowTestStandaloneSidePanelDiagnostics {
+  const win = getStandaloneWindowForTest();
+  const doc = win?.document || null;
+  const query = <T extends Element = HTMLElement>(
+    root: ParentNode | null | undefined,
+    selector: string,
+  ) => (root?.querySelector(selector) as T | null) || null;
+  const queryAll = (root: ParentNode | null | undefined, selector: string) =>
+    Array.from(root?.querySelectorAll(selector) || []) as HTMLElement[];
+  const textOf = (element: Element | null | undefined) =>
+    (element?.textContent || "").trim();
+  const toggle = query<HTMLButtonElement>(
+    doc,
+    ".llm-standalone-side-panel-toggle",
+  );
+  const column = query(doc, ".llm-standalone-side-panel");
+  const contentWrapper = query(doc, ".llm-standalone-content-wrapper");
+  const contentArea = query(doc, ".llm-standalone-content");
+  const visible = (element: HTMLElement | null) =>
+    Boolean(element && !element.hidden && element.getClientRects().length);
+  const keysIn = (root: Element | null) =>
+    queryAll(root, ".llm-standalone-search-item[data-conversation-key]").map(
+      (row) => Number(row.dataset.conversationKey),
+    );
+  const countIn = (root: Element | null, selector: string) =>
+    queryAll(root, selector).length;
+  const assistantMessageTexts = (body: Element | null) =>
+    queryAll(body, "#llm-chat-box .llm-message-wrapper").map((wrapper) =>
+      textOf(wrapper.querySelector(".llm-bubble") || wrapper),
+    );
+
+  // The shown tab's content; other tabs stay mounted but hidden.
+  const readOnlyRoot = query(
+    column,
+    ".llm-standalone-side-panel-readonly:not([hidden])",
+  );
+  const readOnlyBody = query(readOnlyRoot, ".llm-standalone-side-body");
+  const readOnlyInput = query<HTMLTextAreaElement>(readOnlyBody, "#llm-input");
+  const sideRoot = query(
+    column,
+    ".llm-standalone-side-panel-chat:not([hidden])",
+  );
+  const sideBody = query(sideRoot, ".llm-standalone-side-body");
+  const sidePanelRoot = query(sideBody, "#llm-main");
+  const sideInput = query<HTMLTextAreaElement>(sideBody, "#llm-input");
+  const confirm = query(sideBody, ".llm-side-chat-close-confirm");
+  const mainInput = query<HTMLTextAreaElement>(contentArea, "#llm-input");
+  const mainItem = contentArea
+    ? activeContextPanels.get(contentArea)?.() || null
+    : null;
+  const mainKey = mainItem ? getConversationKey(mainItem) : 0;
+  const mainSelected = selectedTextCache.get(mainKey) || [];
+  return {
+    open: Boolean(column && !column.hidden),
+    toggleExpanded: toggle?.getAttribute("aria-expanded") ?? null,
+    toggleLabel: toggle?.getAttribute("aria-label") || "",
+    toggleControls: toggle?.getAttribute("aria-controls") ?? null,
+    view: column?.dataset.sideView || "",
+    activeTab:
+      query(
+        column,
+        ".llm-standalone-side-panel-tab.active:not([data-side-tab-kind='newtab'])",
+      )?.dataset.sideTabId || null,
+    stripTabCount: queryAll(column, ".llm-standalone-side-panel-tab").length,
+    newTabTab: (() => {
+      const tab = query(
+        column,
+        ".llm-standalone-side-panel-tab[data-side-tab-kind='newtab']",
+      );
+      const close = query(tab, ".llm-standalone-side-panel-tab-close");
+      return {
+        present: visible(tab),
+        active: Boolean(tab?.classList.contains("active")),
+        title: textOf(query(tab, ".llm-standalone-side-panel-tab-title")),
+        closeVisible: visible(close),
+        /** Its index among all strip tabs, the real ones first. */
+        index: queryAll(column, ".llm-standalone-side-panel-tab").indexOf(
+          tab as HTMLElement,
+        ),
+      };
+    })(),
+    tabs: queryAll(
+      column,
+      ".llm-standalone-side-panel-tab:not([data-side-tab-kind='newtab'])",
+    ).map((tab) => {
+      const close = query(tab, ".llm-standalone-side-panel-tab-close");
+      return {
+        id: tab.dataset.sideTabId || "",
+        kind: tab.dataset.sideTabKind || "",
+        title: textOf(query(tab, ".llm-standalone-side-panel-tab-title")),
+        active: tab.classList.contains("active"),
+        closeVisible: Boolean(
+          close &&
+          win &&
+          visible(close) &&
+          win.getComputedStyle(close)?.visibility !== "hidden",
+        ),
+      };
+    }),
+    newTabButton: (() => {
+      const button = query(
+        column,
+        ".llm-standalone-side-panel-bar > .llm-standalone-side-panel-icon-new-tab",
+      );
+      return {
+        visible: visible(button),
+        pressed: button?.getAttribute("aria-pressed") === "true",
+      };
+    })(),
+    panelConfirm: (() => {
+      const card = query(column, ".llm-side-panel-close-confirm");
+      return {
+        visible: visible(card),
+        text: textOf(query(card, ".llm-agent-hitl-description")),
+      };
+    })(),
+    titleText: textOf(
+      queryAll(column, ".llm-standalone-content-title-text").find(visible),
+    ),
+    design: (() => {
+      const metrics = (element: HTMLElement | null | undefined) => {
+        if (!element || !win || !visible(element)) return null;
+        const style = win.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return {
+          fontSize: style?.fontSize || "",
+          fontWeight: style?.fontWeight || "",
+          topPx: rect.top,
+          heightPx: rect.height,
+        };
+      };
+      const firstVisible = (root: ParentNode | null, selector: string) =>
+        queryAll(root, selector).find(visible) || null;
+      const mainScale = (element: HTMLElement | null) =>
+        element && win
+          ? (
+              win
+                .getComputedStyle(element)
+                ?.getPropertyValue("--llm-font-scale") || ""
+            ).trim()
+          : "";
+      return {
+        mainTitle: metrics(
+          firstVisible(contentWrapper, ".llm-standalone-content-title-text"),
+        ),
+        sideTitle: metrics(
+          firstVisible(column, ".llm-standalone-content-title-text"),
+        ),
+        tabRowHeightPx:
+          query(doc, ".llm-standalone-tab-row")?.getBoundingClientRect()
+            .height || 0,
+        barHeightPx:
+          query(
+            column,
+            ".llm-standalone-side-panel-bar",
+          )?.getBoundingClientRect().height || 0,
+        navRow: metrics(
+          firstVisible(doc, ".llm-standalone-sidebar .llm-standalone-nav-row"),
+        ),
+        launchRow: metrics(firstVisible(column, "[data-side-launch]")),
+        startTitle: metrics(firstVisible(column, ".llm-start-page-title")),
+        newTabPage: (() => {
+          const root = firstVisible(
+            column,
+            ".llm-standalone-side-panel-newtab",
+          );
+          const title = query(root, ".llm-start-page-title");
+          const subtitle = query(root, ".llm-start-page-subtitle");
+          const nav = query(root, ".llm-standalone-side-panel-newtab-nav");
+          if (!win || !root || !title || !nav) return null;
+          const box = root.getBoundingClientRect();
+          const top = title.getBoundingClientRect().top;
+          const navRect = nav.getBoundingClientRect();
+          return {
+            title: textOf(title),
+            subtitle: textOf(subtitle),
+            subtitleFontStyle:
+              (subtitle && win.getComputedStyle(subtitle)?.fontStyle) || "",
+            /** Content centre minus the page's centre. */
+            centreDxPx:
+              navRect.left + navRect.width / 2 - (box.left + box.width / 2),
+            centreDyPx: (top + navRect.bottom) / 2 - (box.top + box.height / 2),
+            rowLefts: queryAll(nav, "[data-side-launch]").map(
+              (row) => row.getBoundingClientRect().left,
+            ),
+            titleTopPx: top,
+            subtitleTopPx: subtitle?.getBoundingClientRect().top ?? null,
+            mainTitleTopPx:
+              firstVisible(
+                contentWrapper,
+                ".llm-start-page-title",
+              )?.getBoundingClientRect().top ?? null,
+            mainSubtitleTopPx:
+              firstVisible(
+                contentWrapper,
+                ".llm-start-page-subtitle",
+              )?.getBoundingClientRect().top ?? null,
+          };
+        })(),
+        dayLabel: metrics(
+          firstVisible(
+            doc,
+            ".llm-standalone-sidebar .llm-standalone-day-label",
+          ),
+        ),
+        sectionLabel: null,
+        mainFontScale: mainScale(query(contentArea, "#llm-main")),
+        sideFontScales: queryAll(column, "#llm-main").map(mainScale),
+        mainTabs: segmentedMetrics(
+          win,
+          query(doc, ".llm-standalone-tab-row .llm-standalone-tab-group"),
+        ),
+        browserTabs: (() => {
+          const strip = query(column, ".llm-standalone-side-panel-tabs");
+          const bar = query(column, ".llm-standalone-side-panel-bar");
+          const toggle = query(doc, ".llm-standalone-side-panel-toggle");
+          const viewHost = query(column, ".llm-standalone-side-panel-view");
+          if (!win || !strip || !bar || !toggle || !viewHost || !column)
+            return null;
+          if (!visible(strip)) return null;
+          const flare = (tab: HTMLElement, pseudo: string) => {
+            const style = win.getComputedStyle(tab, pseudo);
+            return {
+              widthPx: Number.parseFloat(style?.width || "") || 0,
+              image: style?.backgroundImage || "",
+            };
+          };
+          const middle = (element: Element | null | undefined) => {
+            if (!element || !(element as HTMLElement).getClientRects().length)
+              return null;
+            const rect = element.getBoundingClientRect();
+            return rect.top + rect.height / 2;
+          };
+          return {
+            toggleTopPx: toggle.getBoundingClientRect().top,
+            toggleBottomPx: toggle.getBoundingClientRect().bottom,
+            navToggleBottomPx: (() => {
+              const navToggle = query(doc, ".llm-standalone-nav-toggle");
+              return navToggle && visible(navToggle)
+                ? navToggle.getBoundingClientRect().bottom
+                : null;
+            })(),
+            mainSwitchTopPx:
+              query(
+                doc,
+                ".llm-standalone-tab-row .llm-standalone-tab-group",
+              )?.getBoundingClientRect().top ?? 0,
+            centres: {
+              tabRow: middle(query(doc, ".llm-standalone-tab-row")) ?? 0,
+              toggle: middle(toggle) ?? 0,
+              mainSwitch:
+                middle(
+                  query(
+                    doc,
+                    ".llm-standalone-tab-row .llm-standalone-tab-group",
+                  ),
+                ) ?? 0,
+              strip: middle(bar) ?? 0,
+              newTabButton:
+                middle(
+                  query(
+                    bar,
+                    ":scope > .llm-standalone-side-panel-icon-new-tab",
+                  ),
+                ) ?? 0,
+              closeButton:
+                middle(query(bar, ".llm-standalone-side-panel-close")) ?? 0,
+              tabs: queryAll(strip, ".llm-standalone-side-panel-tab").map(
+                (tab) => ({
+                  icon:
+                    middle(query(tab, ".llm-standalone-side-panel-tab-icon")) ??
+                    0,
+                  title:
+                    middle(
+                      query(tab, ".llm-standalone-side-panel-tab-title"),
+                    ) ?? 0,
+                  close: middle(
+                    query(tab, ".llm-standalone-side-panel-tab-close"),
+                  ),
+                }),
+              ),
+            },
+            panelLeftPx: column.getBoundingClientRect().left,
+            stripTopPx: bar.getBoundingClientRect().top,
+            stripBottomPx: bar.getBoundingClientRect().bottom,
+            tabRowTopPx:
+              query(doc, ".llm-standalone-tab-row")?.getBoundingClientRect()
+                .top || 0,
+            tabRowBottomPx:
+              query(doc, ".llm-standalone-tab-row")?.getBoundingClientRect()
+                .bottom || 0,
+            stripBackground: win.getComputedStyle(bar)?.backgroundColor || "",
+            contentTopPx: viewHost.getBoundingClientRect().top,
+            tabs: queryAll(strip, ".llm-standalone-side-panel-tab").map(
+              (tab) => {
+                const rect = tab.getBoundingClientRect();
+                const style = win.getComputedStyle(tab);
+                return {
+                  leftPx: rect.left,
+                  rightPx: rect.right,
+                  topPx: rect.top,
+                  bottomPx: rect.bottom,
+                  active: tab.classList.contains("active"),
+                  background: style?.backgroundColor || "",
+                  color: style?.color || "",
+                  radius: `${style?.borderTopLeftRadius} ${style?.borderTopRightRadius} ${style?.borderBottomRightRadius} ${style?.borderBottomLeftRadius}`,
+                  flareBefore: flare(tab, "::before"),
+                  flareAfter: flare(tab, "::after"),
+                };
+              },
+            ),
+          };
+        })(),
+        sideChips: readHistoryChipColors(win, column),
+        searchField: (() => {
+          const field = firstVisible(
+            column,
+            ".llm-standalone-side-panel-search-row .llm-standalone-search-header",
+          );
+          if (!field || !win) return null;
+          const style = win.getComputedStyle(field);
+          const rect = field.getBoundingClientRect();
+          return {
+            topPx: rect.top,
+            heightPx: rect.height,
+            hasLens: Boolean(
+              field.querySelector(".llm-standalone-nav-icon-search"),
+            ),
+            background: style?.backgroundColor || "",
+            placeholder:
+              query<HTMLInputElement>(field, "input")?.placeholder || "",
+          };
+        })(),
+      };
+    })(),
+    panelWidthPx: column?.getBoundingClientRect().width || 0,
+    splitter: (() => {
+      const splitter = query(doc, ".llm-standalone-side-panel-resizer");
+      return {
+        visible: visible(splitter),
+        widthPx: splitter?.getBoundingClientRect().width || 0,
+        lineColor:
+          (splitter &&
+            win?.getComputedStyle(splitter, "::before")?.backgroundColor) ||
+          "",
+        cursor: (splitter && win?.getComputedStyle(splitter)?.cursor) || "",
+      };
+    })(),
+    panelBackground:
+      (column && win?.getComputedStyle(column)?.backgroundColor) || "",
+    mainBackground:
+      (contentWrapper &&
+        win?.getComputedStyle(contentWrapper)?.backgroundColor) ||
+      "",
+    mainContentWidthPx: contentWrapper?.getBoundingClientRect().width || 0,
+    window: {
+      outerWidth: win?.outerWidth || 0,
+      screenX: win?.screenX || 0,
+      screenY: win?.screenY || 0,
+      availLeft: Number((win?.screen as any)?.availLeft) || 0,
+      availWidth: win?.screen?.availWidth || 0,
+    },
+    sidebarState:
+      (query(doc, ".llm-standalone-sidebar") as HTMLElement | null)?.dataset
+        .sidebarState || "",
+    launchRows: queryAll(column, ".llm-standalone-side-panel-launch-row").map(
+      (row) => row.dataset.sideLaunch || "",
+    ),
+    historyKeys: visible(query(column, ".llm-standalone-side-panel-history"))
+      ? keysIn(query(column, ".llm-standalone-side-panel-history"))
+      : [],
+    sideChats: queryAll(column, ".llm-standalone-side-panel-chat").map(
+      (root) => {
+        const body = query(root, ".llm-standalone-side-body");
+        return {
+          tabId: root.dataset.sideTabId || "",
+          conversationKey: Number(
+            query(body, "#llm-main")?.dataset.itemId || 0,
+          ),
+          messageTexts: assistantMessageTexts(body),
+          shown: !root.hidden,
+        };
+      },
+    ),
+    readOnly:
+      readOnlyRoot && readOnlyBody && !readOnlyRoot.hidden
+        ? {
+            title: textOf(
+              query(readOnlyRoot, ".llm-standalone-content-title-text"),
+            ),
+            pill: textOf(
+              query(readOnlyRoot, ".llm-standalone-side-panel-pill"),
+            ),
+            conversationKey: Number(
+              query(readOnlyBody, "#llm-main")?.dataset.itemId || 0,
+            ),
+            messageTexts: assistantMessageTexts(readOnlyBody),
+            inputDisabled: Boolean(readOnlyInput?.disabled),
+            placeholder: readOnlyInput?.placeholder || "",
+            actionButtons: queryAll(
+              readOnlyBody,
+              "[data-side-read-only-action]",
+            ).map((button) => button.dataset.sideReadOnlyAction || ""),
+            statusText: textOf(query(readOnlyBody, "#llm-status")),
+            editableBubbles: countIn(readOnlyBody, ".llm-bubble-editable"),
+            retryButtons: countIn(readOnlyBody, ".llm-message-action-retry"),
+            deleteButtons: countIn(readOnlyBody, ".llm-message-action-delete"),
+            forkButtons: countIn(readOnlyBody, ".llm-message-action-fork"),
+            quoteButtons: countIn(
+              readOnlyBody,
+              ".llm-message-action-quote-main",
+            ),
+            copyButtons: countIn(readOnlyBody, ".llm-message-action-copy"),
+            composer: readComposerMetrics(win, readOnlyBody),
+          }
+        : null,
+    sideChat:
+      sideRoot && sideBody
+        ? {
+            conversationKey: Number(sidePanelRoot?.dataset.itemId || 0),
+            conversationKind: sidePanelRoot?.dataset.conversationKind || "",
+            messageTexts: assistantMessageTexts(sideBody),
+            pill: textOf(query(sideRoot, ".llm-standalone-side-panel-pill")),
+            placeholder: sideInput?.placeholder || "",
+            statusText: textOf(query(sideBody, "#llm-status")),
+            inputHeightPx: sideInput?.getBoundingClientRect().height || 0,
+            sendMainButtons: countIn(sideBody, ".llm-message-action-send-main"),
+            retryButtons: countIn(sideBody, ".llm-message-action-retry"),
+            editableBubbles: countIn(sideBody, ".llm-bubble-editable"),
+            forkButtons: countIn(sideBody, ".llm-message-action-fork"),
+            deleteButtons: countIn(sideBody, ".llm-message-action-delete"),
+            contextNotes: queryAll(sideBody, ".llm-side-chat-context-note").map(
+              (note) => textOf(note),
+            ),
+            selectedContextTexts: (
+              selectedTextCache.get(
+                Number(sidePanelRoot?.dataset.itemId || 0),
+              ) || []
+            ).map((entry) => entry.text),
+            confirmVisible: Boolean(confirm),
+            confirmText: textOf(query(confirm, ".llm-agent-hitl-description")),
+            clearDisabled: Boolean(
+              query<HTMLButtonElement>(
+                sideRoot,
+                ".llm-standalone-side-panel-icon-clear",
+              )?.disabled,
+            ),
+            composer: readComposerMetrics(win, sideBody),
+          }
+        : null,
+    main: {
+      conversationKey: mainKey,
+      inputHeightPx: mainInput?.getBoundingClientRect().height || 0,
+      statusText: textOf(query(contentArea, "#llm-status")),
+      selectedContextSources: mainSelected.map((entry) => String(entry.source)),
+      selectedContextTexts: mainSelected.map((entry) => entry.text),
+      askSideButtons: countIn(contentArea, ".llm-message-action-ask-side"),
+      composer: readComposerMetrics(win, contentArea),
+    },
+  };
+}
+
+async function getStandaloneSidePanelDiagnostics(): Promise<WorkflowTestStandaloneSidePanelDiagnostics> {
+  assertWorkflowTestEnabled();
+  await waitForStandaloneReady();
+  return readStandaloneSidePanelDiagnostics();
+}
+
+const STANDALONE_SIDE_PANEL_CONTROL_SELECTORS: Record<
+  WorkflowTestStandaloneSidePanelControl,
+  string
+> = {
+  toggle: ".llm-standalone-side-panel-toggle",
+  close: ".llm-standalone-side-panel-bar .llm-standalone-side-panel-close",
+  "new-tab":
+    ".llm-standalone-side-panel-bar > .llm-standalone-side-panel-icon-new-tab",
+  "newtab-tab": ".llm-standalone-side-panel-tab[data-side-tab-kind='newtab']",
+  "newtab-tab-close":
+    ".llm-standalone-side-panel-tab[data-side-tab-kind='newtab'] .llm-standalone-side-panel-tab-close",
+  "new-sidechat":
+    ".llm-standalone-side-panel-newtab:not([hidden]) [data-side-launch='sidechat']",
+  "new-history":
+    ".llm-standalone-side-panel-newtab:not([hidden]) [data-side-launch='history']",
+  clear:
+    ".llm-standalone-side-panel-chat:not([hidden]) .llm-standalone-side-panel-icon-clear",
+  "confirm-keep":
+    ".llm-standalone-side-panel-chat:not([hidden]) .llm-side-chat-close-confirm [data-confirm-action='keep']",
+  "confirm-send-last":
+    ".llm-standalone-side-panel-chat:not([hidden]) .llm-side-chat-close-confirm [data-confirm-action='send-last']",
+  "confirm-discard":
+    ".llm-standalone-side-panel-chat:not([hidden]) .llm-side-chat-close-confirm [data-confirm-action='discard']",
+  "panel-confirm-keep":
+    ".llm-side-panel-close-confirm [data-confirm-action='panel-keep']",
+  "panel-confirm-discard":
+    ".llm-side-panel-close-confirm [data-confirm-action='panel-discard']",
+  "readonly-add-paper":
+    ".llm-standalone-side-panel-readonly:not([hidden]) [data-side-read-only-action='add-paper']",
+  "readonly-open-main":
+    ".llm-standalone-side-panel-readonly:not([hidden]) [data-side-read-only-action='open-main']",
+};
+
+async function clickStandaloneSidePanelControl(
+  control: WorkflowTestStandaloneSidePanelControl,
+): Promise<WorkflowTestStandaloneSidePanelDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const selector = STANDALONE_SIDE_PANEL_CONTROL_SELECTORS[control];
+  const target = doc.querySelector(selector) as HTMLElement | null;
+  if (!target)
+    throw new Error(`Side panel control ${control} was not rendered`);
+  target.click();
+  await Zotero.Promise.delay(250);
+  return readStandaloneSidePanelDiagnostics();
+}
+
+/** Slows (or restores, with null) the side panel's open/close slide. */
+function setStandaloneSidePanelSlideDuration(durationMs: number | null): void {
+  assertWorkflowTestEnabled();
+  setStandaloneSidePanelSlideDurationForTest(durationMs);
+}
+
+/**
+ * Clicks a side panel control and samples every animation frame for
+ * `sampleMs`: the window's width and position, the main column's and the
+ * panel's widths, and whether the panel still shows its tabs.
+ */
+async function recordStandaloneSidePanelSlide(
+  control: WorkflowTestStandaloneSidePanelControl,
+  sampleMs = 700,
+): Promise<WorkflowTestStandaloneSidePanelSlideFrame[]> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const win = doc.defaultView!;
+  const target = doc.querySelector(
+    STANDALONE_SIDE_PANEL_CONTROL_SELECTORS[control],
+  ) as HTMLElement | null;
+  if (!target)
+    throw new Error(`Side panel control ${control} was not rendered`);
+  const main = doc.querySelector(
+    ".llm-standalone-content-wrapper",
+  ) as HTMLElement | null;
+  const column = doc.querySelector(
+    ".llm-standalone-side-panel",
+  ) as HTMLElement | null;
+  const frames: WorkflowTestStandaloneSidePanelSlideFrame[] = [];
+  const startedAt = win.performance.now();
+  const sample = () => {
+    const shown = Boolean(
+      column && !column.hidden && column.getClientRects().length,
+    );
+    frames.push({
+      timeMs: win.performance.now() - startedAt,
+      outerWidth: win.outerWidth,
+      innerWidth: win.innerWidth,
+      screenX: win.screenX,
+      screenY: win.screenY,
+      mainWidthPx: main?.getBoundingClientRect().width || 0,
+      mainLeftPx: main?.getBoundingClientRect().left || 0,
+      columnsScrollLeft:
+        (doc.querySelector(".llm-standalone-lower") as HTMLElement | null)
+          ?.scrollLeft || 0,
+      panelWidthPx: shown ? column!.getBoundingClientRect().width : 0,
+      panelLeftPx: shown ? column!.getBoundingClientRect().left : 0,
+      panelShown: shown,
+      panelTabCount: shown
+        ? column!.querySelectorAll(".llm-standalone-side-panel-tab").length
+        : 0,
+    });
+  };
+  sample();
+  target.click();
+  await new Promise<void>((resolve) => {
+    const step = () => {
+      sample();
+      if (win.performance.now() - startedAt >= sampleMs) resolve();
+      else win.requestAnimationFrame(step);
+    };
+    win.requestAnimationFrame(step);
+  });
+  return frames;
+}
+
+async function dragStandaloneSidePanelSplitter(
+  deltaX: number,
+): Promise<WorkflowTestStandaloneSidePanelDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const win = doc.defaultView!;
+  const splitter = doc.querySelector(
+    ".llm-standalone-side-panel-resizer",
+  ) as HTMLElement | null;
+  if (!splitter) throw new Error("The side panel divider was not rendered");
+  const startX = 600;
+  splitter.dispatchEvent(
+    new win.MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      screenX: startX,
+    }),
+  );
+  win.dispatchEvent(
+    new win.MouseEvent("mousemove", {
+      bubbles: true,
+      screenX: startX + deltaX,
+    }),
+  );
+  win.dispatchEvent(
+    new win.MouseEvent("mouseup", { bubbles: true, screenX: startX + deltaX }),
+  );
+  await Zotero.Promise.delay(100);
+  return readStandaloneSidePanelDiagnostics();
+}
+
+async function clickStandaloneSidePanelTab(
+  index: number,
+  part: "tab" | "close" = "tab",
+): Promise<WorkflowTestStandaloneSidePanelDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const tab = doc.querySelectorAll(
+    ".llm-standalone-side-panel-tab:not([data-side-tab-kind='newtab'])",
+  )[index] as HTMLElement | undefined;
+  if (!tab) {
+    throw new Error(
+      `Side panel tab ${index} was not rendered: ${JSON.stringify(readStandaloneSidePanelDiagnostics().tabs)}`,
+    );
+  }
+  const target =
+    part === "close"
+      ? (tab.querySelector(
+          ".llm-standalone-side-panel-tab-close",
+        ) as HTMLElement | null)
+      : tab;
+  if (!target) throw new Error(`Side panel tab ${index} has no ${part}`);
+  target.click();
+  await Zotero.Promise.delay(300);
+  return readStandaloneSidePanelDiagnostics();
+}
+
+async function clickStandaloneSidePanelHistoryRow(
+  conversationKey: number,
+): Promise<WorkflowTestStandaloneSidePanelDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const list = "History tab";
+  const selector = `.llm-standalone-side-panel-history:not([hidden]) .llm-standalone-search-item[data-conversation-key='${Math.floor(conversationKey)}']`;
+  const deadline = Date.now() + 5000;
+  let row = doc.querySelector(selector) as HTMLElement | null;
+  while (!row && Date.now() < deadline) {
+    await Zotero.Promise.delay(50);
+    row = doc.querySelector(selector) as HTMLElement | null;
+  }
+  if (!row) {
+    throw new Error(
+      `Side panel ${list} row ${conversationKey} was not rendered: ${JSON.stringify(readStandaloneSidePanelDiagnostics())}`,
+    );
+  }
+  row.click();
+  await Zotero.Promise.delay(400);
+  return readStandaloneSidePanelDiagnostics();
+}
+
+function resolveStandaloneChatScopeBody(
+  doc: Document,
+  scope: "main" | "readonly" | "sidechat",
+): HTMLElement | null {
+  if (scope === "main") {
+    return doc.querySelector(".llm-standalone-content") as HTMLElement | null;
+  }
+  // The shown tab of that kind.
+  return doc.querySelector(
+    scope === "readonly"
+      ? ".llm-standalone-side-panel-readonly:not([hidden]) .llm-standalone-side-body"
+      : ".llm-standalone-side-panel-chat:not([hidden]) .llm-standalone-side-body",
+  ) as HTMLElement | null;
+}
+
+/** Forgets a non-active conversation's in-memory history (stored rows stay). */
+async function evictStandaloneConversationFromMemory(
+  conversationKey: number,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  chatHistory.delete(conversationKey);
+  loadedConversationKeys.delete(conversationKey);
+  readOnlyBorrowedConversationKeys.delete(conversationKey);
+}
+
+/**
+ * While a past chat is open read-only in the side panel, runs the real
+ * conversation load for the same key (as the main chat would) and reports
+ * whether the read-only display copy was replaced by a real load.
+ */
+async function probeStandaloneReadOnlyBorrowedLoad(
+  paperItemId: number,
+): Promise<{
+  conversationKey: number;
+  borrowedBefore: boolean;
+  loadedBefore: boolean;
+  borrowedAfter: boolean;
+  loadedAfter: boolean;
+}> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const body = resolveStandaloneChatScopeBody(doc, "readonly");
+  const keyText = (body?.querySelector("#llm-main") as HTMLElement | null)
+    ?.dataset.itemId;
+  const conversationKey = Number(keyText || 0);
+  const paper = Zotero.Items.get(paperItemId) as Zotero.Item | null;
+  if (!body || !conversationKey || !paper) {
+    throw new Error("No read-only view is open");
+  }
+  // The same portal item the window builds for this key's main-chat load.
+  const item = createPaperPortalItem(paper, conversationKey, 1);
+  const borrowedBefore = readOnlyBorrowedConversationKeys.has(conversationKey);
+  const loadedBefore = loadedConversationKeys.has(conversationKey);
+  await ensureConversationLoaded(item);
+  return {
+    conversationKey,
+    borrowedBefore,
+    loadedBefore,
+    borrowedAfter: readOnlyBorrowedConversationKeys.has(conversationKey),
+    loadedAfter: loadedConversationKeys.has(conversationKey),
+  };
+}
+
+async function clickStandaloneChatMessageAction(
+  scope: "main" | "readonly" | "sidechat",
+  actionClass: string,
+): Promise<WorkflowTestStandaloneSidePanelDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const body = resolveStandaloneChatScopeBody(doc, scope);
+  const buttons = Array.from(
+    body?.querySelectorAll(`.${actionClass}`) || [],
+  ) as HTMLElement[];
+  const button = buttons[buttons.length - 1];
+  if (!button) {
+    throw new Error(`No ${actionClass} button in the ${scope} chat`);
+  }
+  button.click();
+  await Zotero.Promise.delay(300);
+  return readStandaloneSidePanelDiagnostics();
+}
+
+async function sendStandaloneSideChat(text: string): Promise<void> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const body = resolveStandaloneChatScopeBody(doc, "sidechat");
+  const input = body?.querySelector("#llm-input") as HTMLTextAreaElement | null;
+  const send = body?.querySelector("#llm-send") as HTMLButtonElement | null;
+  if (!body || !input || !send) {
+    throw new Error("The side chat composer was not rendered");
+  }
+  input.value = text;
+  const EventCtor = doc.defaultView?.Event ?? Event;
+  input.dispatchEvent(new EventCtor("input", { bubbles: true }));
+  const startedAt = Date.now();
+  while (send.disabled && Date.now() - startedAt < 5000) {
+    await Zotero.Promise.delay(25);
+  }
+  send.click();
+}
+
+async function openStandaloneSlashSideChatItem(): Promise<{
+  visible: boolean;
+  disabled: boolean;
+  hint: string;
+}> {
+  assertWorkflowTestEnabled();
+  const { contentArea } = await ensureStandaloneWorkflowPanelReady();
+  dispatchWorkflowClick(contentArea, "#llm-upload-file", "Slash menu button");
+  await Zotero.Promise.delay(150);
+  const option = contentArea.querySelector(
+    "#llm-slash-side-chat-option",
+  ) as HTMLButtonElement | null;
+  if (!option) throw new Error("The Add side chat item was not rendered");
+  return {
+    visible:
+      option.style.display !== "none" && option.getClientRects().length > 0,
+    disabled: option.disabled,
+    hint: (
+      option.querySelector(".llm-action-picker-hint")?.textContent || ""
+    ).trim(),
+  };
+}
+
+async function clickStandaloneSlashSideChatItem(): Promise<WorkflowTestStandaloneSidePanelDiagnostics> {
+  assertWorkflowTestEnabled();
+  const { contentArea } = await ensureStandaloneWorkflowPanelReady();
+  dispatchWorkflowClick(
+    contentArea,
+    "#llm-slash-side-chat-option",
+    "Add side chat item",
+  );
+  await Zotero.Promise.delay(250);
+  return readStandaloneSidePanelDiagnostics();
+}
+
+/**
+ * Types "/" in the panel's composer, clicks "Add past conversation", reads
+ * the rows of the picker, and clicks the row titled `input.title` when given.
+ */
+async function pickPastConversationInPanel(
+  panelId: string,
+  input: { title?: string; rowIndex?: number } = {},
+): Promise<{
+  slashItemVisible: boolean;
+  rowTitles: string[];
+  rowLabels: string[];
+  /** The meta line under each row: scope label and time. */
+  rowMetas: string[];
+  /** Each row's small runtime label ("Codex", "Claude", or "" for Agent). */
+  rowRuntimeLabels: string[];
+  picked: boolean;
+}> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const body = panel.body as HTMLElement;
+  const composer = body.querySelector(
+    "#llm-input",
+  ) as HTMLTextAreaElement | null;
+  if (!composer) throw new Error("Workflow panel composer was not rendered");
+  composer.value = "/";
+  const EventCtor = body.ownerDocument.defaultView?.Event ?? Event;
+  composer.dispatchEvent(new EventCtor("input", { bubbles: true }));
+  await Zotero.Promise.delay(150);
+  const option = body.querySelector(
+    "#llm-slash-past-conversation-option",
+  ) as HTMLElement | null;
+  if (!option) throw new Error("The Add past conversation item is missing");
+  const slashItemVisible =
+    option.style.display !== "none" && option.getClientRects().length > 0;
+  dispatchWorkflowClick(
+    body,
+    "#llm-slash-past-conversation-option",
+    "Add past conversation item",
+  );
+  const openPicker = () =>
+    Array.from(body.querySelectorAll(".llm-standalone-search-overlay")).find(
+      (overlay) => (overlay as HTMLElement).style.display !== "none",
+    ) as HTMLElement | undefined;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5000) {
+    const overlay = openPicker();
+    if (
+      overlay?.querySelector(
+        ".llm-standalone-search-item, .llm-standalone-search-empty",
+      )
+    ) {
+      break;
+    }
+    await Zotero.Promise.delay(25);
+  }
+  const overlay = openPicker();
+  const rows = Array.from(
+    overlay?.querySelectorAll(".llm-standalone-search-item") || [],
+  ) as HTMLElement[];
+  const textOf = (row: Element, selector: string) =>
+    (row.querySelector(selector)?.textContent || "").trim();
+  const rowTitles = rows.map((row) =>
+    textOf(row, ".llm-standalone-search-title"),
+  );
+  const rowLabels = rows.map((row) =>
+    textOf(row, ".llm-standalone-search-label"),
+  );
+  const rowMetas = rows.map((row) =>
+    textOf(row, ".llm-standalone-search-meta"),
+  );
+  const rowRuntimeLabels = rows.map((row) =>
+    textOf(row, ".llm-history-runtime-label"),
+  );
+  let picked = false;
+  if (input.title || input.rowIndex !== undefined) {
+    const index =
+      input.rowIndex !== undefined
+        ? input.rowIndex
+        : rowTitles.findIndex((title) => title.includes(input.title as string));
+    if (index >= 0 && index < rows.length) {
+      rows[index]!.click();
+      picked = true;
+      await Zotero.Promise.delay(250);
+    }
+  }
+  return {
+    slashItemVisible,
+    rowTitles,
+    rowLabels,
+    rowMetas,
+    rowRuntimeLabels,
+    picked,
+  };
+}
+
+/**
+ * Adds a past chat to the panel's latest user message the way past_chat_attach
+ * does: through the attach handler chat.ts registers, with via "agent". Then
+ * reads the refs back from the in-memory message and from the stored row.
+ */
+async function attachPastChatAsAgentInPanel(
+  panelId: string,
+  input: {
+    conversationKey: number;
+    title: string;
+    system?: ConversationSystem;
+  },
+): Promise<{
+  outcome: Awaited<ReturnType<typeof notifyPastChatAttached>>;
+  memoryRefs: AttachedConversationRef[];
+  storedRefs: AttachedConversationRef[];
+  diagnostics: WorkflowTestDiagnostics;
+}> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const item = activeContextPanels.get(panel.body)?.() || panel.item;
+  const conversationKey = getConversationKey(item);
+  if (!conversationKey) {
+    throw new Error("Workflow panel has no active conversation key");
+  }
+  const datasetSystem = (
+    panel.body.querySelector("#llm-main") as HTMLElement | null
+  )?.dataset.conversationSystem;
+  const conversationSystem: ConversationSystem =
+    datasetSystem === "codex" || datasetSystem === "claude_code"
+      ? datasetSystem
+      : "upstream";
+  const latestUser = [...(chatHistory.get(conversationKey) || [])]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!latestUser) throw new Error("Workflow panel has no user message");
+  const outcome = await notifyPastChatAttached({
+    conversationKey,
+    conversationSystem,
+    userMessageTimestamp: latestUser.timestamp,
+    ref: {
+      system: input.system || "upstream",
+      conversationKey: input.conversationKey,
+      title: input.title,
+      libraryID: item.libraryID,
+      via: "agent",
+    },
+  });
+  await Zotero.Promise.delay(100);
+  const stored =
+    conversationSystem === "codex"
+      ? await loadCodexConversation(conversationKey, 200)
+      : conversationSystem === "claude_code"
+        ? await loadClaudeConversation(conversationKey, 200)
+        : await loadConversation(conversationKey, 200);
+  const storedUser = [...stored]
+    .reverse()
+    .find((message) => message.role === "user");
+  return {
+    outcome,
+    memoryRefs: [...(latestUser.attachedConversations || [])],
+    storedRefs: [...(storedUser?.attachedConversations || [])],
+    diagnostics: await getDiagnostics(panelId),
+  };
+}
+
 async function getDiagnostics(
   panelId?: string,
 ): Promise<WorkflowTestDiagnostics> {
@@ -4305,6 +5936,11 @@ async function getDiagnostics(
         "#llm-paper-context-preview .llm-tag-chip-title",
       ) || [],
     ).map((node) => ((node as Element).textContent || "").trim()),
+    composerAttachedConversationLabels: Array.from(
+      body?.querySelectorAll(
+        "#llm-paper-context-preview .llm-conversation-chip-title",
+      ) || [],
+    ).map((node) => ((node as Element).textContent || "").trim()),
     sentContextBadgeLabels: Array.from(
       body?.querySelectorAll("#llm-chat-box .llm-user-context-badges button") ||
         [],
@@ -4322,6 +5958,7 @@ async function getDiagnostics(
       body,
       ".llm-panel-runtime-system-controls",
     ),
+    runtimeBadge: readRuntimeBadge(body),
     webChatMode: panelRoot?.dataset.webchatMode === "true",
     modelButtonDisabled: (
       body?.querySelector("#llm-model-toggle") as HTMLButtonElement | null
@@ -6110,6 +7747,9 @@ async function exerciseAssistantSelectionPromptDismissal(input: {
 
 async function reset(): Promise<void> {
   assertWorkflowTestEnabled();
+  setCodexDirectCatalogDependenciesForTests();
+  resetCodexDirectCatalogForTests();
+  codexDirectCatalogRequests = [];
   resolveDelayedCodexModelCatalog?.();
   resolveDelayedCodexModelCatalog = null;
   setCodexAppServerModelCatalogLoaderForTests();
@@ -6120,6 +7760,7 @@ async function reset(): Promise<void> {
   heldConversationWriteLocks.clear();
   setFooterPermissionCatalogLoadersForTests();
   setAgentRunTraceLoaderForTests();
+  await closeTornChatWindowsForTest();
   await closeStandalone();
   lastSend = null;
   lastFinalRequest = null;
@@ -6195,8 +7836,26 @@ async function openPanelHistoryMenu(panelId: string): Promise<HTMLElement> {
 
 async function listPanelHistory(
   panelId: string,
+  options?: { reopen?: boolean },
 ): Promise<WorkflowTestHistoryRow[]> {
   assertWorkflowTestEnabled();
+  if (options?.reopen) {
+    const panel = getPanel(panelId);
+    const menu = panel.body.querySelector(
+      "#llm-history-menu",
+    ) as HTMLElement | null;
+    if (menu && menu.style.display !== "none") {
+      dispatchWorkflowClick(
+        panel.body,
+        "#llm-history-toggle",
+        "History toggle",
+      );
+      const deadline = Date.now() + 5000;
+      while (menu.style.display !== "none" && Date.now() < deadline) {
+        await Zotero.Promise.delay(50);
+      }
+    }
+  }
   const body = await openPanelHistoryMenu(panelId);
   const rows = Array.from(
     body.querySelectorAll(".llm-history-item[data-conversation-key]"),
@@ -6205,12 +7864,584 @@ async function listPanelHistory(
   for (const row of rows) {
     const conversationKey = Number(row.dataset.conversationKey || 0);
     if (!conversationKey) continue;
-    seen.set(conversationKey, {
-      conversationKey,
-      title: (row.textContent || "").trim(),
-    });
+    seen.set(conversationKey, readWorkflowHistoryRow(row, conversationKey));
   }
   return Array.from(seen.values());
+}
+
+/** One history row as the reader sees it: title, runtime name, draft. */
+function readWorkflowHistoryRow(
+  row: HTMLElement,
+  conversationKey: number,
+): WorkflowTestHistoryRow {
+  const title =
+    row.querySelector(
+      ".llm-history-item-title, .llm-standalone-conv-title, .llm-standalone-search-title",
+    )?.textContent ||
+    row.textContent ||
+    "";
+  return {
+    conversationKey,
+    title: title.trim(),
+    system: row.dataset.conversationSystem || "",
+    runtimeLabel: (
+      row.querySelector(".llm-history-runtime-label")?.textContent || ""
+    ).trim(),
+    isDraft: row.dataset.historyDraft === "true",
+  };
+}
+
+async function waitForWorkflowElement(
+  root: ParentNode,
+  selector: string,
+  timeoutMs = 8000,
+): Promise<HTMLElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  let element = root.querySelector(selector) as HTMLElement | null;
+  while (!element && Date.now() < deadline) {
+    await Zotero.Promise.delay(50);
+    element = root.querySelector(selector) as HTMLElement | null;
+  }
+  return element;
+}
+
+function dispatchWorkflowMouseClick(element: HTMLElement): void {
+  const eventCtor = element.ownerDocument.defaultView?.MouseEvent;
+  if (eventCtor) {
+    element.dispatchEvent(
+      new eventCtor("click", { bubbles: true, cancelable: true }),
+    );
+    return;
+  }
+  element.click();
+}
+
+/**
+ * Polls the panel until `done` holds or the time runs out; resolves with the
+ * last diagnostics either way, so a test can assert on a refused open.
+ */
+async function waitForPanelDiagnostics(
+  panelId: string,
+  done: (diagnostics: WorkflowTestDiagnostics) => boolean,
+  timeoutMs = 10000,
+): Promise<WorkflowTestDiagnostics> {
+  const deadline = Date.now() + timeoutMs;
+  let diagnostics = await getDiagnostics(panelId);
+  while (!done(diagnostics) && Date.now() < deadline) {
+    await Zotero.Promise.delay(50);
+    diagnostics = await getDiagnostics(panelId);
+  }
+  return diagnostics;
+}
+
+async function seedHistoryConversation(input: {
+  system: ConversationSystem;
+  kind: "global" | "paper";
+  paperItemId?: number;
+  userText: string;
+  assistantText?: string;
+}): Promise<WorkflowTestSeededHistoryConversation> {
+  assertWorkflowTestEnabled();
+  const paperItem = input.paperItemId
+    ? (Zotero.Items.get(input.paperItemId) as Zotero.Item | null)
+    : null;
+  if (input.kind === "paper" && !paperItem) {
+    throw new Error(`Unable to find paper item ${input.paperItemId}`);
+  }
+  const libraryID =
+    Number(paperItem?.libraryID || 0) || Zotero.Libraries.userLibraryID;
+  const entry = await conversationRepository.createCatalogEntry({
+    system: input.system,
+    kind: input.kind,
+    libraryID,
+    ...(input.kind === "paper" && paperItem
+      ? { paperItemID: paperItem.id }
+      : {}),
+  });
+  if (!entry?.conversationKey) {
+    throw new Error(`Could not create a ${input.system} ${input.kind} chat`);
+  }
+  const now = Date.now();
+  await appendWorkflowStoredMessage(input.system, entry.conversationKey, {
+    role: "user",
+    text: input.userText,
+    timestamp: now,
+  });
+  await appendWorkflowStoredMessage(input.system, entry.conversationKey, {
+    role: "assistant",
+    text: input.assistantText || "Seeded answer.",
+    timestamp: now + 1,
+  });
+  return {
+    system: input.system,
+    kind: input.kind,
+    conversationKey: entry.conversationKey,
+    libraryID,
+  };
+}
+
+async function deleteSeededHistoryConversation(
+  seeded: WorkflowTestSeededHistoryConversation,
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  await conversationRepository
+    .deleteLocalConversationRows({
+      system: seeded.system,
+      conversationKey: seeded.conversationKey,
+      kind: seeded.kind,
+    })
+    .catch((error) => {
+      appLogger.warn("LLM: workflow seeded chat cleanup failed", error);
+    });
+}
+
+async function findPanelHistoryRow(
+  panelId: string,
+  conversationKey: number,
+): Promise<HTMLElement> {
+  const body = await openPanelHistoryMenu(panelId);
+  const row = await waitForWorkflowElement(
+    body,
+    `.llm-history-item[data-conversation-key="${conversationKey}"]`,
+  );
+  if (!row) {
+    const renderedKeys = Array.from(
+      body.querySelectorAll(".llm-history-item[data-conversation-key]"),
+    ).map((element) => (element as HTMLElement).dataset.conversationKey);
+    throw new Error(
+      `History row ${conversationKey} not rendered; renderedKeys=[${renderedKeys.join(",")}]`,
+    );
+  }
+  return row;
+}
+
+async function clickPanelHistoryRow(
+  panelId: string,
+  conversationKey: number,
+): Promise<WorkflowTestDiagnostics> {
+  assertWorkflowTestEnabled();
+  const row = await findPanelHistoryRow(panelId, conversationKey);
+  dispatchWorkflowMouseClick(row);
+  const diagnostics = await waitForPanelDiagnostics(
+    panelId,
+    (state) =>
+      state.conversationKey === conversationKey &&
+      !(state.runtimeSystemToggles || []).some(
+        (toggle) => toggle.visible && toggle.disabled,
+      ),
+  );
+  await Zotero.Promise.delay(150);
+  return (await getDiagnostics(panelId)) || diagnostics;
+}
+
+async function clickPanelHistoryRowWithForcedOpenFailure(
+  panelId: string,
+  conversationKey: number,
+  system: ConversationSystem,
+): Promise<{ diagnostics: WorkflowTestDiagnostics; interceptorHit: boolean }> {
+  assertWorkflowTestEnabled();
+  const row = await findPanelHistoryRow(panelId, conversationKey);
+  if (!row.isConnected) {
+    throw new Error(
+      `History row ${conversationKey} is not connected; the refusal path was not exercised`,
+    );
+  }
+  let interceptorHit = false;
+  setWorkflowTestHistoryOpenFailure((target) => {
+    if (target.conversationKey !== conversationKey || target.system !== system)
+      return false;
+    interceptorHit = true;
+    return true;
+  });
+  try {
+    dispatchWorkflowMouseClick(row);
+    const deadline = Date.now() + 2000;
+    let diagnostics = await getDiagnostics(panelId);
+    await Zotero.Promise.delay(150);
+    while (Date.now() < deadline) {
+      diagnostics = await getDiagnostics(panelId);
+      if (
+        !(diagnostics.runtimeSystemToggles || []).some(
+          (toggle) => toggle.visible && toggle.disabled,
+        )
+      )
+        break;
+      await Zotero.Promise.delay(50);
+    }
+    await Zotero.Promise.delay(150);
+    return { diagnostics: await getDiagnostics(panelId), interceptorHit };
+  } finally {
+    setWorkflowTestHistoryOpenFailure(null);
+  }
+}
+
+async function clickPanelHistoryRowsRapidly(
+  panelId: string,
+  conversationKeys: number[],
+): Promise<WorkflowTestRapidHistoryClicks> {
+  assertWorkflowTestEnabled();
+  const rows: HTMLElement[] = [];
+  for (const key of conversationKeys) {
+    rows.push(await findPanelHistoryRow(panelId, key));
+  }
+  const win = getPanel(panelId).body.ownerDocument.defaultView;
+  const errors: string[] = [];
+  const onError = (event: Event) => {
+    errors.push(String((event as ErrorEvent).message || event.type));
+  };
+  const onRejection = (event: Event) => {
+    errors.push(
+      String(
+        (event as PromiseRejectionEvent).reason?.message ||
+          (event as PromiseRejectionEvent).reason ||
+          event.type,
+      ),
+    );
+  };
+  win?.addEventListener("error", onError);
+  win?.addEventListener("unhandledrejection", onRejection);
+  try {
+    // One task: the second click lands before the first switch can end.
+    for (const row of rows) dispatchWorkflowMouseClick(row);
+    let previousKey = -1;
+    let stableSince = Date.now();
+    const deadline = Date.now() + 10000;
+    let diagnostics = await getDiagnostics(panelId);
+    while (Date.now() < deadline) {
+      const key = Number(diagnostics.conversationKey || 0);
+      const busy = (diagnostics.runtimeSystemToggles || []).some(
+        (toggle) => toggle.visible && toggle.disabled,
+      );
+      if (key !== previousKey || busy) {
+        previousKey = key;
+        stableSince = Date.now();
+      } else if (
+        conversationKeys.includes(key) &&
+        Date.now() - stableSince >= 600
+      ) {
+        break;
+      }
+      await Zotero.Promise.delay(50);
+      diagnostics = await getDiagnostics(panelId);
+    }
+    return { diagnostics, errors };
+  } finally {
+    win?.removeEventListener("error", onError);
+    win?.removeEventListener("unhandledrejection", onRejection);
+  }
+}
+
+/**
+ * Types `query` into an open Search history popup under `root` and, when
+ * `conversationKey` is set, clicks its row once the search has drawn it
+ * (a searched row carries a preview line).
+ */
+async function searchAndOpenHistoryPopup(
+  root: ParentNode,
+  query: string,
+  conversationKey: number,
+): Promise<WorkflowTestHistorySearchOpen> {
+  const overlay = Array.from(
+    root.querySelectorAll(".llm-standalone-search-overlay"),
+  ).find((element) => (element as HTMLElement).style.display !== "none") as
+    | HTMLElement
+    | undefined;
+  const input = overlay?.querySelector(
+    ".llm-standalone-search-input",
+  ) as HTMLInputElement | null;
+  if (!overlay || !input) {
+    throw new Error("The Search history popup did not open");
+  }
+  input.value = query;
+  const EventCtor = input.ownerDocument.defaultView?.Event || Event;
+  input.dispatchEvent(new EventCtor("input", { bubbles: true }));
+  const rowSelector = `.llm-standalone-search-item[data-conversation-key="${conversationKey}"]`;
+  const searchedRow = await waitForWorkflowElement(
+    overlay,
+    `${rowSelector} .llm-standalone-search-preview`,
+  );
+  const rows = Array.from(
+    overlay.querySelectorAll(".llm-standalone-search-item"),
+  ) as HTMLElement[];
+  const result: WorkflowTestHistorySearchOpen = {
+    resultKeys: rows.map((row) => Number(row.dataset.conversationKey || 0)),
+    resultSystems: rows.map((row) => row.dataset.conversationSystem || ""),
+    resultRuntimeLabels: rows.map((row) =>
+      (
+        row.querySelector(".llm-history-runtime-label")?.textContent || ""
+      ).trim(),
+    ),
+    opened: false,
+  };
+  const row = searchedRow?.closest(
+    ".llm-standalone-search-item",
+  ) as HTMLElement | null;
+  if (!row) {
+    // Close the popup so the next step starts from a closed popup.
+    input.dispatchEvent(
+      new (input.ownerDocument.defaultView?.KeyboardEvent || KeyboardEvent)(
+        "keydown",
+        { key: "Escape", bubbles: true },
+      ),
+    );
+    return result;
+  }
+  dispatchWorkflowMouseClick(row);
+  // The popup closes once the open has finished.
+  const deadline = Date.now() + 10000;
+  while (overlay.style.display !== "none" && Date.now() < deadline) {
+    await Zotero.Promise.delay(50);
+  }
+  result.opened = overlay.style.display === "none";
+  await Zotero.Promise.delay(200);
+  return result;
+}
+
+async function searchAndOpenPanelHistory(
+  panelId: string,
+  query: string,
+  conversationKey: number,
+): Promise<WorkflowTestHistorySearchOpen> {
+  assertWorkflowTestEnabled();
+  const body = await openPanelHistoryMenu(panelId);
+  dispatchWorkflowClick(
+    body as HTMLElement,
+    ".llm-history-menu-search-trigger",
+    "History search trigger",
+  );
+  return searchAndOpenHistoryPopup(body, query, conversationKey);
+}
+
+async function renamePanelHistoryConversation(
+  panelId: string,
+  conversationKey: number,
+  title: string,
+): Promise<Record<ConversationSystem, string | null>> {
+  assertWorkflowTestEnabled();
+  const row = await findPanelHistoryRow(panelId, conversationKey);
+  const renameButton = row.querySelector(
+    ".llm-history-item-rename",
+  ) as HTMLElement | null;
+  if (!renameButton) {
+    throw new Error(`History row ${conversationKey} has no rename button`);
+  }
+  dispatchWorkflowMouseClick(renameButton);
+  const doc = row.ownerDocument;
+  const input = (await waitForWorkflowElement(
+    doc,
+    ".llm-conversation-rename-input",
+  )) as HTMLInputElement | null;
+  if (!input) throw new Error("The rename dialog did not open");
+  input.value = title;
+  input.dispatchEvent(
+    new (doc.defaultView?.Event || Event)("input", { bubbles: true }),
+  );
+  (
+    doc.querySelector(
+      ".llm-conversation-rename-dialog .llm-modal-primary",
+    ) as HTMLButtonElement | null
+  )?.click();
+  const deadline = Date.now() + 5000;
+  while (
+    doc.querySelector(".llm-conversation-rename-dialog") &&
+    Date.now() < deadline
+  ) {
+    await Zotero.Promise.delay(50);
+  }
+  await Zotero.Promise.delay(300);
+  const titles = {} as Record<ConversationSystem, string | null>;
+  for (const system of ["upstream", "codex", "claude_code"] as const) {
+    const entry = await conversationRepository
+      .getCatalogEntry({ system, conversationKey })
+      .catch(() => null);
+    titles[system] = entry ? entry.title || "" : null;
+  }
+  return titles;
+}
+
+async function listStandaloneSidebarHistory(): Promise<
+  WorkflowTestHistoryRow[]
+> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  await waitForWorkflowElement(
+    doc,
+    ".llm-standalone-conv-item[data-conversation-key], .llm-standalone-sidebar-empty",
+  );
+  return (
+    Array.from(
+      doc.querySelectorAll(".llm-standalone-conv-item[data-conversation-key]"),
+    ) as HTMLElement[]
+  ).map((row) =>
+    readWorkflowHistoryRow(row, Number(row.dataset.conversationKey || 0)),
+  );
+}
+
+function readStandalonePinnedPapers(
+  doc: Document,
+): WorkflowTestStandalonePinnedPapers {
+  const button = doc.querySelector(
+    ".llm-standalone-icon-pin",
+  ) as HTMLButtonElement | null;
+  const region = doc.querySelector(
+    ".llm-standalone-pinned-region",
+  ) as HTMLElement | null;
+  const clear = doc.querySelector(
+    ".llm-standalone-pinned-clear",
+  ) as HTMLElement | null;
+  const leftEdge = (selector: string): number | null => {
+    const element = doc.querySelector(selector) as HTMLElement | null;
+    if (!element || !element.getClientRects().length) return null;
+    return Math.round(element.getBoundingClientRect().left);
+  };
+  return {
+    pinButton: {
+      visible: Boolean(button && !button.hidden),
+      pressed: button?.getAttribute("aria-pressed") === "true",
+      label: (button?.getAttribute("aria-label") || "").trim(),
+    },
+    regionVisible: Boolean(region && !region.hidden),
+    clearVisible: Boolean(clear && !clear.hidden),
+    edges: {
+      pinnedLabel: leftEdge(".llm-standalone-pinned-label"),
+      pinnedRow: leftEdge(".llm-standalone-pinned-paper"),
+      historyLabel: leftEdge(
+        ".llm-standalone-sidebar-list > .llm-standalone-conv-group",
+      ),
+      historyRow: leftEdge(
+        ".llm-standalone-sidebar-list > .llm-standalone-conv-item",
+      ),
+    },
+    rows: (
+      Array.from(
+        doc.querySelectorAll(".llm-standalone-pinned-paper"),
+      ) as HTMLElement[]
+    ).map((row) => {
+      const writing = row.querySelector(".llm-history-activity");
+      return {
+        paperItemId: Number(row.dataset.paperItemId || 0),
+        label: (
+          row.querySelector(".llm-standalone-conv-title")?.textContent || ""
+        ).trim(),
+        active: row.classList.contains("active"),
+        dot:
+          writing && !(writing as HTMLElement).hidden
+            ? "writing"
+            : row.querySelector(".llm-standalone-pinned-ready")
+              ? "ready"
+              : null,
+      };
+    }),
+  };
+}
+
+async function listStandalonePinnedPapers(): Promise<WorkflowTestStandalonePinnedPapers> {
+  assertWorkflowTestEnabled();
+  return readStandalonePinnedPapers(await waitForStandaloneReady());
+}
+
+async function clickStandalonePinButton(): Promise<WorkflowTestStandalonePinnedPapers> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const button = doc.querySelector(
+    ".llm-standalone-icon-pin",
+  ) as HTMLButtonElement | null;
+  if (!button || button.hidden) {
+    throw new Error("The window's pin button is not shown");
+  }
+  dispatchWorkflowMouseClick(button);
+  await Zotero.Promise.delay(100);
+  return readStandalonePinnedPapers(doc);
+}
+
+async function clickStandalonePinnedClear(): Promise<WorkflowTestStandalonePinnedPapers> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const button = doc.querySelector(
+    ".llm-standalone-pinned-clear",
+  ) as HTMLButtonElement | null;
+  if (!button || button.hidden) {
+    throw new Error('The "Pinned papers" Clear button is not shown');
+  }
+  dispatchWorkflowMouseClick(button);
+  await Zotero.Promise.delay(100);
+  return readStandalonePinnedPapers(doc);
+}
+
+async function clickStandalonePinnedPaper(
+  paperItemId: number,
+  action: "open" | "unpin" = "open",
+): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const row = await waitForWorkflowElement(
+    doc,
+    `.llm-standalone-pinned-paper[data-paper-item-id="${paperItemId}"]`,
+  );
+  if (!row) throw new Error(`Pinned paper ${paperItemId} not rendered`);
+  const target =
+    action === "unpin"
+      ? (row.querySelector('[data-action="unpin"]') as HTMLElement | null)
+      : row;
+  if (!target) throw new Error(`Pinned paper ${paperItemId} has no unpin`);
+  dispatchWorkflowMouseClick(target);
+  if (action === "open") {
+    await waitForStandaloneDiagnostics(
+      (state) => state.basePaperItemId === paperItemId,
+    );
+  }
+  await Zotero.Promise.delay(250);
+  return readStandaloneDiagnostics();
+}
+
+async function waitForStandaloneDiagnostics(
+  done: (diagnostics: WorkflowTestStandaloneDiagnostics) => boolean,
+  timeoutMs = 10000,
+): Promise<WorkflowTestStandaloneDiagnostics> {
+  const deadline = Date.now() + timeoutMs;
+  let diagnostics = readStandaloneDiagnostics();
+  while (!done(diagnostics) && Date.now() < deadline) {
+    await Zotero.Promise.delay(50);
+    diagnostics = readStandaloneDiagnostics();
+  }
+  return diagnostics;
+}
+
+async function clickStandaloneSidebarHistoryRow(
+  conversationKey: number,
+): Promise<WorkflowTestStandaloneDiagnostics> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const row = await waitForWorkflowElement(
+    doc,
+    `.llm-standalone-conv-item[data-conversation-key="${conversationKey}"]`,
+  );
+  if (!row) {
+    throw new Error(`Window history row ${conversationKey} not rendered`);
+  }
+  dispatchWorkflowMouseClick(row);
+  await waitForStandaloneDiagnostics(
+    (state) => state.conversationKey === conversationKey,
+  );
+  await Zotero.Promise.delay(200);
+  return readStandaloneDiagnostics();
+}
+
+async function searchAndOpenStandaloneHistory(
+  query: string,
+  conversationKey: number,
+): Promise<WorkflowTestHistorySearchOpen> {
+  assertWorkflowTestEnabled();
+  const doc = await waitForStandaloneReady();
+  const opener = doc
+    .querySelector(".llm-standalone-sidebar .llm-standalone-nav-icon-search")
+    ?.closest(
+      "button, [role='button'], .llm-standalone-nav-row",
+    ) as HTMLElement | null;
+  if (!opener) throw new Error("The Search history nav row was not rendered");
+  opener.click();
+  await waitForWorkflowElement(doc, ".llm-standalone-search-overlay");
+  return searchAndOpenHistoryPopup(doc, query, conversationKey);
 }
 
 async function deletePanelHistoryConversation(
@@ -7214,6 +9445,9 @@ export function installWorkflowTestHarness(targetAddon: {
     createItemNoteFixture,
     createStandaloneNoteFixture,
     renderPanelForItem,
+    renderSidePanelForItem,
+    discardSidePanelConversation,
+    getEphemeralConversationRowCounts,
     refreshActiveConversationPanels,
     exerciseBackgroundAgentPublication,
     exerciseNativeQuestionReview: (panelId: string) => {
@@ -7369,24 +9603,31 @@ export function installWorkflowTestHarness(targetAddon: {
           checklistSource: taskQuestionChecklist(record, question)?.source,
         })),
         paperRows: Object.fromEntries(
-          Object.values(record.ledger.papers).map((entry) => [
-            entry.key,
-            {
-              state: entry.state,
-              title: entry.title,
-              reads: Object.values(entry.turns).flatMap((turn) =>
-                turn.reads.map((read) => ({
-                  turnIndex: read.turnIndex,
-                  toolName: read.toolName,
-                  granularity: read.granularity,
-                  method: read.method,
-                  label: read.label,
-                  snippet: read.snippet,
-                  whyMatched: read.whyMatched,
-                })),
-              ),
-            },
-          ]),
+          Object.values(record.ledger.papers).map((entry) => {
+            const decision = latestTaskPaperDecision(entry);
+            return [
+              entry.key,
+              {
+                state: entry.state,
+                title: entry.title,
+                reads: Object.values(entry.turns).flatMap((turn) =>
+                  turn.reads.map((read) => ({
+                    turnIndex: read.turnIndex,
+                    toolName: read.toolName,
+                    granularity: read.granularity,
+                    method: read.method,
+                    label: read.label,
+                    snippet: read.snippet,
+                    whyMatched: read.whyMatched,
+                  })),
+                ),
+                ...(decision ? { decision: { ...decision } } : {}),
+                decisions: Object.values(entry.turns).flatMap((turn) =>
+                  turn.decision ? [{ ...turn.decision }] : [],
+                ),
+              },
+            ];
+          }),
         ),
       };
     },
@@ -7408,6 +9649,16 @@ export function installWorkflowTestHarness(targetAddon: {
         inputTokenCap: input.inputTokenCap,
         stopAfterNotes: input.stopAfterNotes,
       }),
+    exercisePaperDecisionsTurn: async ({ panelId, ...input }) =>
+      exercisePaperDecisionsTurn(
+        await resolveTaskProgressPanel({ panelId }),
+        input,
+      ),
+    callScopedMcpToolForConversation: async ({ panelId, ...input }) =>
+      callScopedMcpToolForConversation(
+        await resolveTaskProgressPanel({ panelId }),
+        input,
+      ),
     exerciseAgentStopRules: (input) =>
       exerciseAgentStopRules(getPanel(input.panelId), {
         scenario: input.scenario,
@@ -7435,9 +9686,12 @@ export function installWorkflowTestHarness(targetAddon: {
     retryLatestPanelResponse,
     readChatTurnLifecycle,
     seedPanelStoredUserMessage,
+    pickPastConversationInPanel,
+    attachPastChatAsAgentInPanel,
     clickPanelSystemToggle,
     clickPanelSystemTogglesRapidly,
-    clickPanelRuntimeModeToggle,
+    openPanelRuntimeMenu,
+    pickPanelRuntime,
     measurePanelRuntimeGeometry,
     measurePanelFooterLayout,
     selectNoteEditorText,
@@ -7551,6 +9805,8 @@ export function installWorkflowTestHarness(targetAddon: {
     clickStandaloneTab,
     toggleStandaloneSidebar,
     hoverStandaloneSidebarToggle,
+    openStandaloneRuntimeMenu,
+    pickStandaloneRuntime,
     clickStandaloneSystemToggle,
     clickStandaloneSystemTogglesRapidly,
     measureStandaloneRuntimeGeometry,
@@ -7653,9 +9909,32 @@ export function installWorkflowTestHarness(targetAddon: {
     getConversationHistoryTexts,
     getStandaloneDiagnostics,
     closeStandalone,
+    beginOpenStandaloneForTest,
+    isStandaloneWindowActiveForTest,
+    openTornChatWindowForTest,
+    getTornChatWindowsForTest,
+    closeTornChatWindowsForTest,
+    listChatWindowsForTest,
+    setPluginUpdateDeps: setPluginUpdateDepsForTest,
+    getStandaloneSidePanelDiagnostics,
+    clickStandaloneSidePanelControl,
+    setStandaloneSidePanelSlideDuration,
+    recordStandaloneSidePanelSlide,
+    clickStandaloneSidePanelHistoryRow,
+    dragStandaloneSidePanelSplitter,
+    clickStandaloneSidePanelTab,
+    readStandaloneSearchPopupChipColors,
+    clickStandaloneChatMessageAction,
+    evictStandaloneConversationFromMemory,
+    probeStandaloneReadOnlyBorrowedLoad,
+    sendStandaloneSideChat,
+    openStandaloneSlashSideChatItem,
+    clickStandaloneSlashSideChatItem,
     getLastSend: () => lastSend,
     getDiagnostics,
     configurePermissionCatalogs,
+    configureCodexDirectCatalog,
+    getCodexDirectCatalogRequests: () => [...codexDirectCatalogRequests],
     configureCodexModelCatalogs,
     getCodexModelCatalogRequests: () => [...codexModelCatalogRequests],
     resolveDelayedCodexModelCatalog: async () => {
@@ -7685,6 +9964,20 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseAssistantSelectionPromptDismissal,
     cleanupFixture,
     listPanelHistory,
+    seedHistoryConversation,
+    deleteSeededHistoryConversation,
+    clickPanelHistoryRow,
+    clickPanelHistoryRowWithForcedOpenFailure,
+    clickPanelHistoryRowsRapidly,
+    searchAndOpenPanelHistory,
+    renamePanelHistoryConversation,
+    listStandaloneSidebarHistory,
+    clickStandaloneSidebarHistoryRow,
+    listStandalonePinnedPapers,
+    clickStandalonePinButton,
+    clickStandalonePinnedClear,
+    clickStandalonePinnedPaper,
+    searchAndOpenStandaloneHistory,
     deletePanelHistoryConversation,
     clickPanelDelete,
     exercisePanelDeleteDuringPendingSend,

@@ -8,13 +8,23 @@ import {
   createWebReadTool,
   validateWebReadInput,
 } from "../src/agent/tools/read/webRead";
-import { clearWebSourcesForRun } from "../src/webAccess/runSources";
+import {
+  clearWebSourcesForRun,
+  highestWebSourceNumber,
+  registerWebSearchSources,
+  seedWebSourceNumbering,
+} from "../src/webAccess/runSources";
 import {
   getTavilyApiKey,
   hasTavilyApiKey,
   setTavilyApiKey,
 } from "../src/webAccess/prefs";
-import type { WebAccessProvider } from "../src/webAccess/types";
+import type {
+  WebAccessProvider,
+  WebSourceRecord,
+} from "../src/webAccess/types";
+import { OUTSIDE_SEARCH_STOP_NOTE } from "../src/agent/tools/read/outsideSearchNeed";
+import { clearOutsideSearchTurn } from "../src/agent/tools/read/outsideSearchLedger";
 import type { AgentToolContext } from "../src/agent/types";
 
 describe("web access agent tools", function () {
@@ -22,6 +32,7 @@ describe("web access agent tools", function () {
 
   afterEach(function () {
     clearWebSourcesForRun("run-web-tools");
+    clearOutsideSearchTurn("run-web-tools");
     (globalThis as typeof globalThis & { Zotero?: typeof Zotero }).Zotero =
       originalZotero;
   });
@@ -105,11 +116,8 @@ describe("web access agent tools", function () {
     };
 
     assert.includeMembers(searchSchema.required || [], ["query", "depth"]);
-    assert.includeMembers(readSchema.required || [], [
-      "urls",
-      "query",
-      "depth",
-    ]);
+    // query is required for mode 'passages' only (checked by validation).
+    assert.includeMembers(readSchema.required || [], ["urls", "depth"]);
     assert.include(
       searchSchema.properties?.depth?.description || "",
       "Follow an explicit user depth request",
@@ -256,6 +264,13 @@ describe("web access agent tools", function () {
     const sourceId = searchResult.results[0].sourceId;
     assert.match(sourceId, /^web_[a-z0-9]+$/);
     assert.deepEqual(searchResult.citation.availableSourceIds, [sourceId]);
+    // Every outside search result closes with the turn's web ledger and
+    // the stop note, as its last field.
+    assert.equal(
+      searchResult.nextStep,
+      `Outside searches this turn: 1 web (queries: current topic). ${OUTSIDE_SEARCH_STOP_NOTE}`,
+    );
+    assert.equal(Object.keys(searchResult).at(-1), "nextStep");
 
     const readResult = await read.execute(
       {
@@ -443,6 +458,60 @@ describe("web access agent tools", function () {
           },
         },
       ],
+    );
+  });
+});
+
+describe("web source numbering", function () {
+  const runId = "run-web-numbering";
+
+  afterEach(function () {
+    clearWebSourcesForRun(runId);
+  });
+
+  function record(url: string): WebSourceRecord {
+    return {
+      sourceId: "provider-id",
+      url,
+      hostname: "example.com",
+      organization: "Example",
+      title: "Page",
+    };
+  }
+
+  it("numbers new sources web_1, web_2 in order and reuses the ID of a repeated URL", function () {
+    const a = "https://example.com/a";
+    const b = "https://example.com/b";
+    const c = "https://example.com/c";
+    const first = registerWebSearchSources(runId, [record(a), record(b)]);
+    assert.deepEqual(
+      first.map((source) => source.sourceId),
+      ["web_1", "web_2"],
+    );
+    const second = registerWebSearchSources(runId, [record(b), record(c)]);
+    assert.deepEqual(
+      second.map((source) => source.sourceId),
+      ["web_2", "web_3"],
+    );
+  });
+
+  it("continues numbering after the highest ID in the transcript", function () {
+    const highest = highestWebSourceNumber([
+      { content: '{"sourceId":"web_7"}' },
+      { content: "see web_3" },
+    ]);
+    assert.equal(highest, 7);
+    seedWebSourceNumbering(runId, highest);
+    const [source] = registerWebSearchSources(runId, [
+      record("https://example.com/new"),
+    ]);
+    assert.equal(source.sourceId, "web_8");
+  });
+
+  it("ignores 7-character legacy hash IDs when seeding", function () {
+    assert.equal(
+      highestWebSourceNumber([{ content: "web_1234567 web_0k3f9a2" }]),
+      0,
     );
   });
 });

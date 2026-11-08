@@ -181,6 +181,13 @@ describe("workflow: explicit provider selection", function () {
       levels: ["low", "medium", "high", "max", "none"],
     },
     {
+      preset: "opencode_go",
+      url: "https://opencode.ai/zen/go/v1",
+      protocol: "anthropic_messages",
+      model: "claude-sonnet-4-6",
+      levels: ["low", "medium", "high", "max", "none"],
+    },
+    {
       preset: "local_openai",
       url: "http://localhost:1234/v1",
       protocol: "openai_chat_compat",

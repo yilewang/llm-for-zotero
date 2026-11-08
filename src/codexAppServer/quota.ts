@@ -9,6 +9,12 @@ export async function readCodexQuota(codexPath: string) {
     { codexPath: getEffectiveCodexAppServerBinaryPath(codexPath) },
   );
   return parseCodexQuota(
-    await proc.sendRequest("account/rateLimits/read", {}, 8000),
+    // Optional telemetry: a slow read must not kill the process a chat turn is using.
+    await proc.sendRequest(
+      "account/rateLimits/read",
+      { excludeResetCreditDetails: true },
+      8000,
+      { failProcessOnTimeout: false },
+    ),
   );
 }

@@ -12,6 +12,7 @@ import {
   normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
   normalizeTagContextRefs,
+  normalizeAttachedConversationRefs,
   synthesizeSelectedTextContexts,
 } from "../context/normalizers";
 import { normalizeQuoteCitations } from "../quotes/quoteCitations";
@@ -251,6 +252,21 @@ export async function loadStoredConversationMessages(config: {
         return undefined;
       }
     })();
+    const attachedConversations = (() => {
+      if (
+        typeof row.attachedConversationsJson !== "string" ||
+        !row.attachedConversationsJson
+      )
+        return undefined;
+      try {
+        const normalized = normalizeAttachedConversationRefs(
+          JSON.parse(row.attachedConversationsJson) as unknown,
+        );
+        return normalized.length ? normalized : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
     const screenshotImages = (() => {
       if (typeof row.screenshotImages !== "string" || !row.screenshotImages)
         return undefined;
@@ -352,6 +368,7 @@ export async function loadStoredConversationMessages(config: {
       quoteCitations,
       selectedCollectionContexts,
       selectedTagContexts,
+      attachedConversations,
       screenshotImages,
       attachments,
       generatedImages,

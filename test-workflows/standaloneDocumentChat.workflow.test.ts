@@ -175,7 +175,7 @@ describe("workflow: standalone document chat", function () {
     );
     assert.deepEqual(
       expanded.titleActionLabels,
-      ["Show task progress", "Export", "Delete conversation"],
+      ["Pin this paper", "Show task progress", "Export", "Delete conversation"],
       diagnosticsMessage(expanded),
     );
     assert.isDefined(expanded.alignment, diagnosticsMessage(expanded));
@@ -455,6 +455,26 @@ describe("workflow: standalone document chat", function () {
       "markdown",
       diagnosticsMessage(postSendDiagnostics),
     );
+  });
+
+  it("starts the standalone composer at one line with only its own resize handle", async function () {
+    const fixture = await api.createPaperWithPdfFixture({
+      title: "Workflow One Line Composer",
+      pdfTitle: "Workflow One Line Composer PDF",
+    });
+    fixtures.push(fixture);
+    await api.openStandaloneForItem(fixture.parentItemId);
+
+    const resize = await api.exerciseStandaloneComposerManualResize();
+
+    assert.deepEqual(resize.resizeHandleTargets, ["input"]);
+    assert.closeTo(resize.heightBeforeDrag, resize.oneLineHeight, 1);
+    // The composer text starts where the mode label above it starts.
+    if (resize.textOffsetFromModeLabel !== null) {
+      assert.closeTo(resize.textOffsetFromModeLabel, 0, 0.5);
+    }
+    // Only the window-aware handle resizes the standalone composer.
+    assert.equal(resize.nativeResize, "none");
   });
 
   it("preserves a manually resized standalone composer while typing", async function () {
@@ -897,5 +917,185 @@ describe("workflow: standalone document chat", function () {
       fixture.pdfAttachmentId,
       diagnosticsMessage(postSendDiagnostics),
     );
+  });
+
+  it("switches conversations from its sidebar in place, keeping the mounted panel", async function () {
+    const fixture = await api.createPaperWithPdfFixture({
+      title: "Workflow Standalone In-Place Switch",
+      pdfTitle: "Workflow Standalone In-Place Switch PDF",
+    });
+    fixtures.push(fixture);
+    await api.openStandaloneForItem(fixture.parentItemId);
+    const win = (Zotero as any).LLMForZotero.data.standaloneWindow as Window;
+    const doc = win.document;
+    const content = () =>
+      doc.querySelector(".llm-standalone-content") as HTMLElement;
+    const panelRoot = () =>
+      content().querySelector("#llm-main") as HTMLElement | null;
+    const chatText = () =>
+      content().querySelector("#llm-chat-box")?.textContent || "";
+    const input = () =>
+      content().querySelector("#llm-input") as HTMLTextAreaElement | null;
+    const mountedKey = () => Number(panelRoot()?.dataset.itemId || 0);
+    const now = () => win.performance?.now() ?? Date.now();
+    const nextFrame = () =>
+      new Promise<void>((resolve) =>
+        win.requestAnimationFrame(() => resolve()),
+      );
+    const waitUntil = async (check: () => boolean, label: string) => {
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        if (check()) return;
+        await Zotero.Promise.delay(10);
+      }
+      assert.fail(`Timed out waiting for ${label}`);
+    };
+    const seedTurns = (marker: string) =>
+      Array.from({ length: 12 }, (_, index) => [
+        { role: "user" as const, text: `${marker} question ${index}` },
+        {
+          role: "assistant" as const,
+          text: `${marker} answer ${index}. ${"Body text. ".repeat(40)}`,
+        },
+      ]).flat();
+
+    /**
+     * Two conversations in the current tab: A seeded, then a new chat B
+     * seeded. B is mounted when this returns.
+     */
+    const seedTwo = async (label: string) => {
+      const markerA = `${label} conversation A`;
+      const markerB = `${label} conversation B`;
+      await api.seedStandaloneConversation(seedTurns(markerA));
+      const keyA = mountedKey();
+      // A may be a remembered chat an earlier test left a draft in.
+      input()!.value = "";
+      input()!.dispatchEvent(new win.Event("input", { bubbles: true }));
+      doc
+        .querySelector<HTMLButtonElement>('[data-sidebar-action="new-chat"]')!
+        .click();
+      await waitUntil(
+        () => mountedKey() > 0 && mountedKey() !== keyA,
+        `${label}: the new chat to mount`,
+      );
+      await api.seedStandaloneConversation(seedTurns(markerB));
+      const keyB = mountedKey();
+      const rowFor = (key: number) =>
+        doc.querySelector<HTMLElement>(
+          `.llm-standalone-conv-item[data-conversation-key="${key}"]`,
+        );
+      await waitUntil(
+        () => Boolean(rowFor(keyA) && rowFor(keyB)),
+        `${label}: both sidebar rows`,
+      );
+      return { keyA, keyB, markerA, markerB, rowFor };
+    };
+
+    const timings: Record<string, number[]> = {};
+    // Collected, not asserted at once, so the timing line is logged either way.
+    const remounts: string[] = [];
+    const checkSameRoot = (tab: string, root: HTMLElement | null) => {
+      if (panelRoot() !== root || !root?.isConnected) {
+        remounts.push(`${tab}: switch to ${mountedKey()} rebuilt the panel`);
+      }
+    };
+    const switchTo = async (
+      label: string,
+      row: HTMLElement,
+      key: number,
+      marker: string,
+    ) => {
+      // Three numbers per switch: the click handler's own time, the time
+      // until the chat shows, and the time until the window's DOM stops
+      // changing (the second chat draw and the history list re-render).
+      let lastMutation = now();
+      const observer = new win.MutationObserver(() => {
+        lastMutation = now();
+      });
+      observer.observe(doc.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true,
+      });
+      const started = now();
+      row.click();
+      const clicked = now();
+      while (
+        !(mountedKey() === key && chatText().includes(`${marker} answer 11`))
+      ) {
+        if (now() - started > 10000) {
+          observer.disconnect();
+          assert.fail(`${label}: timed out waiting for ${marker}`);
+        }
+        await nextFrame();
+      }
+      const shown = now();
+      while (now() - lastMutation < 300 && now() - started < 3000) {
+        await Zotero.Promise.delay(20);
+      }
+      observer.disconnect();
+      (timings[`${label} click`] ||= []).push(clicked - started);
+      (timings[`${label} shown`] ||= []).push(shown - started);
+      (timings[`${label} settled`] ||= []).push(
+        Math.max(lastMutation, shown) - started,
+      );
+    };
+
+    for (const tab of ["open", "paper"] as const) {
+      await api.clickStandaloneTab(tab);
+      const { keyA, keyB, markerA, markerB, rowFor } = await seedTwo(tab);
+      assert.notEqual(keyA, keyB);
+      const root = panelRoot();
+      assert.isOk(root, `${tab}: panel root`);
+      input()!.value = `${tab} draft kept in B`;
+      input()!.dispatchEvent(new win.Event("input", { bubbles: true }));
+      const statusLine = () =>
+        content().querySelector("#llm-status") as HTMLElement | null;
+      // Stands in for a status B's own request wrote ("sending", an error).
+      statusLine()!.textContent = `${tab} status left by B`;
+
+      await switchTo(tab, rowFor(keyA)!, keyA, markerA);
+      checkSameRoot(tab, root);
+      assert.notInclude(
+        statusLine()?.textContent || "",
+        "status left by B",
+        `${tab}: A must not show B's status`,
+      );
+      assert.isFalse(
+        content().querySelector("#llm-chat-box")?.hasAttribute("inert"),
+        `${tab}: the chat takes input after the switch`,
+      );
+      assert.notInclude(chatText(), markerB, `${tab}: B's messages left`);
+      assert.equal(input()!.value, "", `${tab}: A has no draft`);
+      assert.isTrue(rowFor(keyA)!.classList.contains("active"));
+      assert.isFalse(rowFor(keyB)!.classList.contains("active"));
+
+      await switchTo(tab, rowFor(keyB)!, keyB, markerB);
+      checkSameRoot(tab, root);
+      assert.notInclude(chatText(), markerA, `${tab}: A's messages left`);
+      assert.equal(input()!.value, `${tab} draft kept in B`);
+      assert.isTrue(rowFor(keyB)!.classList.contains("active"));
+      assert.isFalse(rowFor(keyA)!.classList.contains("active"));
+      input()!.value = "";
+      input()!.dispatchEvent(new win.Event("input", { bubbles: true }));
+
+      for (let round = 0; round < 3; round += 1) {
+        await switchTo(tab, rowFor(keyA)!, keyA, markerA);
+        await switchTo(tab, rowFor(keyB)!, keyB, markerB);
+        checkSameRoot(tab, root);
+      }
+    }
+    const summary = Object.entries(timings)
+      .map(([label, values]) => {
+        const sorted = [...values].sort((a, b) => a - b);
+        const median = sorted[Math.floor(sorted.length / 2)];
+        return `${label}: median ${median.toFixed(1)} ms over ${values.length} [${values
+          .map((value) => value.toFixed(1))
+          .join(", ")}]`;
+      })
+      .join("; ");
+    console.log(`Standalone conversation switch timing: ${summary}`);
+    assert.deepEqual(remounts, [], "a sidebar switch rebuilt the panel");
   });
 });

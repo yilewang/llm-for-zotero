@@ -5,6 +5,7 @@ import {
 } from "./conversationSystems";
 declare const Zotero: any;
 
+import { isEphemeralConversationKey } from "./conversationKeySpace";
 import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
@@ -737,6 +738,8 @@ export async function registerConversationScope(
   params: ConversationRegistryScope,
   options?: { inTransaction?: boolean },
 ): Promise<boolean> {
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(params.conversationKey)) return false;
   const db = getZoteroDb();
   if (!db?.queryAsync) return false;
   const queryAsync = db.queryAsync.bind(db);
@@ -998,10 +1001,53 @@ export async function deleteRegisteredConversationScopeInTransaction(
   }
 }
 
+async function registryRowMatchesRepair(
+  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>,
+  normalized: NonNullable<ReturnType<typeof normalizeScope>>,
+): Promise<boolean> {
+  const rows = (await queryAsync(
+    `SELECT legacy_conversation_key AS conversationKey,
+            system,
+            kind,
+            profile_signature AS profileSignature,
+            library_id AS libraryID,
+            paper_item_id AS paperItemID,
+            updated_at AS updatedAt,
+            title,
+            valid,
+            invalid_reason AS invalidReason,
+            instance_id AS instanceID
+     FROM ${CONVERSATION_REGISTRY_TABLE}
+     WHERE conversation_id = ?
+     LIMIT 1`,
+    [normalized.conversationID],
+  )) as Array<Record<string, unknown>> | undefined;
+  const row = rows?.[0];
+  if (!row) return false;
+  const nullableNumber = (value: unknown): number | null =>
+    value === null || value === undefined ? null : Number(value);
+  return (
+    Number(row.conversationKey) === normalized.conversationKey &&
+    row.system === normalized.system &&
+    row.kind === normalized.kind &&
+    row.profileSignature === normalized.profileSignature &&
+    Number(row.libraryID) === normalized.libraryID &&
+    nullableNumber(row.paperItemID) === (normalized.paperItemID ?? null) &&
+    Number(row.updatedAt) === normalized.updatedAt &&
+    // The upsert keeps the stored title when it has none of its own.
+    (normalized.title === null || row.title === normalized.title) &&
+    Number(row.valid) === 1 &&
+    (row.invalidReason === null || row.invalidReason === undefined) &&
+    row.instanceID === normalized.instanceID
+  );
+}
+
 export async function repairRegisteredConversationScope(
   params: ConversationRegistryScope,
   options?: { inTransaction?: boolean },
 ): Promise<boolean> {
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(params.conversationKey)) return false;
   const db = getZoteroDb();
   if (!db?.queryAsync) return false;
   const queryAsync = db.queryAsync.bind(db);
@@ -1075,6 +1121,15 @@ export async function repairRegisteredConversationScope(
         : await executeTransaction(writeRepair);
     if (!repaired) return false;
     await syncCatalogInstanceID(normalized);
+    return true;
+  }
+  // Opening a conversation repairs its registry row every time. When the row
+  // already holds exactly what the upsert would write, skip the transaction
+  // and the writes; the ledger check still decides the result.
+  if (await registryRowMatchesRepair(queryAsync, normalized)) {
+    if (!(await registryWriteStillOwnsLedger(normalized))) return false;
+    // The catalog update only fills a blank instance ID.
+    if (!catalogInstanceID) await syncCatalogInstanceID(normalized);
     return true;
   }
   const writeRepair = async (): Promise<boolean> => {

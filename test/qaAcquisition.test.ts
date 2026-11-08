@@ -5,6 +5,8 @@ import {
   snapshotTestGlobals,
   restoreTestGlobals,
   mockPdfAttachment,
+  buildMarkdownPdfContext,
+  headingSequenceMarkdown,
 } from "./helpers/retrievalCorpus";
 import {
   writeMineruCacheFiles,
@@ -18,6 +20,22 @@ import { RetrievalService } from "../src/agent/services/retrievalService";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import { buildRetrievalQueryPlan } from "../src/services/retrieval/retrievalQueryPlan";
 import { papers as corpus } from "./fixtures/qaEvaluation/corpus";
+import {
+  digestSourceLabel,
+  withDigestQuoteCitations,
+} from "../src/agent/digests/paperDigestWorker";
+import type { QuoteCitation } from "../src/shared/types";
+import { SECTIONS_NOT_FOUND_RULE } from "../src/agent/digests/readScope";
+import { clearSectionPickCache } from "../src/agent/digests/sectionPicker";
+import {
+  fakeReader,
+  headingMatchReader,
+  idOf,
+  namesOf,
+} from "./helpers/sectionPickerFixtures";
+
+/** Stands in for the reader that picks named sections (sectionPicker.ts). */
+const STAND_IN_READER = headingMatchReader();
 
 describe("QA acquisition contracts", function () {
   let previous: ReturnType<typeof snapshotTestGlobals>;
@@ -68,6 +86,9 @@ describe("QA acquisition contracts", function () {
         resolvePaperContextTarget: (target: any) =>
           refs.find((p) => p.itemId === target.itemId),
       } as any,
+      undefined,
+      undefined,
+      { readerFactories: STAND_IN_READER.factories },
     );
     const input = tool.validate({
       mode: "targeted",
@@ -92,6 +113,53 @@ describe("QA acquisition contracts", function () {
       modelName: "test",
     } as any)) as any;
   }
+  it("gives a digest quote the id paper_read gives the same passage", async function () {
+    const result = await read({ query: "observational drift", topK: 2 });
+    const citations = (result.quoteCitations || []) as QuoteCitation[];
+    assert.isNotEmpty(citations);
+    const [passage] = citations;
+    // paper_read labels its quotes with the paper's source label.
+    assert.equal(passage.citationLabel, digestSourceLabel(refs[0]));
+    const digest = withDigestQuoteCitations(
+      {
+        schema: 2,
+        itemId: refs[0].itemId,
+        contextItemId: refs[0].contextItemId,
+        title: refs[0].title,
+        answer: "The paper reports drift.",
+        evidence: [{ quote: passage.quoteText }],
+        facets: [],
+        gaps: [],
+        source: {
+          backend: "mineru",
+          readCharacters: 1,
+          totalCharacters: 1,
+          complete: true,
+        },
+        model: "m",
+        producedAt: 1,
+        cacheKey: "k",
+      },
+      digestSourceLabel(refs[0]),
+    );
+    assert.equal(digest.evidence[0].quoteCitationId, passage.id);
+    assert.deepEqual(
+      digest.quoteCitations?.map((citation) => [
+        citation.id,
+        citation.citationLabel,
+        citation.contextItemId,
+        citation.itemId,
+      ]),
+      [
+        [
+          passage.id,
+          passage.citationLabel,
+          passage.contextItemId,
+          passage.itemId,
+        ],
+      ],
+    );
+  });
   it("keeps an Abstract-only top-one read inside Abstract", async function () {
     const result = await read({
       query: "observational drift",
@@ -248,22 +316,129 @@ describe("QA acquisition contracts", function () {
     await service.retrieveEvidence(query);
     assert.equal(calls, 2);
   });
-  it("retains a disclosed fallback for an unknown section instead of claiming that section was read", async function () {
+  it("searches a query only inside the named sections and names a section the paper lacks", async function () {
     const result = await read({
       query: "blood pressure",
       sections: ["Human Participants"],
       topK: 3,
     });
+    // No section of that name: nothing of the paper is searched instead.
+    assert.isEmpty(result.results);
+    assert.isEmpty(result.papers[0].passages);
+    assert.equal(result.papers[0].status, "no_matching_sections");
+    assert.include(JSON.stringify(result.warnings), "Not found in ");
+    assert.include(JSON.stringify(result.warnings), "Human Participants");
+    assert.include(result.warnings, SECTIONS_NOT_FOUND_RULE);
+    assert.include(result.note, "none of the named sections were found");
+  });
+  it("keeps a query inside the named sections the paper has when another name is missing", async function () {
+    const result = await read({
+      query: "sample recording method",
+      sections: ["Methods", "Human Participants"],
+      topK: 8,
+    });
     assert.isNotEmpty(result.papers[0].passages);
-    assert.notInclude(
-      result.papers[0].passages.map((p: any) => p.sectionLabel),
-      "Human Participants",
+    for (const p of result.papers[0].passages)
+      assert.equal(p.sectionLabel, "Methods");
+    assert.include(JSON.stringify(result.warnings), "Human Participants");
+    assert.equal(
+      result.warnings.filter((w: string) => w === SECTIONS_NOT_FOUND_RULE)
+        .length,
+      1,
     );
-    assert.include(JSON.stringify(result), "Human Participants");
-    assert.include(
-      JSON.stringify(result.warnings),
-      "No outline section matched: Human Participants",
+  });
+  // Since the reader picks named sections, which heading binds a name is
+  // the reader's call: the search stays inside what it picked, and a name it
+  // finds no part for is reported and not searched.
+  it("searches only the sections the reader picks for each name", async function () {
+    clearSectionPickCache();
+    const picks: Record<string, string | undefined> = {
+      methods: "2 Methods",
+      "model calibration": undefined,
+      "model fit": "5 Model fit",
+    };
+    const reader = fakeReader((prompt) => ({
+      parts: namesOf(prompt).map((name) =>
+        picks[name]
+          ? { name, sections: [idOf(prompt, `| # ${picks[name]} |`)] }
+          : { name, none: true },
+      ),
+    }));
+    const markdown = headingSequenceMarkdown(
+      [
+        "Place cells under drift",
+        "Abstract",
+        "1 Introduction",
+        "2 Methods",
+        "3 Results",
+        "4 Comparison with other methods",
+        "5 Model fit",
+        "6 Discussion",
+      ],
+      {
+        "2 Methods": "The recording method used silicon probes.",
+        "4 Comparison with other methods":
+          "Each recording method was compared with calcium imaging.",
+        "5 Model fit": "The model fit the recording well.",
+      },
     );
+    const ctx = await buildMarkdownPdfContext(markdown, 9801);
+    // The paper's MinerU directory, as the attachment lookup supplies it:
+    // the reader picks from its headings.
+    const paper = {
+      ...refs[0],
+      itemId: 9800,
+      contextItemId: 9801,
+      mineruCacheDir: getMineruItemDir(9801),
+    };
+    const service = { ensurePaperContext: async () => ctx } as any;
+    const tool = createPaperReadTool(
+      service,
+      new RetrievalService(service),
+      {} as any,
+      {
+        listPaperContexts: () => [paper],
+        resolvePaperContextTarget: () => paper,
+      } as any,
+      undefined,
+      undefined,
+      { readerFactories: reader.factories },
+    );
+    const run = async (sections: string[]) => {
+      const input = tool.validate({
+        mode: "targeted",
+        targets: [{ itemId: paper.itemId, contextItemId: paper.contextItemId }],
+        query: "recording method",
+        sections,
+        topK: 8,
+      });
+      if (!input.ok) throw Error(input.error);
+      return (await tool.execute(input.value, {
+        request: {
+          conversationKey: 11,
+          mode: "agent",
+          conversationKind: "paper",
+          userText: "Read the methods",
+          libraryID: 1,
+          activeItemId: paper.itemId,
+        },
+        item: null,
+        currentAnswerText: "",
+        modelName: "test",
+      } as any)) as any;
+    };
+    const methods = await run(["methods"]);
+    assert.isNotEmpty(methods.papers[0].passages);
+    for (const p of methods.papers[0].passages)
+      assert.equal(p.sectionLabel, "2 Methods");
+    // A name the reader finds no part for is not searched.
+    const calibration = await run(["model calibration"]);
+    assert.isEmpty(calibration.papers[0].passages);
+    assert.include(JSON.stringify(calibration.warnings), "model calibration");
+    const fit = await run(["model fit"]);
+    assert.isNotEmpty(fit.papers[0].passages);
+    for (const p of fit.papers[0].passages)
+      assert.match(p.sectionLabel, /5 Model fit$/);
   });
   it("does not carry a legacy page onto a changed source range", async function () {
     const id = refs[0].contextItemId;

@@ -86,11 +86,17 @@ describe("slash menu behavior", function () {
   it("uses paper PDF base actions only for paper chat", function () {
     assert.deepEqual(
       getBaseSlashMenuItems(resolveSlashActionChatMode("global")),
-      ["upload", "reference"],
+      ["upload", "reference", "pastConversation"],
     );
     assert.deepEqual(
       getBaseSlashMenuItems(resolveSlashActionChatMode("paper")),
-      ["upload", "reference", "pdfPage", "pdfMultiplePages"],
+      [
+        "upload",
+        "reference",
+        "pastConversation",
+        "pdfPage",
+        "pdfMultiplePages",
+      ],
     );
   });
 

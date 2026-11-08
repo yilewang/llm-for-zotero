@@ -11,6 +11,10 @@ const { catalog, selectSteps } = await tsImport(
   "../test-behavior/catalog.ts",
   import.meta.url,
 );
+const { RESUME_GAP_MS, launcherLivenessError, quitRecordedAt } = await tsImport(
+  "../test-behavior/liveness.ts",
+  import.meta.url,
+);
 const args = process.argv.slice(2);
 const options = {
   tier: "full",
@@ -133,6 +137,10 @@ if (list) {
     ...process.env,
     LLM_FOR_ZOTERO_BEHAVIOR_REQUEST: "",
   });
+  const launchedAt = Date.now();
+  let previousPollAt = launchedAt;
+  let lastHeartbeatAt;
+  let resumedAt;
   const child = spawn(npm, ["run", "start"], {
     cwd: root,
     stdio: "inherit",
@@ -178,6 +186,35 @@ if (list) {
         throw new Error(
           "Zotero launcher closed before a completed report was written",
         );
+      // Zotero can quit without the launcher closing; detect that directly.
+      const heartbeat = await stat(
+        path.join(reportDir, "heartbeat.json"),
+      ).catch(() => null);
+      const checkpointsPath = path.join(profile, "sessionCheckpoints.json");
+      let quitAt;
+      try {
+        quitAt = quitRecordedAt(
+          JSON.parse(await readFile(checkpointsPath, "utf8")),
+          (await stat(checkpointsPath)).mtimeMs,
+          launchedAt,
+        );
+      } catch {
+        // A missing or unreadable file means no recorded quit.
+      }
+      if (heartbeat) lastHeartbeatAt = heartbeat.mtimeMs;
+      const now = Date.now();
+      // A long gap between polls means the machine slept; Zotero's timer
+      // needs a full stale window after wake to write a new heartbeat.
+      if (now - previousPollAt > RESUME_GAP_MS) resumedAt = now;
+      previousPollAt = now;
+      const livenessError = launcherLivenessError({
+        now,
+        launchedAt,
+        heartbeatAt: lastHeartbeatAt,
+        quitRecordedAt: quitAt,
+        resumedAt,
+      });
+      if (livenessError) throw new Error(livenessError);
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     if (!(await stat(path.join(reportDir, "done.json")).catch(() => null)))

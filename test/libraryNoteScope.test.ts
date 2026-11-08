@@ -10,9 +10,9 @@ describe("note discovery collection scope", function () {
           received = params;
           return { notes: [], totalCount: 0 };
         },
-        searchAllNotes: async (params: Record<string, unknown>) => {
+        searchAllNotesPage: async (params: Record<string, unknown>) => {
           received = params;
-          return [];
+          return { notes: [], totalCount: 0 };
         },
       } as never);
       const parsed = tool.validate({

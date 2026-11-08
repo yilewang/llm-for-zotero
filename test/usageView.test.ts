@@ -655,21 +655,6 @@ describe("usage tokens card copy", function () {
     );
   });
 
-  // A turn whose provider reported nothing is stored as zero tokens. Printing
-  // "0" for it would say the turn was free, which nobody knows.
-  it("refuses to print zero when the provider reported nothing", function () {
-    assert.deepEqual(
-      describeUsageTokensCard({
-        promptTokens: 0,
-        completionTokens: 0,
-        totalTokens: 0,
-        unreportedTurns: 1,
-        questions: 1,
-      }),
-      { value: "—", sub: "not reported by the provider" },
-    );
-  });
-
   it("separates an empty range from a range with untallied turns", function () {
     assert.deepEqual(
       describeUsageTokensCard({

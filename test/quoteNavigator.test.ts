@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   buildParagraphJumpSuccessStatus,
   navigateToQuote,
+  openPaperForAbstractQuote,
   type QuoteNavigationRequest,
   type QuoteNavigatorDeps,
 } from "../src/modules/contextPanel/quoteNavigator";
@@ -689,5 +690,49 @@ describe("buildParagraphJumpSuccessStatus", function () {
       buildParagraphJumpSuccessStatus("5", pageOnly, 2),
       "Jumped to cited source (page 5, quote found; exact occurrence not selected)",
     );
+  });
+});
+
+describe("openPaperForAbstractQuote", function () {
+  it("opens the paper's PDF at its first page when it has one", async function () {
+    const opened: Array<[number, unknown]> = [];
+    const outcome = await openPaperForAbstractQuote(
+      { itemId: 5, contextItemId: 105 },
+      {
+        openReader: async (id, location) => {
+          opened.push([id, location]);
+          return {} as never;
+        },
+        selectItem: async () => {
+          throw new Error("a PDF opened: nothing to select");
+        },
+      },
+    );
+    assert.equal(outcome, "opened");
+    assert.deepEqual(opened, [[105, { pageIndex: 0 }]]);
+  });
+
+  it("selects the item in the library when it has no PDF to open", async function () {
+    const selected: number[] = [];
+    const outcome = await openPaperForAbstractQuote(
+      { itemId: 5, contextItemId: 5 },
+      {
+        openReader: async () => null,
+        selectItem: async (id) => {
+          selected.push(id);
+          return true;
+        },
+      },
+    );
+    assert.equal(outcome, "selected");
+    assert.deepEqual(selected, [5]);
+  });
+
+  it("reports failure when neither works", async function () {
+    const outcome = await openPaperForAbstractQuote(
+      { itemId: 5 },
+      { openReader: async () => null, selectItem: async () => false },
+    );
+    assert.equal(outcome, "failed");
   });
 });

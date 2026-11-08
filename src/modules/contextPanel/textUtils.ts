@@ -1,5 +1,8 @@
 import { appLogger } from "../../core/logging";
-import { SELECTED_TEXT_MAX_LENGTH } from "./constants";
+import {
+  SELECTED_TEXT_MAX_LENGTH,
+  SIDECHAT_SELECTED_TEXT_MAX_LENGTH,
+} from "./constants";
 import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
 import type {
   PaperContextRef,
@@ -83,12 +86,20 @@ export function normalizeSelectedText(
   source?: SelectedTextSource,
 ): string {
   const sanitized = sanitizeText(text);
-  // Editing needs the selected characters, including paragraph boundaries.
-  const normalized =
-    source === "note-edit"
-      ? sanitized.replace(/\r\n?/g, "\n")
-      : sanitized.replace(/\s+/g, " ");
-  return normalized.trim().slice(0, SELECTED_TEXT_MAX_LENGTH);
+  // Editing needs the selected characters, including paragraph boundaries;
+  // a side-chat transcript keeps its Q:/A: lines.
+  const keepsLineBreaks = source === "note-edit" || source === "sidechat";
+  const normalized = keepsLineBreaks
+    ? sanitized.replace(/\r\n?/g, "\n")
+    : sanitized.replace(/\s+/g, " ");
+  return normalized
+    .trim()
+    .slice(
+      0,
+      source === "sidechat"
+        ? SIDECHAT_SELECTED_TEXT_MAX_LENGTH
+        : SELECTED_TEXT_MAX_LENGTH,
+    );
 }
 
 export function isLikelyCorruptedSelectedText(text: string): boolean {
@@ -237,7 +248,9 @@ export function buildQuestionWithSelectedTextContexts(
           ? "zotero_note"
           : source === "note-edit"
             ? "note_editor"
-            : "pdf_reader";
+            : source === "sidechat"
+              ? "side_chat_transcript"
+              : "pdf_reader";
     const paperLabel =
       includePaperAttribution && source === "pdf"
         ? formatPaperCitationLabel(selectedTextPaperContexts[index])
@@ -404,13 +417,28 @@ export function getAttachmentTypeLabel(entry: {
   return "FILE";
 }
 
+/**
+ * Sets the footer status line. The idle "Ready" line takes the plain style
+ * a freshly mounted panel shows; other messages keep their variant's colour.
+ */
 export function setStatus(
   statusEl: HTMLElement,
   text: string,
   variant: "ready" | "sending" | "error" | "warning",
 ) {
+  const idle = variant === "ready" && (text === "Ready" || text === t("Ready"));
+  if (idle) {
+    setNeutralStatus(statusEl, text);
+    return;
+  }
   statusEl.textContent = text;
   statusEl.className = `llm-status llm-status-${variant}`;
+}
+
+/** A steady status label in the plain (mounted-panel) style. */
+export function setNeutralStatus(statusEl: HTMLElement, text: string) {
+  statusEl.textContent = text;
+  statusEl.className = "llm-status";
 }
 
 export function formatTokenCount(tokens: number): string {
@@ -494,6 +522,17 @@ export function setTokenUsage(
     cacheProvider?: string;
   } = {},
 ): void {
+  if (
+    typeof options.cacheHitRatio === "number" &&
+    Number.isFinite(options.cacheHitRatio)
+  ) {
+    const percent = Math.round(
+      Math.max(0, Math.min(1, options.cacheHitRatio)) * 100,
+    );
+    el.dataset.cache = `${t("Cache hit")} ${percent}%`;
+  } else {
+    delete el.dataset.cache;
+  }
   const normalizedTokens = Math.max(0, sessionTokens);
   if (
     typeof contextWindow === "number" &&
@@ -572,6 +611,7 @@ export function setTokenUsage(
   el.dataset.summary = presentation.summary;
   el.dataset.detail = presentation.detail;
   delete el.dataset.warning;
+  delete el.dataset.cache;
   el.style.display = "";
   if (gaugeEl) {
     gaugeEl.style.display = "inline-block";

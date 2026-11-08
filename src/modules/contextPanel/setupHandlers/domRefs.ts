@@ -8,6 +8,7 @@ export type PanelDomRefs = {
   modelMenu: HTMLDivElement | null;
   reasoningBtn: HTMLButtonElement | null;
   runtimeModeBtn: HTMLButtonElement | null;
+  runtimeMenu: HTMLDivElement | null;
   reasoningSlot: HTMLDivElement | null;
   reasoningMenu: HTMLDivElement | null;
   actionsRow: HTMLDivElement | null;
@@ -48,8 +49,10 @@ export type PanelDomRefs = {
   slashMenu: HTMLDivElement | null;
   slashUploadOption: HTMLButtonElement | null;
   slashReferenceOption: HTMLButtonElement | null;
+  slashPastConversationOption: HTMLButtonElement | null;
   slashPdfPageOption: HTMLButtonElement | null;
   slashPdfMultiplePagesOption: HTMLButtonElement | null;
+  slashSideChatOption: HTMLButtonElement | null;
   imagePreview: HTMLDivElement | null;
   contextPreviews: HTMLDivElement | null;
   selectedContextList: HTMLDivElement | null;
@@ -117,6 +120,9 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     runtimeModeBtn: body.querySelector(
       "#llm-runtime-mode-toggle",
     ) as HTMLButtonElement | null,
+    runtimeMenu: body.querySelector(
+      "#llm-runtime-menu",
+    ) as HTMLDivElement | null,
     reasoningSlot: body.querySelector(
       "#llm-reasoning-dropdown",
     ) as HTMLDivElement | null,
@@ -220,11 +226,17 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     slashReferenceOption: body.querySelector(
       "#llm-slash-reference-option",
     ) as HTMLButtonElement | null,
+    slashPastConversationOption: body.querySelector(
+      "#llm-slash-past-conversation-option",
+    ) as HTMLButtonElement | null,
     slashPdfPageOption: body.querySelector(
       "#llm-slash-pdf-page-option",
     ) as HTMLButtonElement | null,
     slashPdfMultiplePagesOption: body.querySelector(
       "#llm-slash-pdf-multiple-pages-option",
+    ) as HTMLButtonElement | null,
+    slashSideChatOption: body.querySelector(
+      "#llm-slash-side-chat-option",
     ) as HTMLButtonElement | null,
     imagePreview: body.querySelector(
       "#llm-image-preview",

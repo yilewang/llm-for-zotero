@@ -13,6 +13,7 @@ import { toStoredUserRowPatch } from "../src/modules/contextPanel/storedUserRow"
 
 const USER_ROW_FIELDS = [
   "agentRunId",
+  "attachedConversations",
   "attachments",
   "citationPaperContexts",
   "forcedSkillIds",
@@ -104,6 +105,7 @@ describe("user-row update sites", function () {
   }
 
   const DROPPED_BEFORE = [
+    "attachedConversations",
     "forcedSkillIds",
     "selectedTagContexts",
     "selectedTextNoteContexts",

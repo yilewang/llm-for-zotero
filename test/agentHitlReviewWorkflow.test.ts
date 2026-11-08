@@ -141,6 +141,15 @@ function makeRequest(
   };
 }
 
+/** The metadata write target: the named id, else the turn's paper. */
+const metadataTargetGateway = {
+  resolveMetadataWriteTarget: (params: {
+    itemId?: number;
+    paperContext?: { itemId?: number } | null;
+  }) => ({ item: { id: params.itemId || params.paperContext?.itemId || 1 } }),
+  getEditableArticleMetadata: () => null,
+} as never;
+
 function createStubSearchTool(
   execute: (
     input: Record<string, unknown>,
@@ -167,10 +176,21 @@ function createStubSearchTool(
     }),
     createResultReviewAction: (input, result, context) =>
       input.workflow === "review"
-        ? createSearchLiteratureReviewAction(result, context, input)
+        ? createSearchLiteratureReviewAction(
+            result,
+            context,
+            input,
+            metadataTargetGateway,
+          )
         : null,
     resolveResultReview: (input, result, resolution, context) =>
-      resolveSearchLiteratureReview(input, result, resolution, context),
+      resolveSearchLiteratureReview(
+        input,
+        result,
+        resolution,
+        context,
+        metadataTargetGateway,
+      ),
   };
 }
 
@@ -462,6 +482,8 @@ describe("AgentRuntime HITL review workflow", function () {
                 workflow: "review",
                 query: "population coding",
                 limit: 12,
+                need: "not_in_scope_or_library",
+                gap: "The library has no other population-coding papers.",
               }),
               () =>
                 callStep("literature_review", {

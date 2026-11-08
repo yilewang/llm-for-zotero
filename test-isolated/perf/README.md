@@ -106,3 +106,17 @@ Each switch records:
 - `chatDraws`: how many times the whole conversation was drawn.
 
 Results are saved under `tmp/paper-switch-bench/<label>/`, with `summary.json` holding the median, minimum and maximum of each value over all runs.
+
+# Pop-out window conversation switch latency
+
+This opt-in workload measures how long it takes to switch conversations from the sidebar of the pop-out window.
+It seeds two long, rich chats (40 and 120 turns, with math, tables and code) in a fresh scaffold profile and switches between them.
+It never calls a model provider and never opens the normal Zotero library.
+The test skips itself unless `LLM_FOR_ZOTERO_STANDALONE_SWITCH_BENCH=1`.
+
+```sh
+LLM_FOR_ZOTERO_STANDALONE_SWITCH_BENCH=1 LLM_FOR_ZOTERO_TEST_ENTRIES=test-isolated/perf/standaloneSwitch npm run test:workflow
+```
+
+The test asserts no timing.
+Results are saved to `standalone-switch-timing.json` in the scaffold data directory (`.scaffold/test/data/`).

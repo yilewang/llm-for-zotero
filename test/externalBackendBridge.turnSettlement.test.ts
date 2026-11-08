@@ -21,7 +21,15 @@ import {
 } from "../src/agent/mcp/server";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
 import { createFileIOTool } from "../src/agent/tools/write/fileIO";
-import type { AgentEvent, AgentRuntimeOutcome } from "../src/agent/types";
+import type {
+  AgentEvent,
+  AgentRuntimeOutcome,
+  AgentRuntimeRequestInput,
+} from "../src/agent/types";
+import type { PastConversationSource } from "../src/services/pastConversations/pastConversationLoader";
+import { clearPastChatRenderMemoForTests } from "../src/services/pastConversations/pastConversationLoader";
+import { PAST_CHAT_MESSAGE_TITLE } from "../src/services/pastConversations/pastConversationText";
+import { createFakePastConversationSource } from "./helpers/fakePastConversationSource";
 
 const RUN_ID = "bridge-settlement-run";
 const RAW_ANSWER = "Claude's own answer.";
@@ -59,8 +67,9 @@ function storedDocumentPayload(documentId: string, conversationKey: number) {
   });
 }
 
-function createRuntime() {
+function createRuntime(pastConversationSource?: PastConversationSource) {
   const runtime = createExternalBackendBridgeRuntime({
+    pastConversationSource,
     coreRuntime: {
       prepareExecutionRequest: async (input: any) => {
         const request =
@@ -127,6 +136,8 @@ type SettlementRun = {
   liveEvents: AgentEvent[];
   dbCalls: DbCall[];
   documentLookups: unknown[];
+  /** The JSON bodies the turn posted to the bridge's /run-turn. */
+  runTurnBodies: Array<Record<string, any>>;
 };
 
 const originalFetch = globalThis.fetch;
@@ -146,7 +157,11 @@ async function runSettlementTurn(params: {
   streamError?: string;
   /** Pressed before the error line arrives. */
   stop?: AbortController;
+  /** Fields that replace the default request's. */
+  request?: Partial<AgentRuntimeRequestInput>;
+  pastConversationSource?: PastConversationSource;
 }): Promise<SettlementRun> {
+  const runTurnBodies: Array<Record<string, any>> = [];
   const dbCalls: DbCall[] = [];
   const documentLookups: unknown[] = [];
   const liveEvents: AgentEvent[] = [];
@@ -283,6 +298,7 @@ async function runSettlementTurn(params: {
     const body = JSON.parse(String(init?.body || "{}")) as {
       mcpServers?: Record<string, { headers?: Record<string, string> }>;
     };
+    if (url.endsWith("/run-turn")) runTurnBodies.push(body);
     const serverHeaders = Object.values(body.mcpServers || {})[0]?.headers;
     let step = 0;
     const encoder = new TextEncoder();
@@ -342,7 +358,7 @@ async function runSettlementTurn(params: {
   let outcome!: AgentRuntimeOutcome;
   let error: unknown;
   try {
-    outcome = await createRuntime().runTurn({
+    outcome = await createRuntime(params.pastConversationSource).runTurn({
       ...(params.stop ? { signal: params.stop.signal } : {}),
       request: {
         conversationKey: params.conversationKey,
@@ -377,6 +393,7 @@ async function runSettlementTurn(params: {
               ],
             }
           : {}),
+        ...params.request,
       },
       onEvent: (event) => {
         liveEvents.push(event);
@@ -385,7 +402,14 @@ async function runSettlementTurn(params: {
   } catch (caught) {
     error = caught;
   }
-  return { outcome, error, liveEvents, dbCalls, documentLookups };
+  return {
+    outcome,
+    error,
+    liveEvents,
+    dbCalls,
+    documentLookups,
+    runTurnBodies,
+  };
 }
 
 const finishCalls = (run: SettlementRun) =>
@@ -676,5 +700,90 @@ describe("Claude bridge turn settlement", function () {
       { status: "cancelled", text: "bridge exploded", runId: RUN_ID },
       { status: "cancelled", text: report, runId: RUN_ID },
     ]);
+  });
+});
+
+describe("Claude bridge turn: attached past chats in the payload", function () {
+  const pastRef = {
+    system: "upstream" as const,
+    conversationKey: 31,
+    conversationID: "conv-31",
+    title: "Grid cells chat",
+    libraryID: 1,
+  };
+  const pastSource = () =>
+    createFakePastConversationSource([
+      {
+        conversationKey: 31,
+        entry: { title: "Grid cells chat" },
+        messages: [
+          { role: "user", text: "What is the spacing?", timestamp: 1 },
+          { role: "assistant", text: "About 40 cm.", timestamp: 2 },
+        ],
+      },
+    ]);
+
+  this.timeout(15000);
+
+  afterEach(function () {
+    // Unregister while the fixture Zotero, which owns the endpoint, is live.
+    unregisterMcpServer();
+    globalThis.fetch = originalFetch;
+    (globalThis as { Zotero?: unknown }).Zotero = originalZotero;
+    clearPastChatRenderMemoForTests();
+  });
+
+  it("puts the block in front of payload.userText and keeps runtimeRequest.userText", async function () {
+    const run = await runSettlementTurn({
+      conversationKey: 9201,
+      outcome: completed(RAW_ANSWER),
+      failingCommand: false,
+      documentStored: false,
+      pastConversationSource: pastSource(),
+      request: {
+        userText: "What did we find?",
+        attachedConversations: [pastRef],
+        deliveredConversations: [pastRef],
+        attachedConversationScope: [pastRef],
+        metadata: { sourceMessageTimestamp: 1_000 },
+      },
+    });
+    assert.isUndefined(run.error);
+    assert.lengthOf(run.runTurnBodies, 1);
+    const [body] = run.runTurnBodies;
+    assert.isTrue(String(body.userText).startsWith(PAST_CHAT_MESSAGE_TITLE));
+    assert.include(body.userText, "### Past chat upstream:31\n");
+    assert.include(body.userText, "About 40 cm.");
+    assert.isTrue(String(body.userText).endsWith("\n\nWhat did we find?"));
+    assert.equal(body.runtimeRequest.userText, "What did we find?");
+  });
+
+  it("sends a slash message and a turn with nothing attached unchanged", async function () {
+    const slash = await runSettlementTurn({
+      conversationKey: 9202,
+      outcome: completed(RAW_ANSWER),
+      failingCommand: false,
+      documentStored: false,
+      pastConversationSource: pastSource(),
+      request: {
+        userText: "/review",
+        attachedConversations: [pastRef],
+        deliveredConversations: [pastRef],
+        attachedConversationScope: [pastRef],
+        metadata: { sourceMessageTimestamp: 1_001 },
+      },
+    });
+    assert.equal(slash.runTurnBodies[0].userText, "/review");
+    const plain = await runSettlementTurn({
+      conversationKey: 9203,
+      outcome: completed(RAW_ANSWER),
+      failingCommand: false,
+      documentStored: false,
+      pastConversationSource: pastSource(),
+    });
+    assert.equal(
+      plain.runTurnBodies[0].userText,
+      "Write the report and run the command.",
+    );
   });
 });

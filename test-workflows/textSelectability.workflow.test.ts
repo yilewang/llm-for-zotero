@@ -176,8 +176,13 @@ function assertSelectable(
 
 describe("workflow: hint and message text is selectable", function () {
   this.timeout(60000);
-  const api = getWorkflowTestApi();
+  let api: WorkflowTestApi;
   const fixtures: WorkflowTestFixture[] = [];
+
+  before(function () {
+    // Resolved at run time: an earlier suite may have restarted the plugin.
+    api = getWorkflowTestApi();
+  });
 
   after(async function () {
     await api.closeStandalone();

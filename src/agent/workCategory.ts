@@ -92,3 +92,40 @@ export function resolveCodexNativeWorkCategory(
 ): AgentWorkCategory {
   return CODEX_NATIVE_WORK_CATEGORIES[kind];
 }
+
+/**
+ * Tools Claude Code runs inside its own process.
+ *
+ * Like a Codex native item, a Claude Code built-in never reaches a host
+ * `ToolSpec`, so its category is named here with the registered tools. A
+ * read, search or fetch is reading; a shell command or a file write is work
+ * done outside Zotero, the same as Codex's. A helper agent (Task) can do any
+ * kind of work, so it declares none and its row stays outside the groups.
+ */
+const CLAUDE_CODE_NATIVE_WORK_CATEGORIES: Readonly<
+  Record<string, AgentWorkCategory>
+> = {
+  Read: "retrieval",
+  Grep: "retrieval",
+  Glob: "retrieval",
+  WebSearch: "retrieval",
+  WebFetch: "retrieval",
+  Bash: CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY,
+  Write: CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY,
+  Edit: CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY,
+  MultiEdit: CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY,
+  NotebookEdit: CONNECTED_RUNTIME_EFFECT_WORK_CATEGORY,
+  TodoWrite: "planning",
+  Skill: SKILL_ACTIVATION_WORK_CATEGORY,
+};
+
+export function resolveClaudeCodeNativeWorkCategory(
+  toolName: string,
+): AgentWorkCategory | undefined {
+  return Object.prototype.hasOwnProperty.call(
+    CLAUDE_CODE_NATIVE_WORK_CATEGORIES,
+    toolName,
+  )
+    ? CLAUDE_CODE_NATIVE_WORK_CATEGORIES[toolName]
+    : undefined;
+}

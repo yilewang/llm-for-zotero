@@ -113,6 +113,8 @@ export function digestLedgerDelta(
     label?: string;
     relevance?: TaskPaperDigestRelevance;
     stance?: TaskPaperDigestStance;
+    /** The digest read only part of the text (an item over the digest limit). */
+    partial?: boolean;
   } = {},
 ): TaskPaperLedgerDelta {
   const paper = { libraryID: 1, itemId, title: `Paper ${itemId}` };
@@ -148,8 +150,8 @@ export function digestLedgerDelta(
       source: {
         backend: "mineru",
         readCharacters: 1000,
-        totalCharacters: 1000,
-        complete: true,
+        totalCharacters: options.partial ? 4000 : 1000,
+        complete: !options.partial,
       },
       model: "test-model",
       producedAt: 1,

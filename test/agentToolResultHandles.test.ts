@@ -277,4 +277,29 @@ describe("agent tool-result handles", function () {
       "allowStale",
     );
   });
+
+  it("keeps the stale-scope warning beside a stored result's own warnings", async function () {
+    const record = createAgentToolResultHandleRecord({
+      conversationKey: 6,
+      toolName: "paper_read",
+      toolCallId: "call-warned",
+      resourceSignature: "scope-old",
+      content: {
+        warnings: ["Not found in Lee, 2025: results.", "Shared warning."],
+        results: [{ text: "Old scoped evidence" }],
+      },
+    });
+    await upsertAgentToolResultHandles([record!]);
+    const output = await executeRead(
+      { handle: record!.handle, allowStale: true },
+      context({ conversationKey: 6, resourceSignature: "scope-new" }),
+    );
+    const warnings = output.warnings as string[];
+    // The read's own warning first, then the record's, each once.
+    assert.include(warnings[0], "allowStale");
+    assert.deepEqual(warnings.slice(1), [
+      "Not found in Lee, 2025: results.",
+      "Shared warning.",
+    ]);
+  });
 });

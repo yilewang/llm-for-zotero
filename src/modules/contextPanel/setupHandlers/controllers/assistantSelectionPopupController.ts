@@ -14,6 +14,7 @@ import {
 import { sanitizeText } from "../../../../utils/textSanitization";
 import { classifySelectionPromptKey } from "../../selectionPrompt/selectionPromptKeys";
 import { resizeTextareaToContent } from "../../textareaSizing";
+import { getChatPanelExtensions } from "../../chatPanelExtensions";
 
 type AssistantSelectionPopupDeps = {
   body: Element;
@@ -59,9 +60,10 @@ export function attachAssistantSelectionPopup(
     popupHost.__llmSelectionPopupCleanup();
     delete popupHost.__llmSelectionPopupCleanup;
   }
-  // The wrapper is the positioned element; it holds the Quote button and the
+  // The wrapper is the positioned element; it holds the Quote buttons and the
   // inline box that opens after a quote. The box attaches a question to the
-  // quoted chip; it never sends.
+  // quoted chip; it never sends. "Quote in side chat" shows only in a body
+  // that registers a side chat target (the standalone window's main chat).
   const selectionPopup = createElement(
     panelDoc,
     "div",
@@ -77,6 +79,22 @@ export function attachAssistantSelectionPopup(
       title: t("Quote selected text"),
     },
   );
+  const sideChatQuoteButton = createElement(
+    panelDoc,
+    "button",
+    "llm-shortcut-btn llm-assistant-selection-action llm-assistant-selection-side-action",
+    {
+      type: "button",
+      textContent: "❞ " + t("Quote in side chat"),
+      title: t("Quote selected text in a side chat"),
+    },
+  );
+  const actionRow = createElement(
+    panelDoc,
+    "div",
+    "llm-assistant-selection-actions",
+  );
+  actionRow.append(quoteButton, sideChatQuoteButton);
   const promptWrap = createElement(
     panelDoc,
     "div",
@@ -115,7 +133,7 @@ export function attachAssistantSelectionPopup(
   );
   promptQuoteSection.append(promptLabel, promptQuote);
   promptWrap.append(promptQuoteSection, promptInput, promptHint);
-  selectionPopup.append(quoteButton, promptWrap);
+  selectionPopup.append(actionRow, promptWrap);
   panelRoot.appendChild(selectionPopup);
   let selectionPopupText = "";
   let selectionDragStartBubble: HTMLElement | null = null;
@@ -125,10 +143,21 @@ export function attachAssistantSelectionPopup(
   // attaches the question to that chip.
   let promptConversationKey: number | null = null;
   let promptSelectedText = "";
+  // Set when the box was opened by "Quote in side chat": nothing is quoted
+  // here, and Enter sends the text and the question to the side chat.
+  let promptForSideChat = false;
   // Set when the prompt closes from the keyboard, so the keyup of that same
   // key does not reopen the Quote button over the still-selected text.
   let ignoreNextKeyUp = false;
 
+  const getSideChatQuote = () =>
+    getChatPanelExtensions(body)?.sideChatQuote || null;
+  const syncSideChatQuoteButton = () => {
+    const shown = Boolean(getSideChatQuote());
+    sideChatQuoteButton.style.display = shown ? "" : "none";
+    actionRow.classList.toggle("is-split", shown);
+  };
+  syncSideChatQuoteButton();
   const showSelectionPopup = () => {
     if (!selectionPopup.classList.contains("is-visible")) {
       selectionPopup.classList.add("is-visible");
@@ -138,6 +167,7 @@ export function attachAssistantSelectionPopup(
     promptExpanded = false;
     promptConversationKey = null;
     promptSelectedText = "";
+    promptForSideChat = false;
     promptQuote.textContent = "";
     promptHint.textContent = promptHintText;
     selectionPopup.classList.remove("is-expanded");
@@ -146,6 +176,16 @@ export function attachAssistantSelectionPopup(
     promptInput.style.overflowY = "";
   };
   const hideSelectionPopup = () => {
+    // Every chat scroll calls this; a hidden, collapsed popup has nothing
+    // to reset, and rewriting it is a mutation other observers react to.
+    if (
+      !promptExpanded &&
+      !selectionPopup.classList.contains("is-visible") &&
+      !selectionPopup.classList.contains("is-expanded")
+    ) {
+      selectionPopupText = "";
+      return;
+    }
     collapsePrompt();
     selectionPopup.classList.remove("is-visible");
     selectionPopupText = "";
@@ -176,12 +216,14 @@ export function attachAssistantSelectionPopup(
   };
   // existingQuestion prefills the box when the chip already has a question.
   const expandPrompt = (
-    conversationKey: number,
+    conversationKey: number | null,
     selectedText: string,
     existingQuestion = "",
+    forSideChat = false,
   ) => {
     promptExpanded = true;
     promptConversationKey = conversationKey;
+    promptForSideChat = forSideChat;
     promptSelectedText = selectedText;
     promptQuote.textContent = selectedText;
     promptHint.textContent = promptHintText;
@@ -252,6 +294,8 @@ export function attachAssistantSelectionPopup(
       return;
     }
     selectionPopupText = selected;
+    // Before the popup is measured, so its width counts the second button.
+    syncSideChatQuoteButton();
     const selection = panelWin.getSelection?.();
     if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
       hideSelectionPopup();
@@ -325,11 +369,8 @@ export function attachAssistantSelectionPopup(
     showSelectionPopup();
   };
 
-  const quoteSelectedAssistantText = () => {
-    if (!getItem()) {
-      hideSelectionPopup();
-      return;
-    }
+  /** The selected reply text; reports and closes the popup when empty. */
+  const readSelectedAssistantText = (): string => {
     let selected = sanitizeText(selectionPopupText).trim();
     if (!selected) {
       const targetBubble = findAssistantBubbleFromSelection();
@@ -342,8 +383,44 @@ export function attachAssistantSelectionPopup(
     if (!selected) {
       hideSelectionPopup();
       if (status) setStatus(status, t("No assistant text selected"), "error");
+    }
+    return selected;
+  };
+
+  // Opens the question box; Enter sends the text to the side chat.
+  const quoteSelectedTextInSideChat = () => {
+    if (!getSideChatQuote()) {
+      hideSelectionPopup();
       return;
     }
+    const selected = readSelectedAssistantText();
+    if (!selected) return;
+    expandPrompt(null, selected, "", true);
+  };
+
+  /** Sends the box's text and question to the side chat, then closes. */
+  const sendPromptToSideChat = (question: string) => {
+    const target = getSideChatQuote();
+    const selected = promptSelectedText;
+    hideSelectionPopup();
+    if (!target || !selected) {
+      inputBox.focus({ preventScroll: true });
+      return;
+    }
+    // The text has moved to the side chat; a selection left behind would
+    // reopen this popup on the next mouseup.
+    panelWin?.getSelection?.()?.removeAllRanges?.();
+    // The side chat focuses its own composer.
+    target.quote(selected, question || undefined);
+  };
+
+  const quoteSelectedAssistantText = () => {
+    if (!getItem()) {
+      hideSelectionPopup();
+      return;
+    }
+    const selected = readSelectedAssistantText();
+    if (!selected) return;
     const activeItemId = getTextContextConversationKey();
     if (!activeItemId) {
       hideSelectionPopup();
@@ -416,6 +493,10 @@ export function attachAssistantSelectionPopup(
       return;
     }
     const text = promptInput.value.trim();
+    if (promptForSideChat) {
+      sendPromptToSideChat(text);
+      return;
+    }
     const conversationKey = promptConversationKey;
     if (
       text &&
@@ -508,12 +589,12 @@ export function attachAssistantSelectionPopup(
   const onChatContextMenu = () => hideSelectionPopup();
 
   let selectionPopupHandled = false;
-  const triggerSelectionPopupAction = (e: Event) => {
+  const triggerSelectionPopupAction = (e: Event, action: () => void) => {
     if (selectionPopupHandled) return;
     selectionPopupHandled = true;
     e.preventDefault();
     e.stopPropagation();
-    quoteSelectedAssistantText();
+    action();
     panelWin?.setTimeout(() => {
       selectionPopupHandled = false;
     }, 0);
@@ -522,21 +603,29 @@ export function attachAssistantSelectionPopup(
     const maybeMouse = e as MouseEvent;
     return typeof maybeMouse.button !== "number" || maybeMouse.button === 0;
   };
-  quoteButton.addEventListener("pointerdown", (e: Event) => {
-    if (!isPrimarySelectionPopupEvent(e)) return;
-    triggerSelectionPopupAction(e);
-  });
-  quoteButton.addEventListener("mousedown", (e: Event) => {
-    if (!isPrimarySelectionPopupEvent(e)) return;
-    triggerSelectionPopupAction(e);
-  });
-  quoteButton.addEventListener("click", triggerSelectionPopupAction);
-  quoteButton.addEventListener("command", triggerSelectionPopupAction);
-  quoteButton.addEventListener("contextmenu", (e: Event) => {
-    e.preventDefault();
-    e.stopPropagation();
-    hideSelectionPopup();
-  });
+  const bindSelectionPopupAction = (
+    button: HTMLButtonElement,
+    action: () => void,
+  ) => {
+    const trigger = (e: Event) => triggerSelectionPopupAction(e, action);
+    button.addEventListener("pointerdown", (e: Event) => {
+      if (!isPrimarySelectionPopupEvent(e)) return;
+      trigger(e);
+    });
+    button.addEventListener("mousedown", (e: Event) => {
+      if (!isPrimarySelectionPopupEvent(e)) return;
+      trigger(e);
+    });
+    button.addEventListener("click", trigger);
+    button.addEventListener("command", trigger);
+    button.addEventListener("contextmenu", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      hideSelectionPopup();
+    });
+  };
+  bindSelectionPopupAction(quoteButton, quoteSelectedAssistantText);
+  bindSelectionPopupAction(sideChatQuoteButton, quoteSelectedTextInSideChat);
 
   panelDoc.addEventListener("mouseup", onPanelMouseUp, true);
   panelDoc.addEventListener("keyup", onDocKeyUp, true);

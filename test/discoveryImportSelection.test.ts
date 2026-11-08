@@ -143,7 +143,14 @@ describe("discovered papers enter Zotero only through the selection card", funct
   ) {
     const result = await run(
       "literature_search",
-      { mode: "search", workflow, query: "population coding", limit: 12 },
+      {
+        mode: "search",
+        workflow,
+        query: "population coding",
+        limit: 12,
+        need: "not_in_scope_or_library",
+        gap: "The library has no other population-coding papers.",
+      },
       context,
     );
     assert.isTrue(result.ok, JSON.stringify(result.content));
@@ -429,6 +436,8 @@ describe("discovered papers enter Zotero only through the selection card", funct
           workflow: "review",
           query: "population coding",
           limit: 12,
+          need: "not_in_scope_or_library",
+          gap: "The library has no other population-coding papers.",
         }),
       // The model imports instead of showing the card.
       () =>

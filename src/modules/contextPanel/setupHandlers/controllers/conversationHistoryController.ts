@@ -6,6 +6,8 @@ export const GLOBAL_HISTORY_TITLE_MAX_LENGTH = 64;
 export const HISTORY_ROW_TITLE_MAX_LENGTH = 42;
 
 export type ConversationHistoryEntry = {
+  /** The runtime the chat belongs to; row actions use it, not the panel's. */
+  system: ConversationSystem;
   kind: "paper" | "global";
   sourceState: HistoryEntrySourceState;
   section: "paper" | "open";
@@ -28,6 +30,16 @@ export type ConversationHistoryEntry = {
 };
 
 export type HistoryEntrySourceState = "active" | "orphan";
+
+/**
+ * The small runtime name on a history row: "Codex" or "Claude".
+ * Rows of the built-in runtime (Agent) have no name.
+ */
+export function getHistoryRowRuntimeLabel(system: ConversationSystem): string {
+  if (system === "codex") return "Codex";
+  if (system === "claude_code") return "Claude";
+  return "";
+}
 export type HistoryEntryLabelType = "paper" | "library" | "orphan";
 
 export type HistorySwitchTarget =

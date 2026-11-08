@@ -26,6 +26,7 @@ import {
   seedPageTextCacheFromFullText,
 } from "../src/services/pdf/livePdfSelectionLocator";
 import type { QuoteCitation } from "../src/shared/types";
+import { withDigestQuoteCitations } from "../src/agent/digests/paperDigestWorker";
 import type { Message } from "../src/modules/contextPanel/types";
 
 const LABEL = "(Fixture, 2026)";
@@ -200,6 +201,50 @@ describe("paragraph citation location on PDF page text", function () {
     assert.isDefined(shown);
     assert.isFalse(hasVerifiedQuoteLocation(shown!));
     assert.deepEqual(shown, normalizeQuoteCitations([record])[0]);
+  });
+
+  it("keeps a digest quote with no page hint as a grey mark when the gate cannot locate it, as for paper_read", async function () {
+    // A digest mints its quote with no page, fingerprint or chunk kind.
+    const digest = withDigestQuoteCitations(
+      {
+        schema: 2,
+        itemId: CONTEXT_ITEM_ID - 1,
+        contextItemId: CONTEXT_ITEM_ID,
+        title: "Drift fixture",
+        answer: "The code drifts while behaviour holds.",
+        evidence: [{ section: "Results", quote: PASSAGE }],
+        facets: [],
+        gaps: [],
+        source: {
+          backend: "mineru",
+          readCharacters: 1,
+          totalCharacters: 1,
+          complete: true,
+        },
+        model: "m",
+        producedAt: 1,
+        cacheKey: "k",
+      },
+      LABEL,
+    );
+    const [record] = digest.quoteCitations || [];
+    assert.exists(record);
+    assert.isUndefined(record.pageHintIndex);
+    const message = citeOnlyMessage(record);
+    // The PDF's pages do not hold the quote.
+    await gate(message, [
+      pageSource(PAGE_FILLER, 0),
+      pageSource(PAGE_FILLER, 1),
+    ]);
+    const display = getMessageQuoteDisplay(message);
+    const plan = buildQuoteRenderPlan(display);
+    assert.notInclude(display.markdown, "Not a source quote");
+    assert.isEmpty(
+      plan.diagnostics.filter((entry) => entry.quoteCitationId === record.id),
+    );
+    const shown = displayedParagraphCitation(message, record.id);
+    assert.isDefined(shown, "the mark is rendered");
+    assert.isFalse(hasVerifiedQuoteLocation(shown!));
   });
 
   it("never locates a paragraph on another paper's pages", async function () {

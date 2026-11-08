@@ -7,13 +7,21 @@
  * it. (The plan session re-attests a call the tool-execution path already
  * attested and recorded, to file plan evidence; it deliberately does not
  * record a second time.)
+ *
+ * `recordTaskPaperDecisions` is its counterpart for a call that is not a
+ * read: the agent's paper decisions a tool result carries
+ * (`AgentToolResult.paperDecisions`) become that call's delta, under the
+ * call's own id and run. Both tool-execution paths (the built-in runtime and
+ * the MCP server) emit the one delta a call yields the same way.
  */
 import { createTrustedReadObservations } from "./readObservation";
 import type { TrustedReadObservation } from "./readObservationTypes";
 import type { ZoteroMcpToolActivityEvent } from "../mcp/activityTypes";
 import type { AgentEvent } from "../types";
 import {
+  buildDecisionLedgerDelta,
   deriveTaskPaperLedgerDelta,
+  type TaskPaperDecisionInput,
   type TaskPaperLedgerDelta,
   type TaskPaperResolvedRef,
 } from "./taskPaperLedger";
@@ -89,6 +97,32 @@ export function recordTaskPaperRead(params: {
       libraryID: params.libraryID,
       runId: params.runId,
       resolvePaper: resolveZoteroPaperRef,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The ledger delta of the paper decisions one successful call stated, or
+ * `null` when there is no conversation to record it in or no decision is
+ * left after bounding. Never throws, as `recordTaskPaperRead`.
+ */
+export function recordTaskPaperDecisions(params: {
+  toolName: string;
+  callId: string;
+  decisions: readonly TaskPaperDecisionInput[] | undefined;
+  conversationKey?: number;
+  runId?: string;
+}): TaskPaperLedgerDelta | null {
+  if (!params.conversationKey || params.conversationKey <= 0) return null;
+  if (!params.decisions?.length) return null;
+  try {
+    return buildDecisionLedgerDelta({
+      toolName: params.toolName,
+      callId: params.callId,
+      runId: params.runId,
+      decisions: params.decisions,
     });
   } catch {
     return null;

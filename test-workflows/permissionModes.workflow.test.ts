@@ -100,9 +100,9 @@ describe("workflow: provider-aware permission modes", function () {
         });
         const panel = await api.renderPanelForItem(fixture.parentItemId);
 
-        if (!api.getPanelPermissionSurface(panel.panelId).visible) {
-          await api.clickPanelRuntimeModeToggle(panel.panelId);
-        }
+        // The built-in runtime is Agent from the start, so its permission
+        // control is already showing.
+        assert.isTrue(api.getPanelPermissionSurface(panel.panelId).visible);
         assertRows(api.getPanelPermissionSurface(panel.panelId), [
           "original:safe",
           "original:auto",

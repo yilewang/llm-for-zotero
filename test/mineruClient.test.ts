@@ -17,6 +17,7 @@ import {
   MineruPageLimitError,
   parsePdfWithMineruCloud,
   parsePdfWithMineruLocal,
+  getMineruParseSettings,
   resetMineruLocalFileParseGateForTests,
   setMineruLocalBusyRetryDelaysForTests,
 } from "../src/utils/mineruClient";
@@ -168,6 +169,25 @@ function buildMineruWindowsOutputPath(
 }
 
 describe("mineruClient", function () {
+  describe("getMineruParseSettings", function () {
+    it("excludes localServerCommand and localServerIdleMinutes so parse progress keys remain stable", function () {
+      const originalZotero = (globalThis as any).Zotero;
+      (globalThis as any).Zotero = {
+        Prefs: {
+          get: () => undefined,
+          set: () => {},
+        },
+      };
+      try {
+        const settings = getMineruParseSettings();
+        assert.isUndefined((settings as any).localServerCommand);
+        assert.isUndefined((settings as any).localServerIdleMinutes);
+      } finally {
+        (globalThis as any).Zotero = originalZotero;
+      }
+    });
+  });
+
   describe("bundled PDF chunking", function () {
     afterEach(async function () {
       await closePdfWorkersForTests();

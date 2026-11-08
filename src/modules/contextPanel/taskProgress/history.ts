@@ -7,14 +7,20 @@
  *   user messages, and how each was answered: its answer;
  * - every run's `paper_ledger_update` events (in-plugin Agent runs and the
  *   Codex/Claude Code run snapshots, which carry the MCP deltas);
- * - each finished answer's `quoteCitations`, the citations it rendered;
+ * - each finished answer's `quoteCitations`, the citations it rendered,
+ *   and the passages it cites as it shows them (its display, after quote
+ *   validation), numbered as its marks are;
  * - each submitted document's sources (`material_finalized.citedSources`);
  * - whether a plan ran (`plan_*` events), Codex kept a plan (its
  *   `codex-plan-checklist` event) or a run had outcomes (its
  *   `execution_checkpoint` events): the row then stays for the conversation;
  * - each run's Codex plan, or its latest outcome ledger with how the run
  *   ended: the latest run's are the steps, every earlier question keeps
- *   its own in the drawer's history.
+ *   its own in the drawer's history;
+ * - each run's outside searches and reads (`tool_call`, and the
+ *   `tool_result` of a run that searched outside, read whole from its trh_
+ *   handle when the trace kept only a marker), its library searches, and
+ *   its answer's markers (`final`): the question's outside groups.
  *
  * A built-in action leaves no conversation record, so its steps and its
  * "an action ran here" mark last only for the session.
@@ -24,6 +30,7 @@
  */
 import { ExecutionCheckpointFold } from "../../../agent/execution/checkpointEvents";
 import { listAgentRunEventsForRuns } from "../../../agent/store/traceStore";
+import { getAgentToolResultHandle } from "../../../agent/store/toolResultHandles";
 import type { AgentRunEventRecord } from "../../../agent/types";
 import type {
   TaskPaperDocumentCitation,
@@ -40,6 +47,9 @@ import {
   TASK_PROGRESS_REPLAY_EVENT_TYPES,
   taskProgressEffect,
 } from "./runFold";
+import { buildTaskOutsideTurn, isOutsideSourceTool } from "./outside";
+import { buildTaskAnswerCitations } from "./answerCitations";
+import { getWebSourceAnchorsFromTrace } from "../../../webAccess/attribution";
 import {
   getTaskProgress,
   getTaskProgressClearCount,
@@ -52,9 +62,15 @@ import {
   type TaskRunState,
 } from "./store";
 
-/** Event kinds a rebuild reads; everything else in a trace is skipped. */
-export const TASK_PROGRESS_HISTORY_EVENT_TYPES =
-  TASK_PROGRESS_REPLAY_EVENT_TYPES;
+/**
+ * Event kinds a rebuild reads first; everything else in a trace is skipped.
+ * Tool results are read after, only for the runs that searched outside.
+ */
+export const TASK_PROGRESS_HISTORY_EVENT_TYPES: readonly string[] = [
+  ...TASK_PROGRESS_REPLAY_EVENT_TYPES,
+  "tool_call",
+  "final",
+];
 
 function settledState(message: Message | undefined): TaskRunState | null {
   if (!message || message.role !== "assistant" || message.streaming) {
@@ -122,19 +138,31 @@ export function buildTaskProgressHistory(
           break;
         case "codex_checklist":
           planSeen = true;
-          checklist = { source: "codex", runId, steps: effect.steps };
+          checklist = { source: effect.source, runId, steps: effect.steps };
           break;
         default:
           // Live-only effects (answering, waiting, final) are not replayed.
           break;
       }
     }
+    const outside = buildTaskOutsideTurn(runId, events);
     runs.push({
       runId,
       turn: question,
       live: Boolean(message.streaming),
+      ...(outside ? { outside } : {}),
       deltas,
       quoteCitations: message.quoteCitations,
+      // From the stored answer as it shows, not the run's final event; a
+      // web-attributed answer (its final event's markers) from its own text,
+      // as the chat renders it.
+      ...(message.streaming
+        ? {}
+        : {
+            answerCitations: buildTaskAnswerCitations(message, {
+              hasWebSources: getWebSourceAnchorsFromTrace(events).length > 0,
+            }),
+          }),
       ...(documentCitations.length ? { documentCitations } : {}),
       checklist,
     });
@@ -158,7 +186,50 @@ type HistoryLoader = (runIds: string[]) => Promise<AgentRunEventRecord[]>;
 const defaultLoader: HistoryLoader = (runIds) =>
   listAgentRunEventsForRuns(runIds, TASK_PROGRESS_HISTORY_EVENT_TYPES);
 
+/** The outside tool results of runs that searched outside, read whole. */
+type OutsideResultLoader = (
+  conversationKey: number,
+  runIds: string[],
+) => Promise<AgentRunEventRecord[]>;
+
+const defaultOutsideLoader: OutsideResultLoader = async (
+  conversationKey,
+  runIds,
+) => {
+  const events = (
+    await listAgentRunEventsForRuns(runIds, ["tool_result"])
+  ).filter(
+    (event) =>
+      event.payload.type === "tool_result" &&
+      isOutsideSourceTool(event.payload.name),
+  );
+  // A result too big for the trace is kept whole under its trh_ handle.
+  await Promise.all(
+    events.map(async (event) => {
+      const payload = event.payload;
+      if (payload.type !== "tool_result" || !payload.toolResultHandle) return;
+      try {
+        const stored = await getAgentToolResultHandle({
+          conversationKey,
+          handle: payload.toolResultHandle,
+        });
+        if (stored) event.payload = { ...payload, content: stored.content };
+      } catch {
+        // The marker's preview stays; the row shows what it holds.
+      }
+    }),
+  );
+  return events;
+};
+
 let loader: HistoryLoader = defaultLoader;
+let outsideLoader: OutsideResultLoader = defaultOutsideLoader;
+
+export function setTaskProgressOutsideLoaderForTests(
+  next?: OutsideResultLoader,
+): void {
+  outsideLoader = next || defaultOutsideLoader;
+}
 const inflight = new Map<number, Promise<void>>();
 
 export function setTaskProgressHistoryLoaderForTests(
@@ -214,6 +285,22 @@ export function ensureTaskProgressHydrated(
   const task = (async () => {
     const events = runIds.length ? await loader(runIds) : [];
     if (!stillCurrent()) return;
+    const outsideRuns = Array.from(
+      new Set(
+        events
+          .filter(
+            (event) =>
+              event.payload.type === "tool_call" &&
+              isOutsideSourceTool(event.payload.name),
+          )
+          .map((event) => event.runId),
+      ),
+    );
+    if (outsideRuns.length) {
+      events.push(...(await outsideLoader(key, outsideRuns)));
+      if (!stillCurrent()) return;
+      events.sort((a, b) => a.runId.localeCompare(b.runId) || a.seq - b.seq);
+    }
     const byRun = new Map<string, AgentRunEventRecord[]>();
     for (const event of events) {
       const list = byRun.get(event.runId);

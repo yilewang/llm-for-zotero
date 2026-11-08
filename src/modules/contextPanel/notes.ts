@@ -1,4 +1,5 @@
 import { appLogger } from "../../core/logging";
+import { t } from "../../utils/i18n";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { getCurrentLocalTimestamp } from "./textUtils";
 import { sanitizeText, escapeNoteHtml } from "../../utils/textSanitization";
@@ -442,14 +443,22 @@ function buildAssistantNoteHtml(
   generatedImagesHtml = "",
   queryText = "",
 ): string {
-  const query = buildQuoteExpandedMarkdown({
-    markdown: sanitizeText(queryText || "").trim(),
-    quoteCitations,
-  });
-  const response = buildQuoteExpandedMarkdown({
-    markdown: sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
-    quoteCitations,
-  });
+  const query = buildQuoteExpandedMarkdown(
+    {
+      markdown: sanitizeText(queryText || "").trim(),
+      quoteCitations,
+    },
+    { paragraphCitations: "line-labels" },
+  );
+  const response = buildQuoteExpandedMarkdown(
+    {
+      markdown: sanitizeText(
+        stripTrailingPluginFooter(contentText || ""),
+      ).trim(),
+      quoteCitations,
+    },
+    { paragraphCitations: "line-labels" },
+  );
   const source = modelName.trim() || "unknown";
   const timestamp = getCurrentLocalTimestamp();
   let queryHtml = query ? renderRawNoteHtml(query) : "";
@@ -490,14 +499,22 @@ async function buildAssistantNoteHtmlForSave(
     timestamp?: string;
   } = {},
 ): Promise<string> {
-  const query = buildQuoteExpandedMarkdown({
-    markdown: sanitizeText(queryText || "").trim(),
-    quoteCitations,
-  });
-  const response = buildQuoteExpandedMarkdown({
-    markdown: sanitizeText(stripTrailingPluginFooter(contentText || "")).trim(),
-    quoteCitations,
-  });
+  const query = buildQuoteExpandedMarkdown(
+    {
+      markdown: sanitizeText(queryText || "").trim(),
+      quoteCitations,
+    },
+    { paragraphCitations: "line-labels" },
+  );
+  const response = buildQuoteExpandedMarkdown(
+    {
+      markdown: sanitizeText(
+        stripTrailingPluginFooter(contentText || ""),
+      ).trim(),
+      quoteCitations,
+    },
+    { paragraphCitations: "line-labels" },
+  );
   const source = modelName.trim() || "unknown";
   const timestamp = options.timestamp || getCurrentLocalTimestamp();
   let queryHtml = query ? await renderRawNoteHtmlForSave(query, options) : "";
@@ -530,10 +547,13 @@ function renderChatMessageHtmlForNote(
   text: string,
   quoteCitations?: QuoteCitation[],
 ): string {
-  const safeText = buildQuoteExpandedMarkdown({
-    markdown: sanitizeText(text || "").trim(),
-    quoteCitations,
-  });
+  const safeText = buildQuoteExpandedMarkdown(
+    {
+      markdown: sanitizeText(text || "").trim(),
+      quoteCitations,
+    },
+    { paragraphCitations: "line-labels" },
+  );
   if (!safeText) return "";
   // Reuse the same markdown-to-note rendering path as single-response save.
   return renderRawNoteHtml(safeText);
@@ -546,10 +566,13 @@ async function renderChatMessageHtmlForNoteSave(
   noteSaveOptions: NotePersistenceSaveOptions | undefined,
   quoteCitations?: QuoteCitation[],
 ): Promise<string> {
-  const safeText = buildQuoteExpandedMarkdown({
-    markdown: sanitizeText(text || "").trim(),
-    quoteCitations,
-  });
+  const safeText = buildQuoteExpandedMarkdown(
+    {
+      markdown: sanitizeText(text || "").trim(),
+      quoteCitations,
+    },
+    { paragraphCitations: "line-labels" },
+  );
   if (!safeText) return "";
   return renderRawNoteHtmlForSave(safeText, {
     noteId,
@@ -644,6 +667,9 @@ function formatSelectedTextLabel(
   }
   if (source === "note-edit") {
     return total === 1 ? "Editing focus" : `Editing focus (${index + 1})`;
+  }
+  if (source === "sidechat") {
+    return total === 1 ? t("Side chat") : `${t("Side chat")} (${index + 1})`;
   }
   if (total === 1) return "Selected text";
   return `Selected text (${index + 1})`;
@@ -907,10 +933,13 @@ export function buildChatHistoryNotePayload(
     }
     const exportedText =
       msg.role === "assistant"
-        ? buildQuoteExpandedMarkdown({
-            markdown: textWithContext,
-            quoteCitations: quoteDisplay?.quoteCitations,
-          })
+        ? buildQuoteExpandedMarkdown(
+            {
+              markdown: textWithContext,
+              quoteCitations: quoteDisplay?.quoteCitations,
+            },
+            { paragraphCitations: "line-labels" },
+          )
         : textWithContext;
     if (msg.role === "user") {
       lastUserPaperContexts = getMessageCitationPaperContexts(msg);
@@ -1061,10 +1090,13 @@ async function buildChatHistoryNotePayloadForSave(
     }
     const exportedText =
       msg.role === "assistant"
-        ? buildQuoteExpandedMarkdown({
-            markdown: textWithContext,
-            quoteCitations: quoteDisplay?.quoteCitations,
-          })
+        ? buildQuoteExpandedMarkdown(
+            {
+              markdown: textWithContext,
+              quoteCitations: quoteDisplay?.quoteCitations,
+            },
+            { paragraphCitations: "line-labels" },
+          )
         : textWithContext;
     if (msg.role === "user") {
       lastUserPaperContexts = getMessageCitationPaperContexts(msg);

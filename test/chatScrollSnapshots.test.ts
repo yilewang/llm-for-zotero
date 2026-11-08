@@ -29,6 +29,7 @@ import {
   persistPendingChatScrollRestoreForElement,
   persistChatScrollSnapshotForConversationKey,
   restoreChatScrollSnapshotForConversationKey,
+  setChatBoxConversation,
 } from "../src/modules/contextPanel/chatScrollSnapshots";
 
 import { bindChatScrollLifecycle } from "../src/modules/contextPanel/chatScrollLifecycle";
@@ -230,6 +231,49 @@ function appendElement(
 }
 
 describe("chat scroll snapshots", function () {
+  it("keeps a sidebar position through a first render of a box that is still empty", function () {
+    clearChatScrollSnapshotsForTests();
+    const sidebar = makeChatBox({
+      scrollTop: 1000,
+      scrollHeight: 2000,
+      clientHeight: 300,
+    });
+    sidebar.dispatch("wheel");
+    observeChatScroll(1, sidebar as unknown as HTMLDivElement);
+    assert.equal(
+      getChatScrollSnapshot(1, sidebar as unknown as HTMLDivElement)?.scrollTop,
+      1000,
+    );
+
+    // A second surface renders before its history is in the box: the restore
+    // clamps to the top and must not be saved over the first surface's place.
+    const element = makeChatBox({
+      scrollTop: 0,
+      scrollHeight: 300,
+      clientHeight: 300,
+    });
+    // Like a real scroll box, writes clamp to the scrollable range.
+    let top = 0;
+    Object.defineProperty(element, "scrollTop", {
+      get: () => top,
+      set: (value: number) => {
+        top = Math.max(
+          0,
+          Math.min(element.scrollHeight - element.clientHeight, value),
+        );
+      },
+    });
+    const box = element as unknown as HTMLDivElement;
+    initializeChatScrollViewport(1, box);
+    const snapshot = captureChatScrollForRender(1, box);
+    restoreChatScrollAfterRender(1, box, snapshot);
+
+    appendElement(element, "llm-message", { offsetTop: 0, offsetHeight: 2000 });
+    element.scrollHeight = 2000;
+    reconcileChatScroll(1, box);
+    assert.closeTo(box.scrollTop, 1000, 1);
+  });
+
   it("honors a scrollbar drag after an automatic write but before its delayed event", function () {
     clearChatScrollSnapshotsForTests();
     const element = makeChatBox({
@@ -674,6 +718,61 @@ describe("chat scroll snapshots", function () {
     element.scrollTop = 100;
     element.dispatch("scroll");
     assert.equal(getChatScrollSnapshot(2, box)?.scrollTop, 200);
+  });
+
+  it("leaves a reused box and the next conversation's position alone until that conversation is drawn", function () {
+    clearChatScrollSnapshotsForTests();
+    // Conversation 2 was left reading an older message.
+    const remembered = makeChatBox({ scrollTop: 200, scrollHeight: 1000 });
+    appendElement(remembered, "llm-message-wrapper", {
+      offsetTop: 150,
+      offsetHeight: 400,
+      dataset: {
+        messageRole: "assistant",
+        messageTimestamp: "20",
+        messageIndex: "3",
+      },
+    });
+    persistChatScrollSnapshotForConversationKey(2, remembered as never);
+    const saved = getChatScrollSnapshot(2);
+    assert.equal(saved?.mode, "manual");
+    assert.equal(saved?.anchor?.messageTimestamp, "20");
+
+    // The panel switches in place: its root already names conversation 2,
+    // but the box still shows conversation 1's messages.
+    const root = new FakeElement();
+    root.id = "llm-main";
+    root.dataset.itemId = "1";
+    const element = makeChatBox({ scrollTop: 600, scrollHeight: 1000 });
+    root.appendChild(element);
+    appendElement(element, "llm-message-wrapper", {
+      offsetTop: 550,
+      offsetHeight: 400,
+      dataset: {
+        messageRole: "assistant",
+        messageTimestamp: "10",
+        messageIndex: "3",
+      },
+    });
+    const box = element as unknown as HTMLDivElement;
+    setChatBoxConversation(box, 1);
+    initializeChatScrollViewport(1, box);
+    root.dataset.itemId = "2";
+    initializeChatScrollViewport(2, box);
+    withScrollGuard(box, 2, () => {});
+    reconcileChatScroll(2, box);
+    observeChatScroll(2, box);
+    assert.equal(box.scrollTop, 600, "conversation 1's messages do not move");
+    assert.deepEqual(
+      getChatScrollSnapshot(2),
+      saved,
+      "conversation 1's messages are not saved as conversation 2's position",
+    );
+
+    // Once conversation 2 is drawn, its saved position applies.
+    setChatBoxConversation(box, 2);
+    withScrollGuard(box, 2, () => {});
+    assert.equal(box.scrollTop, 200);
   });
 
   it("rejects pending layout callbacks after a viewport switches conversations", function () {

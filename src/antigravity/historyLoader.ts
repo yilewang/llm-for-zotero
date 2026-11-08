@@ -35,7 +35,8 @@ function isDraftSummary(summary: ConversationCatalogEntry): boolean {
   );
 }
 
-function toEntry(
+/** One catalog row as this runtime's history row (title and draft rules). */
+export function toAntigravityConversationHistoryEntry(
   summary: ConversationCatalogEntry,
 ): AntigravityConversationHistoryEntry {
   const isDraft = isDraftSummary(summary);
@@ -67,7 +68,7 @@ export async function loadAntigravityConversationHistoryScope(params: {
     paperItemID: params.paperItemID,
     limit: params.limit,
   });
-  return summaries.map(toEntry);
+  return summaries.map(toAntigravityConversationHistoryEntry);
 }
 
 export async function loadAllAntigravityConversationHistory(params: {
@@ -86,5 +87,5 @@ export async function loadAllAntigravityConversationHistory(params: {
       libraryID: params.libraryID,
       limit: normalizedLimit,
     })
-  ).map(toEntry);
+  ).map(toAntigravityConversationHistoryEntry);
 }

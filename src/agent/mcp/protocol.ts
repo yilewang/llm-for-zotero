@@ -74,6 +74,7 @@ export type McpToolCallResult = {
 export const MCP_METHODS = {
   INITIALIZE: "initialize",
   INITIALIZED: "notifications/initialized",
+  PING: "ping",
   TOOLS_LIST: "tools/list",
   TOOLS_CALL: "tools/call",
 } as const;

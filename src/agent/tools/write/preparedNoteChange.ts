@@ -1,11 +1,15 @@
 import { noteHtmlMatches, canonicalNoteHtml } from "../../../utils/noteHtml";
 import {
+  mergeNoteCitationItems,
+  type NoteCitationItem,
+} from "../../../utils/noteCitations";
+import {
   persistVerifiedNoteHtml,
   verifyNativeNoteHtml,
 } from "../../../services/notePersistence";
 import {
   appendNoteHtml,
-  normalizeNoteSourceText,
+  noteHtmlToModelText,
 } from "../../../services/notes/noteRendering";
 import { invalidateCachedContextText } from "../../../services/paperContent/pdfContext";
 import {
@@ -14,6 +18,7 @@ import {
   type ExternalMutationOutcome,
 } from "../../services/externalMutationCoordinator";
 import {
+  inJournalTransaction,
   isAgentChangeJournalAvailable,
   updateJournalStep,
   registerJournalRecoveryPayloads,
@@ -43,6 +48,23 @@ type PreparedNoteChange = {
 
 const pending = new Map<number, Promise<unknown>>();
 
+/**
+ * The note after an append: the new part joins the note's root, and the works
+ * its new chips cite are registered in that root.
+ */
+export function composeNoteAppend(
+  base: string,
+  next: string,
+  citationItems: readonly NoteCitationItem[] = [],
+): string {
+  return mergeNoteCitationItems(
+    appendNoteHtml(base, next),
+    citationItems.filter((item) =>
+      item.uris.some((uri) => next.includes(encodeURIComponent(uri))),
+    ),
+  );
+}
+
 /** Serialize the complete read/prepare/write/verify interval for this native note. */
 export async function executePreparedNoteChange(params: {
   context: AgentToolContext;
@@ -51,6 +73,9 @@ export async function executePreparedNoteChange(params: {
   html: string;
   expectedOriginalHtml?: string;
   finalizeHtml?: () => Promise<string>;
+  /** Works cited by new chips in an appended part, registered in the note's
+   *  root so Zotero can display them. */
+  citationItems?: NoteCitationItem[];
 }) {
   const previous = pending.get(params.note.id) || Promise.resolve();
   const operation = previous.catch(() => undefined).then(() => execute(params));
@@ -67,6 +92,10 @@ async function execute(
   params: Parameters<typeof executePreparedNoteChange>[0],
 ) {
   const { note, context, mode, html } = params;
+  const compose = (base: string, next: string) =>
+    mode === "append"
+      ? composeNoteAppend(base, next, params.citationItems)
+      : next;
   if (
     !note.id ||
     !note.key ||
@@ -134,9 +163,7 @@ async function execute(
       key: note.key,
       mode,
       before: await storeRecoveryText(current.html),
-      after: await storeRecoveryText(
-        mode === "append" ? appendNoteHtml(current.html, html) : html,
-      ),
+      after: await storeRecoveryText(compose(current.html, html)),
     };
   }
   const before = await readRecoveryText(prepared.before);
@@ -161,7 +188,7 @@ async function execute(
         status: mode === "append" ? "appended" : "updated",
         noteId: note.id,
         title: note.getNoteTitle?.() || "Note",
-        noteText: normalizeNoteSourceText(verification.html),
+        noteText: noteHtmlToModelText(verification.html),
         preparedAfter: await storeRecoveryText(expected),
         noteVerification: verification,
         noteChange: await captureNoteChange(
@@ -195,18 +222,23 @@ async function execute(
         );
       finalizationStarted = true;
       const html = await params.finalizeHtml!();
-      expected = mode === "append" ? appendNoteHtml(before, html) : html;
+      expected = compose(before, html);
       const preparedAfter = await storeRecoveryText(expected);
       if (actionId) {
-        await registerJournalRecoveryPayloads({
-          actionId,
-          stepId: `${actionId}:1`,
-          value: preparedAfter,
-        });
-        await updateJournalStep({
-          stepId: `${actionId}:1`,
-          status: "applying",
-          result: { preparedAfter },
+        // Its own transaction, so another flow's rollback cannot drop it.
+        // This runs as the journaled step's write, after its transactional
+        // claim and after finalization's awaited saves.
+        await inJournalTransaction(async () => {
+          await registerJournalRecoveryPayloads({
+            actionId,
+            stepId: `${actionId}:1`,
+            value: preparedAfter,
+          });
+          await updateJournalStep({
+            stepId: `${actionId}:1`,
+            status: "applying",
+            result: { preparedAfter },
+          });
         });
       }
       finalized = true;

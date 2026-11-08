@@ -5,7 +5,6 @@ import {
   findUniqueQuoteTextSearchMatch,
   normalizeLocatorText,
   splitQuoteAtPairedInlineMath,
-  splitQuoteAtEllipsis,
   summarizeQuoteTextSupport,
 } from "../src/services/quotes/quoteTextSearch";
 
@@ -20,16 +19,6 @@ describe("quoteTextSearch", function () {
     assert.isNotNull(match);
     assert.equal(match?.entryId, "repetitive-page");
     assert.equal(match?.totalOccurrences, 1);
-  });
-
-  it("splits quotes at internal ellipsis and keeps meaningful segments", function () {
-    const result = splitQuoteAtEllipsis(
-      "...Preparatory activity is thought to provide top-down signals that enable rapid processing... The neural basis of this preparatory state involves distributed cortical networks...",
-    );
-
-    assert.equal(result.length, 2);
-    assert.include(result[0], "Preparatory activity");
-    assert.include(result[1], "neural basis");
   });
 
   it("splits paired inline math at the beginning, middle, and end", function () {

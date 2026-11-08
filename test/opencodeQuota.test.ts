@@ -22,6 +22,8 @@ describe("OpenCode Go quota", function () {
       "/zen/go/v1/chat/completions",
       "/zen/go/v1/responses",
       "/zen/go/v1/messages",
+      "/inference/go/v1",
+      "/inference/go/anthropic/v1/messages",
     ])
       assert.deepEqual(
         resolveQuotaTarget({ ...entry, apiBase: `https://opencode.ai${path}` }),
@@ -29,6 +31,7 @@ describe("OpenCode Go quota", function () {
       );
     for (const apiBase of [
       "https://opencode.ai/zen/v1",
+      "https://opencode.ai/inference/v1",
       "https://opencode.ai/zen/v1/messages",
       "https://opencode.ai/zen/go",
       "https://opencode.ai/zen/go/v10",

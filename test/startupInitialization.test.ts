@@ -42,6 +42,80 @@ describe("plugin startup initialization", function () {
     assert.isBelow(initialized, deferred);
   });
 
+  it("starts the startup sequence in the background without awaiting it", function () {
+    // Zotero awaits each plugin's startup before the next plugin's, and each
+    // plugin's window-load hook before the next one's (issue #528).
+    const source = readSource("../src/hooks.ts");
+    const onStartupStart = source.indexOf("async function onStartup(");
+    const sequenceStart = source.indexOf("async function runStartupSequence(");
+    const hookStart = source.indexOf("function onMainWindowLoad(");
+    const registerStart = source.indexOf("function registerMainWindow(");
+    assert.isAtLeast(onStartupStart, 0);
+    assert.isBelow(onStartupStart, sequenceStart);
+    assert.isAtLeast(hookStart, 0);
+    assert.isBelow(hookStart, registerStart);
+    const onStartup = source.slice(onStartupStart, sequenceStart);
+    const onMainWindowLoad = source.slice(hookStart, registerStart);
+
+    assert.include(onStartup, "startupLifecycle.start(");
+    assert.include(onStartup, "runStartupSequence");
+    assert.notMatch(onStartup, /\bawait\b/);
+    assert.include(onMainWindowLoad, "startupLifecycle.onMainWindowLoad(win)");
+    assert.notMatch(onMainWindowLoad, /\bawait\b/);
+    assert.include(
+      source,
+      "startupLifecycle.registerMainWindows(Zotero.getMainWindows())",
+    );
+  });
+
+  it("checks isStopped() after each awaited startup phase and cleans up when stopped", function () {
+    const source = readSource("../src/hooks.ts");
+    const body = source.slice(
+      source.indexOf("async function runStartupSequence("),
+      source.indexOf("const dedicatedChatPaneDisposers"),
+    );
+    const guard = "if (startupLifecycle.isStopped())";
+    let from = 0;
+    for (const phase of [
+      '"Zotero readiness"',
+      '"startup preference migrations"',
+      '"model capability cache"',
+      "initializeConversationStoresForStartup()",
+      '"paper conversation restore selections"',
+      '"main window panel registration"',
+    ]) {
+      const at = body.indexOf(phase, from);
+      assert.isAtLeast(at, 0, `${phase} missing`);
+      const check = body.indexOf(guard, at);
+      assert.isAbove(check, at, `no isStopped() check after ${phase}`);
+      from = check + guard.length;
+    }
+    // The two phases that register global hooks undo them when stopped.
+    for (const phase of [
+      "initializeConversationStoresForStartup()",
+      '"paper conversation restore selections"',
+    ]) {
+      const at = body.indexOf(phase);
+      const check = body.indexOf(guard, at);
+      const cleanup = body.indexOf("await cleanUpStoppedStartup()", check);
+      assert.isAbove(cleanup, check);
+      assert.isBelow(cleanup - check, 80, `no cleanup after ${phase}`);
+    }
+    const cleanupFn = source.slice(
+      source.indexOf("async function cleanUpStoppedStartup("),
+      source.indexOf("function allConversationStoresReady("),
+    );
+    assert.include(cleanupFn, "await shutdownPaperRestoreSelections()");
+    assert.include(cleanupFn, "disposePendingDeletionSubsystem()");
+    assert.include(cleanupFn, "catch");
+    // Each store sub-phase is guarded, so a stopped startup configures nothing.
+    const stores = source.slice(
+      source.indexOf("async function initializeConversationStoresForStartup("),
+      source.indexOf("async function cleanUpStoppedStartup("),
+    );
+    assert.isAtLeast(stores.split(guard).length - 1, 4);
+  });
+
   it("does not statically import optional startup subsystems", function () {
     const source = readSource("../src/hooks.ts");
 

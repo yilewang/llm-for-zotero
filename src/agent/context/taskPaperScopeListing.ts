@@ -84,9 +84,19 @@ export type TaskPaperScopeSet = {
   itemIds: number[];
   /** How many of them have a PDF to read their text from. */
   withText: number;
-  /** Each paper's title and text hint, for naming a page and sizing it. */
+  /**
+   * Each paper's title and text hint, for naming a page and sizing it, and
+   * its Zotero item key when the host looked it up (`withScopeItemKeys`).
+   */
   papers?: Readonly<
-    Record<number, Readonly<{ title: string; text: TaskPaperScopeTextHint }>>
+    Record<
+      number,
+      Readonly<{
+        title: string;
+        text: TaskPaperScopeTextHint;
+        itemKey?: string;
+      }>
+    >
   >;
 };
 
@@ -249,6 +259,32 @@ export function resolveTaskPaperScopeSet(
     };
   }
   return { wholeLibrary, itemIds, withText, papers };
+}
+
+/**
+ * `set` with each paper's Zotero item key, as `keyOf` gives it (the library
+ * index holds none): a restart carries the keys the model cites by
+ * (`restartCarry.ts`). A paper without a key is left as it was.
+ */
+export function withScopeItemKeys(
+  set: TaskPaperScopeSet,
+  keyOf: (itemId: number) => string | undefined,
+): TaskPaperScopeSet {
+  if (!set.papers) return set;
+  const papers: Record<
+    number,
+    NonNullable<TaskPaperScopeSet["papers"]>[number]
+  > = {};
+  for (const [id, paper] of Object.entries(set.papers)) {
+    let itemKey: string | undefined;
+    try {
+      itemKey = keyOf(Number(id))?.trim() || undefined;
+    } catch {
+      itemKey = undefined;
+    }
+    papers[Number(id)] = itemKey ? { ...paper, itemKey } : paper;
+  }
+  return { ...set, papers };
 }
 
 /**

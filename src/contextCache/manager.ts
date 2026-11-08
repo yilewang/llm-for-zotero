@@ -427,6 +427,27 @@ function readNestedNumber(
   return readNumber(nested as Record<string, unknown>, nestedKey);
 }
 
+/**
+ * The whole prompt of an Anthropic Messages usage payload.
+ *
+ * Anthropic's `input_tokens` counts only the uncached part: the tokens read
+ * from and written to the cache come on top, in their own fields. Every
+ * other provider's prompt count already includes its cached tokens, so this
+ * total is what a prompt count and the context meter mean. A proxy that
+ * reports an OpenAI-style `prompt_tokens` beside the Anthropic fields counts
+ * the cached tokens in already, so that count wins.
+ */
+export function anthropicPromptTokens(usage: unknown): number {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return 0;
+  const u = usage as Record<string, unknown>;
+  return (
+    readNumber(u, "prompt_tokens") ||
+    readNumber(u, "input_tokens") +
+      readNumber(u, "cache_read_input_tokens") +
+      readNumber(u, "cache_creation_input_tokens")
+  );
+}
+
 export function extractContextCacheUsage(usage: unknown): Partial<UsageStats> {
   if (!usage || typeof usage !== "object" || Array.isArray(usage)) return {};
   const u = usage as Record<string, unknown>;
@@ -452,12 +473,12 @@ export function extractContextCacheUsage(usage: unknown): Partial<UsageStats> {
   const anthropicRead = readNumber(u, "cache_read_input_tokens");
   const anthropicWrite = readNumber(u, "cache_creation_input_tokens");
   if (anthropicRead > 0 || anthropicWrite > 0) {
-    const denominator = inputTokens || anthropicRead + anthropicWrite;
+    const total = anthropicPromptTokens(usage);
     return {
       cacheReadTokens: anthropicRead,
       cacheWriteTokens: anthropicWrite,
-      cacheMissTokens: Math.max(0, inputTokens - anthropicRead),
-      cacheHitRatio: denominator > 0 ? anthropicRead / denominator : undefined,
+      cacheMissTokens: Math.max(0, total - anthropicRead),
+      cacheHitRatio: total > 0 ? anthropicRead / total : undefined,
       cacheProvider: "anthropic",
     };
   }

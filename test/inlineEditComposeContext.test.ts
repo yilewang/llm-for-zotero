@@ -4,6 +4,7 @@ import { bindProvisionedConversationKey } from "../src/modules/contextPanel/conv
 import { createGlobalPortalItem } from "../src/modules/contextPanel/portalScope";
 import {
   activeContextPanelStateSync,
+  attachedConversationCache,
   initializedConversationComposeContextKeys,
   paperContentSourceOverrides,
   paperContextModeOverrides,
@@ -46,6 +47,7 @@ describe("inline edit compose context sync", function () {
       selectedPaperContextCache.delete(key);
       selectedCollectionContextCache.delete(key);
       selectedTagContextCache.delete(key);
+      attachedConversationCache.delete(key);
       initializedConversationComposeContextKeys.delete(key);
     }
     paperContextModeOverrides.clear();
@@ -175,5 +177,35 @@ describe("inline edit compose context sync", function () {
     assert.isTrue(
       initializedConversationComposeContextKeys.has(conversationKey),
     );
+  });
+
+  it("puts the edited turn's past chats back in the composer as the user's own, without the agent marker", function () {
+    syncComposeContextForInlineEditForTests(body, item, {
+      role: "user",
+      text: "edit me",
+      timestamp: 1,
+      attachedConversations: [
+        {
+          system: "upstream",
+          conversationKey: 41,
+          title: "Picked",
+          libraryID: 1,
+        },
+        {
+          system: "codex",
+          conversationKey: 42,
+          title: "Found by the agent",
+          libraryID: 1,
+          via: "agent",
+        },
+      ],
+    });
+
+    const refs = attachedConversationCache.get(itemId) || [];
+    assert.deepEqual(
+      refs.map((ref) => `${ref.system}:${ref.conversationKey}`),
+      ["upstream:41", "codex:42"],
+    );
+    for (const ref of refs) assert.notProperty(ref, "via");
   });
 });

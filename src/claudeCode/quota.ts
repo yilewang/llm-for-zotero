@@ -1,5 +1,6 @@
 import type { ClaudeQuotaTarget, ProviderQuota } from "../providers/quota";
 import { createAbortController } from "../utils/apiHelpers";
+import { claudeBridgeFetch } from "./bridgeProcess";
 
 export function parseClaudeQuota(payload: unknown): ProviderQuota | null {
   const raw = payload as { quota?: { windows?: unknown } } | null;
@@ -48,7 +49,7 @@ export async function readClaudeQuota(
   const controller = createAbortController();
   const timeout = setTimeout(() => controller.abort(), 12000);
   try {
-    const response = await fetch(`${base}/account-quota?${query}`, {
+    const response = await claudeBridgeFetch(`${base}/account-quota?${query}`, {
       headers: { Accept: "application/json" },
       signal: controller.signal,
       redirect: "error",

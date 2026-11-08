@@ -1,6 +1,9 @@
 import { fingerprintText } from "./actionOperationEvidence";
 import { OPERATION_CATALOG } from "./operationCatalog";
-import { recordJournalObservation } from "../store/changeJournal";
+import {
+  inJournalTransaction,
+  recordJournalObservation,
+} from "../store/changeJournal";
 import type { AgentActionParameters, AgentActionReceipt } from "./types";
 import { appLogger } from "../../core/logging";
 
@@ -149,16 +152,21 @@ export async function recordExternalRuntimeEffect(params: {
 }): Promise<AgentActionReceipt> {
   const receipt = buildExternalRuntimeEffectReceipt(params);
   try {
-    await recordJournalObservation({
-      event: "external_runtime_effect_observed",
-      objectType: "external_runtime_effect",
-      objectIds: [params.runId || params.effect.source, params.callId],
-      extra: {
-        source: params.effect.source,
-        conversationKey: params.conversationKey,
-        receipt,
-      },
-    });
+    // Its own transaction, so another flow's rollback cannot drop the
+    // receipt. Callers record it from a runtime's message handler, never
+    // inside a Zotero transaction.
+    await inJournalTransaction(() =>
+      recordJournalObservation({
+        event: "external_runtime_effect_observed",
+        objectType: "external_runtime_effect",
+        objectIds: [params.runId || params.effect.source, params.callId],
+        extra: {
+          source: params.effect.source,
+          conversationKey: params.conversationKey,
+          receipt,
+        },
+      }),
+    );
   } catch (error) {
     // The client already ran the effect. A supplementary audit failure must not
     // turn that into a failed decision the caller retries.

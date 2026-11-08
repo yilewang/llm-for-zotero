@@ -20,16 +20,35 @@
  * issues one read observation for it (read mode `digest`), so a document may
  * cite a digested paper the model never read itself. Its depth is the text
  * the worker read: body for the whole text or an excerpt of 5,000 characters
- * or more, abstract below that.
+ * or more, abstract below that; for a scoped read, what the scope covered
+ * (`digestReadCapabilities`).
+ *
+ * Read scope. A part reads each paper for the scope it declared (`read`),
+ * or a paper's own override, else the full text (`readScope.ts`). An
+ * abstract is returned as written, without a model call.
  *
  * Bounds. One `task_update` call digests at most 30 papers; the rest stay
  * pending and the part is declared again to continue. A paper whose digest
  * failed runs again on at most two re-declarations in a run; after that its
  * failure is final.
  */
-import { DEFAULT_INPUT_TOKEN_CAP } from "../../utils/llmDefaults";
 import type { UtilityLLMParams } from "../../utils/utilityLLM";
-import type { PaperContextRef } from "../../shared/types";
+import {
+  mapReaderCompletion,
+  type ReaderAdapterFactories,
+  type ReaderChoice,
+  type ResolvedReader,
+} from "../reader/resolveReader";
+import {
+  readerChoiceFromSelection,
+  type ReaderEntryLookup,
+} from "../reader/readerChoiceFromSelection";
+import {
+  resolveReaderWithFallback,
+  type ReaderFallbackNote,
+} from "../reader/readerFallback";
+import type { PaperContextRef, QuoteCitation } from "../../shared/types";
+import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
 import {
   buildDigestFailureLedgerDelta,
   buildDigestLedgerDelta,
@@ -44,6 +63,12 @@ import { canonicalJson } from "../services/libraryMutation/canonicalJson";
 import { sha256Text } from "../store/journalRecoveryBlobStore";
 import { applyOutcomeEvidence } from "../loop/outcomes";
 import type { PdfService } from "../services/pdfService";
+import {
+  ReaderCompletionError,
+  limitReaderCompletion,
+  type ReaderCallLimiter,
+} from "../../shared/readerCompletion";
+import { hostReaderCallLimiter } from "../reader/readerLimiter";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import {
   createAgentToolResultHandleRecord,
@@ -51,10 +76,21 @@ import {
   upsertAgentToolResultHandles,
   type AgentToolResultHandleRecord,
 } from "../store/toolResultHandles";
-import { readPaperTextForDigest } from "../tools/read/paperRead";
+import { readPaperScopeText } from "../tools/read/paperRead";
+import { warmPageTextCacheForAttachment } from "../../services/pdf/livePdfSelectionLocator";
+import {
+  SECTIONS_NOT_FOUND_RULE,
+  digestReadCapabilities,
+  isFullReadScope,
+  type ReadScope,
+} from "./readScope";
+import { createSectionPicker, type SectionPicker } from "./sectionPicker";
 import type { AgentRuntimeRequest, AgentToolContext } from "../types";
 import {
   DIGEST_FAILURE_REASONS,
+  DIGEST_SCOPE_EMPTY_REASONS,
+  digestMissesNamedSections,
+  digestSourceLabel,
   renderHostPaperDigests,
   runPaperDigestJob,
   type HostPaperDigest,
@@ -88,8 +124,26 @@ const failureRetries = new WeakMap<object, Map<string, number>>();
 /** The text a digest reads for one resolved paper, already cut. */
 export type DigestPaperText = Pick<
   PaperDigestSource,
-  "backend" | "text" | "totalCharacters"
+  | "backend"
+  | "text"
+  | "totalCharacters"
+  | "covered"
+  | "unmatched"
+  | "notFound"
+  | "paperCharacters"
+  | "bounds"
+  | "approximateByPosition"
+  | "textSource"
 >;
+
+/** How a digest reads a paper's text, besides its scope. */
+export type DigestReadOptions = {
+  /**
+   * The reader's choice of a sections scope's named parts, on the digest's
+   * own reader (`sectionPicker.ts`).
+   */
+  pickSections?: SectionPicker;
+};
 
 /** A digest cache that also names the handle context_read reads it by. */
 export type HostPaperDigestCache = PaperDigestCache & {
@@ -103,13 +157,23 @@ export type DigestJobHostDeps = {
     request: AgentRuntimeRequest,
     itemId: number,
   ) => Promise<PaperContextRef | null>;
-  /** The paper's text cut to `maxChars`, or null when it has none. */
+  /**
+   * The paper's text for `scope` (the full text when absent) cut to
+   * `maxChars`, or null when it has none. A sections scope's names are
+   * picked by `options.pickSections` when given.
+   */
   readText: (
     paper: PaperContextRef,
     maxChars: number,
+    scope?: ReadScope,
+    options?: DigestReadOptions,
   ) => Promise<DigestPaperText | null>;
   /** Test seam forwarded to `callUtilityLLM`. */
   llmCall?: UtilityLLMParams["llmCall"];
+  /** Test seam: each reader route's adapter factory. */
+  readerFactories?: ReaderAdapterFactories;
+  /** Test seam: where a picked API reader's model entry is looked up. */
+  lookupReaderEntry?: ReaderEntryLookup;
   /** Test seam; defaults to the handle-store cache. */
   createCache?: (context: AgentToolContext) => HostPaperDigestCache;
 };
@@ -142,6 +206,12 @@ export type DigestRunResult = {
   }>;
   /** The citable source of each digest, as a read tool's result names it. */
   documentEvidenceRefs?: DigestEvidenceRef[];
+  /**
+   * The host-minted citations of every digest's Evidence quotes, as
+   * paper_read returns its passages': the ids a chat answer cites
+   * (`[[cite:Q_...]]`), which the run collects for the final answer.
+   */
+  quoteCitations?: QuoteCitation[];
   /** `final`: not run again; the paper failed on every allowed retry. */
   digestFailures?: Array<{
     itemId: number;
@@ -156,6 +226,18 @@ export type DigestRunResult = {
   digestPending?: string[];
   /** What the model must know to go on: a batch left, or final failures. */
   digestNote?: string;
+  /**
+   * Which model read each digest, when the user picked a reader model: the
+   * trace's record of who read what.
+   */
+  digestReaders?: Array<{
+    itemId: number;
+    taskId?: string;
+    model: string;
+    route?: string;
+  }>;
+  /** The chosen reader failed for a configuration reason; main model read. */
+  readerFallback?: ReaderFallbackNote;
 };
 
 /** One digest's evidence ref, in the shape a read tool's result carries. */
@@ -217,10 +299,13 @@ function digestPaperIdentity(digest: HostPaperDigest): {
 export async function createDigestReadObservation(params: {
   callId: string;
   digest: HostPaperDigest;
+  /** The tool whose call ran the digest; `task_update` for a digest part. */
+  toolName?: string;
 }): Promise<TrustedReadObservation | null> {
   const identity = digestPaperIdentity(params.digest);
   if (!identity) return null;
   const { digest } = params;
+  const toolName = params.toolName || "task_update";
   const inputDigest = `sha256:${await sha256Text(
     canonicalJson({
       target: `item:${digest.itemId}`,
@@ -238,7 +323,7 @@ export async function createDigestReadObservation(params: {
   )}`;
   const callDigest = `sha256:${await sha256Text(
     canonicalJson({
-      toolName: "task_update",
+      toolName,
       callId: `${params.callId}:digest:${digest.itemId}`,
       inputDigest,
     }),
@@ -247,17 +332,15 @@ export async function createDigestReadObservation(params: {
     version: 1 as const,
     observationId: `${callDigest}:1`,
     issuer: "zotero_host" as const,
-    toolName: "task_update",
+    toolName,
     callDigest,
     inputDigest,
     resultDigest,
     ...identity,
-    capabilities: [
-      digest.source.complete ||
-      digest.source.readCharacters >= DIGEST_BODY_DEPTH_CHARS
-        ? "body"
-        : "abstract",
-    ] as TrustedReadObservation["capabilities"],
+    capabilities: digestReadCapabilities(
+      digest.source,
+      DIGEST_BODY_DEPTH_CHARS,
+    ) as TrustedReadObservation["capabilities"],
     readMode: "digest",
   };
   return {
@@ -322,19 +405,38 @@ export function createHandleStorePaperDigestCache(params: {
       for (const record of records) {
         const digest = cachedDigest(record);
         if (!digest) continue;
+        // A record stored again with quote ids wins over the one stored
+        // before them, whichever the store lists first.
+        const known = digests.get(digest.cacheKey);
+        if (
+          known &&
+          Array.isArray(known.quoteCitations) &&
+          !Array.isArray(digest.quoteCitations)
+        )
+          continue;
         digests.set(digest.cacheKey, digest);
         if (
           (record.resourceSignature || "") === (params.resourceSignature || "")
         )
           handles.set(digest.cacheKey, record.handle);
+        // The served digest came from another scope: this scope's handle
+        // holds an older record, so the digest is stored under this scope
+        // when a handle is asked for.
+        else handles.delete(digest.cacheKey);
       }
       return digests;
     }));
   const store = async (digest: HostPaperDigest) => {
+    // Read back alone (context_read after compaction), the rendered digest
+    // carries the live result's note for a named section the paper lacks.
+    const notFound = digestMissesNamedSections(digest.source);
     const content: DigestCacheContent = {
       cacheKey: digest.cacheKey,
       digest,
-      rendered: renderHostPaperDigests([digest], []),
+      rendered: [
+        renderHostPaperDigests([digest], []),
+        ...(notFound ? [SECTIONS_NOT_FOUND_RULE] : []),
+      ].join("\n\n"),
     };
     const record = createAgentToolResultHandleRecord({
       conversationKey: params.conversationKey,
@@ -365,20 +467,103 @@ export function createHandleStorePaperDigestCache(params: {
   };
 }
 
+type ZoteroFieldItem = {
+  getField?: (field: string) => unknown;
+  isRegularItem?: () => boolean;
+  libraryID?: unknown;
+  firstCreator?: unknown;
+};
+
+/**
+ * A regular item without an attachment, as a paper whose context item is
+ * itself; null for anything else (a note, an attachment, no item).
+ */
+function recordOnlyPaper(
+  gateway: Partial<Pick<ZoteroGateway, "getItem">>,
+  itemId: number,
+): PaperContextRef | null {
+  const item = gateway.getItem?.(itemId) as ZoteroFieldItem | null | undefined;
+  if (!item?.isRegularItem?.()) return null;
+  const field = (name: string) => {
+    const value = item.getField?.(name);
+    return typeof value === "string" ? value.trim() : "";
+  };
+  const libraryID = Number(item.libraryID);
+  const year = /\b(\d{4})\b/.exec(field("date"))?.[1];
+  const creator =
+    typeof item.firstCreator === "string" ? item.firstCreator.trim() : "";
+  return {
+    itemId,
+    contextItemId: itemId,
+    title: field("title") || `Item ${itemId}`,
+    ...(Number.isInteger(libraryID) && libraryID > 0 ? { libraryID } : {}),
+    ...(creator ? { firstCreator: creator } : {}),
+    ...(year ? { year } : {}),
+  };
+}
+
+/**
+ * The item's Zotero record as text: its title, creators and filled fields,
+ * without the abstract (a metadata read reads no more than the record's
+ * bibliographic fields).
+ */
+function metadataText(
+  gateway: Partial<
+    Pick<ZoteroGateway, "getItem" | "getEditableArticleMetadata">
+  >,
+  paper: PaperContextRef,
+): string {
+  const item = gateway.getItem?.(paper.itemId);
+  const snapshot = item ? gateway.getEditableArticleMetadata?.(item) : null;
+  if (!snapshot) return paper.title ? `Title: ${paper.title}` : "";
+  const creators = snapshot.creators
+    .map((creator) =>
+      [creator.firstName, creator.lastName, creator.name]
+        .filter((part) => typeof part === "string" && part.trim())
+        .join(" "),
+    )
+    .filter(Boolean);
+  return [
+    `Title: ${snapshot.title || paper.title || ""}`,
+    ...(creators.length ? [`Creators: ${creators.join("; ")}`] : []),
+    ...Object.entries(snapshot.fields)
+      .filter(
+        ([field, value]) =>
+          field !== "title" &&
+          field !== "abstractNote" &&
+          typeof value === "string" &&
+          value.trim(),
+      )
+      .map(([field, value]) => `${field}: ${value}`),
+  ].join("\n");
+}
+
 /**
  * Resolves papers and reads their text from Zotero: the turn's own paper
  * ref when the turn carries it, else the gateway's resolver. The gateway's
  * ref does not carry the MinerU cache directory, so it is looked up from the
  * paper's attachments, as the figure read does, and the text is read
  * exactly as the overview read picks it (MinerU `full.md`, else the PDF).
+ * A scoped read cuts it by `readPaperScopeText`, reading the Zotero abstract
+ * field, the paper's notes, its record or the PDF's page text as the scope
+ * asks, and the named sections the digest's reader picks.
  */
 export function createZoteroPaperDigestSources(deps: {
   zoteroGateway: Pick<
     ZoteroGateway,
     "resolvePaperContextTarget" | "getAllChildAttachmentInfos"
-  >;
-  pdfService: Pick<PdfService, "getOverviewExcerpt">;
+  > &
+    Partial<
+      Pick<
+        ZoteroGateway,
+        "getItem" | "getEditableArticleMetadata" | "getPaperNotes"
+      >
+    >;
+  pdfService: Pick<PdfService, "getOverviewExcerpt"> &
+    Partial<Pick<PdfService, "ensurePaperContext">>;
 }): Pick<DigestJobHostDeps, "resolvePaper" | "readText"> {
+  const gateway = deps.zoteroGateway;
+  const item = (paper: PaperContextRef) => gateway.getItem?.(paper.itemId);
   return {
     resolvePaper: async (request, itemId) => {
       let paper: PaperContextRef | null = null;
@@ -389,7 +574,11 @@ export function createZoteroPaperDigestSources(deps: {
       } catch {
         return null;
       }
-      if (!paper || paper.mineruCacheDir) return paper;
+      // A paper with no attachment is still its Zotero record: a scoped
+      // read of its abstract, notes or record needs no PDF, and a read of
+      // its text finds none.
+      if (!paper) return recordOnlyPaper(gateway, itemId);
+      if (paper.mineruCacheDir) return paper;
       try {
         const infos =
           await deps.zoteroGateway.getAllChildAttachmentInfos(itemId);
@@ -407,20 +596,59 @@ export function createZoteroPaperDigestSources(deps: {
       }
       return paper;
     },
-    readText: (paper, maxChars) =>
-      readPaperTextForDigest({
+    readText: async (paper, maxChars, scope, options) => {
+      const read = await readPaperScopeText({
         paperContext: paper,
-        pdfService: deps.pdfService,
+        scope,
         maxChars,
-      }),
+        ...(options?.pickSections
+          ? { pickSections: options.pickSections }
+          : {}),
+        pdfService: {
+          getOverviewExcerpt: (params) =>
+            deps.pdfService.getOverviewExcerpt(params),
+          ensurePaperContext: async (ref) =>
+            deps.pdfService.ensurePaperContext
+              ? deps.pdfService.ensurePaperContext(ref)
+              : undefined,
+        },
+        readAbstractNote: (ref) => {
+          const field = (
+            item(ref) as ZoteroFieldItem | null | undefined
+          )?.getField?.("abstractNote");
+          return typeof field === "string" ? field : "";
+        },
+        readNotes: (ref) => gateway.getPaperNotes?.({ item: item(ref) }) || [],
+        readMetadata: (ref) => metadataText(gateway, ref),
+        readPageTexts: async (ref) =>
+          (await warmPageTextCacheForAttachment(ref.contextItemId))?.pages ||
+          [],
+      });
+      if (!read) return null;
+      const {
+        source,
+        complete: _complete,
+        coveredParts: _coveredParts,
+        ...text
+      } = read;
+      return isFullReadScope(scope)
+        ? {
+            backend: text.backend,
+            text: text.text,
+            totalCharacters: text.totalCharacters,
+          }
+        : { ...text, textSource: source };
+    },
   };
 }
 
 /**
- * Runs each digest part's job in order, with the chat turn's model, budget
- * and Stop signal, publishing every paper's outcome as it lands. Stop ends
- * the run between papers: finished digests stay, and the papers not
- * finished are reported pending.
+ * Runs each digest part's job in order, with the reader the request's
+ * runtime reads with (the chat turn's model in the plugin Agent, Codex
+ * Responses or the Claude bridge with the chat's model) and the turn's Stop
+ * signal, publishing every paper's outcome as it lands. Stop ends the run
+ * between papers: finished digests stay, and the papers not finished are
+ * reported pending.
  */
 export async function runDigestParts(params: {
   parts: readonly DigestPartRequest[];
@@ -428,22 +656,47 @@ export async function runDigestParts(params: {
   deps: DigestJobHostDeps;
   /** The part's id as the model names it. */
   localTaskId: (taskId: string) => string;
+  /** An explicit reader; by default the main model of the runtime. */
+  readerChoice?: ReaderChoice;
+  /** Test seam; defaults to the process-wide reader limit. */
+  limiter?: ReaderCallLimiter;
 }): Promise<DigestRunResult> {
   const { context, deps } = params;
   const request = context.request;
   const signal = context.signal;
-  const llm = {
-    model: request.model,
-    apiBase: request.apiBase,
-    apiKey: request.apiKey,
-    authMode: request.authMode,
-    providerProtocol: request.providerProtocol,
-    profileOverride: request.advanced?.profileOverride,
+  const readerChoice =
+    params.readerChoice ??
+    readerChoiceFromSelection({
+      selection: request.readerSelection,
+      request,
+      lookupEntry: deps.lookupReaderEntry,
+    });
+  const { resolution, fallbackNote } = resolveReaderWithFallback({
+    request,
+    choice: readerChoice,
     llmCall: deps.llmCall,
-  };
-  const inputCapTokens =
-    request.runtimeContextBudget?.contextWindowTokens ||
-    DEFAULT_INPUT_TOKEN_CAP;
+    factories: deps.readerFactories,
+  });
+  // No reader: every paper fails as unconfigured, without a model call.
+  const unlimited: ResolvedReader = resolution.ok
+    ? resolution.reader
+    : {
+        route: "turn_model",
+        model: "",
+        complete: async () => {
+          throw new ReaderCompletionError({
+            reason: "not_configured",
+            detail: resolution.detail,
+          });
+        },
+        windowTokens: 0,
+      };
+  // Every digest call waits on the host's one reader limit, as paper_digest's
+  // do, so parts, chats and windows never read with more than that at once.
+  const reader = mapReaderCompletion(unlimited, (complete) =>
+    limitReaderCompletion(complete, params.limiter || hostReaderCallLimiter),
+  );
+  const inputCapTokens = reader.windowTokens;
   const cache =
     deps.createCache?.(context) ||
     createHandleStorePaperDigestCache({
@@ -606,28 +859,46 @@ export async function runDigestParts(params: {
       (entry) => entry.taskId === part.taskId,
     );
     const instruction = task?.description || "";
+    // The part's read scope, and each paper's own (`read`, `overrides`).
+    const overrides = new Map(
+      (task?.readOverrides || []).map((entry) => [entry.target, entry.read]),
+    );
     // The paper rows name the part: its full task id, so two runs of one
     // conversation that both declare a part 'papers' stay two parts, and its
     // label.
     const partRow = { partId: part.taskId, ...(label ? { label } : {}) };
+    // A sections scope's named parts are picked by the part's own reader,
+    // for the request the part serves.
+    const pickSections = createSectionPicker({
+      reader,
+      ...(task?.question ? { question: task.question } : {}),
+      ...(signal ? { signal } : {}),
+    });
     const result = await runPaperDigestJob({
       targets: part.targets,
       instruction,
       ...(task?.question ? { question: task.question } : {}),
-      readText: async (itemId, maxChars) => {
+      ...(task?.readScope ? { scope: task.readScope } : {}),
+      ...(overrides.size
+        ? { scopeOf: (itemId: number) => overrides.get(`item:${itemId}`) }
+        : {}),
+      readText: async (itemId, maxChars, scope) => {
         const paper = await resolvePaper(itemId);
         if (!paper) return null;
-        const text = await deps.readText(paper, maxChars);
+        const text = await deps.readText(paper, maxChars, scope, {
+          pickSections,
+        });
         if (!text) return null;
         return {
           itemId,
           contextItemId: paper.contextItemId,
           ...(paper.libraryID ? { libraryID: paper.libraryID } : {}),
           ...(paper.title ? { title: paper.title } : {}),
+          sourceLabel: digestSourceLabel(paper),
           ...text,
         };
       },
-      llm,
+      reader,
       inputCapTokens,
       concurrency: DIGEST_CONCURRENCY,
       signal,
@@ -712,6 +983,9 @@ export async function runDigestParts(params: {
         ...(ref ? { evidenceRefs: [ref] } : {}),
       });
   }
+  const quoteCitations = mergeQuoteCitations(
+    ...digests.map((digest) => digest.quoteCitations),
+  );
   const allFailures = [...failures, ...finalFailures];
   const final = new Set(finalFailures);
   const notes: string[] = [];
@@ -741,8 +1015,37 @@ export async function runDigestParts(params: {
           ", ",
         )}. Name ${unreadable.length === 1 ? "it" : "them"} as not read; do not declare ${unreadable.length === 1 ? "it" : "them"} again, read ${unreadable.length === 1 ? "it" : "them"} with paper_read, or search for ${unreadable.length === 1 ? "it" : "them"} outside the library.`,
     );
+  // A scope the paper has nothing of: nothing was read in its place.
+  const outOfScope = [
+    ...new Map(
+      allFailures
+        .filter((failure) => DIGEST_SCOPE_EMPTY_REASONS.has(failure.reason))
+        .map((failure) => [failure.itemId, failure]),
+    ).values(),
+  ];
+  if (outOfScope.length)
+    notes.push(
+      `Nothing read for ${outOfScope
+        .map(
+          (failure) =>
+            `${titleOf(failure.itemId) || `Item ${failure.itemId}`} (${failure.target}${failure.detail ? `; ${failure.detail}` : ""})`,
+        )
+        .join(
+          ", ",
+        )}: the paper has none of what the part's read scope names, and no other text was read in its place. Name ${outOfScope.length === 1 ? "it" : "them"} as not read for that scope.`,
+    );
+  // The rule once per result, whether a paper has some or none of the names.
+  if (
+    digests.some((digest) => digestMissesNamedSections(digest.source)) ||
+    outOfScope.some(
+      (failure) => failure.reason === DIGEST_FAILURE_REASONS.noMatchingSections,
+    )
+  )
+    notes.push(SECTIONS_NOT_FOUND_RULE);
   const retriable = finalFailures.filter(
-    (failure) => failure.reason !== DIGEST_FAILURE_REASONS.noText,
+    (failure) =>
+      failure.reason !== DIGEST_FAILURE_REASONS.noText &&
+      !DIGEST_SCOPE_EMPTY_REASONS.has(failure.reason),
   );
   if (retriable.length)
     notes.push(
@@ -793,6 +1096,7 @@ export async function runDigestParts(params: {
       : {}),
     ...(handles.length ? { digestHandles: handles } : {}),
     ...(evidenceRefs.length ? { documentEvidenceRefs: evidenceRefs } : {}),
+    ...(quoteCitations.length ? { quoteCitations } : {}),
     ...(allFailures.length
       ? {
           digestFailures: allFailures.map((failure) => {
@@ -808,5 +1112,20 @@ export async function runDigestParts(params: {
       : {}),
     ...(pending.length ? { digestPending: pending } : {}),
     ...(notes.length ? { digestNote: notes.join(" ") } : {}),
+    ...(readerChoice && digests.some((digest) => digest.model)
+      ? {
+          digestReaders: digests
+            .filter((digest) => digest.model)
+            .map((digest) => ({
+              itemId: digest.itemId,
+              ...(partOf.get(digest)
+                ? { taskId: partOf.get(digest)!.local }
+                : {}),
+              model: digest.model,
+              ...(digest.readerRoute ? { route: digest.readerRoute } : {}),
+            })),
+        }
+      : {}),
+    ...(fallbackNote() ? { readerFallback: fallbackNote() } : {}),
   };
 }

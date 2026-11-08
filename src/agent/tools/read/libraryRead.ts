@@ -1,4 +1,8 @@
 import type { PaperContextRef } from "../../../shared/types";
+import {
+  hasNoteEmbedTokens,
+  NOTE_EMBED_PLACEHOLDER_GUIDANCE,
+} from "../../../utils/noteEmbeds";
 import type { AgentToolDefinition } from "../../types";
 import {
   LibraryReadService,
@@ -30,6 +34,7 @@ const VALID_SECTIONS = new Set<ReadLibrarySection>([
   "annotations",
   "attachments",
   "collections",
+  "relatedLinks",
   "content",
 ]);
 
@@ -86,7 +91,7 @@ export function createLibraryReadTool(
     spec: {
       name: "library_read",
       description:
-        "Read structured Zotero item state: metadata, notes, annotations, attachments, collection membership, and note content. Use paper_read for primary PDF/paper content. For explicit child-attachment requests, enumerate attachments then use read_attachment for Markdown/HTML/TXT/DOCX.",
+        "Read structured Zotero item state: metadata, notes, annotations, attachments, collection membership, relatedLinks (Zotero's Related box), and note content. Use paper_read for primary PDF/paper content. For explicit child-attachment requests, enumerate attachments then use read_attachment for Markdown/HTML/TXT/DOCX.",
       inputSchema: {
         type: "object",
         required: ["sections"],
@@ -113,6 +118,7 @@ export function createLibraryReadTool(
                 "annotations",
                 "attachments",
                 "collections",
+                "relatedLinks",
               ],
             },
           },
@@ -125,6 +131,7 @@ export function createLibraryReadTool(
     },
     presentation: {
       label: "Read Library",
+      traceIcon: "library",
       summaries: {
         onCall: "Reading structured Zotero item data",
         onSuccess: ({ content }) => {
@@ -153,12 +160,12 @@ export function createLibraryReadTool(
         if (!rawSections.length) {
           return fail(
             "sections is required: provide an array like ['metadata', 'notes']. " +
-              "Valid sections: metadata, notes, content, annotations, attachments, collections.",
+              "Valid sections: metadata, notes, content, annotations, attachments, collections, relatedLinks.",
           );
         }
         return fail(
           `None of the provided sections are valid: ${JSON.stringify(rawSections.slice(0, 5))}. ` +
-            `Valid sections: metadata, notes, content, annotations, attachments, collections.` +
+            `Valid sections: metadata, notes, content, annotations, attachments, collections, relatedLinks.` +
             (rawSections.includes("tags")
               ? " Item tags come from library_search with include:['tags']."
               : ""),
@@ -214,6 +221,10 @@ export function createLibraryReadTool(
         sections: input.sections,
         results: read.results,
         warnings: read.warnings,
+        // Explain note placeholders once, and only when a note has them.
+        ...(hasNoteEmbedTokens(JSON.stringify(read.results))
+          ? { noteEmbeds: NOTE_EMBED_PLACEHOLDER_GUIDANCE }
+          : {}),
       };
     },
   };

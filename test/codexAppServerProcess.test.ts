@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  CODEX_APP_SERVER_CHILD_TURN_GRACE_MS,
   CodexAppServerProcess,
   CodexAppServerProcessRetiredError,
   destroyCachedCodexAppServerProcess,
@@ -222,6 +223,53 @@ describe("codexAppServerProcess", function () {
       globals.ztoolkit = previousToolkit;
       proc.destroy();
     }
+  });
+  it("rejects only the timed-out request when failProcessOnTimeout is false", async function () {
+    let killed = false;
+    const proc = CodexAppServerProcess.forTest({
+      stdin: { write: () => {} },
+      kill: () => {
+        killed = true;
+      },
+    });
+    let closed = false;
+    proc.onClose(() => {
+      closed = true;
+    });
+    const other = proc.sendRequest("other/read", {}, 0);
+    let error: unknown;
+    try {
+      await proc.sendRequest("side/read", {}, 5, {
+        failProcessOnTimeout: false,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assert.match(String(error), /Timed out waiting for codex app-server/);
+    assert.isFalse(killed);
+    assert.isFalse(closed);
+    (proc as any).handleMessage({ id: 1, result: { ok: true } });
+    assert.deepEqual(await other, { ok: true });
+    proc.destroy();
+  });
+  it("tells a running turn why the connection closed", async function () {
+    const proc = createProcess();
+    const turn = waitForCodexAppServerTurnCompletion({
+      proc,
+      threadId: "thread",
+      turnId: "turn",
+      timeoutMs: 0,
+    });
+    const settled = turn.then(
+      () => undefined,
+      (caught) => caught as Error,
+    );
+    await proc.sendRequest("slow/read", {}, 5).catch(() => undefined);
+    const error = await settled;
+    assert.match(
+      String(error?.message),
+      /^Codex app-server connection closed: Timed out waiting for codex app-server response to slow\/read/,
+    );
   });
   it("settles a lost connection after pending proposal persistence finishes", async function () {
     const proc = createProcess();
@@ -1117,8 +1165,9 @@ describe("codexAppServerProcess", function () {
           settled,
           "the parent must wait for its child's decision",
         );
+        // Complete the turn in the same tick as the decision: a yield here
+        // lets a late event loop fire the 30 ms idle timer first.
         approve({ decision: "accept" });
-        await tick();
         proc.handleMessage({
           method: "turn/completed",
           params: {
@@ -1135,6 +1184,313 @@ describe("codexAppServerProcess", function () {
         dispose();
         proc.destroy();
       }
+    });
+
+    describe("child turns at the parent's turn/completed", function () {
+      const spawnChild = (proc: TestProcess, childThreadId: string) =>
+        proc.handleMessage({
+          method: "item/completed",
+          params: {
+            threadId: "thread-A",
+            turnId: "turn-A",
+            item: {
+              id: `spawn-${childThreadId}`,
+              type: "collabAgentToolCall",
+              receiverThreadIds: [childThreadId],
+            },
+          },
+        });
+      const turnBoundary = (
+        proc: TestProcess,
+        method: "turn/started" | "turn/completed",
+        threadId: string,
+        turnId: string,
+        completedStatus = "completed",
+      ) =>
+        proc.handleMessage({
+          method,
+          params: {
+            threadId,
+            turn: {
+              id: turnId,
+              status:
+                method === "turn/started" ? "inProgress" : completedStatus,
+            },
+          },
+        });
+      const finishParent = (proc: TestProcess, text = "parent answer") => {
+        proc.handleMessage({
+          method: "item/agentMessage/delta",
+          params: { threadId: "thread-A", turnId: "turn-A", delta: text },
+        });
+        turnBoundary(proc, "turn/completed", "thread-A", "turn-A");
+      };
+      function startParent(
+        proc: TestProcess,
+        options: {
+          childTurnGraceMs?: number;
+          timeoutMs?: number;
+          signal?: AbortSignal;
+        } = {},
+      ) {
+        const childThreadIds = new Set<string>();
+        let settledAt = 0;
+        const result = waitForCodexAppServerTurnCompletion({
+          proc,
+          threadId: "thread-A",
+          turnId: "turn-A",
+          childThreadIds,
+          cacheKey: "child-grace-missing-entry",
+          interruptOnAbort: true,
+          timeoutMs: options.timeoutMs ?? 5000,
+          childTurnGraceMs: options.childTurnGraceMs ?? 1000,
+          signal: options.signal,
+        }).then(
+          (text) => {
+            settledAt = Date.now();
+            return { text } as { text?: string; error?: unknown };
+          },
+          (error) => {
+            settledAt = Date.now();
+            return { error } as { text?: string; error?: unknown };
+          },
+        );
+        return { result, childThreadIds, settledAt: () => settledAt };
+      }
+      const interrupts = (writes: Array<Record<string, any>>) =>
+        writes
+          .filter((write) => write.method === "turn/interrupt")
+          .map((write) => write.params);
+      const answerInterrupts = (
+        proc: TestProcess,
+        writes: Array<Record<string, any>>,
+      ) => {
+        for (const write of writes) {
+          if (write.method === "turn/interrupt") {
+            proc.handleMessage({ id: write.id, result: {} });
+          }
+        }
+      };
+
+      it("waits 15 s by default", function () {
+        assert.equal(CODEX_APP_SERVER_CHILD_TURN_GRACE_MS, 15_000);
+      });
+
+      it("settles at once with no child turns, as before", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        const completedAt = Date.now();
+        finishParent(proc);
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 100);
+        proc.destroy();
+      });
+
+      it("does not wait for a child whose turn completed before the parent", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        turnBoundary(proc, "turn/completed", "child-1", "child-turn-1");
+        const completedAt = Date.now();
+        finishParent(proc);
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 100);
+        proc.destroy();
+      });
+
+      it("settles after a running child turn completes, with the parent's text", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        assert.equal(turn.settledAt(), 0, "the parent waits for its child");
+        assert.isTrue(
+          turn.childThreadIds.has("child-1"),
+          "the child stays tracked while the parent waits",
+        );
+        proc.handleMessage({
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "child-1",
+            turnId: "child-turn-1",
+            delta: "child report",
+          },
+        });
+        const childCompletedAt = Date.now();
+        turnBoundary(proc, "turn/completed", "child-1", "child-turn-1");
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isAtLeast(turn.settledAt(), childCompletedAt);
+        assert.isBelow(turn.settledAt() - childCompletedAt, 100);
+        assert.isEmpty([...turn.childThreadIds]);
+        proc.destroy();
+      });
+
+      it("settles at the grace bound when a child turn never completes", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        // An idle timeout shorter than the grace must not fail the finished turn.
+        const turn = startParent(proc, {
+          childTurnGraceMs: 120,
+          timeoutMs: 30,
+        });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        const completedAt = Date.now();
+        finishParent(proc);
+        const outcome = await turn.result;
+        assert.isUndefined(outcome.error);
+        assert.equal(outcome.text, "parent answer");
+        assert.isAtLeast(turn.settledAt() - completedAt, 110);
+        assert.isBelow(turn.settledAt() - completedAt, 400);
+        proc.destroy();
+      });
+
+      it("tracks a child turn that started before the spawn named the child", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        spawnChild(proc, "child-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        assert.equal(turn.settledAt(), 0);
+        turnBoundary(proc, "turn/completed", "child-1", "child-turn-1");
+        assert.equal((await turn.result).text, "parent answer");
+        proc.destroy();
+      });
+
+      it("does not wait for another conversation's running turn", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 2000 });
+        turnBoundary(proc, "turn/started", "thread-B", "turn-B");
+        const completedAt = Date.now();
+        finishParent(proc);
+        assert.equal((await turn.result).text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 100);
+        proc.destroy();
+      });
+
+      it("interrupts the parent and each running child turn on Stop", async function () {
+        const writes: Array<Record<string, any>> = [];
+        const proc = createConcurrentProcess({
+          userAgent: CURRENT_USER_AGENT,
+          writes,
+        });
+        const controller = new AbortController();
+        const turn = startParent(proc, { signal: controller.signal });
+        spawnChild(proc, "child-1");
+        spawnChild(proc, "child-2");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        turnBoundary(proc, "turn/started", "child-2", "child-turn-2");
+        turnBoundary(proc, "turn/completed", "child-2", "child-turn-2");
+        controller.abort();
+        const outcome = await turn.result;
+        assert.equal((outcome.error as Error)?.name, "AbortError");
+        assert.sameDeepMembers(interrupts(writes), [
+          { threadId: "thread-A", turnId: "turn-A" },
+          { threadId: "child-1", turnId: "child-turn-1" },
+        ]);
+        answerInterrupts(proc, writes);
+        proc.destroy();
+      });
+
+      for (const status of ["interrupted", "failed"]) {
+        it(`settles at once and interrupts a running child when the parent is ${status}`, async function () {
+          const writes: Array<Record<string, any>> = [];
+          const proc = createConcurrentProcess({
+            userAgent: CURRENT_USER_AGENT,
+            writes,
+          });
+          const turn = startParent(proc, { childTurnGraceMs: 2000 });
+          spawnChild(proc, "child-1");
+          turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+          const completedAt = Date.now();
+          turnBoundary(proc, "turn/completed", "thread-A", "turn-A", status);
+          const outcome = await turn.result;
+          assert.isBelow(turn.settledAt() - completedAt, 200);
+          if (status === "interrupted") {
+            assert.equal((outcome.error as Error)?.name, "AbortError");
+          } else {
+            assert.match(String((outcome.error as Error)?.message), /failed/);
+          }
+          assert.deepEqual(interrupts(writes), [
+            { threadId: "child-1", turnId: "child-turn-1" },
+          ]);
+          answerInterrupts(proc, writes);
+          proc.destroy();
+        });
+      }
+
+      it("starts one grace when the parent's turn/completed arrives twice", async function () {
+        const proc = createConcurrentProcess({ userAgent: CURRENT_USER_AGENT });
+        const turn = startParent(proc, { childTurnGraceMs: 150 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        const completedAt = Date.now();
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        // A second completion must not restart the 150 ms bound.
+        turnBoundary(proc, "turn/completed", "thread-A", "turn-A");
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.isBelow(turn.settledAt() - completedAt, 260);
+        proc.destroy();
+      });
+
+      it("interrupts a child still running when the grace ends", async function () {
+        const writes: Array<Record<string, any>> = [];
+        const proc = createConcurrentProcess({
+          userAgent: CURRENT_USER_AGENT,
+          writes,
+        });
+        const turn = startParent(proc, { childTurnGraceMs: 80 });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        assert.deepEqual(
+          interrupts(writes),
+          [],
+          "no interrupt inside the grace",
+        );
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.deepEqual(interrupts(writes), [
+          { threadId: "child-1", turnId: "child-turn-1" },
+        ]);
+        answerInterrupts(proc, writes);
+        proc.destroy();
+      });
+
+      it("on Stop during the grace, interrupts the children and keeps the parent's answer", async function () {
+        const writes: Array<Record<string, any>> = [];
+        const proc = createConcurrentProcess({
+          userAgent: CURRENT_USER_AGENT,
+          writes,
+        });
+        const controller = new AbortController();
+        const turn = startParent(proc, {
+          signal: controller.signal,
+          childTurnGraceMs: 2000,
+        });
+        spawnChild(proc, "child-1");
+        turnBoundary(proc, "turn/started", "child-1", "child-turn-1");
+        finishParent(proc);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        assert.equal(turn.settledAt(), 0);
+        controller.abort();
+        const outcome = await turn.result;
+        assert.equal(outcome.text, "parent answer");
+        assert.deepEqual(interrupts(writes), [
+          { threadId: "child-1", turnId: "child-turn-1" },
+        ]);
+        answerInterrupts(proc, writes);
+        proc.destroy();
+      });
     });
 
     it("still destroys the process when a lone turn times out", async function () {
@@ -2754,6 +3110,134 @@ describe("codexAppServerProcess", function () {
     );
     assert.notProperty(calls[0]?.environment || {}, "HTTP_PROXY");
     assert.isTrue(calls[0]?.environmentAppend);
+  });
+
+  describe("Codex home folder setting", function () {
+    async function withCodexHome<T>(
+      home: string,
+      callback: () => Promise<T>,
+    ): Promise<T> {
+      const globals = globalThis as TestGlobal;
+      const original = globals.Zotero;
+      globals.Zotero = {
+        ...(original as object),
+        Prefs: { get: () => home },
+      };
+      try {
+        return await callback();
+      } finally {
+        globals.Zotero = original;
+      }
+    }
+
+    async function spawnWithHome(
+      home: string,
+      env: Record<string, string>,
+      exists: (path: string) => boolean,
+    ): Promise<SubprocessCallOptions[]> {
+      const calls: SubprocessCallOptions[] = [];
+      await withRuntimeStubs(
+        {
+          env,
+          inheritEnv: false,
+          platform: "macos",
+          ioExists: exists,
+          stubProcessLifecycle: true,
+          subprocessCall: createSpawnStub(calls),
+        },
+        () =>
+          withCodexHome(home, async () => {
+            const proc = await CodexAppServerProcess.spawn({
+              codexPath: "/opt/codex",
+            });
+            proc.destroy();
+          }),
+      );
+      return calls;
+    }
+
+    it("adds no CODEX_HOME when the setting is empty", async function () {
+      const calls = await spawnWithHome(
+        "",
+        { CODEX_HOME: "/inherited" },
+        () => true,
+      );
+      assert.lengthOf(calls, 1);
+      assert.notProperty(calls[0]?.environment || {}, "CODEX_HOME");
+    });
+
+    it("passes the configured folder, with spaces, to the child only", async function () {
+      const home = "/Users/me/Agent config/Codex Zotero";
+      const calls = await spawnWithHome(
+        home,
+        { CODEX_HOME: "/inherited" },
+        (path) => path === home || path === "/opt/codex",
+      );
+      assert.equal(calls[0]?.environment?.CODEX_HOME, home);
+      assert.isTrue(calls[0]?.environmentAppend);
+      assert.equal(
+        (globalThis as TestGlobal).process?.env?.CODEX_HOME,
+        process.env.CODEX_HOME,
+      );
+    });
+
+    it("checks and passes a quoted folder without its quotes", async function () {
+      const home = "/Users/me/Codex Zotero";
+      const calls = await spawnWithHome(
+        ` "${home}" `,
+        {},
+        (path) => path === home || path === "/opt/codex",
+      );
+      assert.equal(calls[0]?.environment?.CODEX_HOME, home);
+    });
+
+    it("fails with a readable error when the folder is missing", async function () {
+      let message = "";
+      try {
+        await spawnWithHome(
+          "/no/such folder",
+          {},
+          (path) => path !== "/no/such folder",
+        );
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      assert.include(message, "Codex home folder");
+      assert.include(message, "/no/such folder");
+    });
+
+    it("keeps cached processes separate for different home folders", async function () {
+      const originalSpawn = CodexAppServerProcess.spawn;
+      CodexAppServerProcess.spawn = async () =>
+        CodexAppServerProcess.forTest({
+          stdin: { write: () => {} },
+          kill: () => {},
+        });
+      try {
+        const none = await withCodexHome("", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        const homeA = await withCodexHome("/a", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        const homeAAgain = await withCodexHome("/a", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        const homeB = await withCodexHome("/b", () =>
+          getOrCreateCodexAppServerProcess("home-cache"),
+        );
+        assert.notStrictEqual(homeA, none);
+        assert.strictEqual(homeAAgain, homeA);
+        assert.notStrictEqual(homeB, homeA);
+      } finally {
+        CodexAppServerProcess.spawn = originalSpawn;
+        for (const home of ["", "/a", "/b"]) {
+          await withCodexHome(home, async () =>
+            destroyCachedCodexAppServerProcess("home-cache"),
+          );
+        }
+      }
+    });
   });
 
   it("uses an explicit codex path before environment or PATH lookup", async function () {

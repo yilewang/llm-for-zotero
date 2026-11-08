@@ -40,7 +40,7 @@ describe("codex native activity maps to stages at the bridge", function () {
       toolName: "codex_web_search",
       toolLabel: "Web search",
       args: { query: "drift" },
-      text: "Searching web",
+      text: 'Searching the web for "drift"',
       workCategory: "retrieval",
     });
 
@@ -55,7 +55,7 @@ describe("codex native activity maps to stages at the bridge", function () {
       toolName: "codex_web_search",
       toolLabel: "Web search",
     });
-    assert.equal(completed.activity?.text, "Searched web");
+    assert.equal(completed.activity?.text, 'Searched the web for "drift"');
     assert.equal(completed.activity?.ok, true);
   });
 
@@ -68,7 +68,7 @@ describe("codex native activity maps to stages at the bridge", function () {
       },
       "completed",
     );
-    assert.equal(openPage.activity?.text, "Opened web page");
+    assert.equal(openPage.activity?.text, "Opened example.org");
     assert.deepEqual(openPage.activity?.args, { url: "https://example.org/a" });
 
     const findInPage = mapped(
@@ -132,7 +132,7 @@ describe("codex native activity maps to stages at the bridge", function () {
     );
     assert.equal(started.stage?.stage, "external_system");
     assert.equal(started.activity?.codeBlock, "pwd");
-    assert.equal(started.activity?.text, "Running command");
+    assert.equal(started.activity?.text, "Running pwd");
 
     const failed = mapped(
       {
@@ -144,7 +144,7 @@ describe("codex native activity maps to stages at the bridge", function () {
       },
       "completed",
     );
-    assert.equal(failed.activity?.text, "Command failed");
+    assert.equal(failed.activity?.text, "Command failed: pwd");
     assert.deepEqual(failed.activity?.args, { cwd: "/repo", status: "exit 2" });
     // A non-zero exit is a report the command made, not a transport failure:
     // the row stays a completed external action, as it did in the panel.
@@ -177,10 +177,36 @@ describe("codex native activity maps to stages at the bridge", function () {
     );
     assert.equal(completed.stage?.stage, "external_system");
     assert.equal(completed.activity?.toolName, "file_changes");
-    assert.equal(completed.activity?.text, "Updated files");
+    assert.equal(completed.activity?.text, "Created a.ts");
     assert.deepEqual(completed.activity?.args, {
       "src/a.ts": { type: "add" },
     });
+  });
+
+  it("names the command inside Codex's login-shell wrapper", function () {
+    const command = `/bin/zsh -lc 'rg -n "Fig" paper.md'`;
+    const completed = mapped(
+      { id: "cmd-2", type: "commandExecution", command, exitCode: 0 },
+      "completed",
+    );
+    assert.equal(completed.activity?.text, 'Ran rg -n "Fig" paper.md');
+    // The block keeps exactly what ran.
+    assert.equal(completed.activity?.codeBlock, command);
+  });
+
+  it("counts the files a change touched when it touched several", function () {
+    const started = mapped(
+      {
+        id: "fc-2",
+        type: "fileChange",
+        changes: [
+          { path: "/repo/a.ts", kind: { type: "update" } },
+          { path: "/repo/b.ts", kind: { type: "update" } },
+        ],
+      },
+      "started",
+    );
+    assert.equal(started.activity?.text, "Editing 2 files");
   });
 
   it("returns nothing for an item that is not structured work", function () {

@@ -8,6 +8,7 @@ import {
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
+  normalizeAttachedConversationRefs,
 } from "../context/normalizers";
 import { normalizeQuoteCitations } from "../quotes/quoteCitations";
 import {
@@ -280,6 +281,7 @@ export const RUNTIME_MESSAGE_SELECT_COLUMNS_SQL = `id,
             quote_citations_json AS quoteCitationsJson,
             collection_contexts_json AS collectionContextsJson,
             tag_contexts_json AS tagContextsJson,
+            attached_conversations_json AS attachedConversationsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
             generated_images_json AS generatedImagesJson,
@@ -1077,6 +1079,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     const selectedTagContexts = normalizeTagContextRefs(
       message.selectedTagContexts,
     );
+    const attachedConversations = normalizeAttachedConversationRefs(
+      message.attachedConversations,
+    );
     const screenshotImages = Array.isArray(message.screenshotImages)
       ? message.screenshotImages.filter(
           (entry): entry is string =>
@@ -1132,8 +1137,8 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
           const identityPlaceholder = identityAvailable ? ", ?" : "";
           await Zotero.DB.queryAsync(
             `INSERT INTO ${tables.messages}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window, document_id${identityColumn})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, attached_conversations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window, document_id${identityColumn})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
             [
               conversationID,
               normalizedKey,
@@ -1173,6 +1178,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
                 : null,
               selectedTagContexts.length
                 ? JSON.stringify(selectedTagContexts)
+                : null,
+              attachedConversations.length
+                ? JSON.stringify(attachedConversations)
                 : null,
               screenshotImages.length ? JSON.stringify(screenshotImages) : null,
               attachments.length ? JSON.stringify(attachments) : null,
@@ -1382,6 +1390,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       | "citationPaperContexts"
       | "selectedCollectionContexts"
       | "selectedTagContexts"
+      | "attachedConversations"
       | "screenshotImages"
       | "attachments"
     >,
@@ -1413,6 +1422,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     );
     const selectedTagContexts = normalizeTagContextRefs(
       message.selectedTagContexts,
+    );
+    const attachedConversations = normalizeAttachedConversationRefs(
+      message.attachedConversations,
     );
     const messageTimestamp = Number.isFinite(message.timestamp)
       ? Math.floor(message.timestamp)
@@ -1453,6 +1465,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
            citation_paper_contexts_json = ?,
            collection_contexts_json = ?,
            tag_contexts_json = ?,
+           attached_conversations_json = ?,
            screenshot_images = ?,
            attachments_json = ?
        WHERE id = (
@@ -1511,6 +1524,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
             : null,
           selectedTagContexts.length
             ? JSON.stringify(selectedTagContexts)
+            : null,
+          attachedConversations.length
+            ? JSON.stringify(attachedConversations)
             : null,
           message.screenshotImages?.length
             ? JSON.stringify(message.screenshotImages)
@@ -2452,6 +2468,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
         quote_citations_json TEXT,
         collection_contexts_json TEXT,
         tag_contexts_json TEXT,
+        attached_conversations_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
         generated_images_json TEXT,
@@ -2562,6 +2579,12 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
         columns,
         "tag_contexts_json",
         "tag_contexts_json TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "attached_conversations_json",
+        "attached_conversations_json TEXT",
       );
       await ensureColumn(
         tables.messages,

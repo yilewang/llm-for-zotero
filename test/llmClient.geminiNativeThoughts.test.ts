@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import { callLLM, callLLMStream } from "../src/utils/llmClient";
+import type { UsageStats } from "../src/shared/llm";
 
 describe("llmClient gemini native thought parts", function () {
   const originalZotero = globalThis.Zotero;
@@ -260,5 +261,35 @@ describe("llmClient gemini native thought parts", function () {
     >;
     assert.equal(thinkingConfig?.thinkingLevel, "ultra");
     assert.equal(thinkingConfig?.includeThoughts, true);
+  });
+
+  it("counts thinking tokens as completion tokens in streamed usage", async function () {
+    mockGeminiFetch({
+      stream: () =>
+        makeSseStream([
+          'data: {"candidates":[{"content":{"parts":[{"text":"Answer."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":20,"thoughtsTokenCount":300,"totalTokenCount":420}}\n\n',
+        ]),
+    });
+
+    const samples: UsageStats[] = [];
+    await callLLMStream(
+      {
+        prompt: "Solve this.",
+        model: "gemini-3.6-flash",
+        apiBase: "https://generativelanguage.googleapis.com/v1beta",
+        apiKey: "gemini-test",
+        providerProtocol: "gemini_native",
+      },
+      () => {},
+      undefined,
+      (usage) => {
+        samples.push(usage);
+      },
+    );
+
+    assert.lengthOf(samples, 1);
+    assert.equal(samples[0].promptTokens, 100);
+    assert.equal(samples[0].completionTokens, 320);
+    assert.equal(samples[0].totalTokens, 420);
   });
 });

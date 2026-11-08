@@ -15,6 +15,8 @@ export type TaskProgressToggleState = {
   applies: boolean;
   /** The row shows (its target; it may still be moving). */
   shown: boolean;
+  /** It shows in the side panel's Task progress tab: a click brings it back. */
+  docked?: boolean;
 };
 
 export function createTaskProgressToggleButton(
@@ -39,7 +41,13 @@ export function applyTaskProgressToggleState(
   const pressedAttr = pressed ? "true" : "false";
   if (button.getAttribute("aria-pressed") !== pressedAttr)
     button.setAttribute("aria-pressed", pressedAttr);
-  const label = t(pressed ? "Hide task progress" : "Show task progress");
+  const label = t(
+    state.docked
+      ? "Move task progress back to chat"
+      : pressed
+        ? "Hide task progress"
+        : "Show task progress",
+  );
   if (button.title !== label) button.title = label;
   if (button.getAttribute("aria-label") !== label)
     button.setAttribute("aria-label", label);

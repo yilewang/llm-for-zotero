@@ -70,7 +70,8 @@ describe("workflow: custom endpoint reasoning defaults", function () {
         ),
       ) as HTMLButtonElement[];
       // Each row is the level name alone, with no description beside it.
-      assert.equal(rows[0]?.textContent, "✓ Auto");
+      assert.equal(rows[0]?.textContent, "Auto");
+      assert.isTrue(rows[0]?.classList.contains("llm-menu-option-selected"));
       assert.isFalse(rows.some((row) => /off/i.test(row.textContent || "")));
       const max = rows.find((row) =>
         /^max$/i.test((row.textContent || "").trim()),

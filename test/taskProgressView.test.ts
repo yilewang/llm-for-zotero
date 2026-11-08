@@ -1,7 +1,9 @@
 import { assert } from "chai";
 import type { TaskPaperScopeEntry } from "../src/agent/context/taskPaperScopeListing";
 import {
+  buildDecisionLedgerDelta,
   taskPaperDigestPartLabel,
+  type TaskPaperDecision,
   type TaskPaperLedgerDelta,
   type TaskPaperLedgerEntry,
   type TaskPaperReadEvent,
@@ -11,6 +13,7 @@ import type { AgentRunEventRecord } from "../src/agent/types";
 import { buildTaskProgressHistory } from "../src/modules/contextPanel/taskProgress/history";
 import {
   applyTaskDocumentCitations,
+  applyTaskOutsideEvent,
   applyTaskPaperUpdate,
   beginTaskAction,
   beginTaskRun,
@@ -28,6 +31,7 @@ import {
   markTaskWaiting,
   setTaskOutcomes,
   setTaskScope,
+  syncTaskAnswerCitations,
   taskReadInDepth,
 } from "../src/modules/contextPanel/taskProgress/store";
 import {
@@ -46,6 +50,8 @@ import {
   createTaskProgressCurtain,
   createTaskProgressDrawer,
   createTaskProgressRow,
+  countTaskProgress,
+  buildTaskProgressPaperRows,
   cleanTaskPaperSnippet,
   formatTaskPaperPassageLabel,
   formatTaskPaperTail,
@@ -58,6 +64,7 @@ import {
   type TaskProgressView,
   type TaskProgressViewInput,
 } from "../src/modules/contextPanel/taskProgress/view";
+import { TASK_PROGRESS_SHOW_IN_ANSWER_EVENT } from "../src/modules/contextPanel/taskProgress/outsideView";
 import { collectFakeText, fakeDocument, FakeElement } from "./helpers/fakeDom";
 import {
   digestLedgerDelta,
@@ -142,6 +149,8 @@ function mount(
     /** Set to true to make timers throw, as a closed window's do. */
     windowClosed?: { value: boolean };
     resolvePaperLabel?: (itemId: number) => string | null;
+    /** The side panel's Task progress tab: the drawer always open. */
+    docked?: boolean;
   } = {},
 ): Harness {
   const timers = new Map<number, { callback: () => void; ms: number }>();
@@ -167,6 +176,7 @@ function mount(
     shell: shell as unknown as HTMLElement,
     chatBox: chatBox as unknown as HTMLElement,
     keyTarget: panel as unknown as HTMLElement,
+    docked: options.docked,
     deps: {
       setTimeout: (callback, ms) => {
         if (options.windowClosed?.value) {
@@ -230,6 +240,15 @@ function mount(
 }
 
 const MAX_VAR = "--llm-task-progress-drawer-max";
+
+/** The Steps block on show: the question's own Steps card. */
+function shownSteps(harness: Harness): FakeElement {
+  const steps = harness.drawer
+    .findAllByClass("llm-task-progress-steps")
+    .find((node) => !(node as any).hidden);
+  assert.isOk(steps, "the Steps block shows");
+  return steps!;
+}
 
 /** A layout whose motion, chat strip and resize callbacks a test drives. */
 function fakeLayout(options: { ms?: number; strip?: number } = {}) {
@@ -522,8 +541,8 @@ describe("task progress view", function () {
     assert.equal(third.dataset.state, "matched");
     assert.equal(
       second.findByClass("llm-task-paper-tail")!.textContent,
-      "Results",
-      "a labelled passage names its section, not a passage count",
+      "",
+      "a read row leaves its end to the title",
     );
     assert.equal(
       second.findByClass("llm-task-paper-meta-text")!.textContent,
@@ -587,6 +606,26 @@ describe("task progress view", function () {
         title,
       ),
       "Full text",
+      "another tool's whole-paper read keeps its wording",
+    );
+    assert.equal(
+      formatTaskPaperPassageLabel(
+        read({
+          toolName: "paper_read",
+          granularity: "full",
+          label: "12/40 chunks",
+        }),
+        title,
+      ),
+      "Part · 12/40 chunks",
+      "an old full record with a partial count",
+    );
+    assert.equal(
+      formatTaskPaperPassageLabel(
+        read({ toolName: "paper_read", granularity: "full" }),
+        title,
+      ),
+      "Full",
     );
     assert.equal(
       cleanTaskPaperSnippet(
@@ -646,51 +685,19 @@ describe("task progress view", function () {
         turnState: entry.state,
       };
     };
-    assert.equal(
-      formatTaskPaperTail(row([{ granularity: "full", snippet: "Body." }])),
-      "Full text",
-    );
-    assert.equal(
-      formatTaskPaperTail(
-        row([
-          { granularity: "section", label: "Methods", snippet: "a" },
-          { granularity: "section", label: "Results", snippet: "b" },
-        ]),
-      ),
-      "Methods, Results",
-    );
-    assert.equal(
-      formatTaskPaperTail(
-        row(
-          ["A", "B", "C", "D"].map((label) => ({
-            granularity: "section" as const,
-            label,
-            snippet: label,
-          })),
-        ),
-      ),
-      "A, B, C…",
-    );
-    assert.equal(
-      formatTaskPaperTail(row([{ snippet: "a" }, { snippet: "b" }])),
-      "2 passages",
-    );
-    assert.equal(
-      formatTaskPaperTail(
-        row([
-          { label: "p. 4", snippet: "a" },
-          { label: "Paper", snippet: "b" },
-        ]),
-      ),
-      "2 passages",
-      "a page label or the paper's own title names no section",
-    );
-    assert.equal(
-      formatTaskPaperTail(
-        row([{ granularity: "full", snippet: "Body." }], { citations: 2 }),
-      ),
-      "Full text · cited 2",
-    );
+    // A read paper's row keeps its room for the title: what was read lists
+    // under the opened row, and a citation is the Cited tag.
+    for (const reads of [
+      [{ granularity: "full" as const, snippet: "Body." }],
+      [
+        { granularity: "section" as const, label: "Methods", snippet: "a" },
+        { granularity: "section" as const, label: "Results", snippet: "b" },
+      ],
+      [{ snippet: "a" }, { snippet: "b" }],
+    ]) {
+      assert.equal(formatTaskPaperTail(row(reads)), "");
+      assert.equal(formatTaskPaperTail(row(reads, { citations: 2 })), "");
+    }
     assert.equal(
       cleanTaskPaperSnippet("[chunk 0] # Title\nBody"),
       "Title Body",
@@ -699,6 +706,211 @@ describe("task progress view", function () {
       cleanTaskPaperSnippet("[chunk 3 p. 2]\n## Results\nBody"),
       "Results Body",
     );
+  });
+
+  it("says found for a search hit and skimmed for a skim, with no read detail", function () {
+    const row = (
+      state: TaskProgressPaperRow["state"],
+      granularity: TaskPaperReadEvent["granularity"],
+    ): TaskProgressPaperRow => {
+      const entry: TaskPaperLedgerEntry = {
+        key: "1:1",
+        libraryID: 1,
+        itemId: 1,
+        contextItemIds: [],
+        text: "unknown",
+        state,
+        latestTurn: 1,
+        turns: {
+          1: {
+            state,
+            readState: state,
+            reads: [
+              {
+                key: "1:1",
+                callId: "c",
+                toolName: "paper_read",
+                granularity,
+              },
+            ],
+            droppedReads: 0,
+            citations: [],
+            droppedCitations: 0,
+          },
+        },
+      };
+      return {
+        key: "1:1",
+        index: 1,
+        libraryID: 1,
+        itemId: 1,
+        title: "Paper",
+        creator: "",
+        year: "",
+        folders: [],
+        tags: [],
+        scopeText: "unknown",
+        inScope: true,
+        entry,
+        state,
+        turnState: state,
+      };
+    };
+    assert.equal(formatTaskPaperTail(row("matched", "metadata")), "found");
+    assert.equal(formatTaskPaperTail(row("skimmed", "abstract")), "skimmed");
+    assert.equal(formatTaskPaperTail(row("skimmed", "outline")), "skimmed");
+  });
+
+  describe("agent decisions", function () {
+    function decide(
+      callId: string,
+      runId: string,
+      decisions: Array<[number, TaskPaperDecision["value"], string]>,
+    ) {
+      const delta = buildDecisionLedgerDelta({
+        runId,
+        callId,
+        toolName: "review_decide",
+        decisions: decisions.map(([itemId, value, reason]) => ({
+          paper: { libraryID: 1, itemId, title: `Paper ${itemId}` },
+          value,
+          reason,
+        })),
+      });
+      applyTaskPaperUpdate(KEY, delta!, runId);
+    }
+    const tagOf = (item: FakeElement) => {
+      const tag = item.findByClass("llm-task-paper-cite")!;
+      return tag.hidden ? "" : tag.textContent;
+    };
+    const openDetails = (item: FakeElement) => {
+      item.findByClass("llm-task-paper-summary")!.dispatchFakeEvent("click");
+      return collectFakeText(item.findByClass("llm-task-paper-details")!);
+    };
+
+    it("adds an excluded count to the count line only above zero", function () {
+      seedScope(5);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      applyTaskPaperUpdate(
+        KEY,
+        ledgerDelta("c1", [[1, "read", "One."]]),
+        "run-a",
+      );
+      decide("d0", "run-a", [[2, "include", "Fits."]]);
+      harness.view.flush();
+      assert.equal(harness.count(), "1 of 5 read");
+      decide("d1", "run-a", [
+        [3, "exclude", "Off topic."],
+        [4, "exclude", "A review."],
+        [5, "defer", "Needs the PDF."],
+      ]);
+      harness.view.flush();
+      assert.equal(
+        harness.count(),
+        "1 of 5 read · 2 excluded",
+        "deferred and included papers are not counted",
+      );
+    });
+
+    it("counts the latest decision of the latest question, not an earlier question's", function () {
+      seedScope(5);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "q1", turnIndex: 1 });
+      decide("d1", "q1", [
+        [1, "exclude", "Off topic."],
+        [2, "exclude", "Off topic."],
+      ]);
+      completeTaskRun(KEY, { runId: "q1", quoteCitations: [] });
+      beginTaskRun(KEY, { runId: "q2", turnIndex: 2 });
+      applyTaskPaperUpdate(KEY, ledgerDelta("c2", [[3, "read", "Now."]]), "q2");
+      decide("d2", "q2", [
+        [1, "include", "On topic after all."],
+        [4, "exclude", "Duplicate."],
+      ]);
+      harness.view.flush();
+      assert.equal(
+        harness.count(),
+        "1 of 5 read · 1 excluded",
+        "question 2 changed paper 1 and added paper 4",
+      );
+    });
+
+    it("tags an excluded or deferred row, none for include", function () {
+      seedScope(4);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      decide("d1", "run-a", [
+        [1, "exclude", "Off topic."],
+        [2, "defer", "Needs the PDF."],
+        [3, "include", "Fits."],
+      ]);
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const items = harness.items();
+      assert.deepEqual(items.map(tagOf), ["Excluded", "Deferred", "", ""]);
+      const tag = items[0].findByClass("llm-task-paper-cite")!;
+      assert.include(
+        tag.className,
+        "llm-task-paper-cite-named",
+        "the same neutral style as the Named tag",
+      );
+    });
+
+    it("shows the reason in the opened row for an exclusion or a deferral, and no line for an inclusion", function () {
+      seedScope(3);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      decide("d1", "run-a", [
+        [1, "exclude", "Off topic."],
+        [2, "include", "Fits the drift question."],
+        [3, "defer", "Needs the full text."],
+      ]);
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const items = harness.items();
+      // The block is a heading, then the line, as a digest block is.
+      const decisionBlock = (item: FakeElement) => {
+        const block = item.findByClass("llm-task-paper-read")!;
+        return block.children.map((child) => [
+          child.className,
+          child.textContent,
+        ]);
+      };
+      assert.include(openDetails(items[0]), "Excluded — Off topic.");
+      assert.deepEqual(decisionBlock(items[0]), [
+        ["llm-task-paper-turn", "Decision"],
+        ["llm-task-paper-how", "Excluded — Off topic."],
+      ]);
+      assert.notInclude(openDetails(items[1]), "Fits the drift question.");
+      assert.notInclude(openDetails(items[1]), "Included");
+      assert.notInclude(openDetails(items[1]), "Decision");
+      assert.include(openDetails(items[2]), "Deferred — Needs the full text.");
+      assert.deepEqual(decisionBlock(items[2]), [
+        ["llm-task-paper-turn", "Decision"],
+        ["llm-task-paper-how", "Deferred — Needs the full text."],
+      ]);
+    });
+
+    it("shows both the read state and the tag of a paper read and excluded", function () {
+      seedScope(2);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+      applyTaskPaperUpdate(
+        KEY,
+        ledgerDelta("c1", [[1, "read", "A passage about drift."]]),
+        "run-a",
+      );
+      decide("d1", "run-a", [[1, "exclude", "Wrong species."]]);
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const [item] = harness.items();
+      assert.equal(item.dataset.state, "read");
+      assert.equal(tagOf(item), "Excluded");
+      const details = openDetails(item);
+      assert.include(details, "A passage about drift.");
+      assert.include(details, "Excluded — Wrong species.");
+    });
   });
 
   it("counts distinct passages, and strips inline heading marks from a snippet", function () {
@@ -758,7 +970,8 @@ describe("task progress view", function () {
         state: "read",
         turnState: "read",
       }),
-      "3 passages",
+      "",
+      "a read row has no words at its end",
     );
     assert.equal(
       cleanTaskPaperSnippet(
@@ -925,10 +1138,12 @@ describe("task progress view", function () {
     harness.row.dispatchFakeEvent("click");
     const paper = harness.items()[1];
     assert.equal(paper.dataset.state, "cited");
-    assert.equal(
-      paper.findByClass("llm-task-paper-tail")!.textContent,
-      "Results · cited 2",
-    );
+    assert.equal(paper.findByClass("llm-task-paper-tail")!.textContent, "");
+    const citeTag = paper.findByClass("llm-task-paper-cite") as FakeElement & {
+      hidden: boolean;
+    };
+    assert.isFalse(citeTag.hidden, "a cited paper shows its Cited tag");
+    assert.equal(citeTag.textContent, "Cited");
     paper.findByClass("llm-task-paper-summary")!.dispatchFakeEvent("click");
     const details = paper.findByClass("llm-task-paper-details")!;
     const text = collectFakeText(details);
@@ -1011,6 +1226,56 @@ describe("task progress view", function () {
     assert.equal(harness.count(), "0 of 20 read", "not painted yet");
     harness.runTimers();
     assert.equal(harness.count(), "10 of 20 read");
+  });
+
+  it("leaves out a read whose words are only a heading", function () {
+    seedScope(3);
+    const harness = track(mount({}, { doc: customEventDocument() }));
+    const read = (label: string, snippet: string) => ({
+      key: "1:2",
+      callId: "c1",
+      toolName: "paper_read",
+      granularity: "section" as const,
+      label,
+      snippet,
+    });
+    applyTaskPaperUpdate(
+      KEY,
+      {
+        version: 1,
+        callId: "c1",
+        toolName: "paper_read",
+        papers: [
+          {
+            key: "1:2",
+            libraryID: 1,
+            itemId: 2,
+            contextItemId: 22,
+            title: "Paper 2",
+            state: "read",
+          },
+        ],
+        reads: [
+          read("2 Results", "# 2 Results"),
+          read("2 Results", "2 Results"),
+          read("Methods", "[chunk 4]\n## 3 Methods\n"),
+          read("Abstract", "# Abstract Responses change over weeks."),
+          read("Discussion", "Habits form when animals overmatch."),
+        ],
+      },
+      "run-a",
+    );
+    harness.row.dispatchFakeEvent("click");
+    const paper = harness.items()[1];
+    paper.findByClass("llm-task-paper-summary")!.dispatchFakeEvent("click");
+    const reads = paper
+      .findByClass("llm-task-paper-details")!
+      .findAllByClass("llm-task-paper-read");
+    assert.deepEqual(
+      reads.map((node) => node.findByClass("llm-task-paper-how")!.textContent),
+      ["Abstract", "Discussion"],
+      "a heading alone, or its label's words again, shows nothing new",
+    );
   });
 
   it("offers Source on passages with text or a named page, and asks the panel to open it", function () {
@@ -1134,93 +1399,405 @@ describe("task progress view", function () {
     });
   });
 
-  it("opens a cited quote in its paper, keeping the drawer open", function () {
+  it("lists the answer's cited passages under Cited, numbered as its marks, and lights their sentences", function () {
     seedScope(5);
     const dispatched: FakeCustomEvent[] = [];
     const harness = track(mount({}, { doc: customEventDocument() }));
     beginTaskRun(KEY, { runId: "run-a" });
-    applyTaskPaperUpdate(KEY, ledgerDelta("c1", [[1, "read", "One"]]), "run-a");
-    completeTaskRun(KEY, {
-      runId: "run-a",
-      quoteCitations: [
-        {
-          ...quoteCitation("Q1.a:p2", 1),
-          pageHintLabel: "7",
-          contextItemId: 9,
-        },
-      ],
-    });
+    applyTaskPaperUpdate(
+      KEY,
+      ledgerDelta("c1", [
+        [1, "read", "Unrelated passage the answer never used."],
+      ]),
+      "run-a",
+    );
+    const text =
+      "Intro line.\n\n## Drift findings\n\nDrift grows with time [[cite:Q_b]]. It saturates later [[cite:Q_a]]. Both hold [[cite:Q_a]].";
+    const quoteCitations = [
+      {
+        ...quoteCitation("Q_a", 1),
+        quoteText: "Drift saturates after the first week.",
+        pageHintLabel: "7",
+        pageHintIndex: 6,
+        sourceSectionLabel: "Results",
+        contextItemId: 11,
+      },
+      { ...quoteCitation("Q_b", 1), sourceSectionLabel: "Methods" },
+      quoteCitation("Q_c", 2),
+    ];
+    completeTaskRun(KEY, { runId: "run-a", quoteCitations });
+    syncTaskAnswerCitations(KEY, { runId: "run-a" }, { text, quoteCitations });
+    applyTaskOutsideEvent(KEY, "run-a", { type: "final", text });
     harness.row.dispatchFakeEvent("click");
     const item = harness.items()[0];
     assert.equal(item.dataset.state, "cited");
-    assert.equal(
-      item.findByClass("llm-task-paper-tail")!.textContent,
-      "Results · cited 1",
-    );
     const summary = item.findByClass("llm-task-paper-summary")!;
     summary.dispatchFakeEvent("click");
-    const link = item.findByClass("llm-task-paper-citation")!;
-    assert.equal(link.textContent, "↳ “Quoted evidence Q1.a:p2”");
-    assert.equal(link.dataset.citationId, "Q1.a:p2");
-    assert.equal(link.title, "Open this passage in the paper");
-    (link as any).dispatchEvent = (event: FakeCustomEvent) => {
+    const details = item.findByClass("llm-task-paper-details")!;
+    assert.deepEqual(
+      details
+        .findAllByClass("llm-task-paper-turn")
+        .map((heading) => heading.textContent),
+      ["Cited"],
+      "one list replaces Passages read and In the answer",
+    );
+    const blocks = details.findAllByClass("llm-task-cited-item");
+    const cited = blocks.filter(
+      (block) =>
+        !block.parentElement?.classList.contains("llm-task-cited-fold-body"),
+    );
+    assert.deepEqual(
+      cited.map((block) => [
+        ...block
+          .findByClass("llm-task-paper-how")!
+          .children.map((part) => part.textContent),
+        block.findByClass("llm-task-paper-snippet")!.textContent,
+      ]),
+      [
+        ["1", "Methods", "Quoted evidence Q_b"],
+        ["2", "p. 7 · Results", "Drift saturates after the first week."],
+      ],
+      "the numbers are the answer's marks', by first appearance",
+    );
+    const [, second] = cited;
+    const source = second.findByClass("llm-task-paper-open")!;
+    (source as any).dispatchEvent = (event: FakeCustomEvent) => {
+      dispatched.push(event);
+      return true;
+    };
+    source.dispatchFakeEvent("click");
+    assert.equal(dispatched[0].type, TASK_PROGRESS_OPEN_PASSAGE_EVENT);
+    assert.deepEqual(dispatched[0].init.detail, {
+      itemId: 1,
+      libraryID: 1,
+      rawSnippet: "Drift saturates after the first week.",
+      cleanedSnippet: "Drift saturates after the first week.",
+      label: "p. 7 · Results",
+      pageLabel: "7",
+      pageIndex: 6,
+      contextItemId: 11,
+      granularity: "passage",
+    });
+    const link = second
+      .findByClass("llm-task-cited-foot")!
+      .findByClass("llm-task-source-link")!;
+    assert.equal(link.textContent, "Show in answer");
+    (harness.drawer as any).dispatchEvent = (event: FakeCustomEvent) => {
       dispatched.push(event);
       return true;
     };
     const click = link.dispatchFakeEvent("click");
     assert.isTrue(click.propagationStopped, "the click stays on the link");
-    assert.lengthOf(dispatched, 1);
-    assert.equal(dispatched[0].type, TASK_PROGRESS_OPEN_PASSAGE_EVENT);
-    assert.isTrue(dispatched[0].init.bubbles);
-    assert.deepInclude(dispatched[0].init.detail as object, {
+    assert.equal(dispatched[1].type, TASK_PROGRESS_SHOW_IN_ANSWER_EVENT);
+    assert.deepEqual(dispatched[1].init.detail, {
+      runId: "run-a",
+      key: "1:1",
       itemId: 1,
-      libraryID: 1,
-      rawSnippet: "Quoted evidence Q1.a:p2",
-      cleanedSnippet: "Quoted evidence Q1.a:p2",
-      label: "(Smith, 2021)",
-      // The page and the attachment the quote recorded, for the fallback
-      // and the right PDF.
-      pageLabel: "7",
-      contextItemId: 9,
-      granularity: "passage",
+      citationId: "Q_a",
+      texts: ["It saturates later.", "Both hold."],
     });
+    // The read the answer did not cite, folded under the list.
+    const fold = details.findByClass("llm-task-cited-fold")!;
+    const toggle = fold.findByClass("llm-task-fold")!;
+    assert.equal(
+      toggle.findByClass("llm-task-fold-text")!.textContent,
+      "Read, not cited (1)",
+    );
+    assert.equal(toggle.getAttribute("aria-expanded"), "false");
+    const body = fold.findByClass("llm-task-cited-fold-body")!;
+    assert.isTrue((body as any).hidden, "folded until opened");
+    assert.include(
+      collectFakeText(body),
+      "Unrelated passage the answer never used.",
+    );
+    toggle.dispatchFakeEvent("click");
+    assert.isFalse((body as any).hidden);
+    harness.view.flush();
+    const reopened = item
+      .findByClass("llm-task-paper-details")!
+      .findByClass("llm-task-cited-fold-body")!;
+    assert.isFalse(
+      (reopened as any).hidden,
+      "the fold stays open over a repaint",
+    );
     assert.isTrue(harness.view.isOpen(), "the drawer stays open");
     assert.equal(summary.getAttribute("aria-expanded"), "true");
-
-    // A link the panel is still opening does nothing more.
-    link.disabled = true;
-    link.dispatchFakeEvent("click");
-    assert.lengthOf(dispatched, 1);
   });
 
-  it("opens the paper from a citation recorded without its quote", function () {
+  it("shows a sentence that only names a paper as named, and folds its reads", function () {
     seedScope(5);
-    const dispatched: FakeCustomEvent[] = [];
     const harness = track(mount({}, { doc: customEventDocument() }));
     beginTaskRun(KEY, { runId: "run-a" });
     applyTaskPaperUpdate(KEY, ledgerDelta("c1", [[1, "read", "One"]]), "run-a");
-    completeTaskRun(KEY, {
-      runId: "run-a",
-      quoteCitations: [{ ...quoteCitation("q1", 1), quoteText: "" }],
-    });
+    const text = "Smith (2021) found slow drift.";
+    completeTaskRun(KEY, { runId: "run-a", quoteCitations: [] });
+    syncTaskAnswerCitations(KEY, { runId: "run-a" }, { text });
+    applyTaskOutsideEvent(KEY, "run-a", { type: "final", text });
     harness.row.dispatchFakeEvent("click");
     const item = harness.items()[0];
     item.findByClass("llm-task-paper-summary")!.dispatchFakeEvent("click");
-    const link = item.findByClass("llm-task-paper-citation")!;
-    assert.equal(link.textContent, "↳ “(Smith, 2021)”");
-    (link as any).dispatchEvent = (event: FakeCustomEvent) => {
+    const details = item.findByClass("llm-task-paper-details")!;
+    assert.deepEqual(
+      details
+        .findAllByClass("llm-task-paper-turn")
+        .map((heading) => heading.textContent),
+      ["Cited"],
+    );
+    assert.lengthOf(details.findAllByClass("llm-task-cited-number"), 0);
+    const [named] = details.findAllByClass("llm-task-cited-named");
+    assert.equal(
+      named.findByClass("llm-task-paper-how")!.textContent,
+      "Named in the answer, no passage",
+    );
+    assert.equal(
+      named.findByClass("llm-task-paper-snippet")!.textContent,
+      "Smith (2021) found slow drift.",
+    );
+    assert.isNull(named.findByClass("llm-task-paper-open"), "no passage");
+    const dispatched: FakeCustomEvent[] = [];
+    (harness.drawer as any).dispatchEvent = (event: FakeCustomEvent) => {
       dispatched.push(event);
       return true;
     };
-    link.dispatchFakeEvent("click");
-    assert.lengthOf(dispatched, 1);
-    assert.deepInclude(dispatched[0].init.detail as object, {
+    named.findByClass("llm-task-source-link")!.dispatchFakeEvent("click");
+    assert.deepEqual(dispatched[0].init.detail, {
+      runId: "run-a",
+      key: "1:1",
       itemId: 1,
-      rawSnippet: "",
-      label: "(Smith, 2021)",
-      granularity: "full",
+      text: "Smith (2021) found slow drift.",
     });
-    assert.isTrue(harness.view.isOpen(), "the drawer stays open");
+    assert.equal(
+      details.findByClass("llm-task-fold-text")!.textContent,
+      "Read, not cited (1)",
+      "the read the answer did not cite is folded",
+    );
+  });
+
+  it("keeps a paper chat's own paper a row until its answer cites it, then lists it in its Cited card", function () {
+    seedScope(3);
+    const harness = track(
+      mount(
+        {
+          basePaperItemId: 1,
+          visibility: {
+            conversationKind: "paper",
+            isWebChat: false,
+            isNoteSession: false,
+            collectionCount: 1,
+            tagCount: 0,
+            paperCount: 1,
+          },
+        },
+        { doc: customEventDocument() },
+      ),
+    );
+    beginTaskRun(KEY, { runId: "run-a" });
+    applyTaskPaperUpdate(
+      KEY,
+      ledgerDelta("c1", [
+        [1, "read", "Drift saturates after the first week."],
+        [2, "read", "Another paper's passage."],
+      ]),
+      "run-a",
+    );
+    harness.row.dispatchFakeEvent("click");
+    harness.view.flush();
+    const ownRows = () =>
+      harness.items().filter((item) => item.dataset.itemId === "1");
+    const card = () =>
+      harness.drawer
+        .findAllByClass("llm-task-card")
+        .find((node) => node.dataset.card === "cited")!;
+    assert.lengthOf(ownRows(), 1, "before the answer, a row like the others");
+    assert.isTrue((card() as any).hidden, "no Cited card without a citation");
+    const text = "Drift saturates [[cite:Q_a]].";
+    const quoteCitations = [
+      {
+        ...quoteCitation("Q_a", 1),
+        quoteText: "Drift saturates after the first week.",
+      },
+    ];
+    completeTaskRun(KEY, { runId: "run-a", quoteCitations });
+    syncTaskAnswerCitations(KEY, { runId: "run-a" }, { text, quoteCitations });
+    applyTaskOutsideEvent(KEY, "run-a", { type: "final", text });
+    harness.view.flush();
+    assert.lengthOf(ownRows(), 0, "cited: the paper leaves the list");
+    assert.isFalse((card() as any).hidden, "for its Cited card");
+    assert.equal(card().findByClass("llm-task-card-counts")!.textContent, "1");
+    assert.lengthOf(card().findAllByClass("llm-task-cited-number"), 1);
+  });
+
+  it("opens a paper chat's Cited card with where its paper was read, for a question that cites it without reading it", function () {
+    seedScope(3);
+    const harness = track(
+      mount(
+        {
+          basePaperItemId: 1,
+          visibility: {
+            conversationKind: "paper",
+            isWebChat: false,
+            isNoteSession: false,
+            collectionCount: 1,
+            tagCount: 0,
+            paperCount: 1,
+          },
+        },
+        { doc: customEventDocument() },
+      ),
+    );
+    beginTaskRun(KEY, { runId: "run-a", turnIndex: 1 });
+    applyTaskPaperUpdate(
+      KEY,
+      {
+        ...ledgerDelta("c1", [
+          [1, "read", "Drift saturates after the first week."],
+        ]),
+        reads: [
+          "Drift saturates after the first week.",
+          "Place fields reorganize over two weeks.",
+        ].map((snippet) => ({
+          key: "1:1",
+          callId: "c1",
+          toolName: "library_retrieve",
+          granularity: "passage" as const,
+          method: "bm25",
+          label: "Results",
+          snippet,
+        })),
+      },
+      "run-a",
+    );
+    completeTaskRun(KEY, { runId: "run-a", quoteCitations: [] });
+    applyTaskOutsideEvent(KEY, "run-a", {
+      type: "final",
+      text: "Nothing to say yet.",
+    });
+    // Question 2 cites the paper and reads nothing of it.
+    beginTaskRun(KEY, { runId: "run-b", turnIndex: 2 });
+    const text = "Drift saturates [[cite:Q_a]].";
+    const quoteCitations = [
+      {
+        ...quoteCitation("Q_a", 1),
+        quoteText: "Drift saturates after the first week.",
+      },
+    ];
+    completeTaskRun(KEY, { runId: "run-b", quoteCitations });
+    syncTaskAnswerCitations(KEY, { runId: "run-b" }, { text, quoteCitations });
+    applyTaskOutsideEvent(KEY, "run-b", { type: "final", text });
+    harness.row.dispatchFakeEvent("click");
+    harness.view.flush();
+    const card = harness.drawer
+      .findAllByClass("llm-task-card")
+      .find((node) => node.dataset.card === "cited" && !(node as any).hidden)!;
+    assert.isOk(card, "question 2's Cited card shows");
+    const list = card.findByClass("llm-task-cited-list")!;
+    const [first] = list.children;
+    assert.equal(
+      first.findByClass("llm-task-paper-how")!.textContent,
+      "Read while answering Question 1",
+    );
+    const go = first.findByClass("llm-task-paper-open")!;
+    assert.equal(go.textContent, "Go to Question 1");
+    assert.lengthOf(
+      list.findAllByClass("llm-task-paper-turn"),
+      0,
+      "the card's header already says Cited",
+    );
+    assert.lengthOf(list.findAllByClass("llm-task-cited-number"), 1);
+    // Question 1's reads, the one cited now left out.
+    assert.equal(
+      list.findByClass("llm-task-fold-text")!.textContent,
+      "Read, not cited (1)",
+    );
+    const body = list.findByClass("llm-task-cited-fold-body")!;
+    assert.include(collectFakeText(body), "Place fields reorganize");
+    assert.notInclude(collectFakeText(body), "Drift saturates");
+  });
+
+  describe("a paper chat's In your library card", function () {
+    const paperChat = () =>
+      track(
+        mount(
+          {
+            basePaperItemId: 1,
+            visibility: {
+              conversationKind: "paper",
+              isWebChat: false,
+              isNoteSession: false,
+              collectionCount: 1,
+              tagCount: 0,
+              paperCount: 1,
+            },
+          },
+          { doc: customEventDocument() },
+        ),
+      );
+    const libraryCard = (harness: Harness) =>
+      harness.drawer
+        .findAllByClass("llm-task-card")
+        .find((node) => node.dataset.card === "library")!;
+
+    it("says the library was searched and nothing was relevant", function () {
+      const harness = paperChat();
+      beginTaskRun(KEY, { runId: "run-a" });
+      applyTaskOutsideEvent(KEY, "run-a", {
+        type: "tool_call",
+        name: "library_search",
+        callId: "s1",
+        args: { query: "drift" },
+      } as never);
+      const text = "Nothing in the library bears on this.";
+      completeTaskRun(KEY, { runId: "run-a", quoteCitations: [] });
+      syncTaskAnswerCitations(KEY, { runId: "run-a" }, { text });
+      applyTaskOutsideEvent(KEY, "run-a", { type: "final", text });
+      harness.row.dispatchFakeEvent("click");
+      harness.view.flush();
+      const card = libraryCard(harness);
+      assert.isFalse((card as any).hidden, "the searched library shows");
+      assert.equal(
+        card.findByClass("llm-task-card-counts")!.textContent,
+        "Searched. Nothing relevant.",
+      );
+    });
+
+    it("hides when its only row was the chat's own paper, now in Cited", function () {
+      const harness = paperChat();
+      beginTaskRun(KEY, { runId: "run-a" });
+      applyTaskOutsideEvent(KEY, "run-a", {
+        type: "tool_call",
+        name: "library_retrieve",
+        callId: "c1",
+        args: { query: "drift" },
+      } as never);
+      applyTaskPaperUpdate(
+        KEY,
+        ledgerDelta("c1", [
+          [1, "read", "Drift saturates after the first week."],
+        ]),
+        "run-a",
+      );
+      const text = "Drift saturates [[cite:Q_a]].";
+      const quoteCitations = [
+        {
+          ...quoteCitation("Q_a", 1),
+          quoteText: "Drift saturates after the first week.",
+        },
+      ];
+      completeTaskRun(KEY, { runId: "run-a", quoteCitations });
+      syncTaskAnswerCitations(
+        KEY,
+        { runId: "run-a" },
+        { text, quoteCitations },
+      );
+      applyTaskOutsideEvent(KEY, "run-a", { type: "final", text });
+      harness.row.dispatchFakeEvent("click");
+      harness.view.flush();
+      assert.isTrue((libraryCard(harness) as any).hidden);
+      const cited = harness.drawer
+        .findAllByClass("llm-task-card")
+        .find((node) => node.dataset.card === "cited")!;
+      assert.isFalse((cited as any).hidden);
+    });
   });
 
   it("asks for MinerU text only for the rows on screen", async function () {
@@ -1298,20 +1875,22 @@ describe("task progress view", function () {
     const head = harness.drawer.findByClass("llm-task-progress-head")!;
     assert.isTrue(head.hidden, "no summary line above the paper list");
     assert.equal(collectFakeText(head), "");
-    // Question 1's papers are under its own header.
-    const earlier = harness.drawer.findByClass(
+    // Question 1's papers are under its own header, under question 2's.
+    const earlier = harness.drawer.findAllByClass(
       "llm-task-progress-question-section",
-    )!;
+    )[1];
     earlier
       .findByClass("llm-task-progress-question")!
       .dispatchFakeEvent("click");
-    const [read, cited] = earlier.findAllByClass("llm-task-paper");
-    assert.equal(read.dataset.state, "read", "read in question 1 stays read");
+    // The paper the answer cites leads; the one it did not use folds away.
+    const [cited] = earlier.findAllByClass("llm-task-paper");
     assert.equal(cited.dataset.state, "cited");
-    assert.equal(
-      read.findByClass("llm-task-paper-tail")!.textContent,
-      "Results",
-    );
+    earlier.findByClass("llm-task-fold")!.dispatchFakeEvent("click");
+    const read = earlier
+      .findAllByClass("llm-task-paper")
+      .find((row) => row.dataset.state === "read")!;
+    assert.isOk(read, "read in question 1 stays read");
+    assert.equal(read.findByClass("llm-task-paper-tail")!.textContent, "");
     read.findByClass("llm-task-paper-summary")!.dispatchFakeEvent("click");
     const details = collectFakeText(
       read.findByClass("llm-task-paper-details")!,
@@ -1349,8 +1928,7 @@ describe("task progress view", function () {
     harness.view.flush();
     assert.equal(harness.count(), "0/3 steps · Read 4 papers");
     harness.row.dispatchFakeEvent("click");
-    const steps = harness.drawer.findByClass("llm-task-progress-steps")!;
-    assert.isFalse((steps as any).hidden);
+    const steps = shownSteps(harness);
     const text = collectFakeText(steps);
     assert.include(text, "Auto Tag");
     assert.include(text, "Reading papers");
@@ -1398,8 +1976,7 @@ describe("task progress view", function () {
     harness.view.flush();
     assert.equal(harness.count(), "1/3 steps · 1 of 6 read");
     harness.row.dispatchFakeEvent("click");
-    const steps = harness.drawer.findByClass("llm-task-progress-steps")!;
-    assert.isFalse((steps as any).hidden);
+    const steps = shownSteps(harness);
     const lines = steps.findAllByClass("llm-plan-task");
     assert.deepEqual(
       lines.map((line) => line.className),
@@ -1842,9 +2419,12 @@ describe("task progress view of an outcome ledger", function () {
     harness.row.findByClass("llm-task-progress-pill") as any;
   function openSteps(harness: Harness): FakeElement {
     harness.row.dispatchFakeEvent("click");
-    const steps = harness.drawer.findByClass("llm-task-progress-steps")!;
-    assert.isFalse((steps as any).hidden, "the Steps block shows");
-    return steps;
+    // The question's Steps card holds them, as in the side panel tab.
+    const steps = harness.drawer
+      .findAllByClass("llm-task-progress-steps")
+      .find((node) => !(node as any).hidden);
+    assert.isOk(steps, "the Steps block shows");
+    return steps!;
   }
   const headerStatus = (steps: FakeElement) =>
     steps.findByClass("llm-plan-status")!.textContent;
@@ -1874,7 +2454,8 @@ describe("task progress view of an outcome ledger", function () {
     assert.equal(harness.count(), "1/2 steps · 0 of 200 read");
     const steps = openSteps(harness);
     assert.equal(headerStatus(steps), "In progress");
-    assert.include(collectFakeText(steps), "Steps");
+    // The card's head already says Steps: the list does not repeat it.
+    assert.notInclude(collectFakeText(steps), "Steps");
     const [readRow, saveRow] = rows(steps);
     assert.deepEqual(
       [readRow.className, saveRow.className],
@@ -2422,6 +3003,56 @@ describe("task progress view of an outcome ledger", function () {
       );
     });
 
+    it("closes the line with the excluded count: 2/4 steps · 212 papers in scope · 2 excluded", function () {
+      seedScope(200);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-a" });
+      setTaskOutcomes(
+        KEY,
+        "run-a",
+        outcomeCheckpoint([
+          readAll(items(212), items(212)),
+          outcomeTask("explain", {
+            description: "Explain the common thread",
+            effect: "answer",
+            status: "completed",
+          }),
+          noteAll(items(212), items(120)),
+          outcomeTask("tag", {
+            description: "Tag the papers",
+            capability: "zotero.tags",
+          }),
+        ]),
+      );
+      applyTaskPaperUpdate(
+        KEY,
+        buildDecisionLedgerDelta({
+          runId: "run-a",
+          callId: "d1",
+          toolName: "review_decide",
+          decisions: [
+            [1, "exclude"],
+            [2, "exclude"],
+            [3, "include"],
+          ].map(([itemId, value]) => ({
+            paper: {
+              libraryID: 1,
+              itemId: itemId as number,
+              title: `P${itemId}`,
+            },
+            value: value as TaskPaperDecision["value"],
+            reason: "Screened.",
+          })),
+        })!,
+        "run-a",
+      );
+      harness.view.flush();
+      assert.equal(
+        harness.count(),
+        "2/4 steps · 212 papers in scope · 2 excluded",
+      );
+    });
+
     it("sizes a whole-library scope that lists no papers", function () {
       const harness = track(mount());
       beginTaskRun(KEY, { runId: "run-a" });
@@ -2494,7 +3125,9 @@ describe("task progress view of an outcome ledger", function () {
       KEY,
       "run-a",
       outcomeCheckpoint(
-        [{ ...save, status: "blocked", reason: OUTCOME_REASONS.declined }],
+        // A settled run is blocked by a write it could not verify; a decline
+        // settles as skipped (see the case below).
+        [{ ...save, status: "blocked", reason: OUTCOME_REASONS.unverified }],
         "blocked",
       ),
     );
@@ -2515,6 +3148,29 @@ describe("task progress view of an outcome ledger", function () {
     assert.equal(row.className, "llm-plan-task llm-plan-task-blocked");
     assert.equal(row.findByClass("llm-plan-task-badge")!.textContent, "!");
     assert.equal(row.findByClass("llm-plan-task-pill")!.textContent, "Blocked");
+    assert.equal(detailOf(row), OUTCOME_REASONS.unverified);
+  });
+
+  it("settled decline: the step is skipped with the user's reason and the run is partly done", function () {
+    seedScope();
+    const harness = track(mount());
+    beginTaskRun(KEY, { runId: "run-a" });
+    setTaskOutcomes(
+      KEY,
+      "run-a",
+      outcomeCheckpoint(
+        [{ ...save, status: "skipped", reason: OUTCOME_REASONS.declined }],
+        "completed_with_exceptions",
+      ),
+    );
+    completeTaskRun(KEY, { runId: "run-a" });
+    harness.view.flush();
+    assert.equal(harness.row.dataset.state, "completed_with_exceptions");
+    assert.equal(pill(harness).textContent, "Partly done");
+    const steps = openSteps(harness);
+    assert.equal(headerStatus(steps), "Completed with exceptions");
+    const [row] = rows(steps);
+    assert.equal(row.findByClass("llm-plan-task-pill")!.textContent, "Skipped");
     assert.equal(detailOf(row), "You declined this change.");
   });
 
@@ -2563,7 +3219,14 @@ describe("task progress view of an outcome ledger", function () {
         doneTargets: items(done),
       });
     function paperRow(harness: Harness, key: string): FakeElement {
-      const found = harness.items().find((item) => item.dataset.key === key);
+      const find = () =>
+        harness.items().find((item) => item.dataset.key === key);
+      // A paper the answer did not use sits under its card's fold.
+      if (!find())
+        for (const fold of harness.drawer.findAllByClass("llm-task-fold"))
+          if (fold.getAttribute("aria-expanded") !== "true")
+            fold.dispatchFakeEvent("click");
+      const found = find();
       assert.isOk(found, `row ${key}`);
       return found!;
     }
@@ -2611,12 +3274,8 @@ describe("task progress view of an outcome ledger", function () {
       harness.row.dispatchFakeEvent("click");
       const first = paperRow(harness, "1:1");
       assert.equal(first.dataset.state, "read");
-      assert.equal(tailOf(first), "2 passages");
-      assert.equal(
-        tailOf(paperRow(harness, "1:2")),
-        "Summary",
-        "a digest with no surviving evidence still has its summary",
-      );
+      assert.equal(tailOf(first), "");
+      assert.equal(tailOf(paperRow(harness, "1:2")), "");
       const details = expand(first);
       const text = collectFakeText(details);
       assert.include(text, "Summary");
@@ -2627,8 +3286,8 @@ describe("task progress view of an outcome ledger", function () {
       const block = details.findByClass("llm-task-paper-digest")!;
       assert.equal(
         block.findByClass("llm-task-paper-turn")!.textContent,
-        "Summary",
-        "the summary sits in a block like Cited in document",
+        "Summary · Full",
+        "the summary sits in a block like Cited in document; its reader read every character",
       );
       assert.equal(
         block.findByClass("llm-task-paper-snippet")!.textContent,
@@ -2644,6 +3303,43 @@ describe("task progress view of an outcome ledger", function () {
         2,
         "only the evidence passages open the source",
       );
+    });
+
+    it("a digest of part of an item's text shows as skimmed in its row and tail, and counts in the read line", function () {
+      seedScope(3);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "run-d" });
+      applyTaskPaperUpdate(
+        KEY,
+        digestLedgerDelta("call-p", 1, { runId: "run-d", partial: true }),
+        "run-d",
+      );
+      applyTaskPaperUpdate(
+        KEY,
+        digestLedgerDelta("call-p", 2, { runId: "run-d" }),
+        "run-d",
+      );
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const partial = paperRow(harness, "1:1");
+      assert.equal(partial.dataset.state, "skimmed");
+      assert.equal(tailOf(partial), "skimmed");
+      const whole = paperRow(harness, "1:2");
+      assert.equal(whole.dataset.state, "read");
+      assert.equal(tailOf(whole), "");
+      // A skim counts in the "read" count, as every skimmed paper does.
+      const record = getTaskProgress(KEY)!;
+      const counts = countTaskProgress(record);
+      assert.equal(counts.read, 2);
+      assert.equal(harness.count(), "2 of 3 read");
+      const states = buildTaskProgressPaperRows(record).map((row) => [
+        row.itemId,
+        row.state,
+      ]);
+      assert.deepEqual(states.slice(0, 2), [
+        [1, "skimmed"],
+        [2, "read"],
+      ]);
     });
 
     it("shows a long summary whole in its Summary block", function () {
@@ -2703,7 +3399,141 @@ describe("task progress view of an outcome ledger", function () {
         { citationId: "d1", libraryID: 1, itemKey: "P1", itemId: 1 },
       ]);
       harness.row.dispatchFakeEvent("click");
-      assert.equal(tailOf(paperRow(harness, "1:1")), "Full text · cited 1");
+      assert.equal(tailOf(paperRow(harness, "1:1")), "");
+    });
+
+    describe("how far a paper_read went", function () {
+      const fullRead = (
+        callId: string,
+        label: string | undefined,
+        extra: Partial<TaskPaperReadEvent> = {},
+      ) => ({
+        version: 1 as const,
+        callId,
+        runId: "run-d",
+        toolName: "paper_read",
+        papers: [
+          { key: "1:1", libraryID: 1, itemId: 1, state: "read" as const },
+        ],
+        reads: [
+          {
+            key: "1:1",
+            callId,
+            toolName: "paper_read",
+            granularity: "full" as const,
+            method: "full",
+            ...(label ? { label } : {}),
+            snippet: "Opening paragraph of the paper.",
+            ...extra,
+          },
+        ],
+      });
+      const headings = (details: FakeElement) =>
+        details.findAllByClass("llm-task-reach");
+
+      it("heads the expanded row with Full and its chunk count, above the Cited list, not under Read, not cited", function () {
+        seedScope(2);
+        const harness = track(mount());
+        beginTaskRun(KEY, { runId: "run-d" });
+        applyTaskPaperUpdate(KEY, fullRead("full", "122/122 chunks"), "run-d");
+        applyTaskPaperUpdate(
+          KEY,
+          digestLedgerDelta("call-s", 1, {
+            runId: "run-d",
+            evidence: [{ section: "Methods", quote: "We recorded cells." }],
+          }),
+          "run-d",
+        );
+        applyTaskDocumentCitations(KEY, "run-d", [
+          { citationId: "d1", libraryID: 1, itemKey: "P1", itemId: 1 },
+        ]);
+        harness.row.dispatchFakeEvent("click");
+        const details = expand(paperRow(harness, "1:1"));
+        const [heading] = headings(details);
+        assert.isOk(heading, "one heading line");
+        assert.lengthOf(headings(details), 1);
+        assert.equal(
+          heading.findByClass("llm-task-paper-how")!.textContent,
+          "Full · 122/122 chunks",
+        );
+        assert.isOk(heading.findByClass("llm-task-paper-open"), "Source");
+        assert.isFalse(
+          details
+            .findAllByClass("llm-task-cited-fold-body")
+            .some((fold) => collectFakeText(fold).includes("Full")),
+          "not among the reads the answer did not cite",
+        );
+        assert.notInclude(collectFakeText(details), "Full text");
+      });
+
+      it("shows Part for a read that stopped short, and one heading for the furthest of several", function () {
+        seedScope(2);
+        const harness = track(mount());
+        beginTaskRun(KEY, { runId: "run-d" });
+        applyTaskPaperUpdate(
+          KEY,
+          fullRead("a", "12/40 chunks", { granularity: "digest" }),
+          "run-d",
+        );
+        applyTaskPaperUpdate(
+          KEY,
+          fullRead("b", "30/32 chunks", { granularity: "digest" }),
+          "run-d",
+        );
+        harness.row.dispatchFakeEvent("click");
+        const details = expand(paperRow(harness, "1:1"));
+        assert.lengthOf(headings(details), 1);
+        assert.equal(
+          headings(details)[0].findByClass("llm-task-paper-how")!.textContent,
+          "Part · 30/32 chunks",
+        );
+        assert.isOk(
+          headings(details)[0].findByClass("llm-task-paper-open"),
+          "Source stays on a Part heading",
+        );
+        assert.lengthOf(details.findAllByClass("llm-task-cited-fold"), 0);
+      });
+
+      it("reads as a different thing from a host digest of the same paper", function () {
+        seedScope(2);
+        const harness = track(mount());
+        beginTaskRun(KEY, { runId: "run-d" });
+        applyTaskPaperUpdate(
+          KEY,
+          digestLedgerDelta("call-s", 1, {
+            runId: "run-d",
+            summary: "Cells drift slowly over days.",
+          }),
+          "run-d",
+        );
+        applyTaskPaperUpdate(KEY, fullRead("full", "32/32 chunks"), "run-d");
+        harness.row.dispatchFakeEvent("click");
+        const details = expand(paperRow(harness, "1:1"));
+        const digest = details.findByClass("llm-task-paper-digest")!;
+        assert.equal(
+          digest.findByClass("llm-task-paper-turn")!.textContent,
+          "Summary · Full",
+        );
+        assert.include(collectFakeText(digest), "Cells drift slowly");
+        const [reach] = headings(details);
+        assert.equal(
+          reach.findByClass("llm-task-paper-how")!.textContent,
+          "Full · 32/32 chunks",
+        );
+        assert.notInclude(
+          collectFakeText(reach),
+          "Cells drift slowly",
+          "the heading carries no summary text",
+        );
+        assert.isFalse(
+          collectFakeText(digest).includes("32/32 chunks"),
+          "the summary block does not carry the read's tally",
+        );
+        assert.notStrictEqual(
+          digest.findByClass("llm-task-paper-turn")!.textContent,
+          reach.findByClass("llm-task-paper-how")!.textContent,
+        );
+      });
     });
 
     it("a failed digest shows its reason on the row", function () {
@@ -2757,7 +3587,7 @@ describe("task progress view of an outcome ledger", function () {
       );
       harness.row.dispatchFakeEvent("click");
       const row = paperRow(harness, "1:1");
-      assert.equal(tailOf(row), "1 passage");
+      assert.equal(tailOf(row), "", "the failure left the row");
       const text = collectFakeText(expand(row));
       assert.include(text, "Retried and summarized.");
       assert.notInclude(text, "timed out");
@@ -2824,13 +3654,13 @@ describe("task progress view of an outcome ledger", function () {
         const details = expand(row);
         assert.deepEqual(blocksOf(details), [
           {
-            heading: BRIEF,
+            heading: `${BRIEF} · Full`,
             lines: [],
             answer: "Second brief.",
             note: undefined,
           },
           {
-            heading: PATH,
+            heading: `${PATH} · Full`,
             lines: [
               "Directly relevant — It measures belief during navigation.",
               "Supports — Eye movements follow the latent position.",
@@ -2843,11 +3673,7 @@ describe("task progress view of an outcome ledger", function () {
         assert.notInclude(text, "First brief.");
         assert.notInclude(text, "timed out");
         assert.notInclude(text, "Summary", "every block has its part's label");
-        assert.equal(
-          tailOf(row),
-          BRIEF,
-          "the tail names the part whose result came last",
-        );
+        assert.equal(tailOf(row), "", "a read row has no words at its end");
       });
 
       it("a failed part shows '<label> failed' with the host's reason beside a part that succeeded", function () {
@@ -2868,13 +3694,13 @@ describe("task progress view of an outcome ledger", function () {
             note: "The model call timed out",
           },
           {
-            heading: BRIEF,
+            heading: `${BRIEF} · Full`,
             lines: [],
             answer: "In brief.",
             note: undefined,
           },
         ]);
-        assert.equal(tailOf(first), BRIEF);
+        assert.equal(tailOf(first), "");
         const second = paperRow(harness, "1:2");
         assert.equal(second.dataset.state, "matched");
         assert.equal(tailOf(second), `${PATH} failed`);
@@ -2917,11 +3743,11 @@ describe("task progress view of an outcome ledger", function () {
         assert.deepEqual(
           blocks.map((block) => [block.heading, block.answer]),
           [
-            ["Summary", "Saved summary."],
-            [PATH, "Gaze tracks the belief."],
+            ["Summary · Full", "Saved summary."],
+            [`${PATH} · Full`, "Gaze tracks the belief."],
           ],
         );
-        assert.equal(tailOf(row), PATH);
+        assert.equal(tailOf(row), "");
       });
 
       it("keeps two questions' parts apart when both declare a part 'papers': the part is named by its execution-qualified id", function () {
@@ -2960,17 +3786,19 @@ describe("task progress view of an outcome ledger", function () {
           },
         ]);
         // The older question keeps its own result, under its own header.
-        const earlier = harness.drawer.findByClass(
-          "llm-task-progress-question-section",
-        )!;
-        earlier
+        harness.drawer
+          .findAllByClass("llm-task-progress-question-section")[1]
           .findByClass("llm-task-progress-question")!
           .dispatchFakeEvent("click");
+        const earlier = harness.drawer.findAllByClass(
+          "llm-task-progress-question-section",
+        )[1];
+        earlier.findByClass("llm-task-fold")?.dispatchFakeEvent("click");
         assert.deepEqual(
           blocksOf(expand(earlier.findAllByClass("llm-task-paper")[0])),
           [
             {
-              heading: BRIEF,
+              heading: `${BRIEF} · Full`,
               lines: [],
               answer: "Gaze tracks the belief.",
               note: undefined,
@@ -3005,10 +3833,10 @@ describe("task progress view of an outcome ledger", function () {
         );
         harness.row.dispatchFakeEvent("click");
         const first = paperRow(harness, "1:1");
-        assert.equal(blocksOf(expand(first))[0].heading, label);
-        assert.equal(tailOf(first), label);
+        assert.equal(blocksOf(expand(first))[0].heading, `${label} · Full`);
+        assert.equal(tailOf(first), "");
         const second = blocksOf(expand(paperRow(harness, "1:2")))[0];
-        assert.lengthOf(second.heading!, 60);
+        assert.lengthOf(second.heading!.replace(/ · Full$/, ""), 60);
       });
 
       it("renders the same blocks after the run is replayed from its saved events", function () {
@@ -3056,9 +3884,9 @@ describe("task progress view of an outcome ledger", function () {
             block.answer,
           ]),
           [
-            [BRIEF, [], "In brief."],
+            [`${BRIEF} · Full`, [], "In brief."],
             [
-              PATH,
+              `${PATH} · Full`,
               [
                 "Directly relevant — It measures belief during navigation.",
                 "Supports — Eye movements follow the latent position.",
@@ -3067,7 +3895,7 @@ describe("task progress view of an outcome ledger", function () {
             ],
           ],
         );
-        assert.equal(tailOf(first), PATH);
+        assert.equal(tailOf(first), "");
         assert.equal(tailOf(paperRow(harness, "1:2")), `${PATH} failed`);
       });
     });
@@ -3107,7 +3935,7 @@ describe("task progress view of an outcome ledger", function () {
         "run-a",
         outcomeCheckpoint(
           [
-            { ...save, status: "blocked", reason: OUTCOME_REASONS.declined },
+            { ...save, status: "blocked", reason: OUTCOME_REASONS.unverified },
             outcomeTask("ask", {
               description: "Ask which collection to use",
               status: "blocked",
@@ -3125,8 +3953,8 @@ describe("task progress view of an outcome ledger", function () {
         ),
       );
       harness.view.flush();
-      const [declinedRow, askRow, pickRow] = rows(openSteps(harness));
-      assert.equal(detailOf(declinedRow), t(OUTCOME_REASONS.declined));
+      const [unverifiedRow, askRow, pickRow] = rows(openSteps(harness));
+      assert.equal(detailOf(unverifiedRow), t(OUTCOME_REASONS.unverified));
       assert.equal(detailOf(askRow), "Needs the user's choice of collection");
       assert.equal(labelOf(askRow), "Ask which collection to use");
       assert.notEqual(t("Needs input"), "Needs input");
@@ -3213,7 +4041,7 @@ describe("task progress view of an outcome ledger", function () {
       const block = open("1:1");
       assert.equal(
         block.findByClass("llm-task-paper-turn")!.textContent,
-        label,
+        `${label} · ${t("Full")}`,
       );
       assert.deepEqual(
         block
@@ -3604,6 +4432,19 @@ describe("task progress history by question", function () {
     completeTaskRun(KEY, { runId: "q2" });
   }
 
+  /** A follow-up the agent answers from earlier reading: no paper read. */
+  function askWithoutReads(turn: number, text: string, finish = true) {
+    beginTaskRun(KEY, { runId: `q${turn}`, turnIndex: turn, text });
+    if (finish) completeTaskRun(KEY, { runId: `q${turn}` });
+  }
+
+  const quietOf = (root: FakeElement) =>
+    root.findByClass("llm-task-progress-quiet") as
+      | (FakeElement & { hidden: boolean })
+      | null;
+  const ANSWERED_FROM_EARLIER =
+    "Answered from earlier reading. No papers were opened again.";
+
   const sectionsOf = (harness: Harness) =>
     harness.drawer.findAllByClass("llm-task-progress-question-section");
   const headOf = (section: FakeElement) =>
@@ -3636,244 +4477,498 @@ describe("task progress history by question", function () {
     return collectFakeText(item.findByClass("llm-task-paper-details"));
   };
 
-  it("looks as it did with one question: no question header", function () {
+  it("in the chat, a follow-up that only screens papers shows its excluded count, not No new reads", function () {
     seedScope(5);
     const harness = track(mount());
     askFirst();
+    askWithoutReads(2, GAZE, false);
+    applyTaskPaperUpdate(
+      KEY,
+      buildDecisionLedgerDelta({
+        runId: "q2",
+        callId: "screen",
+        toolName: "review_decide",
+        decisions: [4, 5].map((itemId) => ({
+          paper: { libraryID: 1, itemId, title: `Paper ${itemId}` },
+          value: "exclude" as const,
+          reason: "Off topic.",
+        })),
+      })!,
+      "q2",
+    );
+    completeTaskRun(KEY, { runId: "q2" });
     harness.view.flush();
-    harness.row.dispatchFakeEvent("click");
-    assert.isNull(currentHead(harness));
-    assert.isNull(harness.drawer.findByClass("llm-task-progress-history"));
-    assert.isNull(harness.drawer.findByClass("llm-task-progress-question"));
-    assert.isNull(harness.drawer.findByClass("llm-task-progress-papers-title"));
-    assert.lengthOf(harness.items(), 5);
+    assert.equal(harness.count(), "0 of 5 read · 2 excluded");
   });
 
-  it("lists the questions newest first, the earlier one folded with its words, ending and counts", function () {
+  it("in the chat, a follow-up answered from earlier reading shows one line, not unread papers", function () {
     seedScope(5);
     const harness = track(mount());
     askFirst();
-    askSecond();
+    askWithoutReads(2, GAZE);
     harness.view.flush();
-    assert.equal(
-      harness.count(),
-      "2 of 5 read",
-      "the row still describes the latest question",
-    );
+    assert.equal(harness.count(), "No new reads");
     harness.row.dispatchFakeEvent("click");
-    const current = currentHead(harness)!;
-    assert.isOk(current, "the current question has a header");
-    assert.notEqual(current.tagName, "button", "it is not a control");
-    assert.equal(labelOf(current), `Question 2 · “${GAZE}”`);
-    assert.equal(pillOf(current).textContent, "Completed");
-    assert.equal(
-      harness.drawer.findByClass("llm-task-progress-papers-title")!.textContent,
-      "Papers (5)",
-    );
-
-    const [earlier, ...rest] = sectionsOf(harness);
-    assert.lengthOf(rest, 0, "one earlier question");
-    const head = headOf(earlier);
-    assert.equal(head.tagName, "button");
-    assert.equal(head.getAttribute("aria-expanded"), "false");
-    assert.equal(
-      labelOf(head),
-      "Question 1 · “Write a review on path integration in the entorhinal…”",
-    );
-    assert.equal(pillOf(head).textContent, "Completed");
-    assert.equal(pillOf(head).dataset.tone, "completed");
-    assert.equal(countsOf(head), "2/2 steps · 2 papers");
-    assert.lengthOf(
-      earlier.findAllByClass("llm-task-paper"),
-      0,
-      "a folded question builds no rows",
-    );
-    assert.isNull(earlier.findByClass("llm-task-progress-steps"));
-
-    // The current question's rows show its reads only.
-    const items = currentItems(harness);
-    assert.deepEqual(
-      items.map((item) => item.dataset.state),
-      ["listed", "read", "read", "listed", "listed"],
-    );
-    const shared = detailsOf(itemOf(items, 2));
-    assert.include(shared, "Gaze tracks the animal's belief.");
-    assert.notInclude(shared, "Path integration drifts");
-    assert.notInclude(shared, "Question");
-    assert.notInclude(shared, "Cited in answer");
-  });
-
-  it("unrolls an earlier question's own steps and papers, and folds it again", function () {
-    seedScope(5);
-    const harness = track(mount());
-    askFirst();
-    askSecond();
-    harness.view.flush();
-    harness.row.dispatchFakeEvent("click");
-    const [earlier] = sectionsOf(harness);
-    const head = headOf(earlier);
-    head.dispatchFakeEvent("click");
-    assert.equal(head.getAttribute("aria-expanded"), "true");
-    const steps = earlier.findByClass("llm-task-progress-steps")!;
-    assert.include(collectFakeText(steps), "Read the papers");
-    assert.include(collectFakeText(steps), "Write the review");
-    assert.equal(
-      earlier.findByClass("llm-task-progress-papers-title")!.textContent,
-      "Papers (2)",
-    );
-    const items = earlier.findAllByClass("llm-task-paper");
-    assert.deepEqual(
-      items.map((item) => [item.dataset.key, item.dataset.state]),
-      [
-        ["1:1", "read"],
-        ["1:2", "cited"],
-      ],
-    );
-    const remove = itemOf(items, 1).findByClass("llm-task-paper-remove") as any;
+    const newest = sectionsOf(harness)[0];
+    assert.lengthOf(newest.findAllByClass("llm-task-paper"), 0);
+    const quiet = quietOf(newest)!;
+    assert.isFalse(quiet.hidden);
+    assert.equal(quiet.textContent, ANSWERED_FROM_EARLIER);
     assert.isTrue(
-      remove.hidden,
-      "an earlier question's paper is not removable",
+      (
+        harness.drawer.findByClass("llm-task-progress-more") as FakeElement & {
+          hidden: boolean;
+        }
+      ).hidden,
     );
-    const shared = detailsOf(itemOf(items, 2));
-    assert.include(shared, "Path integration drifts without landmarks.");
-    assert.include(shared, "Cited in answer");
-    assert.notInclude(shared, "Gaze tracks");
-    assert.notInclude(shared, "Question");
-    assert.lengthOf(
-      harness.items().filter((item) => item.dataset.key === "1:2"),
-      2,
-      "a paper both questions read is in both",
-    );
-    head.dispatchFakeEvent("click");
-    assert.equal(head.getAttribute("aria-expanded"), "false");
-    assert.lengthOf(earlier.findAllByClass("llm-task-paper"), 0);
-    assert.isNull(earlier.findByClass("llm-task-progress-steps"));
   });
 
-  it("keeps an unrolled question unrolled through a repaint and a new mount", function () {
+  it("still counts 0 of N read for a first question that read nothing", function () {
     seedScope(5);
-    const first = track(mount());
-    askFirst();
-    askSecond();
-    first.view.flush();
-    first.row.dispatchFakeEvent("click");
-    headOf(sectionsOf(first)[0]).dispatchFakeEvent("click");
-    applyTaskPaperUpdate(KEY, ledgerDelta("c3", [[4, "read", "More."]]), "q2");
-    first.view.flush();
-    let [earlier] = sectionsOf(first);
-    assert.equal(headOf(earlier).getAttribute("aria-expanded"), "true");
-    assert.lengthOf(earlier.findAllByClass("llm-task-paper"), 2);
-    first.view.dispose();
-
-    const again = track(mount());
-    assert.isTrue(again.view.isOpen());
-    [earlier] = sectionsOf(again);
-    assert.equal(headOf(earlier).getAttribute("aria-expanded"), "true");
-    assert.lengthOf(earlier.findAllByClass("llm-task-paper"), 2);
-  });
-
-  it("leaves out an earlier question that has no steps and no papers", function () {
-    seedScope(5);
-    const harness = track(mount());
-    beginTaskRun(KEY, { runId: "q1", turnIndex: 1, text: "Hello" });
-    completeTaskRun(KEY, { runId: "q1" });
-    askSecond();
-    harness.view.flush();
-    harness.row.dispatchFakeEvent("click");
-    assert.isNull(currentHead(harness), "nothing to go back to: no history");
-    assert.lengthOf(sectionsOf(harness), 0);
-  });
-
-  it("gives a built-in action its own section, titled with the action", function () {
-    seedScope(5);
-    const harness = track(mount());
-    askFirst();
-    beginTaskAction(KEY, {
-      runId: "action-1",
-      title: "Auto Tag",
-      text: "tag the drift papers",
-    });
-    setTaskActionStep(KEY, "action-1", { step: "Tagging", index: 1, total: 1 });
-    endTaskAction(KEY, "action-1", "completed", "Tagged 2 items");
-    harness.view.flush();
-    harness.row.dispatchFakeEvent("click");
-    assert.equal(
-      labelOf(currentHead(harness)!),
-      "Auto Tag · “tag the drift papers”",
-    );
-    askSecond();
-    harness.view.flush();
-    const [action, question] = sectionsOf(harness);
-    assert.equal(labelOf(headOf(action)), "Auto Tag · “tag the drift papers”");
-    assert.equal(pillOf(headOf(action)).textContent, "Completed");
-    assert.equal(countsOf(headOf(action)), "1/1 steps");
-    assert.match(labelOf(headOf(question)), /^Question 1 · /);
-    headOf(action).dispatchFakeEvent("click");
+    track(mount());
+    askWithoutReads(1, REVIEW);
     assert.include(
-      collectFakeText(action.findByClass("llm-task-progress-steps")),
-      "Steps · Auto Tag",
+      formatTaskProgressCount(getTaskProgress(KEY), true),
+      "0 of 5 read",
     );
-    assert.lengthOf(action.findAllByClass("llm-task-paper"), 0);
   });
 
-  it("names an action by its title alone when no request was typed", function () {
-    seedScope(5);
-    const harness = track(mount());
-    askFirst();
-    beginTaskAction(KEY, { runId: "action-1", title: "Auto Tag" });
-    endTaskAction(KEY, "action-1", "failed", "offline");
-    harness.view.flush();
-    harness.row.dispatchFakeEvent("click");
-    assert.equal(labelOf(currentHead(harness)!), "Auto Tag");
-    assert.equal(pillOf(currentHead(harness)!).textContent, "Failed");
+  describe("docked in the side panel", function () {
+    const dockedSections = (harness: Harness) =>
+      harness.drawer
+        .findByClass("llm-task-progress-dock-questions")!
+        .findAllByClass("llm-task-progress-question-section");
+    const metaOf = (head: FakeElement) =>
+      collectFakeText(
+        head.findByClass("llm-task-progress-dock-question-meta"),
+      ).replace(/\s+/g, " ");
+
+    it("shows every question as the same block, newest first and unrolled, each with its status ring", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      askSecond();
+      harness.view.flush();
+      assert.isTrue(harness.view.isOpen(), "open with no click");
+      const sections = dockedSections(harness);
+      assert.lengthOf(sections, 2);
+      const [newest, older] = sections.map(headOf);
+      for (const head of [newest, older]) {
+        assert.equal(head.tagName, "button");
+        assert.isOk(
+          head.findByClass("llm-task-progress-ring"),
+          "every question keeps its status ring",
+        );
+        assert.equal(head.dataset.state, "completed");
+      }
+      assert.equal(
+        newest.findByClass("llm-task-progress-dock-question-words")!
+          .textContent,
+        GAZE,
+      );
+      assert.equal(
+        older.findByClass("llm-task-progress-dock-question-words")!.textContent,
+        REVIEW,
+        "the words are not cut at 60 characters",
+      );
+      assert.include(metaOf(newest), "Question 2");
+      assert.include(metaOf(newest), "Completed");
+      assert.include(metaOf(older), "2 read · 1 cited");
+      assert.equal(newest.getAttribute("aria-expanded"), "true");
+      assert.equal(older.getAttribute("aria-expanded"), "false");
+      // Its answer cites none of its papers: they fold into one line.
+      const fold = sections[0].findByClass("llm-task-fold")!;
+      assert.equal(
+        collectFakeText(fold).trim(),
+        "5 found, none used in the answer",
+      );
+      assert.lengthOf(sections[0].findAllByClass("llm-task-paper"), 0);
+      fold.dispatchFakeEvent("click");
+      assert.lengthOf(
+        dockedSections(harness)[0].findAllByClass("llm-task-paper"),
+        5,
+        "the newest lists its papers in its own block",
+      );
+      assert.lengthOf(
+        dockedSections(harness)[1].findAllByClass("llm-task-paper"),
+        0,
+      );
+      assert.isNull(
+        currentHead(harness),
+        "no separate header for the current question",
+      );
+      assert.lengthOf(
+        harness.drawer.findAllByClass("llm-task-paper"),
+        5,
+        "papers are listed once, only inside the newest block",
+      );
+    });
+
+    it("says a follow-up answered from earlier reading read nothing new, in one line instead of unread papers", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      askWithoutReads(2, GAZE);
+      harness.view.flush();
+      const [newest] = dockedSections(harness);
+      assert.include(metaOf(headOf(newest)), "No new reads");
+      assert.notInclude(metaOf(headOf(newest)), "0 of 5 read");
+      assert.lengthOf(newest.findAllByClass("llm-task-paper"), 0);
+      const quiet = quietOf(newest)!;
+      assert.isFalse(quiet.hidden);
+      assert.equal(quiet.textContent, ANSWERED_FROM_EARLIER);
+    });
+
+    it("keeps an earlier follow-up that read nothing, so every question number stays", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      askWithoutReads(2, GAZE);
+      askWithoutReads(3, "And the third question?");
+      harness.view.flush();
+      const sections = dockedSections(harness);
+      assert.lengthOf(sections, 3);
+      const middle = headOf(sections[1]);
+      assert.include(metaOf(middle), "Question 2");
+      assert.include(metaOf(middle), "No new reads");
+      middle.dispatchFakeEvent("click");
+      const unrolled = dockedSections(harness)[1];
+      assert.equal(quietOf(unrolled)!.textContent, ANSWERED_FROM_EARLIER);
+      assert.isTrue(
+        quietOf(dockedSections(harness)[2])?.hidden ?? true,
+        "the first question read papers, so it has no such line",
+      );
+    });
+
+    it("keeps an earlier follow-up that only screened papers: its excluded rows, not No new reads", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      askWithoutReads(2, GAZE, false);
+      applyTaskPaperUpdate(
+        KEY,
+        buildDecisionLedgerDelta({
+          runId: "q2",
+          callId: "screen",
+          toolName: "review_decide",
+          decisions: [4, 5].map((itemId) => ({
+            paper: { libraryID: 1, itemId, title: `Paper ${itemId}` },
+            value: "exclude" as const,
+            reason: "Off topic.",
+          })),
+        })!,
+        "q2",
+      );
+      completeTaskRun(KEY, { runId: "q2" });
+      askWithoutReads(3, "And the third question?");
+      harness.view.flush();
+      const sections = dockedSections(harness);
+      assert.lengthOf(sections, 3);
+      const middle = headOf(sections[1]);
+      assert.include(metaOf(middle), "Question 2");
+      assert.notInclude(metaOf(middle), "No new reads");
+      middle.dispatchFakeEvent("click");
+      dockedSections(harness)[1]
+        .findByClass("llm-task-fold")!
+        .dispatchFakeEvent("click");
+      const unrolled = dockedSections(harness)[1];
+      const screened = unrolled.findAllByClass("llm-task-paper");
+      assert.lengthOf(screened, 2, "the two papers it screened still list");
+      for (const item of screened) {
+        const tag = item.findByClass("llm-task-paper-cite")!;
+        assert.equal(tag.textContent, "Excluded");
+      }
+      assert.isTrue(
+        quietOf(unrolled)?.hidden ?? true,
+        "it is not answered from earlier reading",
+      );
+    });
+
+    it("lists the papers while a follow-up is still working", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      askWithoutReads(2, GAZE, false);
+      harness.view.flush();
+      const [newest] = dockedSections(harness);
+      assert.lengthOf(newest.findAllByClass("llm-task-paper"), 5);
+      assert.isTrue(quietOf(newest)!.hidden);
+    });
+
+    it("folds the newest and unrolls an older one on a click", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      askSecond();
+      harness.view.flush();
+      let [newest, older] = dockedSections(harness).map(headOf);
+      newest.dispatchFakeEvent("click");
+      older.dispatchFakeEvent("click");
+      [newest, older] = dockedSections(harness).map(headOf);
+      assert.equal(newest.getAttribute("aria-expanded"), "false");
+      assert.equal(older.getAttribute("aria-expanded"), "true");
+      const sections = dockedSections(harness);
+      assert.lengthOf(sections[0].findAllByClass("llm-task-paper"), 0);
+      // The cited paper shows; the other folds into one line.
+      assert.lengthOf(sections[1].findAllByClass("llm-task-paper"), 1);
+      assert.equal(
+        collectFakeText(sections[1].findByClass("llm-task-fold")!).trim(),
+        "1 more, not used in the answer",
+      );
+      assert.isOk(sections[1].findByClass("llm-task-progress-steps"));
+      harness.view.flush();
+      assert.equal(
+        headOf(dockedSections(harness)[0]).getAttribute("aria-expanded"),
+        "false",
+        "a repaint keeps the reader's choice",
+      );
+    });
+
+    it("shows Cited, numbered, and the reads it did not cite under a cited paper", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      applyTaskOutsideEvent(KEY, "q1", {
+        type: "final",
+        text: "## Drift\n\nPaths drift without landmarks [[cite:cite-1]].",
+      });
+      harness.view.flush();
+      const [cited] =
+        dockedSections(harness)[0].findAllByClass("llm-task-paper");
+      const shared = detailsOf(cited);
+      assert.include(shared, "Cited");
+      assert.include(shared, "Quoted evidence cite-1");
+      assert.include(shared, "Read, not cited (1)");
+      assert.notInclude(shared, "Passages read");
+      assert.notInclude(shared, "In the answer");
+      assert.equal(
+        cited.findByClass("llm-task-cited-number")!.textContent,
+        "1",
+        "a record without its answer's passages numbers them from the answer",
+      );
+    });
+
+    it("shows a single question as the same block", function () {
+      seedScope(5);
+      const harness = track(mount({}, { docked: true }));
+      askFirst();
+      harness.view.flush();
+      const sections = dockedSections(harness);
+      assert.lengthOf(sections, 1);
+      assert.equal(headOf(sections[0]).getAttribute("aria-expanded"), "true");
+      assert.isOk(sections[0].findByClass("llm-task-progress-steps"));
+    });
   });
 
-  describe("in Chinese", function () {
-    const globals = globalThis as unknown as { Zotero?: unknown };
-    let previousZotero: unknown;
-    before(function () {
-      previousZotero = globals.Zotero;
-      globals.Zotero = { Prefs: { get: () => "zh-CN" }, locale: "zh-CN" };
-      initI18n();
-    });
-    after(function () {
-      if (previousZotero === undefined) delete globals.Zotero;
-      else globals.Zotero = previousZotero;
-      initI18n();
+  describe("in the chat's own card, as in the side panel", function () {
+    const cardSections = (harness: Harness) =>
+      harness.drawer
+        .findByClass("llm-task-progress-dock-questions")!
+        .findAllByClass("llm-task-progress-question-section");
+    const metaOf = (head: FakeElement) =>
+      collectFakeText(
+        head.findByClass("llm-task-progress-dock-question-meta"),
+      ).replace(/\s+/g, " ");
+    const wordsOf = (head: FakeElement) =>
+      head.findByClass("llm-task-progress-dock-question-words")!.textContent;
+
+    it("shows one question as one block, unrolled, with its steps", function () {
+      seedScope(5);
+      const harness = track(mount());
+      askFirst();
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const sections = cardSections(harness);
+      assert.lengthOf(sections, 1);
+      assert.equal(headOf(sections[0]).getAttribute("aria-expanded"), "true");
+      assert.include(
+        collectFakeText(sections[0].findByClass("llm-task-progress-steps")),
+        "Read the papers",
+      );
+      assert.isNull(currentHead(harness), "no separate current header");
     });
 
-    it("names each question once, in the reader's language", function () {
-      for (const value of [
-        "Papers ({count})",
-        "{count} paper",
-        "{count} papers",
-      ])
-        assert.notEqual(t(value), value, value);
+    it("lists the questions newest first, the earlier one folded", function () {
+      seedScope(5);
+      const harness = track(mount());
+      askFirst();
+      askSecond();
+      harness.view.flush();
+      assert.equal(
+        harness.count(),
+        "2 of 5 read",
+        "the row still describes the latest question",
+      );
+      harness.row.dispatchFakeEvent("click");
+      const [newest, older, ...rest] = cardSections(harness);
+      assert.lengthOf(rest, 0);
+      assert.equal(wordsOf(headOf(newest)), GAZE);
+      assert.equal(wordsOf(headOf(older)), REVIEW);
+      assert.include(metaOf(headOf(newest)), "Question 2");
+      assert.include(metaOf(headOf(older)), "2 read · 1 cited");
+      assert.equal(headOf(newest).getAttribute("aria-expanded"), "true");
+      assert.equal(headOf(older).getAttribute("aria-expanded"), "false");
+      assert.lengthOf(older.findAllByClass("llm-task-paper"), 0);
+      // Its answer cites none of its papers: they fold into one line.
+      assert.equal(
+        collectFakeText(newest.findByClass("llm-task-fold")).trim(),
+        "5 found, none used in the answer",
+      );
+    });
+
+    it("unrolls an earlier question, its cited paper first, and folds it again", function () {
       seedScope(5);
       const harness = track(mount());
       askFirst();
       askSecond();
       harness.view.flush();
       harness.row.dispatchFakeEvent("click");
-      const head = headOf(sectionsOf(harness)[0]);
-      assert.equal(
-        labelOf(head),
-        "第 1 个问题 · “Write a review on path integration in the entorhinal…”",
+      const head = headOf(cardSections(harness)[1]);
+      head.dispatchFakeEvent("click");
+      assert.equal(head.getAttribute("aria-expanded"), "true");
+      const older = cardSections(harness)[1];
+      assert.include(
+        collectFakeText(older.findByClass("llm-task-progress-steps")),
+        "Write the review",
       );
-      assert.equal(pillOf(head).textContent, "已完成");
-      assert.equal(countsOf(head), "2/2 步 · 2 篇论文");
-      assert.equal(labelOf(currentHead(harness)!), `第 2 个问题 · “${GAZE}”`);
-      const text = collectFakeText(harness.drawer);
-      assert.equal(
-        text.split("第 1 个问题").length - 1,
-        1,
-        "the earlier question is named once",
+      const [cited] = older.findAllByClass("llm-task-paper");
+      assert.equal(cited.dataset.key, "1:2");
+      assert.equal(cited.dataset.state, "cited");
+      const shared = detailsOf(cited);
+      assert.include(shared, "Cited");
+      assert.include(shared, "Read, not cited (1)");
+      assert.include(shared, "Path integration drifts without landmarks.");
+      assert.notInclude(shared, "Passages read");
+      assert.notInclude(shared, "↳ “Quoted evidence cite-1”");
+      assert.notInclude(shared, "Gaze tracks");
+      headOf(cardSections(harness)[1]).dispatchFakeEvent("click");
+      assert.lengthOf(
+        cardSections(harness)[1].findAllByClass("llm-task-paper"),
+        0,
       );
+    });
+
+    it("shows Cited, numbered, and the reads it did not cite under a cited paper", function () {
+      seedScope(5);
+      const harness = track(mount());
+      askFirst();
+      applyTaskOutsideEvent(KEY, "q1", {
+        type: "final",
+        text: "## Drift\n\nPaths drift without landmarks [[cite:cite-1]].",
+      });
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      const [cited] = cardSections(harness)[0].findAllByClass("llm-task-paper");
+      const shared = detailsOf(cited);
+      assert.include(shared, "Cited");
+      assert.include(shared, "Quoted evidence cite-1");
+      assert.include(shared, "Read, not cited (1)");
+      assert.notInclude(shared, "Passages read");
+      assert.notInclude(shared, "In the answer");
       assert.equal(
-        harness.drawer.findByClass("llm-task-progress-papers-title")!
-          .textContent,
-        "论文（5）",
+        cited.findByClass("llm-task-cited-number")!.textContent,
+        "1",
       );
+    });
+
+    it("keeps an unrolled question unrolled through a repaint and a new mount", function () {
+      seedScope(5);
+      const first = track(mount());
+      askFirst();
+      askSecond();
+      first.view.flush();
+      first.row.dispatchFakeEvent("click");
+      headOf(cardSections(first)[1]).dispatchFakeEvent("click");
+      applyTaskPaperUpdate(
+        KEY,
+        ledgerDelta("c3", [[4, "read", "More."]]),
+        "q2",
+      );
+      first.view.flush();
+      assert.equal(
+        headOf(cardSections(first)[1]).getAttribute("aria-expanded"),
+        "true",
+      );
+      first.view.dispose();
+
+      const again = track(mount());
+      assert.isTrue(again.view.isOpen());
+      assert.equal(
+        headOf(cardSections(again)[1]).getAttribute("aria-expanded"),
+        "true",
+      );
+    });
+
+    it("keeps an earlier question with no steps and no papers, so numbers never skip", function () {
+      seedScope(5);
+      const harness = track(mount());
+      beginTaskRun(KEY, { runId: "q1", turnIndex: 1, text: "Hello" });
+      completeTaskRun(KEY, { runId: "q1" });
+      askSecond();
+      harness.view.flush();
+      harness.row.dispatchFakeEvent("click");
+      assert.lengthOf(cardSections(harness), 2);
+    });
+
+    it("gives a built-in action its own block, named with the action", function () {
+      seedScope(5);
+      const harness = track(mount());
+      askFirst();
+      beginTaskAction(KEY, {
+        runId: "action-1",
+        title: "Auto Tag",
+        text: "tag the drift papers",
+      });
+      setTaskActionStep(KEY, "action-1", {
+        step: "Tagging",
+        index: 1,
+        total: 1,
+      });
+      endTaskAction(KEY, "action-1", "completed", "Tagged 2 items");
+      harness.view.flush();
+      assert.equal(harness.count(), "1/1 steps · Tagged 2 items");
+      harness.row.dispatchFakeEvent("click");
+      const [action, question] = cardSections(harness);
+      assert.equal(wordsOf(headOf(action)), "tag the drift papers");
+      assert.include(metaOf(headOf(action)), "Auto Tag");
+      assert.include(metaOf(headOf(question)), "Question 1");
+      assert.include(
+        collectFakeText(action.findByClass("llm-task-progress-steps")),
+        "Tagging",
+      );
+    });
+
+    describe("in Chinese", function () {
+      const globals = globalThis as unknown as { Zotero?: unknown };
+      let previousZotero: unknown;
+      before(function () {
+        previousZotero = globals.Zotero;
+        globals.Zotero = { Prefs: { get: () => "zh-CN" }, locale: "zh-CN" };
+        initI18n();
+      });
+      after(function () {
+        if (previousZotero === undefined) delete globals.Zotero;
+        else globals.Zotero = previousZotero;
+        initI18n();
+      });
+
+      it("names each question once, in the reader's language", function () {
+        seedScope(5);
+        const harness = track(mount());
+        askFirst();
+        askSecond();
+        harness.view.flush();
+        harness.row.dispatchFakeEvent("click");
+        const [newest, older] = cardSections(harness);
+        assert.include(metaOf(headOf(newest)), "第 2 个问题");
+        assert.include(metaOf(headOf(older)), "第 1 个问题");
+        assert.include(metaOf(headOf(older)), "已完成");
+        assert.equal(
+          collectFakeText(harness.drawer).split("第 1 个问题").length - 1,
+          1,
+          "the earlier question is named once",
+        );
+      });
     });
   });
 });

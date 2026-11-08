@@ -5,6 +5,7 @@ import {
   setSelectedTextContextEntries,
   updateSelectedTextContextQueryForItem,
 } from "../src/modules/contextPanel/contextResolution";
+import { setChatPanelExtensions } from "../src/modules/contextPanel/chatPanelExtensions";
 import { attachAssistantSelectionPopup } from "../src/modules/contextPanel/setupHandlers/controllers/assistantSelectionPopupController";
 
 type Listener = (e: any) => void;
@@ -161,6 +162,9 @@ function makeFakePanel(selectedText: string) {
       focusNode: textNode,
       focusOffset: 0,
       getRangeAt: () => range,
+      removeAllRanges: () => {
+        panelWin.selectionCleared = true;
+      },
     }),
     setTimeout: (fn: () => void) => {
       fn();
@@ -296,5 +300,118 @@ describe("assistant reply Quote box", function () {
     });
     assert.isTrue(popup.classList.contains("is-expanded"));
     assert.equal(input.value, "draft");
+  });
+});
+
+describe("assistant reply Quote in side chat", function () {
+  const conversationKey = 828282;
+  const quoted = "Another sentence from the reply.";
+
+  beforeEach(function () {
+    setSelectedTextContextEntries(conversationKey, []);
+  });
+  afterEach(function () {
+    setSelectedTextContextEntries(conversationKey, []);
+  });
+
+  function attach(body: Element) {
+    const panel = makeFakePanel(quoted);
+    attachAssistantSelectionPopup({
+      body,
+      panelRoot: panel.panelRoot,
+      panelDoc: panel.doc,
+      panelWin: panel.panelWin,
+      chatBox: panel.chatBox,
+      inputBox: panel.inputBox,
+      status: null,
+      getItem: () => ({}) as Zotero.Item,
+      getTextContextConversationKey: () => conversationKey,
+      runWithChatScrollGuard: (fn) => fn(),
+      updateSelectedTextPreviewPreservingScroll: () => {},
+      isElementNode: (value: unknown): value is Element =>
+        Boolean(value) && (value as { nodeType?: number }).nodeType === 1,
+    });
+    return {
+      panel,
+      popup: findByClass(panel.panelRoot, "llm-assistant-selection-popup"),
+      sideButton: findByClass(
+        panel.panelRoot,
+        "llm-assistant-selection-side-action",
+      ),
+    };
+  }
+
+  it("is hidden when the body has no side chat target", function () {
+    const body = { querySelector: () => null } as unknown as Element;
+    const { sideButton } = attach(body);
+    sideButton.dispatch("click");
+    assert.equal(sideButton.style.display, "none");
+    assert.isFalse(sideButton.parentNode.classList.contains("is-split"));
+    assert.lengthOf(getSelectedTextContextEntries(conversationKey), 0);
+  });
+
+  function sideChatBody() {
+    const body = { querySelector: () => null } as unknown as Element;
+    const sent: Array<{ text: string; question?: string }> = [];
+    setChatPanelExtensions(body, {
+      sideChatQuote: {
+        quote: (text, question) => sent.push({ text, question }),
+      },
+    });
+    return { body, sent };
+  }
+  const key = (input: any, k: string) =>
+    input.dispatch("keydown", {
+      key: k,
+      shiftKey: false,
+      isComposing: false,
+      keyCode: k === "Enter" ? 13 : 27,
+      repeat: false,
+    });
+
+  it("opens the question box and sends text and question on Enter", function () {
+    const { body, sent } = sideChatBody();
+    const { panel, popup, sideButton } = attach(body);
+    assert.isTrue(sideButton.parentNode.classList.contains("is-split"));
+    sideButton.dispatch("click");
+    assert.isTrue(popup.classList.contains("is-expanded"));
+    assert.deepEqual(sent, []);
+    const input = findByClass(
+      panel.panelRoot,
+      "llm-assistant-selection-prompt-input",
+    );
+    input.value = "Why is that?";
+    key(input, "Enter");
+    assert.deepEqual(sent, [{ text: quoted, question: "Why is that?" }]);
+    assert.isFalse(popup.classList.contains("is-expanded"));
+    assert.isTrue(panel.panelWin.selectionCleared);
+    // Nothing is quoted in the main chat.
+    assert.lengthOf(getSelectedTextContextEntries(conversationKey), 0);
+  });
+
+  it("sends the text alone on an empty Enter", function () {
+    const { body, sent } = sideChatBody();
+    const { panel, sideButton } = attach(body);
+    sideButton.dispatch("click");
+    const input = findByClass(
+      panel.panelRoot,
+      "llm-assistant-selection-prompt-input",
+    );
+    key(input, "Enter");
+    assert.deepEqual(sent, [{ text: quoted, question: undefined }]);
+  });
+
+  it("sends nothing when the box is closed with Escape", function () {
+    const { body, sent } = sideChatBody();
+    const { panel, popup, sideButton } = attach(body);
+    sideButton.dispatch("click");
+    const input = findByClass(
+      panel.panelRoot,
+      "llm-assistant-selection-prompt-input",
+    );
+    input.value = "draft";
+    key(input, "Escape");
+    assert.isFalse(popup.classList.contains("is-expanded"));
+    assert.deepEqual(sent, []);
   });
 });

@@ -110,7 +110,33 @@ describe("task progress run fold", function () {
     assert.deepEqual(taskProgressEffect(SAMPLES.codex_progress), {
       kind: "codex_checklist",
       steps: [{ label: "Inspect", status: "completed" }],
+      source: "codex",
     });
+  });
+
+  it("reads Claude Code's step snapshot as the same effect, from Claude", function () {
+    assert.deepEqual(
+      taskProgressEffect(
+        event({
+          type: "codex_progress",
+          itemId: "codex-plan-checklist",
+          text: "• Screen",
+          runtime: "claude",
+          steps: [
+            { content: "Screen", status: "in_progress" },
+            { content: "Skim", status: "pending" },
+          ],
+        }),
+      ),
+      {
+        kind: "codex_checklist",
+        steps: [
+          { label: "Screen", status: "in_progress" },
+          { label: "Skim", status: "pending" },
+        ],
+        source: "claude",
+      },
+    );
   });
 
   it("reads no plan from a Codex item that carries none", function () {
@@ -131,9 +157,12 @@ describe("task progress run fold", function () {
   });
 
   it("is where the rebuild's stored event kinds come from", function () {
-    assert.strictEqual(
-      TASK_PROGRESS_HISTORY_EVENT_TYPES,
-      TASK_PROGRESS_REPLAY_EVENT_TYPES,
-    );
+    // The replayed kinds, and the tool calls and answers the outside
+    // groups fold (their tool results are read after, run by run).
+    assert.deepEqual(TASK_PROGRESS_HISTORY_EVENT_TYPES, [
+      ...TASK_PROGRESS_REPLAY_EVENT_TYPES,
+      "tool_call",
+      "final",
+    ]);
   });
 });

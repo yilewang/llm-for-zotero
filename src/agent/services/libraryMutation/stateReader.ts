@@ -210,6 +210,25 @@ function readItemCollections(item: Zotero.Item | null): number[] {
   }
 }
 
+/** A regular item's live (untrashed) child attachments and notes, sorted. */
+function readItemChildIds(item: Zotero.Item): {
+  childAttachmentIds: number[];
+  childNoteIds: number[];
+} {
+  const ids = (values: unknown[] | undefined) =>
+    Array.from(
+      new Set(
+        (values || [])
+          .map((value: unknown) => Math.floor(Number(value)))
+          .filter((value: number) => Number.isFinite(value) && value > 0),
+      ),
+    ).sort((left, right) => left - right);
+  return {
+    childAttachmentIds: ids(item.getAttachments?.()),
+    childNoteIds: ids(item.getNotes?.()),
+  };
+}
+
 async function readAttachmentPath(item: Zotero.Item | null): Promise<string> {
   if (!item?.isAttachment?.()) return "";
   try {
@@ -241,13 +260,20 @@ export class MutationStateReader {
           ? createdIds.itemIds
           : Array.from(new Set([...itemIds, ...createdIds.itemIds]));
     }
-    if (operation.type === "update_metadata" && !itemIds.length) {
-      const target = this.zoteroGateway.resolveMetadataItem({
+    // The write resolver, not the read one: reading back a PDF's parent
+    // after writing the PDF confirmed a change on an object never edited.
+    const metadataWriteTarget = () => {
+      if (operation.type !== "update_metadata") return null;
+      const target = this.zoteroGateway.resolveMetadataWriteTarget({
         request: context.request,
         item: context.item,
         itemId: operation.itemId,
         paperContext: operation.paperContext,
       });
+      return "item" in target ? target.item : null;
+    };
+    if (operation.type === "update_metadata" && !itemIds.length) {
+      const target = metadataWriteTarget();
       if (target) itemIds = [target.id];
     }
 
@@ -258,12 +284,7 @@ export class MutationStateReader {
           ? this.zoteroGateway.getItem(itemId)
           : null;
       if (!item && operation.type === "update_metadata") {
-        item = this.zoteroGateway.resolveMetadataItem({
-          request: context.request,
-          item: context.item,
-          itemId: operation.itemId,
-          paperContext: operation.paperContext,
-        });
+        item = metadataWriteTarget();
       }
       if (!item) {
         states.push({ itemId, exists: false });
@@ -314,6 +335,12 @@ export class MutationStateReader {
           }
         }
       }
+      if (operation.type === "change_item_type") {
+        const record = this.zoteroGateway.readItemTypeRecord(item);
+        state.itemType = record.itemType;
+        state.fields = record.fields;
+        state.creators = record.creators;
+      }
       if (
         operation.type === "apply_tags" ||
         operation.type === "remove_tags" ||
@@ -341,6 +368,10 @@ export class MutationStateReader {
           ).trim() || undefined;
         state.attachmentPath = (await readAttachmentPath(item)) || undefined;
       }
+      // A merge moves every child of a duplicate onto the master; its
+      // postcondition reads what each item still holds.
+      if (operation.type === "merge_items" && item.isRegularItem?.() === true)
+        Object.assign(state, readItemChildIds(item));
       const captureCompleteItemFingerprint =
         mutationUsesDeferredInverse(operation) ||
         operation.type === "trash_items" ||
@@ -371,27 +402,20 @@ export class MutationStateReader {
         if (attachmentTitle) state.attachmentTitle = attachmentTitle;
         const attachmentPath = await readAttachmentPath(item);
         if (attachmentPath) state.attachmentPath = attachmentPath;
+        // An attach is judged by the kind of attachment it made. Part of the
+        // whole fingerprint, so the undo that trashes it reads the same
+        // fields the attach recorded.
+        if (item.isAttachment?.()) {
+          state.attachmentLinkMode = Number(item.attachmentLinkMode);
+          const url = String(item.getField?.("url") || "");
+          if (url) state.attachmentUrl = url;
+        }
         const isRegularItem =
           item.isRegularItem?.() === true ||
           (typeof item.isRegularItem !== "function" &&
             item.isNote?.() !== true &&
             item.isAttachment?.() !== true);
-        if (isRegularItem) {
-          state.childAttachmentIds = Array.from(
-            new Set(
-              (item.getAttachments?.() || [])
-                .map((value: unknown) => Math.floor(Number(value)))
-                .filter((value: number) => Number.isFinite(value) && value > 0),
-            ),
-          ).sort((left, right) => left - right);
-          state.childNoteIds = Array.from(
-            new Set(
-              (item.getNotes?.() || [])
-                .map((value: unknown) => Math.floor(Number(value)))
-                .filter((value: number) => Number.isFinite(value) && value > 0),
-            ),
-          ).sort((left, right) => left - right);
-        }
+        if (isRegularItem) Object.assign(state, readItemChildIds(item));
         if (item.isNote?.()) {
           state.noteHtml = item.getNote?.() || "";
           state.noteHtmlChecksum = await sha256Text(state.noteHtml);

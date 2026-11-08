@@ -8,6 +8,7 @@ import {
   resolveInlineEditSubmitText,
 } from "../src/modules/contextPanel/setupHandlers/controllers/inlineEditRetryController";
 import type {
+  AttachedConversationRef,
   CollectionContextRef,
   PaperContextRef,
   SelectedTextContext,
@@ -43,10 +44,20 @@ describe("inlineEditRetryController", function () {
       },
     ];
 
+    const attachedConversations: AttachedConversationRef[] = [
+      {
+        system: "codex",
+        conversationKey: 9,
+        title: "Earlier chat",
+        libraryID: 1,
+      },
+    ];
+
     const snapshot = buildInlineEditRetryContextSnapshot({
       selectedContexts,
       selectedCollectionContexts,
       selectedTagContexts,
+      attachedConversations,
     });
 
     assert.deepEqual(snapshot.selectedTexts, ["quoted passage"]);
@@ -61,6 +72,16 @@ describe("inlineEditRetryController", function () {
     );
     assert.deepEqual(snapshot.selectedTagContexts, selectedTagContexts);
     assert.notStrictEqual(snapshot.selectedTagContexts, selectedTagContexts);
+    assert.deepEqual(snapshot.attachedConversations, attachedConversations);
+    assert.notStrictEqual(
+      snapshot.attachedConversations,
+      attachedConversations,
+    );
+  });
+
+  it("passes an empty attached-conversation list when the composer has none", function () {
+    const snapshot = buildInlineEditRetryContextSnapshot({});
+    assert.deepEqual(snapshot.attachedConversations, []);
   });
 
   describe("resolveInlineEditSubmitText", function () {

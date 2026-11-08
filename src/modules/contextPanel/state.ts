@@ -10,6 +10,7 @@ import type {
   OtherContextRef,
   CollectionContextRef,
   TagContextRef,
+  AttachedConversationRef,
   ChatRuntimeMode,
   PaperContextSendMode,
   PaperContentSourceMode,
@@ -48,6 +49,12 @@ import {
 export const chatHistory = new Map<number, Message[]>();
 export const conversationForkLinks = new Map<number, ConversationForkLink>();
 export const loadedConversationKeys = new Set<number>();
+/**
+ * Keys whose chatHistory entry was borrowed by a read-only view (the
+ * standalone side panel). The copy is display-only: it is not a real load, so
+ * ensureConversationLoaded must replace it instead of treating it as loaded.
+ */
+export const readOnlyBorrowedConversationKeys = new Set<number>();
 export const loadingConversationTasks = new Map<number, Promise<void>>();
 export const webChatIsolatedConversationKeys = new Set<number>();
 /**
@@ -71,9 +78,9 @@ export const selectedReasoningProviderCache = new Map<
   ReasoningProviderKind
 >();
 
-// The same two values as conversationSelection's SelectionSurface, spelled out
+// The same values as conversationSelection's SelectionSurface, spelled out
 // here because that module imports this one.
-type ReasoningSurface = "embedded" | "standalone";
+type ReasoningSurface = "embedded" | "standalone" | "side" | `torn:${string}`;
 
 export function reasoningCacheKey(
   surface: ReasoningSurface | undefined,
@@ -82,7 +89,7 @@ export function reasoningCacheKey(
   return `${surface || "embedded"}:${itemId}`;
 }
 
-/** Forget one surface's reasoning choices; the other surface keeps its own. */
+/** Forget one surface's reasoning choices; the other surfaces keep their own. */
 export function clearSelectedReasoningForSurface(
   surface: ReasoningSurface | undefined,
 ): void {
@@ -371,6 +378,7 @@ export function clearConversationOwnedRuntimeState(
   clearTaskProgress(key);
   conversationForkLinks.delete(key);
   loadedConversationKeys.delete(key);
+  readOnlyBorrowedConversationKeys.delete(key);
   loadingConversationTasks.delete(key);
   webChatIsolatedConversationKeys.delete(key);
   webChatSessionConversationKeys.delete(key);
@@ -402,6 +410,13 @@ export function clearConversationOwnedRuntimeState(
       standalonePaperConversationByPaper.delete(stateKey);
     }
   }
+  for (const tornMap of [tornGlobalByLibrary, tornPaperByPaper]) {
+    for (const [stateKey, activeKey] of tornMap) {
+      if (normalizeConversationKey(activeKey) === key) {
+        tornMap.delete(stateKey);
+      }
+    }
+  }
 
   clearMenuTargetsForConversation(key);
   // The finalizer may run without a mounted panel, so the panels' DOM cleanup
@@ -423,7 +438,7 @@ export function setMessageLineSpacingPercent(value: number) {
     .then((m) => m.setMessageLineSpacingPref(value))
     .catch(() => {});
 }
-export let messageParagraphSpacingPx = 8; // MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX
+export let messageParagraphSpacingPx = 12; // MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX
 export function setMessageParagraphSpacingPx(value: number) {
   messageParagraphSpacingPx = value;
   import("./prefHelpers")
@@ -621,6 +636,10 @@ export const selectedCollectionContextCache = new Map<
   CollectionContextRef[]
 >();
 export const selectedTagContextCache = new Map<number, TagContextRef[]>();
+export const attachedConversationCache = new Map<
+  number,
+  AttachedConversationRef[]
+>();
 // Conversations whose paper/collection/tag composer state has been initialized.
 // Membership is significant even when every corresponding context cache is empty.
 export const initializedConversationComposeContextKeys = new Set<number>();
@@ -683,6 +702,13 @@ export const standaloneConversationModeByLibrary = new Map<
 export const standaloneGlobalConversationByLibrary = new Map<string, number>();
 export const standalonePaperConversationByPaper = new Map<string, number>();
 
+// Each torn-off chat window's own selection, like the standalone window's
+// above. Keys are "<torn surface>|<system>|<runtime state key>"; nothing here
+// is ever persisted. Read and written only through conversationSelection.ts.
+export const tornModeByLibrary = new Map<string, "paper" | "global">();
+export const tornGlobalByLibrary = new Map<string, number>();
+export const tornPaperByPaper = new Map<string, number>();
+
 // ── Auto-lock state (open chat locks during generation) ─────────────────────
 // Multiple conversations can be auto-locked simultaneously.
 const autoLockedGlobalConversationKeys = new Set<number>();
@@ -708,6 +734,7 @@ export function clearAllState(): void {
   clearAllTaskProgress();
   conversationForkLinks.clear();
   loadedConversationKeys.clear();
+  readOnlyBorrowedConversationKeys.clear();
   loadingConversationTasks.clear();
   webChatForceNewChatConversationKeys.clear();
   selectedReasoningCache.clear();
@@ -747,6 +774,9 @@ export function clearAllState(): void {
   standaloneConversationModeByLibrary.clear();
   standaloneGlobalConversationByLibrary.clear();
   standalonePaperConversationByPaper.clear();
+  tornModeByLibrary.clear();
+  tornGlobalByLibrary.clear();
+  tornPaperByPaper.clear();
   const pendingKeys = [...pendingRequestIds.keys()];
   pendingRequestIds.clear();
   for (const key of pendingKeys) notifyRequestActivityChanged(key, true);
@@ -755,6 +785,7 @@ export function clearAllState(): void {
   abortControllers.clear();
   autoLockedGlobalConversationKeys.clear();
   selectedTagContextCache.clear();
+  attachedConversationCache.clear();
   webChatIsolatedConversationKeys.clear();
   webChatSessionConversationKeys.clear();
   clearMermaidSvgCache();

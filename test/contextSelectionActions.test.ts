@@ -5,6 +5,8 @@ import {
   type ContextSelectionActionDeps,
 } from "../src/modules/contextPanel/contextSelectionActions";
 import {
+  paperContentSourceOverrides,
+  paperContextModeOverrides,
   selectedPaperContextCache,
   selectedPaperPreviewExpandedCache,
 } from "../src/modules/contextPanel/state";
@@ -114,6 +116,9 @@ describe("default Zotero item context selection", function () {
   afterEach(function () {
     selectedPaperContextCache.clear();
     selectedPaperPreviewExpandedCache.clear();
+    // Adding an item as context also sets its paper mode override.
+    paperContextModeOverrides.clear();
+    paperContentSourceOverrides.clear();
     globalScope.Zotero = originalZotero;
   });
 

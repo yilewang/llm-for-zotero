@@ -28,6 +28,7 @@ import type {
   PaperContextSendMode,
   SelectedTextContext,
   TagContextRef,
+  AttachedConversationRef,
 } from "../types";
 import {
   initializedConversationComposeContextKeys,
@@ -48,6 +49,7 @@ import {
   selectedPaperContextListExpandedCache,
   selectedPaperPreviewExpandedCache,
   selectedTagContextCache,
+  attachedConversationCache,
   selectedTextCache,
   selectedTextPreviewExpandedCache,
 } from "../state";
@@ -136,6 +138,10 @@ export const composeContextStore = {
   otherRefs: listSlot<OtherContextRef>(selectedOtherRefContextCache),
   collections: listSlot<CollectionContextRef>(selectedCollectionContextCache),
   tags: listSlot<TagContextRef>(selectedTagContextCache),
+  /** Past chats attached to the next message; cleared after send. */
+  attachedConversations: listSlot<AttachedConversationRef>(
+    attachedConversationCache,
+  ),
   /** The contextItemId of the sticky paper chip, or false for none. */
   paperPreviewExpanded: ownerSlot<number | false>(
     selectedPaperPreviewExpandedCache,

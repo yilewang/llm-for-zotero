@@ -1,4 +1,4 @@
-import { config } from "../package.json";
+import { config, version } from "../package.json";
 import { ColumnOptions, DialogHelper } from "zotero-plugin-toolkit";
 import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
@@ -9,6 +9,8 @@ class Addon {
   public data: {
     alive: boolean;
     config: typeof config;
+    // Version of the bundle that created this object (src/index.ts).
+    version: string;
     // Env type, see build.js
     env: "development" | "production" | "test";
     initialized?: boolean;
@@ -36,6 +38,7 @@ class Addon {
     this.data = {
       alive: true,
       config,
+      version,
       env: __env__,
       initialized: false,
       ztoolkit: createZToolkit(),

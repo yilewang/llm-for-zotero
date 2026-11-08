@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, it } from "mocha";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
 import {
+  CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES,
   createExternalBackendBridgeRuntime,
   describeClaudeRuntimeToolEffect,
 } from "../src/agent/externalBackendBridge";
@@ -17,7 +18,9 @@ import {
   CORE_RESEARCH_CONTRACT,
   PAPER_CITATION_CONTRACT,
   RUNTIME_CAPABILITY_CONTEXT,
+  SEARCH_ROUTING_CONTRACT,
 } from "../src/shared/instructionContracts";
+import { AGENT_SEARCH_TOOL_ROUTES } from "../src/agent/model/agentPersona";
 
 describe("external bridge action approval handling", function () {
   function createRuntime(onPrepare?: () => void) {
@@ -628,6 +631,18 @@ describe("external bridge action approval handling", function () {
       ]) {
         assert.include(customInstruction, contract);
       }
+      // Search routing reaches the bridge once; the plugin-only selection
+      // card rule does not (the bridge has no literature_review card).
+      assert.equal(
+        customInstruction.split(SEARCH_ROUTING_CONTRACT).length - 1,
+        1,
+      );
+      assert.notInclude(customInstruction, AGENT_SEARCH_TOOL_ROUTES);
+      // Its own search-tool line maps the web family to WebSearch/WebFetch.
+      assert.equal(
+        customInstruction.split(CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES).length - 1,
+        1,
+      );
       const mcpServers = capturedBody?.mcpServers as
         | Record<
             string,
@@ -653,6 +668,9 @@ describe("external bridge action approval handling", function () {
         capturedBody?.allowedTools,
         `mcp__${serverName}__run_command`,
       );
+      // No paper-reader subagent is registered: the skill reads every paper
+      // with the host reader.
+      assert.notProperty(capturedBody?.metadata || {}, "paperReaderTools");
       assert.equal(mcpServers?.[serverName].type, "http");
       assert.equal(
         mcpServers?.[serverName].url,

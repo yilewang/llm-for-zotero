@@ -8,6 +8,7 @@
  * motion moves nothing, and the chat keeps its bottom or its reading place.
  */
 import { assert } from "chai";
+import { findCurrentTaskProgressSteps } from "../src/modules/contextPanel/taskProgress/view";
 import { executionCheckpointEvent } from "../src/agent/execution/checkpointEvents";
 import type { ExecutionCheckpoint } from "../src/agent/types";
 import type {
@@ -77,7 +78,10 @@ describe("workflow: task progress curtain", function () {
       shell: root.querySelector("#llm-chat-shell") as HTMLElement,
       box: root.querySelector("#llm-chat-box") as HTMLElement,
       drawer: root.querySelector("#llm-task-progress-drawer") as HTMLElement,
-      steps: root.querySelector(".llm-task-progress-steps") as HTMLElement,
+      /** The current question's visible Steps block, re-queried each read. */
+      get steps() {
+        return findCurrentTaskProgressSteps(root);
+      },
       count: () =>
         root.querySelector(".llm-task-progress-count")?.textContent || "",
     };
@@ -534,8 +538,8 @@ describe("workflow: task progress curtain", function () {
       assert.equal(view(panelId).row.dataset.state, "working");
       assert.equal(view(panelId).count(), "0/1 steps");
       view(panelId).row.click();
-      await until(() => !view(panelId).steps.hidden, "the steps show");
-      assert.include(view(panelId).steps.textContent || "", sort);
+      await until(() => Boolean(view(panelId).steps), "the steps show");
+      assert.include(view(panelId).steps?.textContent || "", sort);
       view(panelId).row.click();
       await until(
         () => view(panelId).drawer.dataset.state === "closed",

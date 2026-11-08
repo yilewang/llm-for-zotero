@@ -37,7 +37,9 @@ export type DocumentOutcomePolicy = Readonly<{
   integrityPolicy: DocumentIntegrityPolicy;
 }>;
 
-export type PlanCitationSource = Readonly<{
+/** A cited Zotero item. Stored sources without a kind are this kind. */
+export type ZoteroCitationSource = Readonly<{
+  kind?: undefined;
   libraryID: number;
   itemKey: string;
   evidenceRefs: readonly string[];
@@ -48,6 +50,39 @@ export type PlanCitationSource = Readonly<{
     sourceFingerprint: string;
   }>;
 }>;
+
+/**
+ * A cited outside paper: one literature_search or literature_read returned
+ * in the run, by its paper source id. It has no Zotero evidence records
+ * (`evidenceRefs` stays empty) and no page locator.
+ */
+export type OutsideCitationSource = Readonly<{
+  kind: "outside";
+  paperId: string;
+  evidenceRefs: readonly string[];
+}>;
+
+export type PlanCitationSource = ZoteroCitationSource | OutsideCitationSource;
+
+export function isOutsideCitationSource(
+  source: Readonly<{ kind?: string }>,
+): source is OutsideCitationSource {
+  return source.kind === "outside";
+}
+
+/**
+ * A cited source's identity: `paper:<paperId>` for an outside paper, else
+ * `libraryID:itemKey`.
+ */
+export function citationSourceKey(
+  source:
+    | Pick<ZoteroCitationSource, "libraryID" | "itemKey">
+    | Pick<OutsideCitationSource, "kind" | "paperId">,
+): string {
+  return "paperId" in source
+    ? `paper:${source.paperId}`
+    : `${source.libraryID}:${source.itemKey}`;
+}
 
 export type PlanCitationCluster = Readonly<{
   citationId: string;
@@ -61,16 +96,125 @@ export type FormattedCitationCluster = Readonly<{
   sources: readonly PlanCitationSource[];
 }>;
 
+/** A CSL-JSON name: family and given, or one name kept whole. */
+export type CslName =
+  | Readonly<{ family: string; given?: string; suffix?: string }>
+  | Readonly<{ literal: string }>;
+
+/** The CSL types an outside paper is formatted as. */
+export const OUTSIDE_PAPER_CSL_TYPES = [
+  "article-journal",
+  "article",
+  "paper-conference",
+  "chapter",
+  "book",
+] as const;
+
+export type OutsidePaperCslType = (typeof OUTSIDE_PAPER_CSL_TYPES)[number];
+
+/**
+ * The CSL-JSON item an outside paper is formatted from. Its id is `ext-<n>`:
+ * never all digits (a Zotero item's CSL id is) and never containing "/".
+ */
+export type OutsidePaperCslItem = Readonly<{
+  id: string;
+  type: OutsidePaperCslType;
+  title?: string;
+  author?: readonly CslName[];
+  issued?: Readonly<{ "date-parts": readonly (readonly number[])[] }>;
+  DOI?: string;
+  URL?: string;
+  "container-title"?: string;
+  volume?: string;
+  issue?: string;
+  page?: string;
+}>;
+
+/**
+ * What a DOI lookup adds to an outside paper's CSL item. Its fields replace
+ * the ones built from the run's record.
+ */
+export type OutsidePaperCslEnrichment = Partial<
+  Pick<
+    OutsidePaperCslItem,
+    | "type"
+    | "author"
+    | "issued"
+    | "container-title"
+    | "volume"
+    | "issue"
+    | "page"
+  >
+>;
+
+/**
+ * A cited outside paper as the document keeps it: its identifiers and the
+ * CSL-JSON it was formatted from. A snapshot, so the document renders, and
+ * its papers can be imported, after the run that found them has ended.
+ */
+export type OutsidePaperSnapshot = Readonly<{
+  paperId: string;
+  doi?: string;
+  arxivId?: string;
+  pmid?: string;
+  pmcid?: string;
+  url?: string;
+  csl: OutsidePaperCslItem;
+}>;
+
+/** A References entry for a cited Zotero item. */
+export type ZoteroBibliographyEntry = Readonly<{
+  libraryID: number;
+  itemKey: string;
+  text: string;
+  html: string;
+}>;
+
+/**
+ * A References entry for a cited outside paper. Its link comes from the
+ * paper's identifiers in `outsidePapers`, not from the entry.
+ */
+export type OutsideBibliographyEntry = Readonly<{
+  paperId: string;
+  text: string;
+  html: string;
+}>;
+
+export type BibliographyEntry =
+  | ZoteroBibliographyEntry
+  | OutsideBibliographyEntry;
+
+export function isOutsideBibliographyEntry(
+  entry: BibliographyEntry,
+): entry is OutsideBibliographyEntry {
+  return "paperId" in entry;
+}
+
 export type FormattedCitationBundle = Readonly<{
   clusters: readonly FormattedCitationCluster[];
-  bibliographyEntries: readonly Readonly<{
-    libraryID: number;
-    itemKey: string;
-    text: string;
-    html: string;
-  }>[];
+  /** One list in citation-style order, Zotero and outside entries mixed. */
+  bibliographyEntries: readonly BibliographyEntry[];
   style: Readonly<{ id: string; title: string }>;
   locale: string;
+  /** The cited outside papers; absent when the document cites none. */
+  outsidePapers?: readonly OutsidePaperSnapshot[];
+}>;
+
+/**
+ * A document's text before its citations were formatted: the draft Markdown
+ * with its `[[cite:ID]]` tokens, and the citation clusters as submitted. Kept
+ * only for a document that cites an outside paper, so a later version can
+ * cite the imported items without the model rewriting the text.
+ */
+export type DocumentCitationDraft = Readonly<{
+  markdown: string;
+  clusters: readonly PlanCitationCluster[];
+}>;
+
+/** The stored document a new version was made from. */
+export type DocumentRevisionOf = Readonly<{
+  documentId: string;
+  documentVersion: number;
 }>;
 
 export type DocumentAssetProvenance =
@@ -185,6 +329,10 @@ export type DocumentArtifactV2 = DocumentArtifactFields &
           /** @deprecated Compatibility with early DocumentArtifactV2 drafts. */
           skillRoutingReceiptHash?: string;
         }>;
+    /** Present only when the document cites an outside paper. */
+    citationDraft?: DocumentCitationDraft;
+    /** Present only on a version made from an earlier document. */
+    revisionOf?: DocumentRevisionOf;
   }>;
 
 export type DocumentArtifact = LegacyPlanDocument | DocumentArtifactV2;
@@ -222,7 +370,7 @@ export type DocumentNoteBinding = Readonly<{
   documentVersion?: number;
   contentHash?: string;
   nativeContentHash?: string;
-  nativeContentHashVersion?: 1;
+  nativeContentHashVersion?: 1 | 2;
   parentItemId?: number;
   finalized?: boolean;
 }>;

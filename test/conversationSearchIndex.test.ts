@@ -316,6 +316,51 @@ describe("conversation search index", function () {
     );
   });
 
+  it("requires every word and applies the paper and activity filters in the read when asked", async function () {
+    const { queries } = installSearchIndexDb({
+      tables: ["llm_for_zotero_paper_conversations"],
+      searchRows: [],
+    });
+    await searchConversationIndex({
+      system: "upstream",
+      libraryID: 2,
+      query: "decoder drift",
+      limit: 10,
+      matchAllWords: true,
+      paperItemID: 44,
+      minLastActivityAt: 5_000,
+    });
+    const searchQuery = queries.find(
+      ({ sql }) =>
+        sql.includes(`FROM ${CONVERSATION_SEARCH_INDEX_TABLE}`) &&
+        sql.includes("body_text AS bodyText"),
+    );
+    const searchSql = searchQuery?.sql || "";
+    const tokenFilterSql = searchSql.slice(
+      searchSql.indexOf("user_turn_count > 0"),
+    );
+    assert.include(
+      tokenFilterSql,
+      "\n        AND (LOWER(COALESCE(si.title, '')) LIKE ?",
+    );
+    assert.notInclude(tokenFilterSql, "library chat");
+    assert.include(searchSql, "si.kind = 'paper' AND si.paper_item_id = ?");
+    assert.include(searchSql, "si.last_activity_at >= ?");
+    assert.deepEqual(searchQuery?.params, [
+      CONVERSATION_SEARCH_BODY_CHAR_LIMIT,
+      "upstream",
+      2,
+      "%decoder%",
+      "%decoder%",
+      "%drift%",
+      "%drift%",
+      44,
+      5_000,
+      2,
+      10,
+    ]);
+  });
+
   it("refreshes before searching only when explicitly requested", async function () {
     const { queries } = installSearchIndexDb({
       tables: [

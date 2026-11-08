@@ -732,7 +732,7 @@ describe("primitive agent tools", function () {
       libraryID: 2,
     };
     const tool = createUpdateMetadataTool({
-      resolveMetadataItem: () => foreignItem,
+      resolveMetadataWriteTarget: () => ({ item: foreignItem }),
       getEditableArticleMetadata: () => makeMetadataSnapshot(7, "Foreign Item"),
       updateArticleMetadata: async () => {
         updateCalled = true;
@@ -839,7 +839,7 @@ describe("primitive agent tools", function () {
     );
     assert.include(
       resourceText,
-      "Ground final content claims in library_retrieve snippets or paper_read results.",
+      "Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.",
     );
     // The host runs a digest on each paper; the model no longer writes
     // digests itself.
@@ -885,7 +885,7 @@ describe("primitive agent tools", function () {
     );
     assert.include(
       resourceText,
-      "Ground final content claims in library_retrieve snippets or paper_read results.",
+      "Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.",
     );
     assert.include(userText, "User request:\nHow many papers");
   });
