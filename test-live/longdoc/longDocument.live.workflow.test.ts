@@ -12,6 +12,8 @@
  * Env: LLM_FOR_ZOTERO_LONGDOC_KEY (answer_key.json), LLM_FOR_ZOTERO_LONGDOC_CORPUS
  * (PDF folder), LLM_FOR_ZOTERO_QA_REPORT_DIR (output; unset = skip), and the
  * optional LLM_FOR_ZOTERO_LONGDOC_CONDITIONS, LLM_FOR_ZOTERO_LONGDOC_CASES,
+ * LLM_FOR_ZOTERO_LONGDOC_CONDITIONS_FILE (JSON object name -> { pdf, prefix,
+ * itemType, title, author, year }; replaces the built-in conditions),
  * LLM_FOR_ZOTERO_LIVE_MODEL, LLM_FOR_ZOTERO_QA_SOFT, LLM_FOR_ZOTERO_QA_VARIANT.
  *
  * Optional key fields (entries without them run exactly as before):
@@ -64,6 +66,7 @@ const prefix = "extensions.zotero.llmforzotero";
 const directory = env("LLM_FOR_ZOTERO_QA_REPORT_DIR");
 const keyPath = env("LLM_FOR_ZOTERO_LONGDOC_KEY");
 const corpusDir = env("LLM_FOR_ZOTERO_LONGDOC_CORPUS");
+const conditionsPath = env("LLM_FOR_ZOTERO_LONGDOC_CONDITIONS_FILE");
 const variant = env("LLM_FOR_ZOTERO_QA_VARIANT") || "unspecified";
 const soft = env("LLM_FOR_ZOTERO_QA_SOFT") === "1";
 // Simulates a smaller context window: request.advanced.inputTokenCap shrinks
@@ -77,18 +80,17 @@ const list = (key: string) =>
 const selectedCases = new Set(list("LLM_FOR_ZOTERO_LONGDOC_CASES"));
 const selectedConditions = new Set(list("LLM_FOR_ZOTERO_LONGDOC_CONDITIONS"));
 
-type Condition = "diss" | "diss-nobm" | "psy";
-const CONDITIONS: Record<
-  Condition,
-  {
-    pdf: string;
-    prefix: string;
-    itemType: "thesis" | "book";
-    title: string;
-    author: string;
-    year: string;
-  }
-> = {
+type Condition = string;
+type ConditionSpec = {
+  pdf: string;
+  prefix: string;
+  /** Zotero item type: thesis, book, journalArticle, preprint, ... */
+  itemType: string;
+  title: string;
+  author: string;
+  year: string;
+};
+const BUILT_IN_CONDITIONS: Record<Condition, ConditionSpec> = {
   diss: {
     pdf: "2412.19845.pdf",
     prefix: "diss-",
@@ -116,7 +118,20 @@ const CONDITIONS: Record<
     year: "2020",
   },
 };
-const conditionOrder = Object.keys(CONDITIONS) as Condition[];
+/** Read at load time, like the key: replaces the built-in conditions. */
+function loadConditions(): Record<Condition, ConditionSpec> {
+  if (!conditionsPath) return BUILT_IN_CONDITIONS;
+  try {
+    const parsed = JSON.parse(String(Zotero.File.getContents(conditionsPath)));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : BUILT_IN_CONDITIONS;
+  } catch {
+    return BUILT_IN_CONDITIONS;
+  }
+}
+const CONDITIONS = loadConditions();
+const conditionOrder = Object.keys(CONDITIONS);
 
 type KeyEntry = {
   id: string;
