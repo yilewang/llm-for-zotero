@@ -14,6 +14,21 @@
  * optional LLM_FOR_ZOTERO_LONGDOC_CONDITIONS, LLM_FOR_ZOTERO_LONGDOC_CASES,
  * LLM_FOR_ZOTERO_LIVE_MODEL, LLM_FOR_ZOTERO_QA_SOFT, LLM_FOR_ZOTERO_QA_VARIANT.
  *
+ * Optional key fields (entries without them run exactly as before):
+ * - "selections": [{"pdf_page": 112, "text": "verbatim passage"}] sends PDF
+ *   text selections with turn 1 only, as the chat panel does (pdf_page is
+ *   1-based). Anchors are resolved against the condition's PDF attachment.
+ *   Turn 1 then reports selection { count, anchors[] }; the case reports
+ *   selections (pdf_page and text length only).
+ * - "pages_needed": reported as pagesNeeded at case level.
+ * - "kind" may be sel-local, sel-section, sel-elsewhere, sel-compare or
+ *   sel-followup (it is only copied into the report).
+ * - "turn2" stays a follow-up turn sent with history and no selection. The
+ *   turn 1 history entry carries the selected text, as the panel stores it.
+ * Each turn also reports pagesRead: the 1-based PDF pages that paper_read
+ * passages carried (pageIndex or pageStart/pageEnd), or null when no
+ * passage carried page information.
+ *
  * Cut signals (what paper_read says about text that was cut or incomplete).
  * Fields read from each paper_read result content (src/agent/tools/read/paperRead.ts):
  * - status (top level, full mode): "partial" or "unreadable" (not "complete").
@@ -38,6 +53,9 @@
 import { assert } from "chai";
 import { usageFromResponse } from "../../test/helpers/qaUsage";
 import { resolveLiveAgentCredentials } from "../agent/liveAgentCredentials";
+import { resolveSelectedTextAnchors } from "../../src/modules/contextPanel/selectedTextAnchors";
+import { buildQuestionWithSelectedTextContexts } from "../../src/modules/contextPanel/textUtils";
+import type { SelectedTextContext } from "../../src/shared/types";
 declare const Zotero: any;
 declare const IOUtils: any;
 declare const Services: any;
@@ -106,6 +124,8 @@ type KeyEntry = {
   kind: string;
   question: string;
   turn2?: string;
+  selections?: Array<{ pdf_page: number; text: string }>;
+  pages_needed?: unknown;
 };
 /** Read at load time: mocha needs the case list before any hook runs. */
 function loadKey(): KeyEntry[] {
@@ -153,6 +173,39 @@ const deliveredSectionsOf = (content: any): string[] => {
         ),
     ),
   ];
+};
+
+/**
+ * 1-based PDF pages the passages of a paper_read result carried: pageIndex
+ * (0-based) or the pageStart..pageEnd range (0-based, as chunk metadata
+ * stores it). Null when no passage carried page information.
+ */
+const pagesReadOf = (content: any): number[] | null => {
+  const rows: any[] = Array.isArray(content?.results)
+    ? content.results
+    : [content?.papers, content?.groups]
+        .filter(Array.isArray)
+        .flatMap((groups: any[]) =>
+          groups.flatMap((group: any) =>
+            Array.isArray(group?.passages) ? group.passages : [],
+          ),
+        );
+  const pages = new Set<number>();
+  let seen = false;
+  const valid = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0;
+  for (const row of rows) {
+    if (valid(row?.pageStart)) {
+      seen = true;
+      const end = valid(row?.pageEnd) ? row.pageEnd : row.pageStart;
+      for (let p = row.pageStart; p <= end && p - row.pageStart < 2000; p++)
+        pages.add(p + 1);
+    } else if (valid(row?.pageIndex)) {
+      seen = true;
+      pages.add(row.pageIndex + 1);
+    }
+  }
+  return seen ? [...pages].sort((a, b) => a - b) : null;
 };
 
 /** Every field of a paper_read result that says text was cut or incomplete. */
@@ -338,6 +391,10 @@ describe("long document live evaluation", function () {
         turn: number,
         userText: string,
         history?: Array<{ role: string; content: string }>,
+        selection?: {
+          contexts: SelectedTextContext[];
+          anchors: any[];
+        },
       ) => {
         const original = toolkit.getGlobal;
         const fetch = original.call(toolkit, "fetch");
@@ -406,6 +463,24 @@ describe("long document live evaluation", function () {
               activeItemId: ref.itemId,
               activePaperContext: ref,
               selectedPaperContexts: [],
+              // A PDF selection: the panel's agent path (agentEngine.ts
+              // toAgentRuntimeRequestParams) fills selectedTextContexts,
+              // resolvedSelectedTextAnchors and the parallel selectedTexts /
+              // selectedTextSources / selectedTextPaperContexts arrays
+              // (noteContexts stay empty for PDF text). The same set is sent.
+              ...(selection
+                ? {
+                    selectedTextContexts: selection.contexts,
+                    resolvedSelectedTextAnchors: selection.anchors,
+                    selectedTexts: selection.contexts.map((c) => c.text),
+                    selectedTextSources: selection.contexts.map(
+                      (c) => c.source,
+                    ),
+                    selectedTextPaperContexts: selection.contexts.map(
+                      (c) => c.paperContext,
+                    ),
+                  }
+                : {}),
               ...credentials,
               ...(inputTokenCap ? { advanced: { inputTokenCap } } : {}),
               ...(history ? { history } : {}),
@@ -518,6 +593,27 @@ describe("long document live evaluation", function () {
             callId: e.callId,
             sections: deliveredSectionsOf(e.content),
           })),
+          pagesRead: readResults.length
+            ? readResults.map((e) => ({
+                callId: e.callId,
+                pages: pagesReadOf(e.content),
+              }))
+            : null,
+          ...(selection
+            ? {
+                selection: {
+                  count: selection.contexts.length,
+                  anchors: selection.anchors.map((a: any) => ({
+                    contextIndex: a.contextIndex,
+                    resolution: a.resolution,
+                    pageIndex: a.pageIndex,
+                    preferredChunkIndexes: a.preferredChunkIndexes,
+                    contextTextChars: String(a.contextText || "").length,
+                    injectedChars: a.injectedChars,
+                  })),
+                },
+              }
+            : {}),
           cutSignals: readResults.map((e) => ({
             callId: e.callId,
             mode: e.content?.mode ?? null,
@@ -529,13 +625,53 @@ describe("long document live evaluation", function () {
       };
 
       const turns: any[] = [];
-      const first = await runTurn(1, `${entry.question}\n\n${turnSuffix}`);
+      const turn1Text = `${entry.question}\n\n${turnSuffix}`;
+      let selection:
+        | { contexts: SelectedTextContext[]; anchors: any[] }
+        | undefined;
+      if (entry.selections?.length) {
+        const contexts: SelectedTextContext[] = entry.selections.map((s) => ({
+          text: s.text,
+          source: "pdf",
+          paperContext: ref,
+          contextItemId: ref.contextItemId,
+          pageIndex: s.pdf_page - 1,
+        }));
+        if (!(globalThis as any).ztoolkit)
+          (globalThis as any).ztoolkit = Zotero.LLMForZotero.data.ztoolkit;
+        selection = {
+          contexts,
+          anchors: await resolveSelectedTextAnchors({
+            selectedTextContexts: contexts,
+            paperContexts: [ref],
+          }),
+        };
+      }
+      const first = await runTurn(1, turn1Text, undefined, selection);
       turns.push(first);
+      // The panel stores a selection turn's user message with its selected
+      // text and rebuilds history from it (chat.ts buildHistoryMessageForLLM
+      // -> reconstructRetryPayload): the selected-text block plus the
+      // question, without resolved anchors.
+      const turn1History = selection
+        ? buildQuestionWithSelectedTextContexts(
+            selection.contexts.map((c) => c.text),
+            selection.contexts.map((c) => c.source),
+            turn1Text,
+            {
+              selectedTextContexts: selection.contexts,
+              selectedTextPaperContexts: selection.contexts.map(
+                (c) => c.paperContext,
+              ),
+              includePaperAttribution: true,
+            },
+          )
+        : turn1Text;
       if (entry.turn2) {
         // Turn 2 continues the same conversation with turn 1 as history.
         turns.push(
           await runTurn(2, `${entry.turn2}\n\n${turnSuffix}`, [
-            { role: "user", content: `${entry.question}\n\n${turnSuffix}` },
+            { role: "user", content: turn1History },
             { role: "assistant", content: first.answer },
           ]),
         );
@@ -563,6 +699,17 @@ describe("long document live evaluation", function () {
         kind: entry.kind,
         question: entry.question,
         turn2: entry.turn2,
+        ...(entry.selections?.length
+          ? {
+              selections: entry.selections.map((s) => ({
+                pdf_page: s.pdf_page,
+                textChars: s.text.length,
+              })),
+            }
+          : {}),
+        ...(entry.pages_needed !== undefined
+          ? { pagesNeeded: entry.pages_needed }
+          : {}),
         turns,
         ...(failures.length ? { failures } : {}),
       });
