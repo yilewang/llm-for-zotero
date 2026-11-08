@@ -443,3 +443,338 @@ describe("openInlineAskOverlay", function () {
     assert.equal(q(doc, "data-llm-inline-ask-quote").style.color, "#b3b3b3");
   });
 });
+
+describe("Inline Ask save view", function () {
+  afterEach(() => closeAllReaderOverlays());
+
+  const colors = [
+    { hex: "#ffd400", label: "Yellow" },
+    { hex: "#ff6666", label: "Red" },
+    { hex: "#5fb236", label: "Green" },
+    { hex: "#2ea8e5", label: "Blue" },
+    { hex: "#a28ae5", label: "Purple" },
+    { hex: "#e56eee", label: "Magenta" },
+    { hex: "#f19837", label: "Orange" },
+    { hex: "#aaaaaa", label: "Gray" },
+  ];
+  const saveLabels = {
+    color: "Color",
+    back: "Back",
+    cancel: "Cancel",
+    save: "Save",
+    addComment: "Add comment",
+  };
+  const mod = { metaKey: true };
+
+  function heldSave() {
+    const calls: Array<{
+      payload: { color: string; comment: string };
+      resolve: (value: { ok: true } | { ok: false; error: string }) => void;
+    }> = [];
+    const save = (payload: { color: string; comment: string }) =>
+      new Promise<{ ok: true } | { ok: false; error: string }>((resolve) =>
+        calls.push({ payload, resolve }),
+      );
+    return { calls, save };
+  }
+
+  async function answered(
+    options: { blocked?: () => string | null } = {},
+    answer = "Drift is **slow**.\n\n- first\n- second",
+  ) {
+    const held = heldSave();
+    const opened = open({
+      save: {
+        colors,
+        pageText: "Page 17",
+        labels: saveLabels,
+        blockedReason: options.blocked ?? (() => null),
+        save: held.save,
+      },
+    });
+    type(opened.doc, "Q1");
+    editorOf(opened.doc).dispatch("keydown", key("Enter"));
+    opened.calls[0].onDelta("partial");
+    assert.isTrue(
+      action(opened.doc, "save").disabled,
+      "Save stays disabled while the answer streams",
+    );
+    opened.calls[0].resolve({ text: answer });
+    await flush();
+    return { ...opened, saves: held.calls };
+  }
+
+  const view = (doc: any) =>
+    (q(doc, "data-llm-inline-ask", "true") || doc.body.children[0]).attributes[
+      "data-view"
+    ];
+  const saveView = (doc: any) => q(doc, "data-llm-inline-ask-save-view");
+  const commentOf = (doc: any) => q(doc, "data-llm-inline-ask-comment");
+
+  it("keeps Save disabled without a save setup", async function () {
+    const { doc, calls } = open();
+    type(doc, "Q1");
+    editorOf(doc).dispatch("keydown", key("Enter"));
+    calls[0].resolve({ text: "Answer" });
+    await flush();
+    assert.isTrue(action(doc, "save").disabled);
+  });
+
+  it("disables Save with the reason as its tooltip", async function () {
+    const { doc } = await answered({
+      blocked: () => "This selection spans two pages.",
+    });
+    assert.isTrue(action(doc, "save").disabled);
+    assert.equal(
+      action(doc, "save").attributes.title,
+      "This selection spans two pages.",
+    );
+  });
+
+  it("opens the annotation card: color, page, highlighted text and the answer as comment", async function () {
+    const { doc, handle } = await answered();
+    assert.isFalse(action(doc, "save").disabled);
+    action(doc, "save").click();
+    const root = handle.root as any;
+    assert.equal(root.attributes["data-view"], "save");
+    assert.isTrue(isFakeShown(saveView(doc)));
+    for (const part of [
+      "data-llm-inline-ask-thread",
+      "data-llm-inline-ask-field",
+      "data-llm-inline-ask-footer",
+    ])
+      assert.isFalse(isFakeShown(q(doc, part)), part);
+    assert.isFalse(isFakeShown(q(doc, "data-llm-inline-ask-quote")));
+    const square = q(doc, "data-llm-inline-ask-color", "toggle");
+    assert.equal(square.style.background, "#ffd400");
+    assert.equal(square.attributes.title, "Color");
+    assert.equal(q(doc, "data-llm-inline-ask-page").textContent, "Page 17");
+    assert.equal(
+      q(doc, "data-llm-inline-ask-save-action", "back").attributes.title,
+      "Back",
+    );
+    const mark = q(doc, "data-llm-inline-ask-mark");
+    assert.equal(mark.textContent, selectedText);
+    assert.equal(mark.style.background, "#ffd40066");
+    const clamp = mark.parentNode;
+    assert.equal(clamp.style.WebkitLineClamp, "3");
+    assert.match(clamp.style.fontFamily, /serif/);
+    const comment = commentOf(doc);
+    assert.equal(comment.attributes.contenteditable, "true");
+    assert.equal(
+      comment.textContent,
+      "Drift is slow.\n\n• first\n• second",
+      "the comment holds the answer as plain text",
+    );
+    assert.isTrue(comment.focused);
+    assert.equal(
+      q(doc, "data-llm-inline-ask-save-action", "cancel").textContent,
+      "Cancel",
+    );
+    assert.equal(
+      q(doc, "data-llm-inline-ask-save-action", "save").textContent,
+      "Save",
+    );
+    assert.isFalse(isFakeShown(q(doc, "data-llm-inline-ask-colors")));
+  });
+
+  it("the color square shows Zotero's eight colors and a pick recolors the card", async function () {
+    const { doc } = await answered();
+    action(doc, "save").click();
+    q(doc, "data-llm-inline-ask-color", "toggle").click();
+    const row = q(doc, "data-llm-inline-ask-colors");
+    assert.isTrue(isFakeShown(row));
+    const dots = doc.body.querySelectorAll("[data-llm-inline-ask-color-dot]");
+    assert.deepEqual(
+      dots.map((dot: any) => dot.attributes.title),
+      colors.map((color) => color.label),
+    );
+    q(doc, "data-llm-inline-ask-color-dot", "#ff6666").click();
+    assert.equal(
+      q(doc, "data-llm-inline-ask-color", "toggle").style.background,
+      "#ff6666",
+    );
+    assert.equal(
+      q(doc, "data-llm-inline-ask-mark").style.background,
+      "#ff666666",
+    );
+    assert.equal(
+      q(doc, "data-llm-inline-ask-color-dot", "#ff6666").attributes[
+        "aria-pressed"
+      ],
+      "true",
+    );
+    assert.equal(
+      q(doc, "data-llm-inline-ask-color-dot", "#ffd400").attributes[
+        "aria-pressed"
+      ],
+      "false",
+    );
+    q(doc, "data-llm-inline-ask-color", "toggle").click();
+    assert.isFalse(isFakeShown(row));
+  });
+
+  it("Escape, Back and Cancel go back to the answer and keep the card", async function () {
+    for (const how of ["escape", "back", "cancel"]) {
+      const { doc, handle, closedCount } = await answered();
+      action(doc, "save").click();
+      if (how === "escape") {
+        const ev = commentOf(doc).dispatch("keydown", key("Escape"));
+        assert.isTrue(ev.defaultPrevented, how);
+      } else {
+        q(doc, "data-llm-inline-ask-save-action", how).click();
+      }
+      assert.equal((handle.root as any).attributes["data-view"], "thread", how);
+      assert.isTrue((handle.root as any).isConnected, how);
+      assert.equal(closedCount(), 0, how);
+      assert.isTrue(isFakeShown(q(doc, "data-llm-inline-ask-footer")), how);
+      assert.isFalse(isFakeShown(saveView(doc)), how);
+      closeAllReaderOverlays();
+    }
+  });
+
+  it("Enter in the comment is a new line; Mod+Enter saves the shown payload and closes on success", async function () {
+    const { doc, handle, saves, closedCount } = await answered();
+    action(doc, "save").click();
+    q(doc, "data-llm-inline-ask-color", "toggle").click();
+    q(doc, "data-llm-inline-ask-color-dot", "#5fb236").click();
+    const comment = commentOf(doc);
+    comment.textContent = "My own note";
+    comment.dispatch("input");
+    const enter = comment.dispatch("keydown", key("Enter"));
+    assert.isFalse(enter.defaultPrevented, "plain Enter edits the comment");
+    assert.lengthOf(saves, 0);
+    const ev = comment.dispatch("keydown", key("Enter", mod));
+    assert.isTrue(ev.defaultPrevented);
+    assert.lengthOf(saves, 1);
+    assert.deepEqual(saves[0].payload, {
+      color: "#5fb236",
+      comment: "My own note",
+    });
+    assert.isTrue(
+      q(doc, "data-llm-inline-ask-save-action", "save").disabled,
+      "Save waits for the running save",
+    );
+    comment.dispatch("keydown", key("Escape"));
+    assert.equal(
+      (handle.root as any).attributes["data-view"],
+      "save",
+      "Escape does not leave a running save",
+    );
+    saves[0].resolve({ ok: true });
+    await flush();
+    assert.isFalse((handle.root as any).isConnected);
+    assert.equal(closedCount(), 1);
+  });
+
+  it("a failed save keeps the payload, shows the error, and Save retries the same payload", async function () {
+    const { doc, handle, saves } = await answered();
+    action(doc, "save").click();
+    q(doc, "data-llm-inline-ask-color", "toggle").click();
+    q(doc, "data-llm-inline-ask-color-dot", "#2ea8e5").click();
+    commentOf(doc).textContent = "Keep me";
+    commentOf(doc).dispatch("input");
+    q(doc, "data-llm-inline-ask-save-action", "save").click();
+    saves[0].resolve({ ok: false, error: "Zotero refused the write." });
+    await flush();
+    const root = handle.root as any;
+    assert.isTrue(root.isConnected);
+    assert.equal(root.attributes["data-view"], "save");
+    const error = q(doc, "data-llm-inline-ask-save-error");
+    assert.isTrue(isFakeShown(error));
+    assert.equal(error.textContent, "Zotero refused the write.");
+    assert.equal(commentOf(doc).textContent, "Keep me");
+    assert.equal(
+      q(doc, "data-llm-inline-ask-color", "toggle").style.background,
+      "#2ea8e5",
+    );
+    assert.isFalse(q(doc, "data-llm-inline-ask-save-action", "save").disabled);
+    q(doc, "data-llm-inline-ask-save-action", "save").click();
+    assert.lengthOf(saves, 2);
+    assert.deepEqual(saves[1].payload, saves[0].payload);
+    assert.isFalse(
+      isFakeShown(q(doc, "data-llm-inline-ask-save-error")),
+      "the old error clears while the retry runs",
+    );
+    // Back and in again restores the frozen payload, not a fresh draft.
+    saves[1].resolve({ ok: false, error: "Still refused." });
+    await flush();
+    q(doc, "data-llm-inline-ask-save-action", "back").click();
+    action(doc, "save").click();
+    assert.equal(commentOf(doc).textContent, "Keep me");
+    assert.equal(
+      q(doc, "data-llm-inline-ask-color", "toggle").style.background,
+      "#2ea8e5",
+    );
+  });
+
+  it("a save that throws shows its message", async function () {
+    const opened = open({
+      save: {
+        colors,
+        pageText: "",
+        labels: saveLabels,
+        blockedReason: () => null,
+        save: async () => {
+          throw new Error("Agent subsystem is not initialized");
+        },
+      },
+    });
+    type(opened.doc, "Q1");
+    editorOf(opened.doc).dispatch("keydown", key("Enter"));
+    opened.calls[0].resolve({ text: "Answer" });
+    await flush();
+    action(opened.doc, "save").click();
+    assert.isFalse(isFakeShown(q(opened.doc, "data-llm-inline-ask-page")));
+    q(opened.doc, "data-llm-inline-ask-save-action", "save").click();
+    await flush();
+    assert.equal(
+      q(opened.doc, "data-llm-inline-ask-save-error").textContent,
+      "Agent subsystem is not initialized",
+    );
+  });
+
+  it("Mod+Enter on the answer opens the save view, unless Save is unavailable", async function () {
+    const ready = await answered();
+    const ev = editorOf(ready.doc).dispatch("keydown", key("Enter", mod));
+    assert.isTrue(ev.defaultPrevented);
+    assert.lengthOf(ready.calls, 1, "Mod+Enter does not send a follow-up");
+    assert.equal(view(ready.doc), "save");
+    closeAllReaderOverlays();
+
+    const blocked = await answered({ blocked: () => "No conversation." });
+    editorOf(blocked.doc).dispatch("keydown", key("Enter", { ctrlKey: true }));
+    assert.equal(view(blocked.doc), "thread");
+    assert.lengthOf(blocked.calls, 1);
+  });
+
+  it("close removes the save view's listeners too", async function () {
+    const { doc, handle } = await answered();
+    action(doc, "save").click();
+    const comment = commentOf(doc);
+    const confirm = q(doc, "data-llm-inline-ask-save-action", "save");
+    const dot = q(doc, "data-llm-inline-ask-color-dot", "#ff6666");
+    handle.close();
+    assert.equal(comment.listenerCount("input"), 0);
+    assert.equal(comment.listenerCount("paste"), 0);
+    assert.equal(confirm.listenerCount("click"), 0);
+    assert.equal(dot.listenerCount("click"), 0);
+    assert.equal(
+      action({ body: handle.root }, "save").listenerCount("click"),
+      0,
+    );
+  });
+
+  it("a blocked reason that appears before the click stops the save", async function () {
+    let reason: string | null = null;
+    const { doc, saves } = await answered({ blocked: () => reason });
+    action(doc, "save").click();
+    reason = "The PDF is in the trash.";
+    q(doc, "data-llm-inline-ask-save-action", "save").click();
+    assert.lengthOf(saves, 0);
+    assert.equal(
+      q(doc, "data-llm-inline-ask-save-error").textContent,
+      "The PDF is in the trash.",
+    );
+  });
+});

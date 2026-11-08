@@ -139,6 +139,8 @@ import type {
   WorkflowTestConversationStoreRowTotals,
   WorkflowTestReaderInlineAskCard,
   WorkflowTestReaderInlineAskOpen,
+  WorkflowTestReaderInlineAskSave,
+  WorkflowTestReaderSelectionDraft,
   WorkflowTestReaderPopupActionRow,
   WorkflowTestSidePanel,
   WorkflowTestStandaloneSidePanelControl,
@@ -7164,17 +7166,157 @@ async function exerciseReaderPopupPromptDismissal(
  * Runs the plugin's selection popup handler for `selectedText`, as Zotero
  * does: in the reader UI document, with a host that records each append.
  */
+/**
+ * The annotation draft Zotero's PDF view built for the current selection:
+ * the one its selection popup carries (`_primaryView._selectionPopup`), or,
+ * when the popup state is not set, the same builder applied to the view's
+ * selection ranges. A JSON copy, as the popup handler takes it.
+ */
+async function readWorkflowNativeSelectionDraft(
+  reader: _ZoteroTypes.ReaderInstance,
+  selectedText: string,
+): Promise<WorkflowTestReaderSelectionDraft> {
+  const unwrap = (value: any): any => value?.wrappedJSObject || value;
+  const view = unwrap(
+    unwrap((reader as unknown as { _internalReader?: unknown })._internalReader)
+      ?._primaryView,
+  );
+  const usable = (annotation: any) =>
+    Boolean(
+      annotation?.position?.rects?.length &&
+      String(annotation.text || "").includes(selectedText),
+    );
+  const copy = (annotation: any) =>
+    JSON.parse(JSON.stringify(annotation)) as Record<string, unknown>;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 5000) {
+    const annotation = unwrap(unwrap(view?._selectionPopup)?.annotation);
+    if (usable(annotation))
+      return {
+        source: "_primaryView._selectionPopup.annotation",
+        annotation: copy(annotation),
+      };
+    await Zotero.Promise.delay(50);
+  }
+  const ranges = view?._selectionRanges;
+  if (
+    ranges?.length &&
+    typeof view?._getAnnotationFromSelectionRanges === "function"
+  ) {
+    const annotation = unwrap(
+      view._getAnnotationFromSelectionRanges(ranges, "highlight"),
+    );
+    if (usable(annotation))
+      return {
+        source: "_primaryView._getAnnotationFromSelectionRanges",
+        annotation: copy(annotation),
+      };
+  }
+  return { source: "none", annotation: null };
+}
+
+/**
+ * Selects `range` (text-layer nodes in the PDF view) the way a user does:
+ * a mouse press on its first character, a move to its last, a release.
+ * Zotero's desktop PDF view ignores DOM selections and builds its own
+ * selection, popup and annotation draft from these events.
+ */
+async function dragWorkflowPdfSelection(selected: {
+  doc: Document;
+  range: Range;
+}): Promise<void> {
+  const viewWindow = selected.doc.defaultView;
+  const rects = Array.from(selected.range.getClientRects() || []).filter(
+    (rect) => rect.width > 0 && rect.height > 0,
+  );
+  if (!viewWindow?.MouseEvent || !rects.length)
+    throw new Error("The PDF view window or the selection rects are missing");
+  const first = rects[0];
+  const last = rects[rects.length - 1];
+  const start = { x: first.left + 1, y: first.top + first.height / 2 };
+  const end = { x: last.right - 1, y: last.top + last.height / 2 };
+  selected.doc.defaultView?.getSelection?.()?.removeAllRanges();
+  const fire = (
+    type: string,
+    point: { x: number; y: number },
+    extra: Record<string, unknown>,
+  ) => {
+    const target =
+      selected.doc.elementFromPoint(point.x, point.y) ||
+      selected.doc.body ||
+      selected.doc.documentElement;
+    const init = cloneEventInitIntoWindow(
+      {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        clientX: point.x,
+        clientY: point.y,
+        screenX: point.x,
+        screenY: point.y,
+        button: 0,
+        ...extra,
+      },
+      viewWindow,
+    );
+    const PointerCtor = (viewWindow as unknown as { PointerEvent?: any })
+      .PointerEvent;
+    const event =
+      type.startsWith("pointer") && PointerCtor
+        ? new PointerCtor(type, init)
+        : new viewWindow.MouseEvent(type, init);
+    target.dispatchEvent(event);
+  };
+  fire("mousedown", start, { buttons: 1, detail: 1 });
+  await Zotero.Promise.delay(30);
+  fire("pointermove", end, { buttons: 1, pointerType: "mouse" });
+  await Zotero.Promise.delay(60);
+  fire("pointermove", end, { buttons: 1, pointerType: "mouse" });
+  await Zotero.Promise.delay(30);
+  fire("pointerup", end, { buttons: 0, pointerType: "mouse" });
+  fire("mouseup", end, { buttons: 0, detail: 1 });
+}
+
 async function dispatchWorkflowReaderSelectionPopup(input: {
   reader: _ZoteroTypes.ReaderInstance;
   pageIndex: number;
   selectedText: string;
+  /**
+   * "synthetic" (default) passes only text and page; "native" passes the
+   * draft Zotero built for the real selection; "native_cross_page" adds
+   * a next-page part to that draft.
+   */
+  draft?: "synthetic" | "native" | "native_cross_page";
 }): Promise<{
   popupHost: HTMLElement;
   popupDoc: Document;
   selectionDoc: Document;
   appendCalls: number;
+  draft: WorkflowTestReaderSelectionDraft | null;
 }> {
   const selected = await selectWorkflowPdfText(input);
+  let draft: WorkflowTestReaderSelectionDraft | null = null;
+  if (input.draft === "native" || input.draft === "native_cross_page") {
+    await dragWorkflowPdfSelection(selected);
+    draft = await readWorkflowNativeSelectionDraft(
+      input.reader,
+      input.selectedText,
+    );
+    if (!draft.annotation)
+      throw new Error("Zotero built no annotation draft for the selection");
+    if (input.draft === "native_cross_page") {
+      const position = draft.annotation.position as {
+        rects: number[][];
+      };
+      draft = {
+        ...draft,
+        annotation: {
+          ...draft.annotation,
+          position: { ...position, nextPageRects: [position.rects[0]] },
+        },
+      };
+    }
+  }
   const popupDoc = getWorkflowReaderUiDocument(input.reader);
   const popupHost = popupDoc.createElement("div");
   popupHost.dataset.workflowSelectionPopup = "true";
@@ -7192,10 +7334,10 @@ async function dispatchWorkflowReaderSelectionPopup(input: {
     reader: input.reader,
     doc: popupDoc,
     params: {
-      annotation: {
+      annotation: (draft?.annotation || {
         text: input.selectedText,
         position: { pageIndex: input.pageIndex },
-      } as any,
+      }) as any,
     },
     append: (node: Node | string) => {
       appendCalls += 1;
@@ -7203,7 +7345,13 @@ async function dispatchWorkflowReaderSelectionPopup(input: {
     },
     type: READER_TEXT_SELECTION_POPUP_EVENT,
   });
-  return { popupHost, popupDoc, selectionDoc: selected.doc, appendCalls };
+  return {
+    popupHost,
+    popupDoc,
+    selectionDoc: selected.doc,
+    appendCalls,
+    draft,
+  };
 }
 
 function readWorkflowPopupButtons(popupHost: HTMLElement): HTMLButtonElement[] {
@@ -7329,21 +7477,31 @@ async function cleanupWorkflowInlineAsk(): Promise<void> {
   await closeWorkflowReader(state.reader);
 }
 
-async function openReaderInlineAsk(input: {
-  attachmentItemId: number;
-  pageIndex: number;
-  selectedText: string;
-}): Promise<WorkflowTestReaderInlineAskOpen> {
+async function openReaderInlineAsk(
+  input: Parameters<WorkflowTestApi["openReaderInlineAsk"]>[0],
+): Promise<WorkflowTestReaderInlineAskOpen> {
   assertWorkflowTestEnabled();
   await cleanupWorkflowInlineAsk();
   const reader = await openWorkflowPdfReader(
     input.attachmentItemId,
     input.pageIndex,
   );
+  let panelConversationKey = 0;
+  if (input.panelId) {
+    mountWorkflowPanelInReaderPane(getPanel(input.panelId), reader);
+    const mainDocument = Zotero.getMainWindow?.()?.document || null;
+    const root = (
+      mainDocument
+        ? getReaderContextPanelForTab(mainDocument, reader.tabID)
+        : null
+    )?.querySelector("#llm-main") as HTMLElement | null;
+    panelConversationKey = Number(root?.dataset.itemId || 0);
+  }
   const popup = await dispatchWorkflowReaderSelectionPopup({
     reader,
     pageIndex: input.pageIndex,
     selectedText: input.selectedText,
+    draft: input.draft,
   });
   workflowInlineAsk = {
     reader,
@@ -7380,6 +7538,8 @@ async function openReaderInlineAsk(input: {
   );
   if (!editor || !card) {
     return {
+      draft: popup.draft,
+      panelConversationKey,
       popupButtonLabels,
       mounted: false,
       overlayDocumentUrl: "",
@@ -7419,6 +7579,8 @@ async function openReaderInlineAsk(input: {
   editor.textContent = "";
   editor.dispatchEvent(new (popupWindow.Event as typeof Event)("input"));
   return {
+    draft: popup.draft,
+    panelConversationKey,
     popupButtonLabels,
     mounted: true,
     overlayDocumentUrl: popupDoc.URL,
@@ -7470,6 +7632,155 @@ async function sendReaderInlineAsk(
 function readReaderInlineAsk(): WorkflowTestReaderInlineAskCard {
   assertWorkflowTestEnabled();
   return readWorkflowInlineAskCard(requireWorkflowInlineAsk().popupDoc);
+}
+
+function readWorkflowInlineAskSave(
+  popupDoc: Document,
+): WorkflowTestReaderInlineAskSave {
+  const card = popupDoc.querySelector(
+    INLINE_ASK_CARD_SELECTOR,
+  ) as HTMLElement | null;
+  const win = popupDoc.defaultView;
+  const find = (selector: string) =>
+    card?.querySelector(selector) as HTMLElement | null;
+  const shown = (node: HTMLElement | null) =>
+    Boolean(node) && win?.getComputedStyle(node!)?.display !== "none";
+  const footerSave = find('[data-llm-inline-ask-action="save"]');
+  const square = find('[data-llm-inline-ask-color="toggle"]');
+  const mark = find('[data-llm-inline-ask-mark="true"]');
+  const comment = find('[data-llm-inline-ask-comment="true"]');
+  const error = find('[data-llm-inline-ask-save-error="true"]');
+  const confirm = find('[data-llm-inline-ask-save-action="save"]');
+  return {
+    mounted: Boolean(card),
+    view: card?.getAttribute("data-view") || "",
+    footerSaveDisabled: Boolean(
+      (footerSave as HTMLButtonElement | null)?.disabled,
+    ),
+    footerSaveTitle: footerSave?.getAttribute("title") || "",
+    saveViewShown: shown(find('[data-llm-inline-ask-save-view="true"]')),
+    color: square?.style.background || "",
+    colorsShown: shown(find('[data-llm-inline-ask-colors="true"]')),
+    colorLabels: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-color-dot]") || [],
+    ).map((node) => (node as Element).getAttribute("title") || ""),
+    pageText: shown(find('[data-llm-inline-ask-page="true"]'))
+      ? find('[data-llm-inline-ask-page="true"]')?.textContent || ""
+      : "",
+    markText: mark?.textContent || "",
+    markBackground: mark?.style.background || "",
+    comment: comment?.innerText ?? "",
+    commentContentEditable: comment?.getAttribute("contenteditable") || "",
+    error: shown(error) ? error?.textContent || "" : "",
+    confirmDisabled: Boolean((confirm as HTMLButtonElement | null)?.disabled),
+  };
+}
+
+function readReaderInlineAskSave(): WorkflowTestReaderInlineAskSave {
+  assertWorkflowTestEnabled();
+  return readWorkflowInlineAskSave(requireWorkflowInlineAsk().popupDoc);
+}
+
+function requireWorkflowInlineAskCard(): {
+  popupDoc: Document;
+  card: HTMLElement;
+} {
+  const { popupDoc } = requireWorkflowInlineAsk();
+  const card = popupDoc.querySelector(
+    INLINE_ASK_CARD_SELECTOR,
+  ) as HTMLElement | null;
+  if (!card) throw new Error("The Inline Ask card is not open");
+  return { popupDoc, card };
+}
+
+/** Opens the annotation card by a click on Save or Mod+Enter. */
+async function openReaderInlineAskSave(input: {
+  via: "click" | "keyboard";
+}): Promise<WorkflowTestReaderInlineAskSave> {
+  assertWorkflowTestEnabled();
+  const { popupDoc, card } = requireWorkflowInlineAskCard();
+  if (input.via === "click") {
+    (
+      card.querySelector(
+        '[data-llm-inline-ask-action="save"]',
+      ) as HTMLButtonElement | null
+    )?.click();
+  } else {
+    const editor = card.querySelector(
+      '[data-llm-inline-ask-editor="true"]',
+    ) as HTMLElement | null;
+    (editor || card).dispatchEvent(
+      makeReaderPromptKey(popupDoc, {
+        key: "Enter",
+        code: "Enter",
+        ...(Zotero.isMac ? { metaKey: true } : { ctrlKey: true }),
+      }),
+    );
+  }
+  await Zotero.Promise.delay(50);
+  return readWorkflowInlineAskSave(popupDoc);
+}
+
+/** Edits the annotation card: the comment text and the color. */
+async function editReaderInlineAskSave(input: {
+  comment?: string;
+  color?: string;
+}): Promise<WorkflowTestReaderInlineAskSave> {
+  assertWorkflowTestEnabled();
+  const { popupDoc, card } = requireWorkflowInlineAskCard();
+  if (input.comment !== undefined) {
+    const comment = card.querySelector(
+      '[data-llm-inline-ask-comment="true"]',
+    ) as HTMLElement | null;
+    if (!comment) throw new Error("The comment field is not rendered");
+    comment.focus();
+    comment.textContent = input.comment;
+    comment.dispatchEvent(
+      new (popupDoc.defaultView!.Event as typeof Event)("input", {
+        bubbles: true,
+      }),
+    );
+  }
+  if (input.color) {
+    const square = card.querySelector(
+      '[data-llm-inline-ask-color="toggle"]',
+    ) as HTMLButtonElement | null;
+    square?.click();
+    const dot = card.querySelector(
+      `[data-llm-inline-ask-color-dot="${input.color}"]`,
+    ) as HTMLButtonElement | null;
+    if (!dot) throw new Error(`No color dot ${input.color}`);
+    dot.click();
+  }
+  await Zotero.Promise.delay(25);
+  return readWorkflowInlineAskSave(popupDoc);
+}
+
+/** Presses Save on the annotation card (click or Mod+Enter in the comment). */
+async function confirmReaderInlineAskSave(input: {
+  via: "click" | "keyboard";
+}): Promise<void> {
+  assertWorkflowTestEnabled();
+  const { popupDoc, card } = requireWorkflowInlineAskCard();
+  if (input.via === "click") {
+    const confirm = card.querySelector(
+      '[data-llm-inline-ask-save-action="save"]',
+    ) as HTMLButtonElement | null;
+    if (!confirm) throw new Error("The annotation card's Save is missing");
+    confirm.click();
+    return;
+  }
+  const comment = card.querySelector(
+    '[data-llm-inline-ask-comment="true"]',
+  ) as HTMLElement | null;
+  if (!comment) throw new Error("The comment field is not rendered");
+  comment.dispatchEvent(
+    makeReaderPromptKey(popupDoc, {
+      key: "Enter",
+      code: "Enter",
+      ...(Zotero.isMac ? { metaKey: true } : { ctrlKey: true }),
+    }),
+  );
 }
 
 async function pointerDownOutsideReaderInlineAsk(): Promise<{
@@ -10562,6 +10873,10 @@ export function installWorkflowTestHarness(targetAddon: {
     openReaderInlineAsk,
     sendReaderInlineAsk,
     readReaderInlineAsk,
+    readReaderInlineAskSave,
+    openReaderInlineAskSave,
+    editReaderInlineAskSave,
+    confirmReaderInlineAskSave,
     pointerDownOutsideReaderInlineAsk,
     showNewReaderSelectionPopup,
     endReaderInlineAsk,

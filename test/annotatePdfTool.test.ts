@@ -407,6 +407,164 @@ describe("annotate_pdf", function () {
     );
   });
 
+  describe("a host-supplied reader selection (Inline Ask)", function () {
+    // Zotero's own selection draft: rects with the reader's full precision.
+    const selection = {
+      pageIndex: 2,
+      rects: [
+        [100.123456, 730.5, 300.987654, 742.25],
+        [100.123456, 716.5, 250.5, 728.25],
+      ],
+      sortIndex: "00002|000123|00049",
+      pageLabel: "iii",
+      text: "A Title spans two lines",
+    };
+    const hostArgs = {
+      attachmentId: 55,
+      text: selection.text,
+      color: "#5fb236",
+      comment: "Edited comment",
+      selection,
+    };
+    const hostContext: AgentToolContext = { ...context, hostAction: true };
+
+    function validated(args: Record<string, unknown>) {
+      const tool = createAnnotatePdfTool(gateway, resolve, () => "fp-1");
+      const result = tool.validate(args);
+      if (!result.ok) assert.fail(result.error);
+      return { tool, input: result.value };
+    }
+
+    it("is admitted by validate and pins the page, but stays out of the model's schema", function () {
+      const { tool, input } = validated(hostArgs);
+      assert.equal(input.pageIndex, 2);
+      assert.deepEqual(input.selection, selection);
+      assert.notProperty(
+        tool.spec.inputSchema.properties as Record<string, unknown>,
+        "selection",
+      );
+    });
+
+    it("rejects a malformed selection", function () {
+      const tool = createAnnotatePdfTool(gateway, resolve);
+      const bad: Array<[string, unknown]> = [
+        ["fractional page", { ...selection, pageIndex: 1.5 }],
+        ["negative page", { ...selection, pageIndex: -1 }],
+        ["no rects", { ...selection, rects: [] }],
+        ["short rect", { ...selection, rects: [[1, 2, 3]] }],
+        ["non-finite rect", { ...selection, rects: [[1, 2, 3, Infinity]] }],
+        ["string rect", { ...selection, rects: [["1", 2, 3, 4]] }],
+        ["numeric sortIndex", { ...selection, sortIndex: 12 }],
+        ["other text", { ...selection, text: "Something else" }],
+        ["cross-page", { ...selection, nextPageRects: [[1, 2, 3, 4]] }],
+        ["not an object", "page 2"],
+      ];
+      for (const [label, value] of bad)
+        assert.isFalse(
+          tool.validate({ ...hostArgs, selection: value }).ok,
+          label,
+        );
+      assert.isFalse(
+        tool.validate({ ...hostArgs, pageIndex: 1 }).ok,
+        "a pageIndex that disagrees with the selection",
+      );
+      assert.isFalse(
+        tool.validate({ ...hostArgs, pageIndex: 2, occurrence: 1 }).ok,
+        "occurrence means nothing for a selection",
+      );
+      assert.isFalse(
+        tool.validate({ ...hostArgs, annotationType: "note" }).ok,
+        "a sticky note does not cover the selection's rects",
+      );
+    });
+
+    it("is refused in planInvocation unless the host built the call", async function () {
+      const { tool, input } = validated(hostArgs);
+      let message = "";
+      try {
+        await tool.planInvocation!(input, context);
+      } catch (error) {
+        message = String(error);
+      }
+      assert.include(message, "selection");
+      const plan = await tool.planInvocation!(input, hostContext);
+      assert.equal(plan.impact, "state_change");
+      // A model call without a selection plans as before.
+      const plain = tool.validate(validArgs);
+      if (!plain.ok) assert.fail(plain.error);
+      assert.equal(
+        (await tool.planInvocation!(plain.value, context)).impact,
+        "state_change",
+      );
+    });
+
+    it("is refused again in execute unless the host built the call", async function () {
+      const saved = install();
+      const { tool, input } = validated(hostArgs);
+      let message = "";
+      try {
+        await tool.execute(input, context);
+      } catch (error) {
+        message = String(error);
+      }
+      assert.include(message, "selection");
+      assert.isEmpty(saved);
+    });
+
+    it("writes the selection's rects, sort index and page label verbatim", async function () {
+      const saved = install();
+      let resolverCalls = 0;
+      const tool = createAnnotatePdfTool(
+        gateway,
+        async () => {
+          resolverCalls += 1;
+          return resolved;
+        },
+        (attachmentId) => (attachmentId === 55 ? "fp-1" : ""),
+      );
+      const input = tool.validate(hostArgs);
+      if (!input.ok) assert.fail(input.error);
+      const result = (await tool.execute(input.value, hostContext)) as any;
+      assert.equal(resolverCalls, 0, "the selection is not re-resolved");
+      assert.lengthOf(saved, 1);
+      assert.deepEqual(saved[0].position, {
+        pageIndex: 2,
+        rects: selection.rects,
+      });
+      assert.equal(saved[0].sortIndex, selection.sortIndex);
+      assert.equal(saved[0].pageLabel, "iii");
+      assert.equal(saved[0].text, selection.text);
+      assert.equal(saved[0].color, "#5fb236");
+      assert.equal(saved[0].comment, "Edited comment");
+      const expected = result.content.expectedAnnotation;
+      assert.equal(expected.source.documentFingerprint, "fp-1");
+      assert.deepEqual(expected.position.rects, selection.rects);
+    });
+
+    it("leaves the fingerprint empty when no open reader has the PDF", async function () {
+      install();
+      const tool = createAnnotatePdfTool(gateway, resolve, () => "");
+      const input = tool.validate(hostArgs);
+      if (!input.ok) assert.fail(input.error);
+      const result = (await tool.execute(input.value, hostContext)) as any;
+      assert.equal(
+        result.content.expectedAnnotation.source.documentFingerprint,
+        "",
+      );
+    });
+
+    it("describes the frozen rects for the receipt", async function () {
+      const { tool, input } = validated(hostArgs);
+      const [descriptor] = await tool.describeAction!(input, hostContext);
+      assert.equal(descriptor.parameters?.pageIndex, 2);
+      assert.deepEqual(descriptor.parameters?.expectedRects, selection.rects);
+      const plain = tool.validate(validArgs);
+      if (!plain.ok) assert.fail(plain.error);
+      const [modelDescriptor] = await tool.describeAction!(plain.value);
+      assert.notProperty(modelDescriptor.parameters || {}, "expectedRects");
+    });
+  });
+
   describe("annotation payloads by type", function () {
     const passage = {
       text: "A passage",

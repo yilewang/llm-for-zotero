@@ -15,8 +15,9 @@ export type ResolvedPdfHighlight = {
   position: PdfHighlightPosition;
   source: {
     documentFingerprint: string;
-    startChar: number;
-    endChar: number;
+    /** Absent for a host selection: Zotero's draft carries no offsets. */
+    startChar?: number;
+    endChar?: number;
   };
 };
 export type PdfHighlightRequest = {
@@ -112,6 +113,32 @@ function selectionRange(
   };
 }
 
+/** The pdf.js document fingerprint of a reader's open PDF, or "". */
+function readerDocumentFingerprint(reader: any): string {
+  const internal = unwrap(reader?._internalReader);
+  const view = unwrap(internal?._primaryView);
+  const app = unwrap(unwrap(view?._iframeWindow)?.PDFViewerApplication);
+  const document = unwrap(app?.pdfDocument);
+  return String(document?.fingerprints?.[0] || document?.fingerprint || "");
+}
+
+/**
+ * The fingerprint of the PDF open in a reader for `attachmentId`, or "" when
+ * no open reader holds it (or the reader is not ready).
+ */
+export function readOpenReaderDocumentFingerprint(
+  attachmentId: number,
+): string {
+  try {
+    const reader = getAllOpenReaders().find(
+      (r) => Number(r.itemID || r._item?.id) === attachmentId,
+    );
+    return reader ? readerDocumentFingerprint(reader) : "";
+  } catch {
+    return "";
+  }
+}
+
 /** Resolve a complete quotation against native character data, without selecting UI text. */
 export async function resolveHighlightInReader(
   reader: any,
@@ -128,9 +155,7 @@ export async function resolveHighlightInReader(
     unwrap(reader?._iframeWindow)?.JSON || unwrap(view?._iframeWindow)?.JSON;
   const nativeValue = (value: unknown) =>
     readerJSON ? readerJSON.parse(JSON.stringify(value)) : value;
-  const fingerprint = String(
-    document?.fingerprints?.[0] || document?.fingerprint || "",
-  );
+  const fingerprint = readerDocumentFingerprint(reader);
   if (
     !document ||
     !fingerprint ||

@@ -922,6 +922,51 @@ function attachReaderSelectionQuestion(input: {
 }
 
 /**
+ * The reader tab's own context panel, as Add Text routes to it: also while
+ * the standalone window is open. Null when the tab has no mounted panel.
+ */
+function resolveReaderPopupPanel(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): ReturnType<typeof resolveReaderPopupPanelTarget> {
+  const docs = new Set<Document>();
+  const pushDoc = (doc?: Document | null) => {
+    if (doc) docs.add(doc);
+  };
+  pushDoc(event.doc);
+  pushDoc(event.doc.defaultView?.top?.document || null);
+  try {
+    pushDoc(Zotero.getMainWindow()?.document || null);
+  } catch (_err) {
+    void _err;
+  }
+  try {
+    const wins = Zotero.getMainWindows?.() || [];
+    for (const win of wins) {
+      pushDoc(win?.document || null);
+    }
+  } catch (_err) {
+    void _err;
+  }
+  const readerWithTab = event.reader as unknown as {
+    tabID?: string | number | null;
+    _tabID?: string | number | null;
+  };
+  return resolveReaderPopupPanelTarget({
+    preferredDocument: event.doc.defaultView?.top?.document || null,
+    documents: docs,
+    tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
+  });
+}
+
+/** The conversation key of a reader panel, or null (never 0). */
+function readPanelConversationKey(
+  target: ReturnType<typeof resolveReaderPopupPanelTarget>,
+): number | null {
+  const key = Math.floor(Number(target?.root.dataset.itemId || 0));
+  return Number.isFinite(key) && key > 0 ? key : null;
+}
+
+/**
  * The reader popup's Inline Ask button. Like Add Text, it acts on the first
  * pointerdown (Zotero may remove the popup before "click") and measures its
  * anchor then. It opens the Inline Ask card with the snapshot taken when the
@@ -935,6 +980,8 @@ function createInlineAskPopupButton(input: {
   /** Reads the selection again when the popup had none. */
   resolveSelectedText: () => string;
   reasoningItemId: number;
+  /** The reader panel's conversation, read when Save checks or runs. */
+  resolveConversationKey: () => number | null;
 }): HTMLButtonElement {
   const { event } = input;
   const button = event.doc.createElementNS(
@@ -995,6 +1042,7 @@ function createInlineAskPopupButton(input: {
         },
         snapshot: { ...input.snapshot, selectedText },
         reasoningItemId: input.reasoningItemId,
+        resolveConversationKey: input.resolveConversationKey,
       });
     } catch (err) {
       appLogger.warn("LLM: Inline Ask card failed", err);
@@ -1099,37 +1147,9 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
             return EMPTY_READER_POPUP_ADD_TEXT_RESULT;
           }
           try {
-            const docs = new Set<Document>();
-            const pushDoc = (doc?: Document | null) => {
-              if (doc) docs.add(doc);
-            };
-            pushDoc(event.doc);
-            pushDoc(event.doc.defaultView?.top?.document || null);
-            try {
-              pushDoc(Zotero.getMainWindow()?.document || null);
-            } catch (_err) {
-              void _err;
-            }
-            try {
-              const wins = Zotero.getMainWindows?.() || [];
-              for (const win of wins) {
-                pushDoc(win?.document || null);
-              }
-            } catch (_err) {
-              void _err;
-            }
-            const readerWithTab = event.reader as unknown as {
-              tabID?: string | number | null;
-              _tabID?: string | number | null;
-            };
-            const popupTopDoc = event.doc.defaultView?.top?.document || null;
             // Always the reader tab's own panel, also while the standalone
             // window is open; without one the text is not added anywhere.
-            const target = resolveReaderPopupPanelTarget({
-              preferredDocument: popupTopDoc,
-              documents: docs,
-              tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
-            });
+            const target = resolveReaderPopupPanel(event);
             if (!target) {
               appLogger.warn(
                 "LLM: Add Text popup action skipped (reader panel unavailable)",
@@ -1142,10 +1162,8 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
               getActiveContextAttachmentFromTabs(),
             );
             const panelBody = target.body;
-            const conversationKey = Math.floor(
-              Number(target.root.dataset.itemId || 0),
-            );
-            if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+            const conversationKey = readPanelConversationKey(target);
+            if (conversationKey === null) {
               appLogger.debug(
                 "LLM: Add Text popup action skipped (invalid conversation target)",
               );
@@ -1364,6 +1382,8 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                 Number(
                   (item as { parentItemID?: unknown } | null)?.parentItemID,
                 ) || itemId,
+              resolveConversationKey: () =>
+                readPanelConversationKey(resolveReaderPopupPanel(event)),
             }),
           );
         } catch (err) {

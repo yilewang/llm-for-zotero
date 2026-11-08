@@ -8,6 +8,13 @@
  * answers), a follow-up field once the answer is in, and the footer
  * (Discard, Continue in sidebar, Save as annotation).
  *
+ * Save as annotation switches the card to an annotation card: the color
+ * square (a click shows Zotero's eight colors), the page, the selected text
+ * highlighted in that color, and the last answer as an editable plain-text
+ * comment, with Cancel and Save. Escape, Back or Cancel return to the
+ * answer; Mod+Enter saves. A failed save keeps the card and its payload, so
+ * Save retries the same payload.
+ *
  * Close policy: before the first question an outside pointerdown closes the
  * card, as the Add Text prompt does. Once a question exists, only Escape,
  * Discard, or another overlay on the same document closes it; a new text
@@ -15,7 +22,10 @@
  *
  * Inline styles only: plugin CSS does not reach reader documents.
  */
-import { renderInlineAskAnswer } from "./inlineAskAnswerRender";
+import {
+  inlineAskAnswerToPlainText,
+  renderInlineAskAnswer,
+} from "./inlineAskAnswerRender";
 import type { InlineAskQuickPrompt } from "./inlineAskPrompts";
 import {
   createInlineAskSession,
@@ -67,6 +77,29 @@ export type InlineAskModelLine = {
   title?: string;
 };
 
+export type InlineAskSavePayload = { color: string; comment: string };
+
+export type InlineAskSaveResult = { ok: true } | { ok: false; error: string };
+
+/** What the card needs for Save as annotation. */
+export type InlineAskSaveSetup = {
+  /** Zotero's highlight colors; the first is the default. */
+  colors: Array<{ hex: string; label: string }>;
+  /** "Page 17"; empty hides it. */
+  pageText: string;
+  labels: {
+    color: string;
+    back: string;
+    cancel: string;
+    save: string;
+    addComment: string;
+  };
+  /** Why Save cannot run now (its tooltip), or null. Read on each check. */
+  blockedReason: () => string | null;
+  /** Writes the annotation; resolves ok only for a verified save. */
+  save: (payload: InlineAskSavePayload) => Promise<InlineAskSaveResult>;
+};
+
 export type InlineAskOverlayInput = {
   /** Reader popup document (the renderTextSelectionPopup event's doc). */
   doc: Document;
@@ -79,6 +112,8 @@ export type InlineAskOverlayInput = {
   labels: InlineAskOverlayLabels;
   runTurn: InlineAskTurnRunner;
   createAbortController?: () => { signal?: AbortSignal; abort(): void } | null;
+  /** Without it, Save as annotation stays disabled. */
+  save?: InlineAskSaveSetup;
   /** Called exactly once on any close path. */
   onClose?: () => void;
 };
@@ -129,6 +164,27 @@ function sendIcon(doc: Document): Element {
     },
   ]);
 }
+
+function closeIcon(doc: Document): Element {
+  return svgIcon(
+    doc,
+    12,
+    {
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "1.5",
+      "stroke-linecap": "round",
+    },
+    [{ tag: "path", attrs: { d: "M4 4l8 8M12 4l-8 8" } }],
+  );
+}
+
+/** The selection's highlight in the card: the color at 40% opacity. */
+function markBackground(hex: string): string {
+  return `${hex}66`;
+}
+
+const PAPER_FONT = '"STIX Two Text","Times New Roman",Times,serif';
 
 function sidebarIcon(doc: Document): Element {
   return svgIcon(
@@ -511,12 +567,199 @@ export function openInlineAskOverlay(
   saveBtn.setAttribute("type", "button");
   saveBtn.setAttribute("data-llm-inline-ask-action", "save");
   saveBtn.textContent = labels.saveAsAnnotation;
-  // Continue in sidebar (M3) and Save as annotation (M2) are not wired yet.
+  // Continue in sidebar is not wired yet (M3).
   setButtonDisabled(sidebarBtn, true);
   setButtonDisabled(saveBtn, true);
   footer.append(discardBtn, footerSpacer, sidebarBtn, saveBtn);
 
-  root.append(quoteSection, thread, field, notice, pills, hint, footer);
+  // ── The annotation card (Save as annotation) ───────────────────────────
+  const saveSetup = input.save;
+  const colors = saveSetup?.colors.length
+    ? saveSetup.colors
+    : [{ hex: "#ffd400", label: "" }];
+  const saveView = el("div", [
+    "display:none",
+    "flex-direction:column",
+    "gap:8px",
+    "min-width:0",
+  ]);
+  saveView.setAttribute("data-llm-inline-ask-save-view", "true");
+  const saveHeader = el("div", [
+    "display:flex",
+    "align-items:center",
+    "gap:7px",
+    "min-width:0",
+  ]);
+  const colorSquare = el("button", [
+    "flex:none",
+    "width:14px",
+    "height:14px",
+    "border-radius:3px",
+    "border:none",
+    "padding:0",
+    "cursor:pointer",
+    `background:${colors[0].hex}`,
+  ]) as HTMLButtonElement;
+  colorSquare.setAttribute("type", "button");
+  colorSquare.setAttribute("data-llm-inline-ask-color", "toggle");
+  colorSquare.setAttribute("title", saveSetup?.labels.color || "");
+  colorSquare.setAttribute("aria-label", saveSetup?.labels.color || "");
+  colorSquare.setAttribute("aria-expanded", "false");
+  const pageText = el("span", [
+    "font-size:11px",
+    `color:${labelFg}`,
+    "line-height:1.2",
+    "white-space:nowrap",
+  ]);
+  pageText.setAttribute("data-llm-inline-ask-page", "true");
+  pageText.textContent = saveSetup?.pageText || "";
+  show(pageText, Boolean(saveSetup?.pageText));
+  const saveHeaderSpacer = el("span", ["flex:1 1 auto"]);
+  const backBtn = el(
+    "button",
+    buttonCss(palette, "ghost", ["padding:4px 6px"]),
+  ) as HTMLButtonElement;
+  backBtn.setAttribute("type", "button");
+  backBtn.setAttribute("data-llm-inline-ask-save-action", "back");
+  backBtn.setAttribute("title", saveSetup?.labels.back || "");
+  backBtn.setAttribute("aria-label", saveSetup?.labels.back || "");
+  backBtn.appendChild(closeIcon(doc));
+  saveHeader.append(colorSquare, pageText, saveHeaderSpacer, backBtn);
+
+  const colorRow = el("div", ["display:none", "gap:6px", "align-items:center"]);
+  colorRow.setAttribute("data-llm-inline-ask-colors", "true");
+  const colorDots: HTMLButtonElement[] = colors.map(({ hex, label }) => {
+    const dot = el("button", [
+      "flex:none",
+      "width:12px",
+      "height:12px",
+      "border-radius:50%",
+      "border:none",
+      "padding:0",
+      "cursor:pointer",
+      `background:${hex}`,
+    ]) as HTMLButtonElement;
+    dot.setAttribute("type", "button");
+    dot.setAttribute("data-llm-inline-ask-color-dot", hex);
+    dot.setAttribute("title", label);
+    dot.setAttribute("aria-label", label);
+    colorRow.append(dot);
+    return dot;
+  });
+
+  const markClamp = el("div", [
+    `font-family:${PAPER_FONT}`,
+    "font-size:13px",
+    "line-height:1.4",
+    "display:-webkit-box",
+    "-webkit-box-orient:vertical",
+    "-webkit-line-clamp:3",
+    "overflow:hidden",
+    "overflow-wrap:anywhere",
+  ]);
+  const mark = el("mark", [
+    `background:${markBackground(colors[0].hex)}`,
+    "color:inherit",
+    "padding:0 1px",
+  ]);
+  mark.setAttribute("data-llm-inline-ask-mark", "true");
+  mark.textContent = input.selectedText;
+  markClamp.append(mark);
+
+  const commentBox = createReaderOverlayEditor({
+    doc,
+    placeholder: saveSetup?.labels.addComment || "",
+    fieldCss: [
+      "position:relative",
+      `border-top:1px solid ${border}`,
+      "padding-top:8px",
+    ],
+    editorCss: [
+      "min-height:18px",
+      "max-height:min(240px, 40vh)",
+      "overflow:auto",
+      "box-sizing:border-box",
+      "border:none",
+      "background:transparent",
+      `color:${fg}`,
+      "font:inherit",
+      "font-size:12px",
+      "line-height:1.5",
+      "white-space:pre-wrap",
+      "overflow-wrap:anywhere",
+      "outline:none",
+      "cursor:text",
+    ],
+    placeholderCss: [
+      "position:absolute",
+      "left:0",
+      "top:8px",
+      "right:0",
+      "overflow:hidden",
+      "white-space:nowrap",
+      "text-overflow:ellipsis",
+      "pointer-events:none",
+      `color:${labelFg}`,
+      "font-size:12px",
+      "line-height:1.5",
+    ],
+    editorAttribute: "data-llm-inline-ask-comment",
+    placeholderAttribute: "data-llm-inline-ask-comment-placeholder",
+  });
+
+  const saveError = el("div", [
+    "display:none",
+    "font-size:11px",
+    `color:${labelFg}`,
+    "line-height:1.3",
+    "overflow-wrap:anywhere",
+  ]);
+  saveError.setAttribute("data-llm-inline-ask-save-error", "true");
+
+  const saveFooter = el("div", [
+    "display:flex",
+    "gap:6px",
+    "align-items:center",
+  ]);
+  const cancelSaveBtn = el(
+    "button",
+    buttonCss(palette, "ghost"),
+  ) as HTMLButtonElement;
+  cancelSaveBtn.setAttribute("type", "button");
+  cancelSaveBtn.setAttribute("data-llm-inline-ask-save-action", "cancel");
+  cancelSaveBtn.textContent = saveSetup?.labels.cancel || "";
+  const confirmSaveBtn = el(
+    "button",
+    buttonCss(palette, "primary"),
+  ) as HTMLButtonElement;
+  confirmSaveBtn.setAttribute("type", "button");
+  confirmSaveBtn.setAttribute("data-llm-inline-ask-save-action", "save");
+  confirmSaveBtn.textContent = saveSetup?.labels.save || "";
+  saveFooter.append(
+    el("span", ["flex:1 1 auto"]),
+    cancelSaveBtn,
+    confirmSaveBtn,
+  );
+
+  saveView.append(
+    saveHeader,
+    colorRow,
+    markClamp,
+    commentBox.field,
+    saveError,
+    saveFooter,
+  );
+
+  root.append(
+    quoteSection,
+    thread,
+    field,
+    notice,
+    pills,
+    hint,
+    footer,
+    saveView,
+  );
 
   // ── Rendering ──────────────────────────────────────────────────────────
   const turnNodes: Array<{ node: HTMLElement; rendered: string }> = [];
@@ -565,6 +808,88 @@ export function openInlineAskOverlay(
     root.style.top = `${Math.round(top)}px`;
   };
 
+  // ── Save as annotation state ───────────────────────────────────────────
+  let view: "thread" | "save" = "thread";
+  let color = colors[0].hex;
+  let colorsOpen = false;
+  let saving = false;
+  /** The payload of the last failed save; Save retries it unless edited. */
+  let frozen: InlineAskSavePayload | null = null;
+
+  const lastAnswerText = (): string => {
+    const turns = session.getState().turns;
+    for (let index = turns.length - 1; index >= 0; index--) {
+      const turn = turns[index];
+      if (
+        turn.role === "assistant" &&
+        turn.status === "done" &&
+        turn.text.trim()
+      )
+        return turn.text;
+    }
+    return "";
+  };
+  const readBlockedReason = (): string | null => {
+    try {
+      return saveSetup?.blockedReason() ?? null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
+  /** Null when Save as annotation can open; else the tooltip ("" for none). */
+  const saveUnavailable = (): string | null => {
+    if (!saveSetup) return "";
+    if (session.getState().phase !== "answered" || !lastAnswerText()) return "";
+    return readBlockedReason();
+  };
+  const syncFooterSave = () => {
+    const reason = saveUnavailable();
+    setButtonDisabled(saveBtn, reason !== null);
+    if (reason) saveBtn.setAttribute("title", reason);
+    else saveBtn.removeAttribute("title");
+  };
+  const applyColor = (hex: string) => {
+    color = hex;
+    colorSquare.style.background = hex;
+    mark.style.background = markBackground(hex);
+    for (const dot of colorDots) {
+      const selected =
+        dot.getAttribute("data-llm-inline-ask-color-dot") === hex;
+      dot.setAttribute("aria-pressed", selected ? "true" : "false");
+      dot.style.boxShadow = selected ? `0 0 0 2px ${bg}, 0 0 0 3px ${fg}` : "";
+    }
+  };
+  const setColorsOpen = (open: boolean) => {
+    colorsOpen = open;
+    show(colorRow, open, "flex");
+    colorSquare.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  const showSaveError = (text: string) => {
+    saveError.textContent = text;
+    show(saveError, Boolean(text));
+  };
+  const syncSaveButtons = () => {
+    setButtonDisabled(confirmSaveBtn, saving);
+    setButtonDisabled(cancelSaveBtn, saving);
+    setButtonDisabled(backBtn, saving);
+  };
+  const applyView = () => {
+    const inSave = view === "save";
+    root.setAttribute("data-view", view);
+    show(saveView, inSave, "flex");
+    if (!inSave) return;
+    for (const node of [
+      quoteSection,
+      thread,
+      field,
+      notice,
+      pills,
+      hint,
+      footer,
+    ])
+      show(node, false);
+  };
+
   const render = (state: InlineAskState) => {
     const { phase, turns } = state;
     root.setAttribute("data-phase", phase);
@@ -588,8 +913,84 @@ export function openInlineAskOverlay(
     }
     lastPhase = phase;
     syncSend();
+    syncFooterSave();
+    applyView();
     thread.scrollTop = thread.scrollHeight;
     if (root.isConnected) keepInViewport();
+  };
+
+  const openSaveView = (): boolean => {
+    if (view === "save" || saveUnavailable() !== null) return false;
+    const draft = frozen ?? {
+      color: colors[0].hex,
+      comment: inlineAskAnswerToPlainText(lastAnswerText()),
+    };
+    applyColor(draft.color);
+    commentBox.setText(draft.comment);
+    setColorsOpen(false);
+    showSaveError("");
+    syncSaveButtons();
+    view = "save";
+    render(session.getState());
+    schedule(() => {
+      if (closed || view !== "save") return;
+      commentBox.editor.focus({ preventScroll: true });
+      commentBox.placeCaretAtEnd();
+    }, 0);
+    return true;
+  };
+  const closeSaveView = () => {
+    if (view !== "save" || saving) return;
+    view = "thread";
+    render(session.getState());
+    schedule(() => {
+      if (closed || view !== "thread") return;
+      editor.focus({ preventScroll: true });
+    }, 0);
+  };
+  const runSave = () => {
+    if (!saveSetup || view !== "save" || saving) return;
+    const reason = readBlockedReason();
+    if (reason) {
+      showSaveError(reason);
+      return;
+    }
+    const payload: InlineAskSavePayload = {
+      color,
+      comment: commentBox.readText().trim(),
+    };
+    frozen = payload;
+    saving = true;
+    showSaveError("");
+    syncSaveButtons();
+    let pending: Promise<InlineAskSaveResult>;
+    try {
+      pending = saveSetup.save({ ...payload });
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    void pending
+      .then(
+        (result) => result,
+        (error): InlineAskSaveResult => ({
+          ok: false,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : String(error || ""),
+        }),
+      )
+      .then((result) => {
+        if (closed) return;
+        saving = false;
+        if (result.ok) {
+          // The highlight now shows natively; the card's work is done.
+          close();
+          return;
+        }
+        syncSaveButtons();
+        showSaveError(result.error);
+      });
   };
 
   // ── Events ─────────────────────────────────────────────────────────────
@@ -609,10 +1010,31 @@ export function openInlineAskOverlay(
     close();
   };
   const onKeyDown = (e: Event) => {
-    const action = classifySelectionPromptKey(e as KeyboardEvent);
+    const keyEvent = e as KeyboardEvent;
+    const action = classifySelectionPromptKey(keyEvent);
+    const modEnter =
+      action === "submit" && Boolean(keyEvent.metaKey || keyEvent.ctrlKey);
     // Keeps bubble-phase listeners above the card out. The reader's window
     // capture listeners have already run; see createReaderOverlayEditor.
     e.stopPropagation();
+    if (view === "save") {
+      // Escape goes back to the answer; Mod+Enter saves; a plain Enter is
+      // a new line in the comment (or the focused button's own key).
+      if (action === "close") {
+        e.preventDefault();
+        closeSaveView();
+      } else if (modEnter) {
+        e.preventDefault();
+        runSave();
+      }
+      return;
+    }
+    if (modEnter && session.getState().phase === "answered") {
+      // Mod+Enter on an answer opens the save view; it never sends.
+      e.preventDefault();
+      openSaveView();
+      return;
+    }
     if (action === "close") {
       e.preventDefault();
       close();
@@ -636,6 +1058,31 @@ export function openInlineAskOverlay(
     e.stopPropagation();
     close();
   };
+  const onSaveClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openSaveView();
+  };
+  const clickActions: Array<[HTMLElement, () => void]> = [
+    [colorSquare, () => setColorsOpen(!colorsOpen)],
+    [backBtn, closeSaveView],
+    [cancelSaveBtn, closeSaveView],
+    [confirmSaveBtn, runSave],
+    ...colorDots.map((dot): [HTMLElement, () => void] => [
+      dot,
+      () => applyColor(dot.getAttribute("data-llm-inline-ask-color-dot")!),
+    ]),
+  ];
+  const saveViewListeners = clickActions.map(
+    ([node, run]): [HTMLElement, (e: Event) => void] => [
+      node,
+      (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        run();
+      },
+    ],
+  );
   const onEditorFocus = () => {
     field.style.borderColor = palette.accent;
   };
@@ -663,6 +1110,10 @@ export function openInlineAskOverlay(
     root.removeEventListener("keypress", stop);
     sendBtn.removeEventListener("click", onSendClick);
     discardBtn.removeEventListener("click", onDiscardClick);
+    saveBtn.removeEventListener("click", onSaveClick);
+    for (const [node, listener] of saveViewListeners)
+      node.removeEventListener("click", listener);
+    commentBox.detach();
     editor.removeEventListener("focus", onEditorFocus);
     editor.removeEventListener("blur", onEditorBlur);
     textBox.detach();
@@ -691,6 +1142,10 @@ export function openInlineAskOverlay(
   root.addEventListener("keypress", stop);
   sendBtn.addEventListener("click", onSendClick);
   discardBtn.addEventListener("click", onDiscardClick);
+  saveBtn.addEventListener("click", onSaveClick);
+  for (const [node, listener] of saveViewListeners)
+    node.addEventListener("click", listener);
+  commentBox.attach();
   editor.addEventListener("focus", onEditorFocus);
   editor.addEventListener("blur", onEditorBlur);
   textBox.attach();

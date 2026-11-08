@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import { describe, it } from "mocha";
 import {
+  inlineAskAnswerToPlainText,
   parseInlineAskAnswer,
   renderInlineAskAnswer,
   stripInlineAskCitationTokens,
@@ -126,5 +127,47 @@ describe("renderInlineAskAnswer", function () {
     assert.equal(container.children.length, 2);
     // The last block has no bottom margin.
     assert.equal(ul.style.margin, "0");
+  });
+});
+
+describe("inlineAskAnswerToPlainText", function () {
+  it("keeps the words and drops the Markdown markers the card interprets", function () {
+    const answer = [
+      "## Drift",
+      "",
+      "Drift is **slow** and _gradual_ [[cite:ABC]].",
+      "It uses `dF/F` and $x_1$.",
+      "",
+      "- first point",
+      "- second *point*",
+      "",
+      "1. one",
+      "2. two",
+      "",
+      "```",
+      "code **stays**",
+      "```",
+    ].join("\n");
+    assert.equal(
+      inlineAskAnswerToPlainText(answer),
+      [
+        "Drift",
+        "",
+        "Drift is slow and gradual.",
+        "It uses dF/F and $x_1$.",
+        "",
+        "• first point",
+        "• second point",
+        "",
+        "1. one",
+        "2. two",
+        "",
+        "code **stays**",
+      ].join("\n"),
+    );
+  });
+
+  it("returns an empty string for an empty answer", function () {
+    assert.equal(inlineAskAnswerToPlainText("  \n "), "");
   });
 });

@@ -245,7 +245,10 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isTrue(answered.footerShown);
     assert.equal(answered.placeholder, "Ask a follow-up…");
     assert.isTrue(answered.sidebarDisabled, "Continue in sidebar comes in M3");
-    assert.isTrue(answered.saveDisabled, "Save as annotation comes in M2");
+    assert.isTrue(
+      answered.saveDisabled,
+      "a draft without rects (and no reader panel) cannot be saved",
+    );
 
     // A card with a conversation survives a page click and a new selection.
     assert.isTrue(

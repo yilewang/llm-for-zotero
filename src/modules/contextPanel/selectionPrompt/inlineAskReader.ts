@@ -5,8 +5,11 @@
  *
  * The card keeps a snapshot taken when Zotero showed the selection popup:
  * the annotation draft, the reader item, and the paper context. Save as
- * annotation (M2) works from that snapshot.
+ * annotation writes that draft through the agent API
+ * (saveSelectionAnnotation), filed under the reader panel's conversation.
  */
+import { getAgentApi, initAgentSubsystem } from "../../../agent";
+import { ZOTERO_HIGHLIGHT_COLORS } from "../../../agent/services/pdfAnnotationGeometry";
 import type { ReasoningConfig } from "../../../shared/llm";
 import { buildCodexReasoningConfig } from "../../../codex/catalogSelection";
 import {
@@ -33,6 +36,8 @@ import {
   openInlineAskOverlay,
   type InlineAskModelLine,
   type InlineAskOverlayHandle,
+  type InlineAskSaveResult,
+  type InlineAskSaveSetup,
 } from "./inlineAskOverlay";
 import { getInlineAskQuickPrompts } from "./inlineAskPrompts";
 import {
@@ -41,7 +46,12 @@ import {
   INLINE_ASK_CONTEXT_TIMEOUT_MS,
   resolveInlineAskSurroundingText,
 } from "./inlineAskRequest";
-import type { InlineAskPopupSnapshot } from "./inlineAskSnapshot";
+import {
+  checkInlineAskSave,
+  readInlineAskSelectionDraft,
+  type InlineAskPopupSnapshot,
+  type InlineAskSaveBlock,
+} from "./inlineAskSnapshot";
 import type { ReaderOverlayAnchor } from "./readerOverlayShared";
 
 /** The reader sidebar panels are the "embedded" selection surface. */
@@ -146,12 +156,162 @@ async function resolveAnchorText(
     .join("\n\n");
 }
 
+/** Zotero's highlight colors, yellow first (the default). */
+const HIGHLIGHT_COLOR_LABELS: Record<
+  keyof typeof ZOTERO_HIGHLIGHT_COLORS,
+  string
+> = {
+  yellow: "Yellow",
+  red: "Red",
+  green: "Green",
+  blue: "Blue",
+  purple: "Purple",
+  magenta: "Magenta",
+  orange: "Orange",
+  gray: "Gray",
+};
+
+function saveBlockReason(block: InlineAskSaveBlock): string {
+  switch (block) {
+    case "not_pdf":
+      return t("Save as annotation works in PDF readers only.");
+    case "trashed":
+      return t("This PDF is in the trash.");
+    case "read_only":
+      return t("This library is read-only.");
+    case "cross_page":
+      return t(
+        "This selection continues on the next page. Highlight it from Zotero's popup instead.",
+      );
+    case "no_position":
+      return t("Zotero gave no position for this selection. Select it again.");
+    case "no_conversation":
+      return t("Open this PDF's chat panel to save annotations.");
+  }
+}
+
+type ReaderAttachment = {
+  libraryID?: number;
+  deleted?: boolean;
+  parentItemID?: number | false;
+  isPDFAttachment?: () => boolean;
+};
+
+/** What Save needs from Zotero now, read on each check. */
+function readSaveFacts(
+  snapshot: InlineAskPopupSnapshot,
+  resolveConversationKey: () => number | null,
+) {
+  const item = Zotero.Items.get(snapshot.readerItemId) as
+    | ReaderAttachment
+    | false
+    | null;
+  const attachment = item || null;
+  const parent = attachment?.parentItemID
+    ? (Zotero.Items.get(attachment.parentItemID) as
+        | { deleted?: boolean }
+        | false)
+    : null;
+  const libraryID = Number(attachment?.libraryID) || 0;
+  let isPdf = false;
+  try {
+    isPdf = Boolean(attachment?.isPDFAttachment?.());
+  } catch {
+    isPdf = false;
+  }
+  let editable = false;
+  try {
+    editable = Boolean(libraryID && Zotero.Libraries.isEditable(libraryID));
+  } catch {
+    editable = false;
+  }
+  const draft = readInlineAskSelectionDraft(
+    snapshot.annotation,
+    snapshot.selectedText,
+    snapshot.pageLabel,
+  );
+  const conversationKey = resolveConversationKey();
+  const block = checkInlineAskSave({
+    isPdf,
+    trashed: Boolean(attachment?.deleted || (parent && parent.deleted)),
+    editable,
+    conversationKey,
+    draft,
+  });
+  return { block, libraryID, conversationKey, draft };
+}
+
+function buildInlineAskSaveSetup(
+  snapshot: InlineAskPopupSnapshot,
+  resolveConversationKey: () => number | null,
+): InlineAskSaveSetup {
+  const draft = readInlineAskSelectionDraft(
+    snapshot.annotation,
+    snapshot.selectedText,
+    snapshot.pageLabel,
+  );
+  const pageLabel =
+    (draft.ok && draft.selection.pageLabel) || snapshot.pageLabel;
+  return {
+    colors: (
+      Object.keys(ZOTERO_HIGHLIGHT_COLORS) as Array<
+        keyof typeof ZOTERO_HIGHLIGHT_COLORS
+      >
+    ).map((name) => ({
+      hex: ZOTERO_HIGHLIGHT_COLORS[name],
+      label: t(HIGHLIGHT_COLOR_LABELS[name]),
+    })),
+    pageText: pageLabel ? t("Page {label}").replace("{label}", pageLabel) : "",
+    labels: {
+      color: t("Color"),
+      back: t("Back"),
+      cancel: t("Cancel"),
+      save: t("Save"),
+      addComment: t("Add comment"),
+    },
+    blockedReason: () => {
+      const { block } = readSaveFacts(snapshot, resolveConversationKey);
+      return block ? saveBlockReason(block) : null;
+    },
+    save: async (payload): Promise<InlineAskSaveResult> => {
+      const facts = readSaveFacts(snapshot, resolveConversationKey);
+      if (facts.block || !facts.draft.ok || facts.conversationKey === null)
+        return {
+          ok: false,
+          error: saveBlockReason(facts.block || "no_position"),
+        };
+      await initAgentSubsystem();
+      const outcome = await getAgentApi().saveSelectionAnnotation({
+        attachmentId: snapshot.readerItemId,
+        libraryID: facts.libraryID,
+        conversationKey: facts.conversationKey,
+        selection: facts.draft.selection,
+        color: payload.color,
+        comment: payload.comment,
+      });
+      if (outcome.ok) return { ok: true };
+      // The tool ran but its receipt did not verify the native row.
+      if (outcome.result?.ok)
+        return {
+          ok: false,
+          error: t("Zotero did not confirm the saved annotation."),
+        };
+      return {
+        ok: false,
+        error: outcome.error || t("The annotation could not be saved."),
+      };
+    },
+  };
+}
+
 export function openInlineAskCardForReader(params: {
   doc: Document;
   anchor: ReaderOverlayAnchor;
   snapshot: InlineAskPopupSnapshot;
   /** The item whose selected reasoning level applies (the paper). */
   reasoningItemId: number;
+  /** The reader panel's conversation; Save files its change there. */
+  resolveConversationKey: () => number | null;
 }): InlineAskCardHandle {
   const { snapshot } = params;
   const choice = resolveInlineAskModelChoice(params.reasoningItemId);
@@ -196,6 +356,7 @@ export function openInlineAskCardForReader(params: {
       modelUnavailable: t("Inline Ask needs an API model."),
     },
     runTurn,
+    save: buildInlineAskSaveSetup(snapshot, params.resolveConversationKey),
     createAbortController: () => {
       const Controller = getAbortController();
       return Controller ? new Controller() : null;

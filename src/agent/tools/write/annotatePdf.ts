@@ -2,7 +2,11 @@ import type { AgentWriteToolDefinition } from "../../types";
 import { stateChangeInvocationPlan } from "../../authorization/invocationPlan";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { resolveHighlightColor } from "../../services/pdfAnnotationGeometry";
-import { resolvePdfHighlight } from "../../../services/pdf/pdfAnnotationResolver";
+import {
+  readOpenReaderDocumentFingerprint,
+  resolvePdfHighlight,
+  type ResolvedPdfHighlight,
+} from "../../../services/pdf/pdfAnnotationResolver";
 import {
   annotationMatchesPayload,
   stickyNotePosition,
@@ -13,6 +17,19 @@ import { executeExternalMutation } from "../../services/externalMutationCoordina
 import { LibraryMutationService } from "../../services/libraryMutationService";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
 
+/**
+ * A reader selection the host (Inline Ask's Save) froze from Zotero's own
+ * popup draft. Host-only: it is not in the model's input schema, and a call
+ * that carries it is refused unless the host built the call.
+ */
+export type AnnotateSelection = {
+  pageIndex: number;
+  rects: number[][];
+  sortIndex: string;
+  pageLabel: string;
+  text: string;
+};
+
 type AnnotateInput = {
   attachmentId: number;
   text: string;
@@ -21,7 +38,67 @@ type AnnotateInput = {
   color: string;
   comment: string;
   annotationType: PdfPassageAnnotationType;
+  selection?: AnnotateSelection;
 };
+
+const HOST_ONLY_SELECTION =
+  "annotate_pdf refused the selection input: only the plugin's own reader actions may pass selection coordinates. Supply the quoted text instead.";
+
+/** Checks the host selection's shape; the error names the bad part. */
+function readSelection(
+  value: unknown,
+  text: string,
+): { ok: true; selection: AnnotateSelection } | { ok: false; error: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return { ok: false, error: "selection must be an object." };
+  const raw = value as Record<string, unknown>;
+  const pageIndex = raw.pageIndex;
+  if (
+    typeof pageIndex !== "number" ||
+    !Number.isInteger(pageIndex) ||
+    pageIndex < 0
+  )
+    return {
+      ok: false,
+      error: "selection.pageIndex must be a zero-based integer.",
+    };
+  const rects = raw.rects;
+  if (
+    !Array.isArray(rects) ||
+    !rects.length ||
+    !rects.every(
+      (rect) =>
+        Array.isArray(rect) &&
+        rect.length === 4 &&
+        rect.every((n) => typeof n === "number" && Number.isFinite(n)),
+    )
+  )
+    return {
+      ok: false,
+      error: "selection.rects must be a non-empty list of four finite numbers.",
+    };
+  if (typeof raw.sortIndex !== "string" || !raw.sortIndex)
+    return { ok: false, error: "selection.sortIndex must be a string." };
+  if (raw.pageLabel !== undefined && typeof raw.pageLabel !== "string")
+    return { ok: false, error: "selection.pageLabel must be a string." };
+  if (raw.text !== text)
+    return { ok: false, error: "selection.text must equal text." };
+  if (raw.nextPageRects !== undefined)
+    return {
+      ok: false,
+      error: "A selection that continues on the next page is not supported.",
+    };
+  return {
+    ok: true,
+    selection: {
+      pageIndex,
+      rects: rects as number[][],
+      sortIndex: raw.sortIndex,
+      pageLabel: (raw.pageLabel as string | undefined) ?? "",
+      text,
+    },
+  };
+}
 
 const ANNOTATION_TYPES: readonly PdfPassageAnnotationType[] = [
   "highlight",
@@ -45,6 +122,7 @@ function nounFor(args: unknown): string {
 export function createAnnotatePdfTool(
   zoteroGateway: ZoteroGateway,
   resolveHighlight = resolvePdfHighlight,
+  readDocumentFingerprint = readOpenReaderDocumentFingerprint,
 ): AgentWriteToolDefinition<AnnotateInput, unknown> {
   const mutationService = new LibraryMutationService(zoteroGateway);
   return {
@@ -62,6 +140,7 @@ export function createAnnotatePdfTool(
           annotationComment: input.comment,
           annotationColor: input.color,
           annotationType: input.annotationType,
+          ...(input.selection ? { expectedRects: input.selection.rects } : {}),
         },
         requestedTargets: [`item:${input.attachmentId}`],
         destinationCollectionIds: [],
@@ -158,6 +237,8 @@ export function createAnnotatePdfTool(
               "pageIndex",
               "occurrence",
               "annotationType",
+              // Host-only; planInvocation and execute refuse it from a model.
+              "selection",
             ].includes(key),
         )
       ) {
@@ -197,6 +278,27 @@ export function createAnnotatePdfTool(
         return fail(
           "color must be a Zotero palette name (yellow, red, green, blue, purple, magenta, orange, gray) or a hex like '#ff6666'.",
         );
+      }
+      if (args.selection !== undefined) {
+        const read = readSelection(args.selection, text);
+        if (!read.ok) return fail(read.error);
+        if (annotationType === "note")
+          return fail(
+            "A selection is highlighted or underlined; a sticky note does not cover it.",
+          );
+        if (occurrence !== undefined)
+          return fail("occurrence does not apply to a selection.");
+        if (pageIndex !== undefined && pageIndex !== read.selection.pageIndex)
+          return fail("pageIndex must match selection.pageIndex.");
+        return ok({
+          attachmentId,
+          pageIndex: read.selection.pageIndex,
+          color,
+          text,
+          comment,
+          annotationType,
+          selection: read.selection,
+        });
       }
       return ok({
         attachmentId,
@@ -266,6 +368,9 @@ export function createAnnotatePdfTool(
       const text =
         data?.text === undefined ? input.text : readString(data.text);
       if (!text) return fail("The highlighted quotation cannot be empty.");
+      // A host selection's text is bound to its rects.
+      if (input.selection && text !== input.text)
+        return fail("The selected text cannot be changed.");
       return ok({
         ...input,
         text,
@@ -273,7 +378,10 @@ export function createAnnotatePdfTool(
       });
     },
 
-    planInvocation() {
+    planInvocation(input, context) {
+      // Runs before authorization; validate has no context to check this.
+      if (input.selection && !context.hostAction)
+        throw new Error(HOST_ONLY_SELECTION);
       return stateChangeInvocationPlan({
         effects: ["create"],
         reversibility: "partial",
@@ -283,13 +391,33 @@ export function createAnnotatePdfTool(
     },
 
     async execute(input, context) {
+      if (input.selection && !context.hostAction)
+        throw new Error(HOST_ONLY_SELECTION);
       const attachment = zoteroGateway.getItem(input.attachmentId);
       if (!attachment?.isAttachment?.() || !attachment.isPDFAttachment?.()) {
         throw new Error(
           `Item ${input.attachmentId} is not a PDF attachment. Use library_read with sections:['attachments'] to find the PDF attachment ID.`,
         );
       }
-      const resolved = await resolveHighlight(input, context.signal);
+      // A host selection is Zotero's own draft: written verbatim, never
+      // re-resolved or rounded, so the native-state match and an idempotent
+      // retry compare the exact values the user saw.
+      const resolved: ResolvedPdfHighlight = input.selection
+        ? {
+            text: input.selection.text,
+            pageLabel: input.selection.pageLabel,
+            sortIndex: input.selection.sortIndex,
+            position: {
+              pageIndex: input.selection.pageIndex,
+              rects: input.selection.rects,
+            },
+            source: {
+              // Empty when no open reader holds the PDF: the receipt then
+              // stays unverified.
+              documentFingerprint: readDocumentFingerprint(input.attachmentId),
+            },
+          }
+        : await resolveHighlight(input, context.signal);
       if (context.signal?.aborted)
         throw new Error("Annotation creation was cancelled.");
       // A note marks the passage with Zotero's note square at its first

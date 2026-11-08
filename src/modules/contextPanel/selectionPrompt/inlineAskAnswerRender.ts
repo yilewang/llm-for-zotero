@@ -261,3 +261,31 @@ export function renderInlineAskAnswer(
     container.appendChild(node);
   });
 }
+
+function inlinesToText(inlines: InlineAskInline[]): string {
+  return inlines.map((inline) => inline.text).join("");
+}
+
+/**
+ * The answer as plain text for an annotation comment: the words the card
+ * shows, without the Markdown markers it interprets (emphasis, code ticks,
+ * headings, fences, citation tokens). Bullets become "•", numbered items
+ * keep their numbers, and blocks are separated by a blank line.
+ */
+export function inlineAskAnswerToPlainText(text: string): string {
+  return parseInlineAskAnswer(text)
+    .map((block) => {
+      if (block.kind === "paragraph")
+        return block.lines.map(inlinesToText).join("\n");
+      if (block.kind === "list")
+        return block.items
+          .map(
+            (item, index) =>
+              `${block.ordered ? `${index + 1}.` : "•"} ${inlinesToText(item)}`,
+          )
+          .join("\n");
+      return block.text;
+    })
+    .join("\n\n")
+    .trim();
+}

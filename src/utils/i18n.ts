@@ -1711,6 +1711,30 @@ const zhCN: Record<string, string> = {
     "结合论文的上下文，用通俗的语言解释这段文字。",
   "Define the technical terms in this passage.": "解释这段文字中的专业术语。",
   "Translate this passage into English.": "把这段文字翻译成中文。",
+  // Inline Ask: Save as annotation.
+  Yellow: "黄色",
+  Red: "红色",
+  Green: "绿色",
+  Blue: "蓝色",
+  Purple: "紫色",
+  Magenta: "洋红色",
+  Orange: "橙色",
+  Gray: "灰色",
+  Color: "颜色",
+  "Page {label}": "第 {label} 页",
+  "Add comment": "添加评论",
+  "Save as annotation works in PDF readers only.":
+    "只有在 PDF 阅读器中才能保存为注释。",
+  "This PDF is in the trash.": "此 PDF 在回收站中。",
+  "This library is read-only.": "此文库为只读。",
+  "This selection continues on the next page. Highlight it from Zotero's popup instead.":
+    "此选区延续到下一页。请改用 Zotero 的弹出菜单添加高亮。",
+  "Zotero gave no position for this selection. Select it again.":
+    "Zotero 没有提供此选区的位置。请重新选择。",
+  "Open this PDF's chat panel to save annotations.":
+    "请打开此 PDF 的对话面板以保存注释。",
+  "The annotation could not be saved.": "无法保存注释。",
+  "Zotero did not confirm the saved annotation.": "Zotero 未确认已保存的注释。",
   "Quote selected text": "引用选中文字",
   "Quote in side chat": "在侧边对话中引用",
   "Quote selected text in a side chat": "在侧边对话中引用选中文字",

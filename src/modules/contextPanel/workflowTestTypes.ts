@@ -392,7 +392,37 @@ export type WorkflowTestReaderInlineAskCard = {
   saveDisabled: boolean;
 };
 
+/** Zotero's annotation draft for a real selection, and where it came from. */
+export type WorkflowTestReaderSelectionDraft = {
+  source: string;
+  annotation: Record<string, unknown> | null;
+};
+
+/** The Inline Ask card's Save state: footer button and annotation card. */
+export type WorkflowTestReaderInlineAskSave = {
+  mounted: boolean;
+  /** "thread" or "save". */
+  view: string;
+  footerSaveDisabled: boolean;
+  footerSaveTitle: string;
+  saveViewShown: boolean;
+  color: string;
+  colorsShown: boolean;
+  colorLabels: string[];
+  pageText: string;
+  markText: string;
+  markBackground: string;
+  comment: string;
+  commentContentEditable: string;
+  error: string;
+  confirmDisabled: boolean;
+};
+
 export type WorkflowTestReaderInlineAskOpen = {
+  /** The popup's annotation draft the card got (null for a synthetic one). */
+  draft: WorkflowTestReaderSelectionDraft | null;
+  /** The reader panel's conversation key (0 when no panel was mounted). */
+  panelConversationKey: number;
   popupButtonLabels: string[];
   mounted: boolean;
   /** The card mounts in reader.html, where the popup lives. */
@@ -1836,12 +1866,34 @@ export type WorkflowTestApi = {
     attachmentItemId: number;
     pageIndex: number;
     selectedText: string;
+    /** Mounts this workflow panel as the reader tab's panel first. */
+    panelId?: string;
+    /**
+     * The popup's annotation draft: "synthetic" (default, text and page
+     * only), "native" (Zotero's draft for the real selection), or
+     * "native_cross_page" (that draft with a next-page part).
+     */
+    draft?: "synthetic" | "native" | "native_cross_page";
   }) => Promise<WorkflowTestReaderInlineAskOpen>;
   /** Sends typed text (Enter in the editor) or clicks a quick-prompt pill. */
   sendReaderInlineAsk: (
     input: { text: string } | { pillId: string },
   ) => Promise<void>;
   readReaderInlineAsk: () => WorkflowTestReaderInlineAskCard;
+  readReaderInlineAskSave: () => WorkflowTestReaderInlineAskSave;
+  /** Opens the annotation card: a click on Save as annotation, or Mod+Enter. */
+  openReaderInlineAskSave: (input: {
+    via: "click" | "keyboard";
+  }) => Promise<WorkflowTestReaderInlineAskSave>;
+  /** Types a comment and picks a color dot in the annotation card. */
+  editReaderInlineAskSave: (input: {
+    comment?: string;
+    color?: string;
+  }) => Promise<WorkflowTestReaderInlineAskSave>;
+  /** Presses Save in the annotation card (click, or Mod+Enter in the comment). */
+  confirmReaderInlineAskSave: (input: {
+    via: "click" | "keyboard";
+  }) => Promise<void>;
   /** A pointerdown on the PDF page (the nested view document). */
   pointerDownOutsideReaderInlineAsk: () => Promise<{ cardOpen: boolean }>;
   /** A new text selection popup on the same reader. */
