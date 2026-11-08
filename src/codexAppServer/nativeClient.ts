@@ -1742,6 +1742,7 @@ function buildCodexNativeVisibleTurnContextBlock(params: {
   const anchorContext = renderSelectedTextAnchorContext({
     selectedTextContexts: skillContext?.selectedTextContexts || [],
     anchors: skillContext?.resolvedSelectedTextAnchors || [],
+    readCalls: true,
   });
   return [visibleContext, anchorContext].filter(Boolean).join("\n\n");
 }

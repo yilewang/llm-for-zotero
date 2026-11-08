@@ -45,6 +45,10 @@ const resolvedAnchor: ResolvedSelectedTextAnchor = {
   injectedChars: 151,
 };
 
+/** The paper_read call the page hint names for the late-page selection. */
+const PAGE_588_CALL =
+  'paper_read {"mode":"targeted","target":{"itemId":70,"contextItemId":77},"pages":[588],"neighborPages":1}';
+
 function messageText(message: AgentModelMessage | undefined): string {
   if (!message) return "";
   if (typeof message.content === "string") return message.content;
@@ -87,7 +91,12 @@ describe("highlight-aware backend payloads", function () {
 
     assert.include(prompt, "Highlight-aware local context:");
     assert.include(prompt, "The highlighted claim and its explanation.");
-    assert.include(prompt, "read PDF page 588");
+    // WebChat has no tools: its hint names the page and attachment.
+    assert.include(
+      prompt,
+      "read PDF page 588 for attachment 77 with one neighboring page.",
+    );
+    assert.notInclude(prompt, "paper_read");
     assert.notInclude(prompt, "primaryChunkIndex");
   });
 
@@ -112,7 +121,10 @@ describe("highlight-aware backend payloads", function () {
     assert.include(text, "attachment_id=77");
     assert.include(text, "page_label=588");
     assert.include(text, "The highlighted claim and its explanation.");
-    assert.include(text, "read PDF page 588");
+    assert.include(
+      text,
+      `read PDF page 588 with one neighboring page: ${PAGE_588_CALL}.`,
+    );
   });
 
   it("carries the locator and bounded context through the Claude bridge envelope", function () {
@@ -155,7 +167,10 @@ describe("highlight-aware backend payloads", function () {
 
     assert.include(block, "page_label=588");
     assert.include(block, "The highlighted claim and its explanation.");
-    assert.include(block, "read PDF page 588");
+    assert.include(
+      block,
+      `read PDF page 588 with one neighboring page: ${PAGE_588_CALL}.`,
+    );
   });
 
   describe("a chip's question", function () {

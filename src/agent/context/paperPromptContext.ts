@@ -13,8 +13,14 @@ import {
   buildBookmarkOutline,
   buildDocumentOutline,
 } from "../../services/paperContent/pdfContext";
-import { formatDocumentMap } from "../../services/paperContent/documentMap";
+import {
+  formatDocumentMap,
+  formatSectionChain,
+  locateInOutline,
+} from "../../services/paperContent/documentMap";
+import type { DocumentOutline } from "../../services/paperContent/types";
 import { estimateTextTokens } from "../../utils/modelInputCap";
+import { formatPageReadCall } from "../../services/context/selectedTextAnchorFormatting";
 import { documentPageMap } from "../tools/read/documentSectionReads";
 import { resolveAgentPromptBudgetLimits } from "./promptBudget";
 import { buildTurnPaperKey } from "./turnPaperScope";
@@ -31,7 +37,7 @@ const DOCUMENT_MAP_PRELOAD_NOTE =
  * of part of its text: the page map follows, and paper_read reads pages.
  */
 const PAGE_MAP_PRELOAD_NOTE =
-  "This document's whole text does not fit the context left, so its text is not preloaded: the map below lists its pages with their sizes and first lines. Read the pages the answer needs with paper_read: mode:'targeted' with pages, numbered as in the map (such as pages:[4,5,6]), or mode:'targeted' with a query to search. A read larger than the remaining context or than a given maxChars returns the pages' map instead of text.";
+  "This document's whole text does not fit the context left, so its text is not preloaded: the map below lists its pages with their sizes and first lines. Read the pages the answer needs with paper_read: mode:'targeted' with pages, numbered as in the map (such as pages:[4,5,6]), or mode:'targeted' with a query to search. A read larger than the context left returns the pages' map instead of text.";
 
 /**
  * What the block of a bookmarked document too large for the context left
@@ -39,7 +45,7 @@ const PAGE_MAP_PRELOAD_NOTE =
  * paper_read reads its sections.
  */
 const BOOKMARK_MAP_PRELOAD_NOTE =
-  "This document's whole text does not fit the context left, so its text is not preloaded: the map below lists its top-level parts, from its bookmarks, with their pages and sizes. Read the parts the answer needs with paper_read: mode:'targeted' with sectionIds (a part with sections returns its sections and sizes; add whole:true to read all of it), with pages, numbered as in the map (such as pages:[4,5,6]), or with a query to search. A read larger than the remaining context or than a given maxChars returns sections or pages instead of text.";
+  "This document's whole text does not fit the context left, so its text is not preloaded: the map below lists its top-level parts, from its bookmarks, with their pages and sizes. Read the parts the answer needs with paper_read: mode:'targeted' with sectionIds (a part with sections returns its sections and sizes; add whole:true to read all of it), with pages, numbered as in the map (such as pages:[4,5,6]), or with a query to search. A read larger than the context left returns sections or pages instead of text.";
 
 /**
  * What a document too long for even its page or section map says: its
@@ -56,10 +62,79 @@ function longDocumentNote(context: PdfContext): string {
 const PASSAGE_ID_RULE =
   "Cite with the Q_ passage IDs that paper_read results carry: [[cite:ID]] for sentence citations, [[quote:ID]] for reading recommendations. To use text without a passage ID, quote it as a `>` blockquote with the source label on the next line and no cite token; never construct an ID.";
 
+/**
+ * Where a PDF selection lies in the map its document is read by: the
+ * guidance the turn's selection context gives instead of the page hint.
+ */
+export type PaperSelectionLocation = {
+  /** The selection's index in the turn's selected texts. */
+  contextIndex: number;
+  guidance: string;
+};
+
 export type PaperPromptContext = {
+  /** Source-only stable prefix: the same with and without a selection. */
   blocks: string[];
   quoteCitations: QuoteCitation[];
+  /**
+   * Per-turn: present only when a selection lies in a document whose map
+   * is preloaded. Rendered with the selection, never in `blocks`.
+   */
+  selectionLocations?: PaperSelectionLocation[];
 };
+
+/**
+ * For each of the turn's selections in this paper, the chains of map parts
+ * that hold it, by its anchor's chunk, else by its page. A selection the map
+ * cannot place gets none, and keeps the page hint.
+ */
+function locateSelections(
+  request: AgentRuntimeRequest,
+  paper: PaperContextRef,
+  context: PdfContext,
+  outline: DocumentOutline,
+): PaperSelectionLocation[] {
+  return (request.resolvedSelectedTextAnchors || []).flatMap((anchor) => {
+    if (anchor.contextItemId !== paper.contextItemId) return [];
+    const chunk = anchor.primaryChunkIndex ?? anchor.preferredChunkIndexes?.[0];
+    // A chunk index counts chunks of the text the anchor was resolved on.
+    const sameText =
+      !anchor.sourceType ||
+      !context.sourceType ||
+      anchor.sourceType === context.sourceType;
+    const page =
+      anchor.pageIndex !== undefined ? anchor.pageIndex + 1 : undefined;
+    const chains = locateInOutline(outline, {
+      chunkIndex:
+        sameText && chunk !== undefined && chunk < context.chunks.length
+          ? chunk
+          : undefined,
+      page,
+    });
+    if (!chains.length) return [];
+    const parts = chains.map(formatSectionChain);
+    const where =
+      parts.length === 1
+        ? `is inside: ${parts[0]}`
+        : `is inside one of: ${parts.join("; ")}`;
+    const pageHint =
+      page !== undefined
+        ? ` For only the adjacent text, read page ${page} with one neighboring page: ${formatPageReadCall(
+            {
+              itemId: paper.itemId,
+              contextItemId: paper.contextItemId,
+              page,
+            },
+          )}.`
+        : "";
+    return [
+      {
+        contextIndex: anchor.contextIndex,
+        guidance: `Selected text ${anchor.contextIndex + 1} ${where}. For the selection in its section, read the part the question means by sectionId (a part with sections lists them unless whole:true).${pageHint}`,
+      },
+    ];
+  });
+}
 
 /**
  * Longest text that gets one passage ID. Full-text-cache and PDFWorker chunks
@@ -160,6 +235,7 @@ export async function preparePaperPromptContext(
   } = {},
 ): Promise<PaperPromptContext> {
   const result: PaperPromptContext = { blocks: [], quoteCitations: [] };
+  const selectionLocations: PaperSelectionLocation[] = [];
   const scope = request.turnPaperScope;
   const papers = scope.papers
     .filter(
@@ -210,10 +286,14 @@ export async function preparePaperPromptContext(
     // A document with chapters is read by its map; the user's explicit
     // full-text attach still preloads its whole text.
     if (context.documentStructure && !roles.includes("full_text")) {
+      const outline = buildDocumentOutline(context);
       result.blocks.push(
         `${header}${DOCUMENT_MAP_PRELOAD_NOTE}\n${PASSAGE_ID_RULE}\n\n${formatDocumentMap(
-          buildDocumentOutline(context),
+          outline,
         )}`,
+      );
+      selectionLocations.push(
+        ...locateSelections(request, paper, context, outline),
       );
       continue;
     }
@@ -274,6 +354,10 @@ export async function preparePaperPromptContext(
       // A map that does not fit either: only the document's size.
       if (estimateTextTokens(block) > remaining)
         block = `${header}${longDocumentNote(context)}\n${PASSAGE_ID_RULE}`;
+      else if (bookmarkMap)
+        selectionLocations.push(
+          ...locateSelections(request, paper, context, bookmarkMap),
+        );
       result.blocks.push(block);
       remaining = Math.max(0, remaining - estimateTextTokens(block));
       continue;
@@ -299,5 +383,6 @@ export async function preparePaperPromptContext(
     result.quoteCitations.push(...citations);
     remaining = Math.max(0, remaining - used);
   }
+  if (selectionLocations.length) result.selectionLocations = selectionLocations;
   return result;
 }
