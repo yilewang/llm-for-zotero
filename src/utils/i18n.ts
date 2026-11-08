@@ -1735,6 +1735,15 @@ const zhCN: Record<string, string> = {
     "请打开此 PDF 的对话面板以保存注释。",
   "The annotation could not be saved.": "无法保存注释。",
   "Zotero did not confirm the saved annotation.": "Zotero 未确认已保存的注释。",
+  // Inline Ask: Continue in sidebar.
+  "The sidebar is answering. Try again when it finishes.":
+    "侧边栏正在回答。请在回答结束后重试。",
+  "Continue in sidebar does not work in WebChat mode.":
+    "WebChat 模式下无法在侧边栏中继续。",
+  "The conversation could not be saved to the sidebar.":
+    "无法将对话保存到侧边栏。",
+  "The sidebar chat for this PDF is not available. Open it and try again.":
+    "此 PDF 的侧边栏对话不可用。请打开它后重试。",
   "Quote selected text": "引用选中文字",
   "Quote in side chat": "在侧边对话中引用",
   "Quote selected text in a side chat": "在侧边对话中引用选中文字",

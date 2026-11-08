@@ -15,6 +15,10 @@
  * answer; Mod+Enter saves. A failed save keeps the card and its payload, so
  * Save retries the same payload.
  *
+ * Continue in sidebar hands the finished turns to the sidebar; the card
+ * closes when the sidebar took them, and otherwise shows the reason under
+ * the footer and keeps its conversation.
+ *
  * Close policy: before the first question an outside pointerdown closes the
  * card, as the Add Text prompt does. Once a question exists, only Escape,
  * Discard, or another overlay on the same document closes it; a new text
@@ -29,6 +33,7 @@ import {
 import type { InlineAskQuickPrompt } from "./inlineAskPrompts";
 import {
   createInlineAskSession,
+  finishedInlineAskTurns,
   type InlineAskSession,
   type InlineAskState,
   type InlineAskTurn,
@@ -81,6 +86,17 @@ export type InlineAskSavePayload = { color: string; comment: string };
 
 export type InlineAskSaveResult = { ok: true } | { ok: false; error: string };
 
+/** A finished turn as the model got it (a quick prompt's full prompt). */
+export type InlineAskContinueTurn = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+/** Moves the turns to the sidebar; ok when the sidebar took them. */
+export type InlineAskContinueInSidebar = (
+  turns: InlineAskContinueTurn[],
+) => Promise<{ ok: true } | { ok: false; error: string }>;
+
 /** What the card needs for Save as annotation. */
 export type InlineAskSaveSetup = {
   /** Zotero's highlight colors; the first is the default. */
@@ -114,6 +130,8 @@ export type InlineAskOverlayInput = {
   createAbortController?: () => { signal?: AbortSignal; abort(): void } | null;
   /** Without it, Save as annotation stays disabled. */
   save?: InlineAskSaveSetup;
+  /** Without it, Continue in sidebar stays disabled. */
+  continueInSidebar?: InlineAskContinueInSidebar;
   /** Called exactly once on any close path. */
   onClose?: () => void;
 };
@@ -359,6 +377,8 @@ export function openInlineAskOverlay(
   });
   const canSendNow = () => {
     const phase = session.getState().phase;
+    // While Continue in sidebar runs, the turns it moves must stay complete.
+    if (continuing) return false;
     return hasModel && (phase === "compose" || phase === "answered");
   };
   const syncSend = () => {
@@ -567,10 +587,18 @@ export function openInlineAskOverlay(
   saveBtn.setAttribute("type", "button");
   saveBtn.setAttribute("data-llm-inline-ask-action", "save");
   saveBtn.textContent = labels.saveAsAnnotation;
-  // Continue in sidebar is not wired yet (M3).
   setButtonDisabled(sidebarBtn, true);
   setButtonDisabled(saveBtn, true);
   footer.append(discardBtn, footerSpacer, sidebarBtn, saveBtn);
+  // Why Continue in sidebar did not move the conversation.
+  const sidebarError = el("div", [
+    "display:none",
+    "font-size:11px",
+    `color:${labelFg}`,
+    "line-height:1.3",
+    "overflow-wrap:anywhere",
+  ]);
+  sidebarError.setAttribute("data-llm-inline-ask-sidebar-error", "true");
 
   // ── The annotation card (Save as annotation) ───────────────────────────
   const saveSetup = input.save;
@@ -758,6 +786,7 @@ export function openInlineAskOverlay(
     pills,
     hint,
     footer,
+    sidebarError,
     saveView,
   );
 
@@ -886,8 +915,68 @@ export function openInlineAskOverlay(
       pills,
       hint,
       footer,
+      sidebarError,
     ])
       show(node, false);
+  };
+
+  // ── Continue in sidebar state ──────────────────────────────────────────
+  let continuing = false;
+  let sidebarErrorText = "";
+  const continueTurns = () => finishedInlineAskTurns(session.getState().turns);
+  const canContinue = () =>
+    Boolean(input.continueInSidebar) &&
+    !continuing &&
+    view === "thread" &&
+    session.getState().phase === "answered" &&
+    continueTurns().length > 0;
+  const syncSidebar = () => {
+    setButtonDisabled(sidebarBtn, !canContinue());
+    sidebarError.textContent = sidebarErrorText;
+    show(
+      sidebarError,
+      Boolean(sidebarErrorText) &&
+        view === "thread" &&
+        session.getState().phase === "answered",
+    );
+  };
+  const runContinue = () => {
+    const run = input.continueInSidebar;
+    if (!run || !canContinue()) return;
+    const turns = continueTurns();
+    continuing = true;
+    sidebarErrorText = "";
+    syncSidebar();
+    syncSend();
+    let pending: ReturnType<InlineAskContinueInSidebar>;
+    try {
+      pending = run(turns);
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    void pending
+      .then(
+        (result) => result,
+        (error): { ok: false; error: string } => ({
+          ok: false,
+          error:
+            error instanceof Error && error.message
+              ? error.message
+              : String(error || ""),
+        }),
+      )
+      .then((result) => {
+        if (closed) return;
+        continuing = false;
+        if (result.ok) {
+          // The sidebar shows the conversation now.
+          close();
+          return;
+        }
+        sidebarErrorText = result.error;
+        syncSidebar();
+        syncSend();
+      });
   };
 
   const render = (state: InlineAskState) => {
@@ -911,9 +1000,11 @@ export function openInlineAskOverlay(
         editor.focus({ preventScroll: true });
       }, 0);
     }
+    if (phase !== "answered") sidebarErrorText = "";
     lastPhase = phase;
     syncSend();
     syncFooterSave();
+    syncSidebar();
     applyView();
     thread.scrollTop = thread.scrollHeight;
     if (root.isConnected) keepInViewport();
@@ -1063,6 +1154,11 @@ export function openInlineAskOverlay(
     e.stopPropagation();
     openSaveView();
   };
+  const onSidebarClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    runContinue();
+  };
   const clickActions: Array<[HTMLElement, () => void]> = [
     [colorSquare, () => setColorsOpen(!colorsOpen)],
     [backBtn, closeSaveView],
@@ -1111,6 +1207,7 @@ export function openInlineAskOverlay(
     sendBtn.removeEventListener("click", onSendClick);
     discardBtn.removeEventListener("click", onDiscardClick);
     saveBtn.removeEventListener("click", onSaveClick);
+    sidebarBtn.removeEventListener("click", onSidebarClick);
     for (const [node, listener] of saveViewListeners)
       node.removeEventListener("click", listener);
     commentBox.detach();
@@ -1143,6 +1240,7 @@ export function openInlineAskOverlay(
   sendBtn.addEventListener("click", onSendClick);
   discardBtn.addEventListener("click", onDiscardClick);
   saveBtn.addEventListener("click", onSaveClick);
+  sidebarBtn.addEventListener("click", onSidebarClick);
   for (const [node, listener] of saveViewListeners)
     node.addEventListener("click", listener);
   commentBox.attach();

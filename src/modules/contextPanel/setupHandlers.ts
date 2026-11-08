@@ -267,6 +267,14 @@ import {
   resolveStandaloneConversationSwitch,
   type StandaloneConversationSwitchDecision,
 } from "./standaloneConversationSwitch";
+import {
+  buildSeededConversationHandover,
+  buildSeededConversationMessages,
+  buildSeededConversationTitleSeed,
+  normalizeSeededTurns,
+  seededConversationNeedsHandover,
+  seedPaperConversationRefusal,
+} from "./seededConversation";
 import { createChatInputLock } from "./chatInputLock";
 import {
   getActiveContextAttachmentFromTabs,
@@ -7423,6 +7431,44 @@ export function setupHandlers(
           conversationSwitchInputLock?.unlock();
         }
       }
+    },
+    startPaperConversationWithTurns: async (input) => {
+      const refusal = seedPaperConversationRefusal({
+        panelAlive: !setupHandlersCleaned && Boolean(item),
+        noteSession: isNoteSession(),
+        runtimeSwitchInFlight: runtimeSystemSwitchInFlight,
+        webChat: isWebChatModeActive(),
+        answering: item ? isRequestPending(getConversationKey(item)) : false,
+      });
+      if (refusal) return { ok: false, reason: refusal };
+      const turns = normalizeSeededTurns(input.turns);
+      if (!turns.length) return { ok: false, reason: "failed" };
+      const created =
+        await historyLifecycleController.createSeededPaperConversation({
+          paperItemID: input.paperItemId,
+          messages: buildSeededConversationMessages(
+            { ...input, turns },
+            Date.now(),
+          ),
+          titleSeed: buildSeededConversationTitleSeed(turns),
+        });
+      if (!created.ok) return created;
+      const shown =
+        !setupHandlersCleaned &&
+        Boolean(item) &&
+        getConversationKey(item as Zotero.Item) === created.conversationKey;
+      let handover = false;
+      if (shown && seededConversationNeedsHandover(created.system)) {
+        // The provider's session never saw the turns: they go with the next
+        // message, as the side chat's transcript does.
+        handover = panelHandle.addTextContext(
+          buildSeededConversationHandover(turns),
+          { source: "sidechat", focusInput: true },
+        );
+      } else if (shown) {
+        inputBox.focus({ preventScroll: true });
+      }
+      return { ok: true, conversationKey: created.conversationKey, handover };
     },
   };
   publishPanelHandle(body, panelHandle);

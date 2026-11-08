@@ -84,6 +84,19 @@ function buildHistory(turns: InlineAskTurn[]): InlineAskHistoryMessage[] {
   return history;
 }
 
+/**
+ * The finished turns as the model got them (a quick prompt's full prompt),
+ * oldest first: what Continue in sidebar moves to the sidebar.
+ */
+export function finishedInlineAskTurns(
+  turns: InlineAskTurn[],
+): Array<{ role: "user" | "assistant"; text: string }> {
+  return buildHistory(turns).map((message) => ({
+    role: message.role,
+    text: message.content,
+  }));
+}
+
 export function createInlineAskSession(params: {
   runTurn: InlineAskTurnRunner;
   onChange: (state: InlineAskState) => void;

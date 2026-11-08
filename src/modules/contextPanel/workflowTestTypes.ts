@@ -418,6 +418,40 @@ export type WorkflowTestReaderInlineAskSave = {
   confirmDisabled: boolean;
 };
 
+/** The card after a click on Continue in sidebar. */
+export type WorkflowTestReaderInlineAskContinue = {
+  /** The button was disabled when clicked. */
+  disabledBefore: boolean;
+  cardOpen: boolean;
+  /** The reason the card shows when it stayed open. */
+  error: string;
+};
+
+/** The chat a workflow panel shows, as rendered and as stored. */
+export type WorkflowTestPanelChatMessages = {
+  conversationKey: number;
+  conversationKind: string;
+  conversationSystem: string;
+  rendered: Array<{
+    role: string;
+    text: string;
+    /** The answer's model header ("" for a question). */
+    model: string;
+    selectedText: string;
+  }>;
+  stored: Array<{
+    role: string;
+    text: string;
+    selectedTextContexts?: import("../../shared/types").SelectedTextContext[];
+  }>;
+  /** The paper catalog row (null for a library chat). */
+  catalog: {
+    title: string;
+    userTurnCount: number;
+    paperItemID: number;
+  } | null;
+};
+
 export type WorkflowTestReaderInlineAskOpen = {
   /** The popup's annotation draft the card got (null for a synthetic one). */
   draft: WorkflowTestReaderSelectionDraft | null;
@@ -1904,6 +1938,12 @@ export type WorkflowTestApi = {
   endReaderInlineAsk: (input: {
     via: "discard" | "escape";
   }) => Promise<{ cardRemoved: boolean }>;
+  /** Clicks Continue in sidebar; resolves when the card closed or says why not. */
+  continueReaderInlineAskInSidebar: () => Promise<WorkflowTestReaderInlineAskContinue>;
+  /** The messages a workflow panel renders and stores for its conversation. */
+  readPanelChatMessages: (
+    panelId: string,
+  ) => Promise<WorkflowTestPanelChatMessages>;
   /** Total rows in the conversation catalogs, message, registry and usage tables. */
   getConversationStoreRowTotals: () => Promise<WorkflowTestConversationStoreRowTotals>;
   exerciseHighlightAwareContextRetrieval: (input: {

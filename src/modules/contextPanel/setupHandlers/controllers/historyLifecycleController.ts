@@ -52,8 +52,10 @@ import {
   canIsolateConversationForWebChat,
   ensureConversationLoaded,
   getConversationKey,
+  persistSeededConversationMessages,
   refreshConversationPanels,
 } from "../../chat";
+import type { StoredChatMessage } from "../../../../utils/chatStore";
 import {
   loadAllConversationHistory,
   toUpstreamHistoryRowShape,
@@ -3743,6 +3745,108 @@ export function createHistoryLifecycleController(
     return true;
   };
 
+  /**
+   * A fresh paper chat that starts with `messages` (Inline Ask's Continue
+   * in sidebar): the draft the panel's own new-chat action would pick (an
+   * empty draft of the paper, or a new one) gets the messages and a title
+   * before the panel opens it, so it is never an empty draft. Like a fork,
+   * the rows are written first and the switch loads them.
+   */
+  const createSeededPaperConversation = async (params: {
+    /** The paper the messages are about; another paper is refused. */
+    paperItemID?: number;
+    messages: StoredChatMessage[];
+    titleSeed: string;
+  }): Promise<
+    | { ok: true; conversationKey: number; system: ConversationSystem }
+    | { ok: false; reason: "unavailable" | "failed" }
+  > => {
+    syncStateFromDeps();
+    if (!item || !params.messages.length || isNoteSession()) {
+      return { ok: false, reason: "unavailable" };
+    }
+    const ownership = captureOwnedPanelOperation("seeded-paper-conversation");
+    if (!ownership) return { ok: false, reason: "unavailable" };
+    const paperItem = resolveCurrentPaperBaseItem();
+    const libraryID = getCurrentLibraryID();
+    const paperItemID = Number(paperItem?.id || 0);
+    const requestedPaperItemID = normalizeHistoryPaperItemID(
+      params.paperItemID,
+    );
+    if (
+      !paperItem ||
+      !libraryID ||
+      !Number.isFinite(paperItemID) ||
+      paperItemID <= 0 ||
+      (requestedPaperItemID && requestedPaperItemID !== paperItemID)
+    ) {
+      return { ok: false, reason: "unavailable" };
+    }
+    const system = getConversationSystem();
+    const freshDraft = await resolveFreshConversationDraft({
+      system,
+      kind: "paper",
+      libraryID,
+      paperItemID,
+      currentConversationKey: Number(getConversationKey(item) || 0),
+    });
+    const conversationKey = Math.floor(Number(freshDraft.conversationKey));
+    if (!conversationKey || conversationKey <= 0) {
+      return { ok: false, reason: "failed" };
+    }
+    if (!isOwnedPanelOperationCurrent(ownership, "seeded-paper-load")) {
+      return { ok: false, reason: "unavailable" };
+    }
+    try {
+      await persistSeededConversationMessages(
+        conversationKey,
+        params.messages,
+        system,
+      );
+      // A frozen or retired conversation drops writes without an error.
+      const stored = await conversationRepository.loadMessages({
+        system,
+        conversationKey,
+        limit: params.messages.length + 1,
+      });
+      if (stored.length !== params.messages.length) {
+        appLogger.warn("LLM: seeded paper chat stored a different turn count", {
+          conversationKey,
+          expected: params.messages.length,
+          stored: stored.length,
+        });
+        return { ok: false, reason: "failed" };
+      }
+      if (params.titleSeed) {
+        await conversationRepository.touchCatalogTitle({
+          system,
+          kind: "paper",
+          conversationKey,
+          title: params.titleSeed,
+        });
+      }
+    } catch (err) {
+      appLogger.warn("LLM: Failed to store the seeded paper chat", err);
+      return { ok: false, reason: "failed" };
+    }
+    // The messages are stored; from here the chat is in history even when
+    // the panel cannot open it now.
+    chatHistory.delete(conversationKey);
+    loadedConversationKeys.delete(conversationKey);
+    invalidateHistorySearchDocument(conversationKey);
+    clearTransientComposeStateForItem(conversationKey);
+    const switched = Boolean(
+      await switchPaperConversation(conversationKey, { paperItem }),
+    );
+    if (!switched) {
+      appLogger.warn("LLM: seeded paper chat stored but not opened", {
+        conversationKey,
+      });
+    }
+    void refreshGlobalHistoryHeader();
+    return { ok: true, conversationKey, system };
+  };
+
   // [webchat] Entering webchat mode anchors the panel on a dedicated,
   // catalog-hidden session row instead of a normal draft: webchat transcripts
   // live on the provider site, so nothing from the session may surface in the
@@ -4575,6 +4679,7 @@ export function createHistoryLifecycleController(
       syncStateFromDeps();
       return createAndSwitchPaperConversation(forceFresh);
     },
+    createSeededPaperConversation,
     ensureWebChatSessionPaperConversation: async () => {
       syncStateFromDeps();
       return ensureWebChatSessionPaperConversation();

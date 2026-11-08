@@ -778,3 +778,153 @@ describe("Inline Ask save view", function () {
     );
   });
 });
+
+describe("Inline Ask continue in sidebar", function () {
+  afterEach(() => closeAllReaderOverlays());
+
+  type ContinueResult = { ok: true } | { ok: false; error: string };
+
+  function heldContinue() {
+    const calls: Array<{
+      turns: Array<{ role: string; text: string }>;
+      resolve: (value: ContinueResult) => void;
+      reject: (error: unknown) => void;
+    }> = [];
+    const continueInSidebar = (turns: Array<{ role: string; text: string }>) =>
+      new Promise<ContinueResult>((resolve, reject) =>
+        calls.push({ turns, resolve, reject }),
+      );
+    return { calls, continueInSidebar };
+  }
+
+  const sidebarError = (doc: any) =>
+    q(doc, "data-llm-inline-ask-sidebar-error");
+
+  async function answeredPill() {
+    const held = heldContinue();
+    const opened = open({ continueInSidebar: held.continueInSidebar });
+    assert.isTrue(
+      action(opened.doc, "sidebar").disabled,
+      "nothing to continue before a question",
+    );
+    q(opened.doc, "data-llm-inline-ask-pill", "explain").click();
+    opened.calls[0].onDelta("Drift");
+    assert.isTrue(
+      action(opened.doc, "sidebar").disabled,
+      "disabled while the answer streams",
+    );
+    opened.calls[0].resolve({ text: "Drift is slow." });
+    await flush();
+    return { ...opened, continues: held.calls };
+  }
+
+  it("enables the button once an answer exists and sends the turns as the model got them", async function () {
+    const { doc, handle, calls, continues, closedCount } = await answeredPill();
+    const button = action(doc, "sidebar");
+    assert.isFalse(button.disabled);
+    assert.equal(button.attributes.title, "Continue in sidebar");
+    button.click();
+    assert.lengthOf(continues, 1);
+    // The pill's full prompt, not its label.
+    assert.deepEqual(continues[0].turns, [
+      { role: "user", text: "Explain this passage fully." },
+      { role: "assistant", text: "Drift is slow." },
+    ]);
+    assert.isTrue(button.disabled, "one move at a time");
+    button.click();
+    assert.lengthOf(continues, 1);
+    // A follow-up waits until the move ends: the moved turns stay complete.
+    type(doc, "Late follow-up");
+    assert.isTrue(sendOf(doc).disabled);
+    editorOf(doc).dispatch("keydown", key("Enter"));
+    assert.lengthOf(calls, 1);
+    continues[0].resolve({ ok: true });
+    await flush();
+    assert.isFalse((handle.root as any).isConnected);
+    assert.equal(closedCount(), 1);
+  });
+
+  it("a refused move shows the reason in the card and keeps the conversation", async function () {
+    const { doc, handle, continues, closedCount } = await answeredPill();
+    assert.isFalse(isFakeShown(sidebarError(doc)));
+    action(doc, "sidebar").click();
+    continues[0].resolve({
+      ok: false,
+      error: "The sidebar is answering. Try again when it finishes.",
+    });
+    await flush();
+    type(doc, "Next");
+    assert.isFalse(sendOf(doc).disabled, "a refused move frees the field");
+    assert.isTrue((handle.root as any).isConnected);
+    assert.equal(closedCount(), 0);
+    assert.isTrue(isFakeShown(sidebarError(doc)));
+    assert.equal(
+      sidebarError(doc).textContent,
+      "The sidebar is answering. Try again when it finishes.",
+    );
+    assert.deepEqual(
+      doc.body
+        .querySelectorAll('[data-llm-inline-ask-question="true"]')
+        .map((node: any) => node.textContent),
+      ["Explain"],
+    );
+    assert.isOk(q(doc, "data-llm-inline-ask-answer", "done"));
+    assert.equal((handle.root as any).attributes["data-phase"], "answered");
+    // The user can try again.
+    assert.isFalse(action(doc, "sidebar").disabled);
+    action(doc, "sidebar").click();
+    assert.lengthOf(continues, 2);
+    assert.isFalse(isFakeShown(sidebarError(doc)), "a retry clears the reason");
+    continues[1].reject(new Error("Panel gone"));
+    await flush();
+    assert.equal(sidebarError(doc).textContent, "Panel gone");
+    assert.isTrue((handle.root as any).isConnected);
+  });
+
+  it("a follow-up hides an earlier reason and keeps the button off while it runs", async function () {
+    const { doc, calls, continues } = await answeredPill();
+    action(doc, "sidebar").click();
+    continues[0].resolve({ ok: false, error: "Not now." });
+    await flush();
+    type(doc, "Why?");
+    editorOf(doc).dispatch("keydown", key("Enter"));
+    assert.isFalse(isFakeShown(sidebarError(doc)));
+    assert.isTrue(action(doc, "sidebar").disabled);
+    calls[1].resolve({ text: "Familiarity." });
+    await flush();
+    action(doc, "sidebar").click();
+    assert.deepEqual(continues[1].turns, [
+      { role: "user", text: "Explain this passage fully." },
+      { role: "assistant", text: "Drift is slow." },
+      { role: "user", text: "Why?" },
+      { role: "assistant", text: "Familiarity." },
+    ]);
+  });
+
+  it("stays disabled without a handler or with only a failed answer", async function () {
+    const plain = open();
+    type(plain.doc, "Q1");
+    editorOf(plain.doc).dispatch("keydown", key("Enter"));
+    plain.calls[0].resolve({ text: "Answer" });
+    await flush();
+    assert.isTrue(action(plain.doc, "sidebar").disabled);
+    closeAllReaderOverlays();
+
+    const held = heldContinue();
+    const failed = open({ continueInSidebar: held.continueInSidebar });
+    type(failed.doc, "Q1");
+    editorOf(failed.doc).dispatch("keydown", key("Enter"));
+    failed.calls[0].resolve({ text: "", errorMessage: "Refused." });
+    await flush();
+    assert.isTrue(action(failed.doc, "sidebar").disabled);
+    action(failed.doc, "sidebar").click();
+    assert.lengthOf(held.calls, 0);
+  });
+
+  it("close removes the button's listener", async function () {
+    const { doc, handle } = await answeredPill();
+    const button = action(doc, "sidebar");
+    handle.close();
+    assert.equal(button.listenerCount("click"), 0);
+  });
+});

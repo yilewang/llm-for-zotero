@@ -7,6 +7,8 @@
  * the annotation draft, the reader item, and the paper context. Save as
  * annotation writes that draft through the agent API
  * (saveSelectionAnnotation), filed under the reader panel's conversation.
+ * Continue in sidebar hands the finished turns to the reader's panel
+ * (inlineAskContinue.ts).
  */
 import { getAgentApi, initAgentSubsystem } from "../../../agent";
 import { ZOTERO_HIGHLIGHT_COLORS } from "../../../agent/services/pdfAnnotationGeometry";
@@ -40,6 +42,10 @@ import {
   type InlineAskSaveSetup,
 } from "./inlineAskOverlay";
 import { getInlineAskQuickPrompts } from "./inlineAskPrompts";
+import {
+  createInlineAskContinueInSidebar,
+  type InlineAskPanelReach,
+} from "./inlineAskContinue";
 import {
   buildInlineAskContext,
   createInlineAskTurnRunner,
@@ -312,6 +318,8 @@ export function openInlineAskCardForReader(params: {
   reasoningItemId: number;
   /** The reader panel's conversation; Save files its change there. */
   resolveConversationKey: () => number | null;
+  /** Runs Continue in sidebar in the reader's panel. */
+  reachPanel?: InlineAskPanelReach;
 }): InlineAskCardHandle {
   const { snapshot } = params;
   const choice = resolveInlineAskModelChoice(params.reasoningItemId);
@@ -357,6 +365,20 @@ export function openInlineAskCardForReader(params: {
     },
     runTurn,
     save: buildInlineAskSaveSetup(snapshot, params.resolveConversationKey),
+    continueInSidebar: params.reachPanel
+      ? createInlineAskContinueInSidebar({
+          snapshot,
+          getModel: () =>
+            choice
+              ? {
+                  name: choice.target.model,
+                  entryId: choice.target.entryId,
+                  providerLabel: choice.target.providerLabel,
+                }
+              : null,
+          reachPanel: params.reachPanel,
+        })
+      : undefined,
     createAbortController: () => {
       const Controller = getAbortController();
       return Controller ? new Controller() : null;

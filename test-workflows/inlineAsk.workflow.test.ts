@@ -244,7 +244,10 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isFalse(answered.pillsShown);
     assert.isTrue(answered.footerShown);
     assert.equal(answered.placeholder, "Ask a follow-up…");
-    assert.isTrue(answered.sidebarDisabled, "Continue in sidebar comes in M3");
+    assert.isFalse(
+      answered.sidebarDisabled,
+      "Continue in sidebar is offered once an answer exists",
+    );
     assert.isTrue(
       answered.saveDisabled,
       "a draft without rects (and no reader panel) cannot be saved",

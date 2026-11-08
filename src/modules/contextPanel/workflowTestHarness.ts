@@ -140,6 +140,8 @@ import type {
   WorkflowTestReaderInlineAskCard,
   WorkflowTestReaderInlineAskOpen,
   WorkflowTestReaderInlineAskSave,
+  WorkflowTestReaderInlineAskContinue,
+  WorkflowTestPanelChatMessages,
   WorkflowTestReaderSelectionDraft,
   WorkflowTestReaderPopupActionRow,
   WorkflowTestSidePanel,
@@ -7857,6 +7859,114 @@ async function endReaderInlineAsk(input: {
   }
 }
 
+/**
+ * Clicks Continue in sidebar on the open card and waits until the card
+ * closes or shows why it stayed open.
+ */
+async function continueReaderInlineAskInSidebar(): Promise<WorkflowTestReaderInlineAskContinue> {
+  assertWorkflowTestEnabled();
+  const { popupDoc } = requireWorkflowInlineAsk();
+  const card = popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR);
+  if (!card) throw new Error("The Inline Ask card is not open");
+  const button = card.querySelector(
+    '[data-llm-inline-ask-action="sidebar"]',
+  ) as HTMLButtonElement | null;
+  if (!button) throw new Error("Continue in sidebar is not rendered");
+  const disabledBefore = button.disabled;
+  button.click();
+  const readError = () =>
+    (
+      card.querySelector(
+        '[data-llm-inline-ask-sidebar-error="true"]',
+      ) as HTMLElement | null
+    )?.textContent?.trim() || "";
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 15_000) {
+    if (!card.isConnected || readError()) break;
+    await Zotero.Promise.delay(25);
+  }
+  return {
+    disabledBefore,
+    cardOpen: card.isConnected,
+    error: readError(),
+  };
+}
+
+/**
+ * The chat a workflow panel shows: its rendered messages, and the stored
+ * rows and catalog row of its conversation.
+ */
+async function readPanelChatMessages(
+  panelId: string,
+): Promise<WorkflowTestPanelChatMessages> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(panelId);
+  const root = panel.body.querySelector("#llm-main") as HTMLElement | null;
+  const conversationKey = Number(root?.dataset.itemId || 0);
+  const conversationKind = root?.dataset.conversationKind || "";
+  const system = (root?.dataset.conversationSystem ||
+    "upstream") as ConversationSystem;
+  const rendered = Array.from(
+    panel.body.querySelectorAll("#llm-chat-box .llm-message-wrapper"),
+  )
+    .map((node) => node as HTMLElement)
+    .filter((node) => node.dataset.messageRole)
+    .map((node) => {
+      // The answer bubble starts with its model header; read it apart.
+      const bubble = node.querySelector(".llm-bubble")?.cloneNode(true) as
+        | HTMLElement
+        | undefined;
+      const header = bubble?.querySelector(".llm-model-header");
+      const model =
+        header?.querySelector(".llm-model-name")?.textContent?.trim() || "";
+      header?.remove();
+      return {
+        role: node.dataset.messageRole || "",
+        text: bubble?.textContent?.trim() || "",
+        model,
+        selectedText:
+          node
+            .querySelector(".llm-user-selected-text-content")
+            ?.textContent?.trim() || "",
+      };
+    });
+  const stored = conversationKey
+    ? await conversationRepository.loadMessages({
+        system,
+        conversationKey,
+        limit: 200,
+      })
+    : [];
+  const catalog =
+    conversationKey && (conversationKind === "paper" || !conversationKind)
+      ? await conversationRepository.getCatalogEntry({
+          system,
+          kind: "paper",
+          conversationKey,
+        })
+      : null;
+  return {
+    conversationKey,
+    conversationKind,
+    conversationSystem: system,
+    rendered,
+    stored: stored.map((message) => ({
+      role: message.role,
+      text: message.text,
+      selectedTextContexts: message.selectedTextContexts?.length
+        ? message.selectedTextContexts.map((context) => ({ ...context }))
+        : undefined,
+    })),
+    catalog: catalog
+      ? {
+          title: catalog.title || "",
+          userTurnCount: Number(catalog.userTurnCount || 0),
+          paperItemID: Number(catalog.paperItemID || 0),
+        }
+      : null,
+  };
+}
+
 async function getConversationStoreRowTotals(): Promise<WorkflowTestConversationStoreRowTotals> {
   assertWorkflowTestEnabled();
   const countAll = async (tables: string[]) => {
@@ -10880,6 +10990,8 @@ export function installWorkflowTestHarness(targetAddon: {
     pointerDownOutsideReaderInlineAsk,
     showNewReaderSelectionPopup,
     endReaderInlineAsk,
+    continueReaderInlineAskInSidebar,
+    readPanelChatMessages,
     getConversationStoreRowTotals,
     exerciseHighlightAwareContextRetrieval,
     exerciseContextChipCardVisibility,

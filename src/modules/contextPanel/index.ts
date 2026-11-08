@@ -118,6 +118,8 @@ import {
 import { closeReaderOverlayForNewSelection } from "./selectionPrompt/readerOverlayShared";
 import { createInlineAskSparkIcon } from "./selectionPrompt/inlineAskOverlay";
 import { openInlineAskCardForReader } from "./selectionPrompt/inlineAskReader";
+import type { InlineAskPanelReach } from "./selectionPrompt/inlineAskContinue";
+import { revealReaderChatPane } from "./dedicatedChatPane";
 import {
   cloneInlineAskAnnotation,
   isInlineAskReader,
@@ -928,6 +930,17 @@ function attachReaderSelectionQuestion(input: {
 function resolveReaderPopupPanel(
   event: Parameters<ReaderTextSelectionPopupHandler>[0],
 ): ReturnType<typeof resolveReaderPopupPanelTarget> {
+  return resolveReaderPopupPanelTarget({
+    preferredDocument: event.doc.defaultView?.top?.document || null,
+    documents: collectReaderPopupDocuments(event),
+    tabID: readReaderTabID(event),
+  });
+}
+
+/** The popup's documents and every main window's: where reader panes live. */
+function collectReaderPopupDocuments(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): Set<Document> {
   const docs = new Set<Document>();
   const pushDoc = (doc?: Document | null) => {
     if (doc) docs.add(doc);
@@ -947,15 +960,56 @@ function resolveReaderPopupPanel(
   } catch (_err) {
     void _err;
   }
+  return docs;
+}
+
+function readReaderTabID(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): string | number | null {
   const readerWithTab = event.reader as unknown as {
     tabID?: string | number | null;
     _tabID?: string | number | null;
   };
-  return resolveReaderPopupPanelTarget({
-    preferredDocument: event.doc.defaultView?.top?.document || null,
-    documents: docs,
-    tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
-  });
+  return readerWithTab.tabID ?? readerWithTab._tabID ?? null;
+}
+
+/** How long Continue in sidebar waits for a revealed panel to mount. */
+const READER_PANEL_REACH_TIMEOUT_MS = 4000;
+
+/**
+ * Continue in sidebar's route to the reader tab's own panel: shows the
+ * tab's chat when it is hidden, waits for its panel to publish a handle,
+ * and runs the request there. Null when no panel answered in time.
+ */
+function createReaderPanelReach(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): InlineAskPanelReach {
+  return async (input) => {
+    // A collapsed pane still lays the panel out a few pixels wide, so only
+    // the tab's side navigation knows whether the chat shows. The tab's
+    // pane lives in a main window, not in the reader's own document.
+    const tabID = readReaderTabID(event);
+    for (const doc of collectReaderPopupDocuments(event)) {
+      try {
+        if (revealReaderChatPane(doc, tabID)) break;
+      } catch (err) {
+        appLogger.warn("LLM: could not reveal the reader chat", err);
+      }
+    }
+    const deadline = Date.now() + READER_PANEL_REACH_TIMEOUT_MS;
+    for (;;) {
+      const current = resolveReaderPopupPanel(event);
+      const handle = current ? getPanelHandle(current.body) : undefined;
+      if (handle) return handle.startPaperConversationWithTurns(input);
+      if (Date.now() >= deadline) {
+        appLogger.warn(
+          "LLM: Continue in sidebar found no reader panel to take the chat",
+        );
+        return null;
+      }
+      await Zotero.Promise.delay(50);
+    }
+  };
 }
 
 /** The conversation key of a reader panel, or null (never 0). */
@@ -982,6 +1036,8 @@ function createInlineAskPopupButton(input: {
   reasoningItemId: number;
   /** The reader panel's conversation, read when Save checks or runs. */
   resolveConversationKey: () => number | null;
+  /** Runs Continue in sidebar in the reader tab's panel. */
+  reachPanel: InlineAskPanelReach;
 }): HTMLButtonElement {
   const { event } = input;
   const button = event.doc.createElementNS(
@@ -1043,6 +1099,7 @@ function createInlineAskPopupButton(input: {
         snapshot: { ...input.snapshot, selectedText },
         reasoningItemId: input.reasoningItemId,
         resolveConversationKey: input.resolveConversationKey,
+        reachPanel: input.reachPanel,
       });
     } catch (err) {
       appLogger.warn("LLM: Inline Ask card failed", err);
@@ -1384,6 +1441,7 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                 ) || itemId,
               resolveConversationKey: () =>
                 readPanelConversationKey(resolveReaderPopupPanel(event)),
+              reachPanel: createReaderPanelReach(event),
             }),
           );
         } catch (err) {

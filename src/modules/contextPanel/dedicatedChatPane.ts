@@ -16,6 +16,57 @@ type TabSelectionObserver = {
   unregisterObserver: (id: string) => void;
 };
 
+type ReaderItemDetails = Element & {
+  sidenav?: Element & { _collapsed?: boolean };
+};
+
+/** Whether a panel root takes up space on screen now. */
+function isChatPanelRootShown(root: Element | null | undefined): boolean {
+  if (!root?.isConnected) return false;
+  const rect = root.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+/**
+ * Opens the reader tab's chat the way its rail icon does: a click on the
+ * chat pane's icon in the tab's item-pane side navigation, which expands a
+ * collapsed pane and shows the chat view. Returns false, doing nothing, when
+ * the chat already shows or the tab has no chat icon.
+ */
+export function revealReaderChatPane(
+  doc: Document,
+  tabID: string | number | null | undefined,
+): boolean {
+  const details = getReaderContextPanelForTab(
+    doc,
+    tabID,
+  ) as ReaderItemDetails | null;
+  const section = details?.querySelector(".llm-dedicated-chat-pane") as
+    | (Element & { dataset?: DOMStringMap })
+    | null;
+  const sidenav = details?.sidenav;
+  if (!details || !section || !sidenav) return false;
+  if (!sidenav._collapsed) {
+    // An open chat view: the icon would close it (see closeChatView).
+    if (doc.documentElement.getAttribute("data-llm-pane-view") === "chat")
+      return false;
+    if (isChatPanelRootShown(details.querySelector("#llm-main"))) return false;
+  }
+  const paneID = section.getAttribute("data-pane");
+  const button = paneID
+    ? (Array.from(sidenav.querySelectorAll("[data-pane]")) as Element[]).find(
+        (node) => node.getAttribute("data-pane") === paneID,
+      )
+    : null;
+  const MouseEventCtor = doc.defaultView?.MouseEvent;
+  if (!button || !MouseEventCtor) return false;
+  // Zotero's side navigation acts on a primary click with detail 1.
+  button.dispatchEvent(
+    new MouseEventCtor("click", { bubbles: true, detail: 1, button: 0 }),
+  );
+  return true;
+}
+
 /**
  * Keep the native per-tab item-details host (and its render/ownership hooks),
  * but make chat and item details mutually exclusive views of the right pane.

@@ -2626,6 +2626,26 @@ async function persistConversationMessage(
   }
 }
 
+/**
+ * Stores finished turns, in order, in a conversation the panel is about to
+ * open (Inline Ask's Continue in sidebar), through the same store routing
+ * and upkeep as a sent message. Throws on the first row that fails.
+ */
+export async function persistSeededConversationMessages(
+  conversationKey: number,
+  messages: readonly StoredChatMessage[],
+  conversationSystem: ConversationSystem,
+): Promise<void> {
+  for (const message of messages) {
+    await persistConversationMessage(
+      conversationKey,
+      message,
+      conversationSystem,
+      { rethrow: true },
+    );
+  }
+}
+
 function normalizeStoredPaperContextRoutes(params: {
   paperContexts?: PaperContextRef[];
   pdfPaperContexts?: PaperContextRef[];
