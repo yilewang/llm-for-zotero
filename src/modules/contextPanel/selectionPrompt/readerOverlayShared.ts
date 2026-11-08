@@ -95,19 +95,26 @@ export function closeReaderOverlay(doc: Document): void {
 }
 
 /**
+ * True when the overlay on `doc` holds work the user has not finished (an
+ * Inline Ask card with a conversation; it says so itself).
+ */
+export function readerOverlayHoldsWork(doc: Document): boolean {
+  const handle = (doc as DocWithOverlay)[OVERLAY_KEY];
+  if (!handle) return false;
+  try {
+    return Boolean(handle.keepsOpenOnNewSelection?.());
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A new selection popup closes the overlay on `doc`, unless the overlay
- * holds work the user has not finished (it says so itself).
+ * holds work the user has not finished.
  */
 export function closeReaderOverlayForNewSelection(doc: Document): void {
-  const handle = (doc as DocWithOverlay)[OVERLAY_KEY];
-  if (!handle) return;
-  let keep = false;
-  try {
-    keep = Boolean(handle.keepsOpenOnNewSelection?.());
-  } catch {
-    keep = false;
-  }
-  if (!keep) handle.close();
+  if (readerOverlayHoldsWork(doc)) return;
+  (doc as DocWithOverlay)[OVERLAY_KEY]?.close();
 }
 
 /** Closes every open overlay (plugin shutdown). */

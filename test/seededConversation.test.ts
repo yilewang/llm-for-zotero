@@ -2,6 +2,8 @@ import { assert } from "chai";
 import { describe, it } from "mocha";
 import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
 import { SIDECHAT_SELECTED_TEXT_MAX_LENGTH } from "../src/modules/contextPanel/constants";
+import { SIDE_CHAT_OMITTED_MARKER } from "../src/modules/contextPanel/sideChatContext";
+import type { StoredChatMessage } from "../src/utils/chatStore";
 import { getSelectedTextSourceIconName } from "../src/modules/contextPanel/contextIcons";
 import {
   buildQuestionWithSelectedTextContexts,
@@ -11,7 +13,10 @@ import { normalizeSelectedTextSource } from "../src/services/context/normalizers
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 import {
   buildSeededConversationHandover,
+  INLINE_ASK_OMITTED_MARKER,
   SEEDED_CONVERSATION_HANDOVER_SOURCE,
+  storeSeededConversation,
+  type SeededConversationStore,
   buildSeededConversationMessages,
   buildSeededConversationTitleSeed,
   normalizeSeededTurns,
@@ -151,20 +156,85 @@ describe("seededConversation", function () {
     assert.equal(buildSeededConversationTitleSeed([]), "");
   });
 
-  it("hands the turns over only where the provider keeps its own session", function () {
+  it("hands the turns over only where a new provider session gets no stored history", function () {
+    // Claude Code starts a fresh session with the typed message only.
     assert.isTrue(seededConversationNeedsHandover("claude_code"));
-    assert.isTrue(seededConversationNeedsHandover("codex"));
+    // Codex app-server injects the stored messages into a new thread, and a
+    // plain API chat sends them as history: a chip would repeat them.
+    assert.isFalse(seededConversationNeedsHandover("codex"));
     assert.isFalse(seededConversationNeedsHandover("upstream"));
   });
 
-  it("writes the handover as the side chat transcript of the turns", function () {
+  it("starts the handover with the paper, page and passage, then the turns", function () {
     assert.equal(
-      buildSeededConversationHandover([
+      buildSeededConversationHandover({
+        selectedTextContext: selection,
+        turns: [
+          { role: "user", text: "Q1" },
+          { role: "assistant", text: "A1" },
+          { role: "user", text: "Q2" },
+        ],
+      }),
+      [
+        "Paper: Drift paper",
+        "Page: 4",
+        "Selected passage:",
+        "A familiar stimulus drifts at a smaller rate.",
+        "",
+        "Q: Q1",
+        "",
+        "A: A1",
+      ].join("\n"),
+    );
+  });
+
+  it("names the page by its index when Zotero gave no label, and skips an unknown paper", function () {
+    const text = buildSeededConversationHandover({
+      selectedTextContext: {
+        text: "Passage",
+        source: "pdf",
+        contextItemId: 41,
+        pageIndex: 6,
+      },
+      turns: [
         { role: "user", text: "Q1" },
         { role: "assistant", text: "A1" },
-        { role: "user", text: "Q2" },
-      ]),
-      "Q: Q1\n\nA: A1",
+      ],
+    });
+    assert.equal(
+      text,
+      [
+        "Page: 7",
+        "Selected passage:",
+        "Passage",
+        "",
+        "Q: Q1",
+        "",
+        "A: A1",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps the passage and the newest turns under the cap, with an Inline Ask marker", function () {
+    const turns = Array.from({ length: 40 }, (_, index) => [
+      { role: "user" as const, text: `Q${index} ${"q".repeat(400)}` },
+      { role: "assistant" as const, text: `A${index} ${"a".repeat(800)}` },
+    ]).flat();
+    const text = buildSeededConversationHandover({
+      selectedTextContext: selection,
+      turns,
+    });
+    assert.isAtMost(text.length, SIDECHAT_SELECTED_TEXT_MAX_LENGTH);
+    assert.isTrue(text.startsWith("Paper: Drift paper\nPage: 4\n"));
+    assert.include(text, selection.text);
+    assert.include(text, INLINE_ASK_OMITTED_MARKER);
+    assert.notInclude(text, SIDE_CHAT_OMITTED_MARKER);
+    assert.include(text, "A39 ");
+    assert.notInclude(text, "Q0 ");
+    assert.equal(
+      normalizeSelectedText(text, "inlineask"),
+      text,
+      "the chip keeps the whole handover",
     );
   });
 });
@@ -253,5 +323,105 @@ describe("Inline Ask handover chip source", function () {
     const text = JSON.stringify(messages);
     assert.include(text, "Inline Ask transcript");
     assert.notInclude(text, "side chat transcript");
+  });
+});
+
+describe("storeSeededConversation", function () {
+  const messages: StoredChatMessage[] = [
+    { role: "user", text: "Q1", timestamp: 101 },
+    { role: "assistant", text: "A1", timestamp: 102 },
+    { role: "user", text: "Q2", timestamp: 103 },
+    { role: "assistant", text: "A2", timestamp: 104 },
+  ];
+
+  /** An in-memory draft that starts empty. */
+  function fakeStore(
+    options: {
+      failWriteAt?: number;
+      dropWriteAt?: number;
+      failTitle?: boolean;
+    } = {},
+  ) {
+    const rows: StoredChatMessage[] = [];
+    const titles: string[] = [];
+    const deletions: Array<[number, number]> = [];
+    let writes = 0;
+    const store: SeededConversationStore = {
+      writeMessage: async (message) => {
+        const index = writes++;
+        if (index === options.failWriteAt) throw new Error("disk full");
+        // A frozen conversation drops a write without an error.
+        if (index === options.dropWriteAt) return;
+        rows.push(message);
+      },
+      countMessages: async () => rows.length,
+      deleteTurn: async (userTimestamp, assistantTimestamp) => {
+        deletions.push([userTimestamp, assistantTimestamp]);
+        for (const [role, timestamp] of [
+          ["user", userTimestamp],
+          ["assistant", assistantTimestamp],
+        ] as const) {
+          const index = rows.findIndex(
+            (row) => row.role === role && row.timestamp === timestamp,
+          );
+          if (index >= 0) rows.splice(index, 1);
+        }
+      },
+      setTitle: async (title) => {
+        if (options.failTitle) throw new Error("title write failed");
+        titles.push(title);
+      },
+    };
+    return { store, rows, titles, deletions };
+  }
+
+  it("stores the messages, then the title", async function () {
+    const fake = fakeStore();
+    const result = await storeSeededConversation(fake.store, messages, "Q1");
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(
+      fake.rows.map((row) => row.text),
+      ["Q1", "A1", "Q2", "A2"],
+    );
+    assert.deepEqual(fake.titles, ["Q1"]);
+    assert.isEmpty(fake.deletions);
+  });
+
+  it("removes the rows it wrote when a later write fails, leaving the draft empty", async function () {
+    const fake = fakeStore({ failWriteAt: 2 });
+    const result = await storeSeededConversation(fake.store, messages, "Q1");
+    assert.deepEqual(result, { ok: false });
+    assert.isEmpty(fake.rows, "no orphan rows stay in the draft");
+    assert.isEmpty(fake.titles, "a failed seed gets no title");
+    // Only the pairs this call wrote (or tried to write) are deleted.
+    assert.deepEqual(fake.deletions, [
+      [101, 102],
+      [103, 104],
+    ]);
+  });
+
+  it("removes the rows it wrote when the stored count is wrong", async function () {
+    const fake = fakeStore({ dropWriteAt: 1 });
+    const result = await storeSeededConversation(fake.store, messages, "Q1");
+    assert.deepEqual(result, { ok: false });
+    assert.isEmpty(fake.rows);
+    assert.isEmpty(fake.titles);
+  });
+
+  it("succeeds when only the title fails, so a retry cannot store a second copy", async function () {
+    const fake = fakeStore({ failTitle: true });
+    const result = await storeSeededConversation(fake.store, messages, "Q1");
+    assert.deepEqual(result, { ok: true });
+    assert.lengthOf(fake.rows, 4);
+    assert.isEmpty(fake.deletions);
+  });
+
+  it("reports failure, not an exception, when the clean-up also fails", async function () {
+    const fake = fakeStore({ failWriteAt: 1 });
+    fake.store.deleteTurn = async () => {
+      throw new Error("delete failed");
+    };
+    const result = await storeSeededConversation(fake.store, messages, "Q1");
+    assert.deepEqual(result, { ok: false });
   });
 });

@@ -485,6 +485,8 @@ export type WorkflowTestPanelChatMessages = {
     userTurnCount: number;
     paperItemID: number;
   } | null;
+  /** The selected-text chips waiting in the composer, in order. */
+  composerSelectedTexts: Array<{ text: string; source: string }>;
 };
 
 export type WorkflowTestReaderInlineAskOpen = {
@@ -1968,7 +1970,13 @@ export type WorkflowTestApi = {
   /** A new text selection popup on the same reader. */
   showNewReaderSelectionPopup: (input: {
     selectedText: string;
-  }) => Promise<{ cardOpen: boolean }>;
+    /** Then presses the new popup's Add Text button. */
+    pressAddText?: boolean;
+  }) => Promise<{
+    cardOpen: boolean;
+    /** Add Text's question box is open in the reader. */
+    addTextPromptOpen: boolean;
+  }>;
   /** Closes the card (Discard button or Escape) and the reader. */
   endReaderInlineAsk: (input: {
     via: "discard" | "escape";

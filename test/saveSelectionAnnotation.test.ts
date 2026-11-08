@@ -4,6 +4,7 @@ import {
   isVerifiedAnnotationSave,
   saveSelectionAnnotation,
 } from "../src/agent/actions/saveSelectionAnnotation";
+import { callTool } from "../src/agent/actions/executor";
 import { ActionContractService } from "../src/agent/contracts/actionContract";
 import { initAgentChangeJournal } from "../src/agent/store/changeJournal";
 import { AgentToolRegistry } from "../src/agent/tools/registry";
@@ -192,7 +193,7 @@ describe("saveSelectionAnnotation", function () {
     assert.lengthOf(harness.saved, 1);
   });
 
-  it("reports an unverified receipt as a failure when no open reader has the PDF", async function () {
+  it("refuses before writing when no open reader has the PDF", async function () {
     const harness = await setup({ fingerprint: "" });
     const outcome = await saveSelectionAnnotation(
       harness.registry,
@@ -201,11 +202,52 @@ describe("saveSelectionAnnotation", function () {
     );
     assert.isFalse(outcome.ok);
     if (outcome.ok) return;
-    assert.equal(
-      outcome.result?.actionReceipts?.[0]?.verification,
-      "unverified",
+    assert.include(outcome.error, "must be open in Zotero's reader");
+    assert.isEmpty(harness.saved, "no highlight is written");
+  });
+
+  it("is refused for an action that runs inside a model turn", async function () {
+    const harness = await setup();
+    const toolContext: AgentToolContext = {
+      request: resolvedAgentRequest({
+        conversationKey: 7001,
+        mode: "agent",
+        userText: "highlight this",
+        libraryID: 1,
+      }),
+      item: null,
+      currentAnswerText: "",
+      modelName: "model",
+      runId: "run-1",
+    };
+    const result = await callTool(
+      "annotate_pdf",
+      {
+        attachmentId: 55,
+        text: selection.text,
+        color: "#a28ae5",
+        comment: "",
+        annotationType: "highlight",
+        selection,
+      },
+      {
+        registry: harness.registry,
+        zoteroGateway: harness.gateway,
+        libraryID: 1,
+        conversationKey: 7001,
+        confirmationMode: "native_ui",
+        onProgress: () => undefined,
+        requestConfirmation: async () => ({ approved: true }),
+        toolContext,
+        requestContext: { actionEntryPoint: "conversation" },
+      },
     );
-    assert.isNotEmpty(outcome.error);
+    assert.isFalse(result.ok);
+    assert.include(
+      JSON.stringify(result.content),
+      "only the plugin's own reader actions may pass selection coordinates",
+    );
+    assert.isEmpty(harness.saved);
   });
 
   it("never files the change under conversation 0", async function () {

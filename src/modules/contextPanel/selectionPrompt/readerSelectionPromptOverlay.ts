@@ -10,6 +10,7 @@ import {
   isDarkReaderDocument,
   positionReaderOverlay,
   prepareReaderOverlaySlot,
+  readerOverlayHoldsWork,
   readerOverlayPalette,
   readerOverlayScheduler,
   registerReaderOverlay,
@@ -291,6 +292,9 @@ export function countOpenReaderSelectionPromptOverlays(): number {
  * that chip's question, if any. Enter attaches the typed text to that chip
  * as its question; it never sends. `attach` returns
  * false when no chip took the text, and the box then stays open.
+ *
+ * An Inline Ask card that holds a conversation keeps the document's slot:
+ * the chip is already in the panel, and the box does not open (null).
  */
 export function openReaderSelectionPromptForChip(input: {
   doc: Document;
@@ -305,6 +309,7 @@ export function openReaderSelectionPromptForChip(input: {
 }): ReaderSelectionPromptOverlayHandle | null {
   if (input.outcome !== "added" && input.outcome !== "duplicate") return null;
   if (!input.selectedText.trim()) return null;
+  if (readerOverlayHoldsWork(input.doc)) return null;
   return openReaderSelectionPromptOverlay({
     doc: input.doc,
     anchor: input.anchor,

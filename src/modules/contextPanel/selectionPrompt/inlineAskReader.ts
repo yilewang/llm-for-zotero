@@ -24,6 +24,7 @@ import {
   getCodexDirectCatalogModel,
   getCodexDirectCatalogSnapshot,
   getCodexDirectReasoningChoices,
+  loadCodexDirectCatalog,
   reconcileCodexDirectReasoningChoice,
 } from "../../../codexAuth/modelCatalog";
 import { getCachedPageTextForAttachment } from "../../../services/pdf/livePdfSelectionLocator";
@@ -33,7 +34,7 @@ import { getModelProviderGroups } from "../../../utils/modelProviders";
 import {
   detectReasoningProvider,
   getReasoningOptions,
-  getSelectedReasoningForItem,
+  peekSelectedReasoningForItem,
 } from "../chat";
 import {
   getAvailableModelEntries,
@@ -104,17 +105,21 @@ export type InlineAskModelChoice = {
   line: InlineAskModelLine;
 };
 
+function isCodexDirectConfigured(): boolean {
+  return getModelProviderGroups().some(
+    (group) =>
+      group.authMode === "codex_auth" &&
+      group.models.some((row) => row.model.trim()),
+  );
+}
+
 function readRuleInput(): InlineAskModelRuleInput {
   return {
     conversationSystem: surfaceChoices.conversationSystem.get(READER_SURFACE),
     sidebarEntry: getSelectedModelEntryForSurface(READER_SURFACE),
     entries: getAvailableModelEntries(),
     codexDirect: {
-      configured: getModelProviderGroups().some(
-        (group) =>
-          group.authMode === "codex_auth" &&
-          group.models.some((row) => row.model.trim()),
-      ),
+      configured: isCodexDirectConfigured(),
       runtimeModel: surfaceChoices.codexRuntimeModel.get(READER_SURFACE),
       isModelAvailable: (model) =>
         getCodexDirectCatalogSnapshot().status !== "ready" ||
@@ -169,17 +174,19 @@ function ruleEffort(
           );
     return reconcileCodexDirectReasoningChoice(target.model, stored);
   }
+  // Read only: remembering the level here would overwrite the sidebar's
+  // per-item choice with one resolved for Inline Ask's model.
   return (
-    getSelectedReasoningForItem(
+    peekSelectedReasoningForItem(
       reasoningItemId,
       target.model,
       target.apiBase,
       target.providerProtocol,
       target.advanced?.profileOverride as Parameters<
-        typeof getSelectedReasoningForItem
+        typeof peekSelectedReasoningForItem
       >[4],
       READER_SURFACE,
-    )?.level || "auto"
+    ).level || "auto"
   );
 }
 
@@ -276,6 +283,20 @@ export function createInlineAskModelPicker(
     pickEffort: (value) => {
       setStringPref(INLINE_ASK_REASONING_PREF, value);
       refresh();
+    },
+    // Until the Codex Direct catalog loads, a Codex Direct model offers
+    // Auto only; the sidebar loads it when its own menu opens, and so does
+    // the card. A load already running is shared.
+    prepareMenu: (onChange) => {
+      if (!isCodexDirectConfigured()) return;
+      if (getCodexDirectCatalogSnapshot().status === "ready") return;
+      void loadCodexDirectCatalog().then(
+        () => {
+          refresh();
+          onChange();
+        },
+        () => undefined,
+      );
     },
   };
 }

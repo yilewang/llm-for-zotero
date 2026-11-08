@@ -59,6 +59,18 @@ function keepNewest(text: string, maxChars: number, marker: string): string {
 }
 
 /**
+ * A chat's turns as "Q: ..." / "A: ..." text of at most `maxChars`
+ * characters, newest kept, with `marker` leading when turns were omitted.
+ */
+export function buildTranscriptContext(
+  messages: readonly TranscriptMessage[],
+  maxChars: number,
+  marker: string,
+): string {
+  return keepNewest(formatTurns(messages), maxChars, marker);
+}
+
+/**
  * The side chat as text for the main chat's next message, at most
  * `maxChars` characters (default: the "sidechat" selected-text cap).
  */

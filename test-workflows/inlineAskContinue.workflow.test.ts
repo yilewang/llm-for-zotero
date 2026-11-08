@@ -20,8 +20,10 @@ import { getReaderContextPanelForTab } from "../src/modules/contextPanel/readerP
  * turns become a new paper conversation in the reader tab's panel, stored as
  * real messages with the selection on the first question, titled, listed in
  * history, and reopened from it. A panel that is answering refuses, and the
- * card keeps its conversation. In a Codex app-server chat the turns also go
- * into the composer for the provider's own session.
+ * card keeps its conversation. In a Claude Code chat the paper, page,
+ * passage and turns also go into the composer for the provider's fresh
+ * session; a Codex app-server thread gets the stored turns as history, so
+ * no chip repeats them. The composer's own chips stay.
  *
  * The plugin's real popup handler, card, panel handle, stores and history
  * run; only the network is scripted (a held fake provider).
@@ -51,6 +53,7 @@ const SAVED_PREF_KEYS = [
 ];
 
 const SELECTED_TEXT = "INLINE_ASK_CONTINUE_PASSAGE";
+const SECOND_SELECTED_TEXT = "INLINE_ASK_CONTINUE_SECOND";
 const EXPLAIN_PROMPT =
   "Explain this passage in plain language, using the context of the paper.";
 
@@ -72,7 +75,9 @@ describe("workflow: Inline Ask continue in sidebar", function () {
     const fixture = await api.createPaperWithPdfFixture({
       title,
       pdfTitle: `${title} PDF`,
-      pages: [`Drift study. The ${SELECTED_TEXT} reports slow change.`],
+      pages: [
+        `Drift study. The ${SELECTED_TEXT} reports slow change. Later the ${SECOND_SELECTED_TEXT} follows.`,
+      ],
     });
     fixtures.push(fixture);
     return fixture;
@@ -419,7 +424,7 @@ describe("workflow: Inline Ask continue in sidebar", function () {
     assert.lengthOf(shown.stored, 4, JSON.stringify(shown));
   });
 
-  it("in a Codex app-server chat, stores the turns in Codex's store and attaches them for the provider", async function () {
+  it("in a Codex app-server chat, stores the turns in Codex's store and adds no chip (the new thread gets them as history)", async function () {
     api.configureCodexModelCatalogs(
       Array.from({ length: 12 }, () => ({
         models: [
@@ -482,18 +487,156 @@ describe("workflow: Inline Ask continue in sidebar", function () {
     assert.equal(shown.catalog?.userTurnCount, 2, message);
     assert.isAbove(shown.catalog?.title.length || 0, 0, message);
     const composer = await api.getDiagnostics(panel.panelId);
-    assert.include(
+    assert.notInclude(
       composer.selectedContextLabels,
       "Inline Ask",
-      `the turns wait in the composer as an Inline Ask chip: ${JSON.stringify(composer.selectedContextLabels)}`,
+      `no handover chip would repeat the injected turns: ${JSON.stringify(composer.selectedContextLabels)}`,
     );
-    assert.notInclude(composer.selectedContextLabels, "Side chat");
+    assert.deepEqual(shown.composerSelectedTexts, [], message);
     const rows = await api.listPanelHistory(panel.panelId, { reopen: true });
     const row = rows.find(
       (entry) => entry.conversationKey === shown.conversationKey,
     );
     assert.isOk(row, JSON.stringify(rows));
     assert.isFalse(Boolean(row!.isDraft), JSON.stringify(row));
+  });
+
+  it("Add Text keeps a card that holds a conversation, and Continue keeps the composer's chip", async function () {
+    const fixture = await createFixture("Inline Ask continue keeps chips");
+    const { panel, panelConversationKey } = await askTwoTurns(
+      fixture,
+      "continue-chips",
+    );
+    const panelBefore = await api.readPanelChatMessages(panel.panelId);
+    assert.lengthOf(panelBefore.stored, 0, "the panel shows an empty draft");
+
+    // Add Text on a new selection: the chip goes to the panel, the card
+    // stays, and Add Text's question box does not replace it.
+    const added = await api.showNewReaderSelectionPopup({
+      selectedText: SECOND_SELECTED_TEXT,
+      pressAddText: true,
+    });
+    assert.isTrue(added.cardOpen, JSON.stringify(added));
+    assert.isFalse(added.addTextPromptOpen, JSON.stringify(added));
+    const card = api.readReaderInlineAsk();
+    assert.equal(card.phase, "answered", JSON.stringify(card));
+    assert.lengthOf(card.answers, 2);
+    let withChip = await api.readPanelChatMessages(panel.panelId);
+    await waitFor(async () => {
+      withChip = await api.readPanelChatMessages(panel.panelId);
+      return withChip.composerSelectedTexts.some(
+        (entry) => entry.text === SECOND_SELECTED_TEXT,
+      );
+    }, "Add Text puts the chip in the panel's composer");
+    assert.equal(withChip.conversationKey, panelConversationKey);
+
+    // Continue reuses that empty draft and leaves the chip in the composer.
+    const moved = await api.continueReaderInlineAskInSidebar();
+    assert.isFalse(moved.cardOpen, JSON.stringify(moved));
+    let shown = await api.readPanelChatMessages(panel.panelId);
+    await waitFor(async () => {
+      shown = await api.readPanelChatMessages(panel.panelId);
+      return shown.rendered.length === 4;
+    }, "the panel draws the seeded messages");
+    const message = JSON.stringify(shown);
+    assert.equal(shown.conversationKey, panelConversationKey, message);
+    assert.lengthOf(shown.stored, 4, message);
+    assert.deepEqual(
+      shown.composerSelectedTexts.map((entry) => [entry.source, entry.text]),
+      [["pdf", SECOND_SELECTED_TEXT]],
+      message,
+    );
+    const composer = await api.getDiagnostics(panel.panelId);
+    assert.lengthOf(
+      composer.selectedContextLabels,
+      1,
+      JSON.stringify(composer.selectedContextLabels),
+    );
+  });
+
+  it("in a Claude Code chat, stores the turns in Claude's store, hands the passage and turns over, and keeps the chat through reopen", async function () {
+    Zotero.Prefs.set(PREF_PREFIX + "enableClaudeCodeMode", true, true);
+    Zotero.Prefs.set(PREF_PREFIX + "conversationSystem", "claude_code", true);
+    const fixture = await createFixture("Inline Ask continue Claude");
+    const tag = "continue-claude";
+    const { panel } = await askTwoTurns(fixture, tag);
+    const panelBefore = await api.readPanelChatMessages(panel.panelId);
+    assert.equal(panelBefore.conversationSystem, "claude_code");
+
+    const moved = await api.continueReaderInlineAskInSidebar();
+    assert.isFalse(moved.cardOpen, JSON.stringify(moved));
+    let shown = await api.readPanelChatMessages(panel.panelId);
+    await waitFor(async () => {
+      shown = await api.readPanelChatMessages(panel.panelId);
+      return shown.rendered.length === 4;
+    }, "the panel draws the seeded Claude messages");
+    const message = JSON.stringify(shown);
+    assert.equal(shown.conversationSystem, "claude_code", message);
+    assert.equal(shown.conversationKind, "paper", message);
+    const expectedOrder = [
+      ["user", EXPLAIN_PROMPT],
+      ["assistant", `${tag} first answer`],
+      ["user", `${tag} follow-up question`],
+      ["assistant", `${tag} second answer`],
+    ];
+    assert.deepEqual(
+      shown.stored.map((row) => [row.role, row.text]),
+      expectedOrder,
+      message,
+    );
+    // Claude's history and its empty-session clean-up treat a chat with
+    // user turns or a title as a real chat, never as an empty draft.
+    assert.equal(shown.catalog?.userTurnCount, 2, message);
+    assert.match(shown.catalog?.title || "", /^Explain this passage/, message);
+
+    // The fresh Claude session gets the passage and turns from the chip.
+    const chips = shown.composerSelectedTexts.filter(
+      (entry) => entry.source === "inlineask",
+    );
+    assert.lengthOf(chips, 1, message);
+    const handover = chips[0].text;
+    assert.isTrue(
+      handover.startsWith(`Paper: Inline Ask continue Claude`),
+      handover,
+    );
+    assert.include(handover, `Selected passage:\n${SELECTED_TEXT}`);
+    assert.isAbove(
+      handover.indexOf(`Q: ${EXPLAIN_PROMPT}`),
+      handover.indexOf(SELECTED_TEXT),
+    );
+    assert.include(handover, `A: ${tag} second answer`);
+    const composer = await api.getDiagnostics(panel.panelId);
+    assert.include(composer.selectedContextLabels, "Inline Ask");
+
+    // Listed as a titled chat, reopened from history, and still listed
+    // after a fresh mount.
+    const seededKey = shown.conversationKey;
+    await api.startNewPanelConversation(panel.panelId);
+    const away = await api.readPanelChatMessages(panel.panelId);
+    assert.notEqual(away.conversationKey, seededKey);
+    const rows = await api.listPanelHistory(panel.panelId, { reopen: true });
+    const row = rows.find((entry) => entry.conversationKey === seededKey);
+    assert.isOk(row, JSON.stringify(rows));
+    assert.isFalse(Boolean(row!.isDraft), JSON.stringify(row));
+    assert.match(row!.title, /^Explain this passage/, JSON.stringify(row));
+    await api.clickPanelHistoryRow(panel.panelId, seededKey);
+    const reopened = await api.readPanelChatMessages(panel.panelId);
+    assert.equal(reopened.conversationKey, seededKey);
+    assert.equal(reopened.conversationSystem, "claude_code");
+    assert.deepEqual(
+      reopened.rendered.map((entry) => [entry.role, entry.text]),
+      expectedOrder,
+      JSON.stringify(reopened),
+    );
+    const remounted = await api.renderPanelForItem(fixture.parentItemId);
+    const remountedRows = await api.listPanelHistory(remounted.panelId, {
+      reopen: true,
+    });
+    const remountedRow = remountedRows.find(
+      (entry) => entry.conversationKey === seededKey,
+    );
+    assert.isOk(remountedRow, JSON.stringify(remountedRows));
+    assert.isFalse(Boolean(remountedRow!.isDraft));
   });
 
   it("opens a collapsed reader pane and seeds the reader tab's own chat", async function () {

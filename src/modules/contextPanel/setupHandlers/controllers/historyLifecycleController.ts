@@ -56,6 +56,7 @@ import {
   refreshConversationPanels,
 } from "../../chat";
 import type { StoredChatMessage } from "../../../../utils/chatStore";
+import { storeSeededConversation } from "../../seededConversation";
 import {
   loadAllConversationHistory,
   toUpstreamHistoryRowShape,
@@ -3797,44 +3798,49 @@ export function createHistoryLifecycleController(
     if (!isOwnedPanelOperationCurrent(ownership, "seeded-paper-load")) {
       return { ok: false, reason: "unavailable" };
     }
-    try {
-      await persistSeededConversationMessages(
-        conversationKey,
-        params.messages,
-        system,
-      );
-      // A frozen or retired conversation drops writes without an error.
-      const stored = await conversationRepository.loadMessages({
-        system,
-        conversationKey,
-        limit: params.messages.length + 1,
-      });
-      if (stored.length !== params.messages.length) {
-        appLogger.warn("LLM: seeded paper chat stored a different turn count", {
-          conversationKey,
-          expected: params.messages.length,
-          stored: stored.length,
-        });
-        return { ok: false, reason: "failed" };
-      }
-      if (params.titleSeed) {
-        await conversationRepository.touchCatalogTitle({
-          system,
-          kind: "paper",
-          conversationKey,
-          title: params.titleSeed,
-        });
-      }
-    } catch (err) {
-      appLogger.warn("LLM: Failed to store the seeded paper chat", err);
-      return { ok: false, reason: "failed" };
-    }
+    // All or nothing for the messages: a failed write removes the rows it
+    // stored, so the draft stays empty and a retry cannot make two copies.
+    const stored = await storeSeededConversation(
+      {
+        writeMessage: (message) =>
+          persistSeededConversationMessages(conversationKey, [message], system),
+        // A frozen or retired conversation drops writes without an error.
+        countMessages: async (limit) =>
+          (
+            await conversationRepository.loadMessages({
+              system,
+              conversationKey,
+              limit,
+            })
+          ).length,
+        deleteTurn: (userTimestamp, assistantTimestamp) =>
+          conversationRepository.deleteTurnMessages({
+            system,
+            conversationKey,
+            userTimestamp,
+            assistantTimestamp,
+          }),
+        setTitle: (title) =>
+          conversationRepository.touchCatalogTitle({
+            system,
+            kind: "paper",
+            conversationKey,
+            title,
+          }),
+      },
+      params.messages,
+      params.titleSeed,
+      (message, detail) =>
+        appLogger.warn(message, { conversationKey, error: detail }),
+    );
+    if (!stored.ok) return { ok: false, reason: "failed" };
     // The messages are stored; from here the chat is in history even when
-    // the panel cannot open it now.
+    // the panel cannot open it now. The composer's chips, images and files
+    // stay: they are the user's, as the new-chat action keeps them unless
+    // it forces a fresh chat.
     chatHistory.delete(conversationKey);
     loadedConversationKeys.delete(conversationKey);
     invalidateHistorySearchDocument(conversationKey);
-    clearTransientComposeStateForItem(conversationKey);
     const switched = Boolean(
       await switchPaperConversation(conversationKey, { paperItem }),
     );

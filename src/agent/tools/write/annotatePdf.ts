@@ -1,4 +1,4 @@
-import type { AgentWriteToolDefinition } from "../../types";
+import type { AgentToolContext, AgentWriteToolDefinition } from "../../types";
 import { stateChangeInvocationPlan } from "../../authorization/invocationPlan";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { resolveHighlightColor } from "../../services/pdfAnnotationGeometry";
@@ -43,6 +43,20 @@ type AnnotateInput = {
 
 const HOST_ONLY_SELECTION =
   "annotate_pdf refused the selection input: only the plugin's own reader actions may pass selection coordinates. Supply the quoted text instead.";
+
+const SELECTION_NEEDS_OPEN_READER =
+  "The highlight was not saved: the PDF must be open in Zotero's reader so the saved highlight can be checked against it. Open the PDF and try again.";
+
+/**
+ * A selection comes only from the plugin's own reader UI: an action's code
+ * built the call (hostAction) from the action UI entry point. An action run
+ * inside a model turn (entry point "conversation") does not qualify.
+ */
+function isHostSelectionCaller(context: AgentToolContext): boolean {
+  return Boolean(
+    context.hostAction && context.request?.actionEntryPoint === "action_ui",
+  );
+}
 
 /** Checks the host selection's shape; the error names the bad part. */
 function readSelection(
@@ -380,7 +394,7 @@ export function createAnnotatePdfTool(
 
     planInvocation(input, context) {
       // Runs before authorization; validate has no context to check this.
-      if (input.selection && !context.hostAction)
+      if (input.selection && !isHostSelectionCaller(context))
         throw new Error(HOST_ONLY_SELECTION);
       return stateChangeInvocationPlan({
         effects: ["create"],
@@ -391,8 +405,16 @@ export function createAnnotatePdfTool(
     },
 
     async execute(input, context) {
-      if (input.selection && !context.hostAction)
+      if (input.selection && !isHostSelectionCaller(context))
         throw new Error(HOST_ONLY_SELECTION);
+      // The receipt checks a selection's highlight against the open reader's
+      // document; without one the write could never be verified, so nothing
+      // is written.
+      const selectionFingerprint = input.selection
+        ? readDocumentFingerprint(input.attachmentId)
+        : "";
+      if (input.selection && !selectionFingerprint)
+        throw new Error(SELECTION_NEEDS_OPEN_READER);
       const attachment = zoteroGateway.getItem(input.attachmentId);
       if (!attachment?.isAttachment?.() || !attachment.isPDFAttachment?.()) {
         throw new Error(
@@ -411,11 +433,7 @@ export function createAnnotatePdfTool(
               pageIndex: input.selection.pageIndex,
               rects: input.selection.rects,
             },
-            source: {
-              // Empty when no open reader holds the PDF: the receipt then
-              // stays unverified.
-              documentFingerprint: readDocumentFingerprint(input.attachmentId),
-            },
+            source: { documentFingerprint: selectionFingerprint },
           }
         : await resolveHighlight(input, context.signal);
       if (context.signal?.aborted)

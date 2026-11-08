@@ -7832,9 +7832,9 @@ async function pointerDownOutsideReaderInlineAsk(): Promise<{
   };
 }
 
-async function showNewReaderSelectionPopup(input: {
-  selectedText: string;
-}): Promise<{ cardOpen: boolean }> {
+async function showNewReaderSelectionPopup(
+  input: Parameters<WorkflowTestApi["showNewReaderSelectionPopup"]>[0],
+): ReturnType<WorkflowTestApi["showNewReaderSelectionPopup"]> {
   assertWorkflowTestEnabled();
   const state = requireWorkflowInlineAsk();
   const pageIndex = 0;
@@ -7845,8 +7845,31 @@ async function showNewReaderSelectionPopup(input: {
   });
   state.popupHosts.push(popup.popupHost);
   await Zotero.Promise.delay(50);
+  if (input.pressAddText) {
+    const addText = readWorkflowPopupButtons(popup.popupHost).find(
+      (button) => button.textContent?.trim() === "Add Text",
+    );
+    const popupWindow = popup.popupDoc.defaultView;
+    if (!addText || !popupWindow?.MouseEvent) {
+      throw new Error("Add Text button was not rendered");
+    }
+    addText.dispatchEvent(
+      new popupWindow.MouseEvent(
+        "pointerdown",
+        cloneEventInitIntoWindow(
+          { bubbles: true, cancelable: true, button: 0 },
+          popupWindow,
+        ),
+      ),
+    );
+    // The chip is added asynchronously; the question box would open after.
+    await Zotero.Promise.delay(500);
+  }
   return {
     cardOpen: Boolean(state.popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR)),
+    addTextPromptOpen: Boolean(
+      state.popupDoc.querySelector('[data-llm-reader-selection-prompt="true"]'),
+    ),
   };
 }
 
@@ -8203,6 +8226,12 @@ async function readPanelChatMessages(
           paperItemID: Number(catalog.paperItemID || 0),
         }
       : null,
+    composerSelectedTexts: conversationKey
+      ? getSelectedTextContextEntries(conversationKey).map((context) => ({
+          text: context.text,
+          source: context.source,
+        }))
+      : [],
   };
 }
 

@@ -10,7 +10,10 @@ import {
   closeReaderOverlayForNewSelection,
   countOpenReaderOverlays,
 } from "../src/modules/contextPanel/selectionPrompt/readerOverlayShared";
-import { openReaderSelectionPromptOverlay } from "../src/modules/contextPanel/selectionPrompt/readerSelectionPromptOverlay";
+import {
+  openReaderSelectionPromptForChip,
+  openReaderSelectionPromptOverlay,
+} from "../src/modules/contextPanel/selectionPrompt/readerSelectionPromptOverlay";
 import { isFakeShown, makeFakeReaderDoc } from "./helpers/fakeReaderOverlayDom";
 
 const labels: InlineAskOverlayInput["labels"] = {
@@ -388,6 +391,44 @@ describe("openInlineAskOverlay", function () {
     assert.isFalse((prompt.root as any).isConnected);
     assert.isTrue((card.root as any).isConnected);
     assert.equal(countOpenReaderOverlays(), 1);
+  });
+
+  it("Add Text's question box does not replace a card that holds a conversation", function () {
+    const promptLabels = {
+      placeholder: "Ask…",
+      hint: "Enter to add",
+      submit: "Add",
+      selectedTextLabel: "Selected text",
+    };
+    const busy = open();
+    q(busy.doc, "data-llm-inline-ask-pill", "explain").click();
+    const skipped = openReaderSelectionPromptForChip({
+      doc: busy.doc,
+      anchor,
+      outcome: "added",
+      selectedText,
+      labels: promptLabels,
+      attach: () => true,
+    });
+    assert.isNull(skipped, "the question box does not open");
+    assert.isTrue((busy.handle.root as any).isConnected);
+    assert.equal(busy.closedCount(), 0);
+    assert.isNull(
+      busy.doc.body.querySelector('[data-llm-reader-selection-prompt="true"]'),
+    );
+
+    // A card without a conversation gives way, as before.
+    const fresh = open();
+    const prompt = openReaderSelectionPromptForChip({
+      doc: fresh.doc,
+      anchor,
+      outcome: "added",
+      selectedText,
+      labels: promptLabels,
+      attach: () => true,
+    });
+    assert.isNotNull(prompt);
+    assert.isFalse((fresh.handle.root as any).isConnected);
   });
 
   it("without a usable model it says so and cannot send", function () {
@@ -921,6 +962,25 @@ describe("Inline Ask continue in sidebar", function () {
     assert.lengthOf(held.calls, 0);
   });
 
+  it("Discard and Escape wait while a move runs, so a discarded chat never appears", async function () {
+    const { doc, handle, continues, closedCount } = await answeredPill();
+    const discard = action(doc, "discard");
+    assert.isFalse(discard.disabled);
+    action(doc, "sidebar").click();
+    assert.isTrue(discard.disabled, "Discard is off during the move");
+    discard.click();
+    editorOf(doc).dispatch("keydown", key("Escape"));
+    assert.isTrue((handle.root as any).isConnected);
+    assert.equal(closedCount(), 0);
+    // A refused move gives Discard and Escape back.
+    continues[0].resolve({ ok: false, error: "Not now." });
+    await flush();
+    assert.isFalse(discard.disabled);
+    editorOf(doc).dispatch("keydown", key("Escape"));
+    assert.isFalse((handle.root as any).isConnected);
+    assert.equal(closedCount(), 1);
+  });
+
   it("close removes the button's listener", async function () {
     const { doc, handle } = await answeredPill();
     const button = action(doc, "sidebar");
@@ -1375,6 +1435,53 @@ describe("Inline Ask model and effort menus", function () {
     doc.dispatch("pointerdown", { target: { nodeType: 1 } });
     assert.isNull(modelMenu(doc));
     assert.isTrue((handle.root as any).isConnected);
+  });
+
+  it("opening a menu lets the picker load model data and redraws the open menu when it arrives", function () {
+    const { picker } = fakePicker();
+    let levels = ["auto"];
+    const loads: Array<() => void> = [];
+    const loading = {
+      ...picker,
+      line: () => ({ ...picker.line(), effort: levels.at(-1)! }),
+      effortMenu: () => ({
+        title: "Reasoning",
+        levels: levels.map((value) => ({
+          value,
+          label: value,
+          selected: value === levels.at(-1),
+        })),
+      }),
+      prepareMenu: (onChange: () => void) => {
+        loads.push(onChange);
+      },
+    };
+    const { doc } = open({ modelPicker: loading });
+    q(doc, "data-llm-inline-ask-model").click();
+    assert.lengthOf(loads, 1, "the model menu starts the load");
+    q(doc, "data-llm-inline-ask-effort").click();
+    assert.lengthOf(loads, 2, "so does the effort menu");
+    const optionsOf = () =>
+      modelMenu(doc)
+        .children.slice(1)
+        .map(
+          (node: any) => node.attributes["data-llm-inline-ask-effort-option"],
+        );
+    assert.deepEqual(optionsOf(), ["auto"]);
+    // The catalog arrives: the open effort menu shows the real levels.
+    levels = ["auto", "low", "medium", "high"];
+    loads[1]();
+    assert.equal(
+      modelMenu(doc).attributes["data-llm-inline-ask-model-menu"],
+      "effort",
+    );
+    assert.deepEqual(optionsOf(), ["auto", "low", "medium", "high"]);
+    assert.equal(q(doc, "data-llm-inline-ask-effort").textContent, "high");
+    assert.lengthOf(loads, 2, "a redraw does not start another load");
+    // With no menu open, an update only refreshes the line.
+    editorOf(doc).dispatch("keydown", key("Escape"));
+    loads[0]();
+    assert.isNull(modelMenu(doc));
   });
 
   it("without a picker the line is display only", function () {

@@ -426,7 +426,19 @@ describe("annotate_pdf", function () {
       comment: "Edited comment",
       selection,
     };
-    const hostContext: AgentToolContext = { ...context, hostAction: true };
+    // The card's Save: an action built the call from the action UI.
+    const hostContext: AgentToolContext = {
+      ...context,
+      request: { ...context.request, actionEntryPoint: "action_ui" },
+      hostAction: true,
+    };
+    // An action run inside a model turn: the executor marks it hostAction
+    // too, but its entry point is the conversation.
+    const modelTurnActionContext: AgentToolContext = {
+      ...context,
+      request: { ...context.request, actionEntryPoint: "conversation" },
+      hostAction: true,
+    };
 
     function validated(args: Record<string, unknown>) {
       const tool = createAnnotatePdfTool(gateway, resolve, () => "fp-1");
@@ -541,16 +553,37 @@ describe("annotate_pdf", function () {
       assert.deepEqual(expected.position.rects, selection.rects);
     });
 
-    it("leaves the fingerprint empty when no open reader has the PDF", async function () {
-      install();
+    it("refuses before writing when no open reader has the PDF", async function () {
+      const saved = install();
       const tool = createAnnotatePdfTool(gateway, resolve, () => "");
       const input = tool.validate(hostArgs);
       if (!input.ok) assert.fail(input.error);
-      const result = (await tool.execute(input.value, hostContext)) as any;
-      assert.equal(
-        result.content.expectedAnnotation.source.documentFingerprint,
-        "",
-      );
+      let message = "";
+      try {
+        await tool.execute(input.value, hostContext);
+      } catch (error) {
+        message = String(error);
+      }
+      assert.include(message, "must be open in Zotero's reader");
+      assert.isEmpty(saved, "nothing is written without a fingerprint");
+    });
+
+    it("is refused for an action that runs inside a model turn", async function () {
+      const saved = install();
+      const { tool, input } = validated(hostArgs);
+      for (const run of [
+        () => tool.planInvocation!(input, modelTurnActionContext),
+        () => tool.execute(input, modelTurnActionContext),
+      ]) {
+        let message = "";
+        try {
+          await run();
+        } catch (error) {
+          message = String(error);
+        }
+        assert.include(message, "selection coordinates");
+      }
+      assert.isEmpty(saved);
     });
 
     it("describes the frozen rects for the receipt", async function () {

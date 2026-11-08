@@ -112,6 +112,12 @@ export type InlineAskModelPicker = {
     levels: Array<{ value: string; label: string; selected: boolean }>;
   };
   pickEffort(value: string): void;
+  /**
+   * Called when the model or effort menu opens: may start loading model
+   * data (the Codex Direct catalog) and calls `onChange` when it arrives,
+   * so the card redraws its line and the open menu.
+   */
+  prepareMenu?(onChange: () => void): void;
 };
 
 export type InlineAskPromptEditingSetup = {
@@ -953,6 +959,16 @@ export function openInlineAskOverlay(
     }, 0);
   };
 
+  // The picker's model data changed: redraw the line and any open menu.
+  const onModelDataChange = () => {
+    if (closed) return;
+    syncModelLine();
+    syncSend();
+    const kind = openMenu?.kind;
+    if (kind !== "model" && kind !== "effort") return;
+    closeMenus();
+    showModelMenu(kind);
+  };
   const toggleModelMenu = (kind: "model" | "effort") => {
     if (!picker) return;
     if (openMenu?.kind === kind) {
@@ -960,6 +976,15 @@ export function openInlineAskOverlay(
       return;
     }
     closeMenus();
+    try {
+      picker.prepareMenu?.(onModelDataChange);
+    } catch {
+      // The menu shows what the picker has now.
+    }
+    showModelMenu(kind);
+  };
+  const showModelMenu = (kind: "model" | "effort") => {
+    if (!picker) return;
     const button = kind === "model" ? modelLabel : effortLabel;
     const menu = el("div", menuPanelCss);
     menu.setAttribute("data-llm-inline-ask-model-menu", kind);
@@ -1505,6 +1530,9 @@ export function openInlineAskOverlay(
     continueTurns().length > 0;
   const syncSidebar = () => {
     setButtonDisabled(sidebarBtn, !canContinue());
+    // A move in flight cannot be discarded: the sidebar would still show
+    // the chat the user threw away.
+    setButtonDisabled(discardBtn, continuing);
     sidebarError.textContent = sidebarErrorText;
     show(
       sidebarError,
@@ -1737,6 +1765,8 @@ export function openInlineAskOverlay(
     }
     if (action === "close") {
       e.preventDefault();
+      // Not while Continue in sidebar moves the conversation (see Discard).
+      if (continuing) return;
       close();
       return;
     }
@@ -1756,6 +1786,7 @@ export function openInlineAskOverlay(
   const onDiscardClick = (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
+    if (continuing) return;
     close();
   };
   const onSaveClick = (e: Event) => {
