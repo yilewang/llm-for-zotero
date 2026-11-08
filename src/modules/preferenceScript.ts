@@ -1654,6 +1654,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const popupAddTextEnabledInput = doc.querySelector(
     `#${config.addonRef}-popup-add-text-enabled`,
   ) as HTMLInputElement | null;
+  const popupInlineAskEnabledInput = doc.querySelector(
+    `#${config.addonRef}-popup-inline-ask-enabled`,
+  ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
   ) as HTMLInputElement | null;
@@ -3271,6 +3274,22 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       Zotero.Prefs.set(
         `${config.prefsPrefix}.showPopupAddText`,
         popupAddTextEnabledInput.checked,
+        true,
+      );
+    });
+  }
+
+  if (popupInlineAskEnabledInput) {
+    const prefValue = Zotero.Prefs.get(
+      `${config.prefsPrefix}.showPopupInlineAsk`,
+      true,
+    );
+    popupInlineAskEnabledInput.checked =
+      prefValue !== false && `${prefValue || ""}`.toLowerCase() !== "false";
+    popupInlineAskEnabledInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.showPopupInlineAsk`,
+        popupInlineAskEnabledInput.checked,
         true,
       );
     });

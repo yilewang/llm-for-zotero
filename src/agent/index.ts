@@ -12,6 +12,10 @@ import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 import { getConversationWriteGeneration } from "../shared/conversationWriteFence";
 import { libraryIndexService } from "../services/libraryIndexService";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
+import {
+  saveSelectionAnnotation,
+  type SaveSelectionAnnotationInput,
+} from "./actions/saveSelectionAnnotation";
 import { undoNoteChange } from "./actions/undoNoteChange";
 import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { initAgentCoverageStore } from "./context/coverageLedger";
@@ -242,6 +246,17 @@ export function getAgentApi() {
       if (!_toolRegistry || !_zoteroGateway)
         throw new Error("Agent subsystem is not initialized");
       return undoNoteChange(_toolRegistry, _zoteroGateway, card);
+    },
+    /**
+     * Saves a reader selection as a highlight (Inline Ask's Save). The
+     * card's Save click confirms the payload it shows; authorization, the
+     * write lock and the change journal still apply. Resolves `ok` only for
+     * a verified receipt.
+     */
+    saveSelectionAnnotation: (input: SaveSelectionAnnotationInput) => {
+      if (!_toolRegistry || !_zoteroGateway)
+        throw new Error("Agent subsystem is not initialized");
+      return saveSelectionAnnotation(_toolRegistry, _zoteroGateway, input);
     },
     // ── Core turn API ──────────────────────────────────────────────────────
     /**

@@ -1065,6 +1065,31 @@ describe("Bespoke finalize-branch receipts", function () {
       );
     });
 
+    it("checks a host selection's frozen rects against the payload Zotero committed", async function () {
+      const withRects = (expectedRects: number[][]) => ({
+        ...annotationProposal,
+        parameters: { ...annotationProposal.parameters, expectedRects },
+      });
+      const matching = await receiptFor({
+        harness: annotationHarness({}),
+        proposal: withRects([[20, 40, 90, 50]]),
+        content: { annotationId: 901, expectedAnnotation },
+      });
+      assert.equal(matching.verification, "verified");
+      assert.equal(matching.status, "applied");
+
+      const moved = await receiptFor({
+        harness: annotationHarness({}),
+        proposal: withRects([[20, 40, 90, 51]]),
+        content: { annotationId: 901, expectedAnnotation },
+      });
+      assert.equal(
+        moved.verification,
+        "unverified",
+        "the payload's rects differ from the selection the user saw",
+      );
+    });
+
     it("refuses an annotation that belongs to another attachment", async function () {
       const receipt = await receiptFor({
         harness: annotationHarness({ annotationParent: 902 }),

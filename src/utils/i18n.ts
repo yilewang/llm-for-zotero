@@ -549,6 +549,10 @@ const zhCN: Record<string, string> = {
     '在阅读器选区弹出菜单中显示"添加文本"',
   "Disable this if you prefer not to show the Add Text option in Zotero's text selection popup menu.":
     '如果你不想在 Zotero 文本选区弹出菜单中显示"添加文本"选项，请禁用此项。',
+  'Show "Inline Ask" in reader selection popup':
+    '在阅读器选区弹出菜单中显示"划词提问"',
+  "Disable this if you prefer not to show the Inline Ask option in Zotero's text selection popup menu.":
+    '如果你不想在 Zotero 文本选区弹出菜单中显示"划词提问"选项，请禁用此项。',
   "Enable Agent Mode (Beta)": "启用 Agent 模式（测试版）",
   'Shows the "Agent" runtime in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
     '在上下文栏显示"Agent"运行时，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',
@@ -1689,6 +1693,67 @@ const zhCN: Record<string, string> = {
     "Enter 添加 · Shift+Enter 换行 · Esc 关闭",
   Add: "添加",
   "Question attached to the selected text": "问题已附加到选中文字",
+  // Inline Ask card in the reader.
+  "Inline Ask": "划词提问",
+  "Ask about the selected text here": "在这里就选中文字提问",
+  "Ask about the selection": "就选中文字提问",
+  "Ask a follow-up": "继续追问",
+  "Enter to send · Shift+Enter for a new line · Esc to close":
+    "Enter 发送 · Shift+Enter 换行 · Esc 关闭",
+  "Reading the selection…": "正在阅读选中文字…",
+  Discard: "丢弃",
+  "Continue in sidebar": "在侧边栏中继续",
+  "Save as annotation": "保存为注释",
+  "Reasoning effort": "推理强度",
+  "Inline Ask needs an API model.": "划词提问需要一个 API 模型。",
+  Explain: "解释",
+  "Define terms": "术语释义",
+  Translate: "翻译",
+  "Explain this passage in plain language, using the context of the paper.":
+    "结合论文的上下文，用通俗的语言解释这段文字。",
+  "Define the technical terms in this passage.": "解释这段文字中的专业术语。",
+  "Translate this passage into English.": "把这段文字翻译成中文。",
+  // Inline Ask: Save as annotation.
+  Yellow: "黄色",
+  Red: "红色",
+  Green: "绿色",
+  Blue: "蓝色",
+  Purple: "紫色",
+  Magenta: "洋红色",
+  Orange: "橙色",
+  Gray: "灰色",
+  Color: "颜色",
+  "Page {label}": "第 {label} 页",
+  "Add comment": "添加评论",
+  "Save as annotation works in PDF readers only.":
+    "只有在 PDF 阅读器中才能保存为注释。",
+  "This PDF is in the trash.": "此 PDF 在回收站中。",
+  "This library is read-only.": "此文库为只读。",
+  "This selection continues on the next page. Highlight it from Zotero's popup instead.":
+    "此选区延续到下一页。请改用 Zotero 的弹出菜单添加高亮。",
+  "Zotero gave no position for this selection. Select it again.":
+    "Zotero 没有提供此选区的位置。请重新选择。",
+  "Open this PDF's chat panel to save annotations.":
+    "请打开此 PDF 的对话面板以保存注释。",
+  "The annotation could not be saved.": "无法保存注释。",
+  "Zotero did not confirm the saved annotation.": "Zotero 未确认已保存的注释。",
+  // Inline Ask: Continue in sidebar.
+  "The sidebar is answering. Try again when it finishes.":
+    "侧边栏正在回答。请在回答结束后重试。",
+  "Continue in sidebar does not work in WebChat mode.":
+    "WebChat 模式下无法在侧边栏中继续。",
+  "The conversation could not be saved to the sidebar.":
+    "无法将对话保存到侧边栏。",
+  "The sidebar chat for this PDF is not available. Open it and try again.":
+    "此 PDF 的侧边栏对话不可用。请打开它后重试。",
+  // Inline Ask: editable prompts, model and effort menus, sidebar handover.
+  Edit: "编辑",
+  Delete: "删除",
+  "Prompt, sent with the selected text": "提示词，与选中文字一起发送",
+  "Claude Code runs only in the sidebar. Inline Ask uses an API model from this list.":
+    "Claude Code 只在侧边栏中运行。划词提问使用此列表中的 API 模型。",
+  "WebChat runs only in the sidebar. Inline Ask uses an API model from this list.":
+    "WebChat 只在侧边栏中运行。划词提问使用此列表中的 API 模型。",
   "Quote selected text": "引用选中文字",
   "Quote in side chat": "在侧边对话中引用",
   "Quote selected text in a side chat": "在侧边对话中引用选中文字",

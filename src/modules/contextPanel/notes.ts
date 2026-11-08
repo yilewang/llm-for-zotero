@@ -671,6 +671,9 @@ function formatSelectedTextLabel(
   if (source === "sidechat") {
     return total === 1 ? t("Side chat") : `${t("Side chat")} (${index + 1})`;
   }
+  if (source === "inlineask") {
+    return total === 1 ? t("Inline Ask") : `${t("Inline Ask")} (${index + 1})`;
+  }
   if (total === 1) return "Selected text";
   return `Selected text (${index + 1})`;
 }

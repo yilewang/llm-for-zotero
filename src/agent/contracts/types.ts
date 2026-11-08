@@ -66,6 +66,11 @@ export type AgentActionParameters = {
   targetNoteId?: number;
   targetItemId?: number;
   pageIndex?: number;
+  /**
+   * The rects of a host-supplied reader selection (Inline Ask's Save), in
+   * PDF points. The written annotation must carry exactly these.
+   */
+  expectedRects?: number[][];
   annotationComment?: string;
   annotationColor?: string;
   revertCount?: number;

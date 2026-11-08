@@ -85,6 +85,25 @@ export function getStringPref(key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+export function setStringPref(key: string, value: string): void {
+  getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, value, true);
+}
+
+/** Clears a user value so the pref reads its default again. */
+export function clearPref(key: string): void {
+  const prefs = getZoteroPrefs();
+  const prefName = `${config.prefsPrefix}.${key}`;
+  if (typeof prefs?.clear === "function") {
+    try {
+      prefs.clear(prefName, true);
+      return;
+    } catch {
+      // Fall through: test stubs and older APIs take an empty value.
+    }
+  }
+  prefs?.set?.(prefName, "", true);
+}
+
 export function getBoolPref(key: string, defaultValue = false): boolean {
   const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);
   if (typeof value === "boolean") return value;
@@ -908,7 +927,7 @@ export const getShortcutOrder = () => getStringArrayPref("shortcutOrder");
 export const setShortcutOrder = (v: string[]) =>
   setStringArrayPref("shortcutOrder", v);
 
-function getStringArrayPref(key: string): string[] {
+export function getStringArrayPref(key: string): string[] {
   const raw =
     (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
   if (!raw) return [];
@@ -924,7 +943,7 @@ function getStringArrayPref(key: string): string[] {
   }
 }
 
-function setStringArrayPref(key: string, value: string[]): void {
+export function setStringArrayPref(key: string, value: string[]): void {
   Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
 }
 

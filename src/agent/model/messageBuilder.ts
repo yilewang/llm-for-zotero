@@ -281,7 +281,9 @@ function buildFullUserMessage(
                 ? "active note editing focus"
                 : source === "sidechat"
                   ? "side chat transcript"
-                  : "PDF reader";
+                  : source === "inlineask"
+                    ? "Inline Ask transcript"
+                    : "PDF reader";
         const noteContext = selectedTextContexts[index]?.noteContext;
         const sourceMeta =
           source === "pdf" && paperContext

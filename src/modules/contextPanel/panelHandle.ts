@@ -1,3 +1,7 @@
+import type {
+  SeedPaperConversationInput,
+  SeedPaperConversationResult,
+} from "./seededConversation";
 import type { StandaloneConversationSwitchDecision } from "./standaloneConversationSwitch";
 
 /**
@@ -22,7 +26,7 @@ export type PanelHandle = {
   addTextContext(
     text: string,
     opts: {
-      source: "model" | "sidechat";
+      source: "model" | "sidechat" | "inlineask";
       focusInput?: boolean;
       question?: string;
     },
@@ -58,6 +62,19 @@ export type PanelHandle = {
    * caller then remounts if this is still its latest switch.
    */
   switchConversationInPlace(nextItem: Zotero.Item): Promise<boolean>;
+  /**
+   * Inline Ask's Continue in sidebar: opens a fresh paper chat for the
+   * panel's paper (a reused empty draft or a new one) that holds `turns` as
+   * real messages, the first question with the selection as its
+   * selected-text context, and titles it by that question. In a Claude Code
+   * chat the paper, page, passage and turns also go into the composer as a
+   * transcript chip, sent with the next message (a fresh Claude Code session
+   * gets no stored history). Refuses, changing nothing, while the panel's
+   * conversation is answering (`busy`).
+   */
+  startPaperConversationWithTurns(
+    input: SeedPaperConversationInput,
+  ): Promise<SeedPaperConversationResult>;
 };
 
 const panelHandles = new WeakMap<Element, PanelHandle>();
