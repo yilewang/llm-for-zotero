@@ -389,6 +389,38 @@ export type WorkflowTestNativePopupGeometry = {
   toggleBottom?: number;
 };
 
+export type WorkflowTestRect = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+export type WorkflowTestNativeInlineAskOpen = {
+  /** Set when Zotero's own popup never showed the Inline Ask button. */
+  error?: string;
+  diagnostic?: string;
+  /** Zotero's popup just before the press (outer box, reader UI pixels). */
+  popup?: WorkflowTestRect;
+  /** Zotero's placement class on the popup, such as page-popup-bottom-center. */
+  popupSide?: string;
+  /** Milliseconds from the popup showing the row to the press. */
+  pressedAfterMs?: number;
+  /** `.selection-popup` is in the document this long after the press. */
+  popupOpenAfterPress?: { ms: number; open: boolean };
+  /** The card's outer box after it opened. */
+  card?: WorkflowTestRect;
+  cardMounted?: boolean;
+  /** The PDF text selection still exists after the card opened. */
+  selectionKept?: boolean;
+  /** `.selection-popup` is in the document 400 ms after the card opened. */
+  popupOpenLater?: boolean;
+  /** The card closed on Escape. */
+  cardClosed?: boolean;
+  /** `.selection-popup` is in the document 400 ms after the card closed. */
+  popupOpenAfterCardClose?: boolean;
+};
+
 export type WorkflowTestReaderPopupActionRow = {
   /** Calls the handler made to the popup's append. */
   appendCalls: number;
@@ -1961,6 +1993,19 @@ export type WorkflowTestApi = {
     /** Mounts this workflow panel as the reader tab's panel first. */
     panelId?: string;
   }) => Promise<WorkflowTestNativePopupGeometry>;
+  /**
+   * Opens the reader, makes a real selection, and presses Inline Ask inside
+   * Zotero's own selection popup (a real pointer and click sequence on the
+   * plugin's button). Measures the popup before the press and the card
+   * after it, then closes the card with Escape and closes the reader.
+   */
+  openNativeReaderInlineAsk: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    /** Mounts this workflow panel as the reader tab's panel first. */
+    panelId?: string;
+  }) => Promise<WorkflowTestNativeInlineAskOpen>;
   /**
    * Opens the reader, shows the selection popup, presses Inline Ask, and
    * reads the card. Editing keys typed into the card must leave the

@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  closeReaderSelectionPopup,
   collectReaderSelectionDocuments,
   getFirstSelectionFromReader,
   getSelectionFromDocument,
@@ -82,5 +83,67 @@ describe("reader selection recovery", function () {
       getFirstSelectionFromReader(reader, normalize),
       "secondary selection",
     );
+  });
+});
+
+describe("closeReaderSelectionPopup", function () {
+  function fakeReader(state: Record<string, unknown>) {
+    const updates: Array<Record<string, unknown>> = [];
+    const internal = {
+      _state: { ...state },
+      _updateState(update: Record<string, unknown>) {
+        updates.push(update);
+        Object.assign(internal._state, update);
+      },
+    };
+    return { reader: { _internalReader: internal }, internal, updates };
+  }
+  const popupIn = (view: "primary" | "secondary") => ({
+    closest: (selector: string) =>
+      selector === `.${view}-view` ? { className: `${view}-view` } : null,
+  });
+
+  it("clears the primary view's popup state and nothing else", function () {
+    const { reader, internal, updates } = fakeReader({
+      primaryViewSelectionPopup: { rect: [1, 2, 3, 4] },
+      secondaryViewSelectionPopup: null,
+    });
+    assert.isTrue(closeReaderSelectionPopup(reader, popupIn("primary") as any));
+    assert.deepEqual(updates, [{ primaryViewSelectionPopup: null }]);
+    assert.isNull(internal._state.primaryViewSelectionPopup);
+  });
+
+  it("clears the secondary view's popup when the popup is in that view", function () {
+    const { reader, updates } = fakeReader({
+      primaryViewSelectionPopup: { rect: [1, 2, 3, 4] },
+      secondaryViewSelectionPopup: { rect: [5, 6, 7, 8] },
+    });
+    assert.isTrue(
+      closeReaderSelectionPopup(reader, popupIn("secondary") as any),
+    );
+    assert.deepEqual(updates, [{ secondaryViewSelectionPopup: null }]);
+  });
+
+  it("changes nothing and returns false without the reader state it needs", function () {
+    assert.isFalse(closeReaderSelectionPopup(null, null));
+    assert.isFalse(closeReaderSelectionPopup({ _internalReader: {} }, null));
+    const noPopup = fakeReader({ primaryViewSelectionPopup: null });
+    assert.isFalse(closeReaderSelectionPopup(noPopup.reader, null));
+    assert.deepEqual(noPopup.updates, []);
+    const otherShape = fakeReader({ somethingElse: 1 });
+    assert.isFalse(closeReaderSelectionPopup(otherShape.reader, null));
+    assert.deepEqual(otherShape.updates, []);
+  });
+
+  it("returns false when the reader throws", function () {
+    const reader = {
+      _internalReader: {
+        _state: { primaryViewSelectionPopup: {} },
+        _updateState() {
+          throw new Error("dead object");
+        },
+      },
+    };
+    assert.isFalse(closeReaderSelectionPopup(reader, null));
   });
 });

@@ -95,6 +95,7 @@ import {
 } from "../../services/paperContent/pdfContext";
 import { getPageLabelForIndex } from "../../services/pdf/livePdfSelectionLocator";
 import {
+  closeReaderSelectionPopup,
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "../../services/pdf/readerSelection";
@@ -115,7 +116,10 @@ import {
   closeAllReaderSelectionPromptOverlays,
   openReaderSelectionPromptForChip,
 } from "./selectionPrompt/readerSelectionPromptOverlay";
-import { closeReaderOverlayForNewSelection } from "./selectionPrompt/readerOverlayShared";
+import {
+  closeReaderOverlayForNewSelection,
+  type ReaderOverlayAnchor,
+} from "./selectionPrompt/readerOverlayShared";
 import { createInlineAskSparkIcon } from "./selectionPrompt/inlineAskOverlay";
 import { openInlineAskCardForReader } from "./selectionPrompt/inlineAskReader";
 import type { InlineAskPanelReach } from "./selectionPrompt/inlineAskContinue";
@@ -1025,10 +1029,14 @@ function readPanelConversationKey(
  * pointerdown (Zotero may remove the popup before "click") and measures its
  * anchor then. It opens the Inline Ask card with the snapshot taken when the
  * popup appeared.
+ *
+ * In Zotero's own selection popup the card replaces the popup: the popup
+ * closes (the text selection stays) and the card takes its place. If the
+ * popup cannot be closed, the card opens below the button row instead.
  */
 function createInlineAskPopupButton(input: {
   event: Parameters<ReaderTextSelectionPopupHandler>[0];
-  /** The popup row; the card opens below it. */
+  /** The popup row; the card opens below it unless it replaces the popup. */
   getAnchorElement: () => Element | null;
   snapshot: InlineAskPopupSnapshot;
   /** Reads the selection again when the popup had none. */
@@ -1079,7 +1087,11 @@ function createInlineAskPopupButton(input: {
     e.preventDefault();
     e.stopPropagation();
     // Measure now: Zotero may remove the popup right after this.
-    const rect = (input.getAnchorElement() || button).getBoundingClientRect();
+    const rowRect = (
+      input.getAnchorElement() || button
+    ).getBoundingClientRect();
+    const nativePopup = button.closest(".selection-popup");
+    const popupRect = nativePopup?.getBoundingClientRect();
     const selectedText =
       normalizeSelectedText(input.snapshot.selectedText) ||
       input.resolveSelectedText();
@@ -1087,15 +1099,34 @@ function createInlineAskPopupButton(input: {
       appLogger.debug("LLM: Inline Ask skipped (no selection)");
       return;
     }
+    const replacesPopup =
+      nativePopup && popupRect
+        ? closeReaderSelectionPopup(event.reader, nativePopup)
+        : false;
+    const anchor: ReaderOverlayAnchor =
+      replacesPopup && nativePopup && popupRect
+        ? {
+            left: popupRect.left,
+            top: popupRect.top,
+            right: popupRect.right,
+            bottom: popupRect.bottom,
+            // Zotero marks a popup placed above the selection with this
+            // class; there the card keeps the popup's bottom edge, so it
+            // grows away from the selection.
+            cover: nativePopup.classList.contains("page-popup-top-center")
+              ? "bottom"
+              : "top",
+          }
+        : {
+            left: rowRect.left,
+            top: rowRect.top,
+            right: rowRect.right,
+            bottom: rowRect.bottom,
+          };
     try {
       openInlineAskCardForReader({
         doc: event.doc,
-        anchor: {
-          left: rect.left,
-          top: rect.top,
-          right: rect.right,
-          bottom: rect.bottom,
-        },
+        anchor,
         snapshot: { ...input.snapshot, selectedText },
         reasoningItemId: input.reasoningItemId,
         resolveConversationKey: input.resolveConversationKey,

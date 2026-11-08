@@ -209,6 +209,38 @@ describe("workflow: Inline Ask in the reader", function () {
     near(single.buttons![0].right, single.toggle!.right, "single right", ms);
   });
 
+  it("opens the card in place of Zotero's selection popup, which closes", async function () {
+    const TOL = 0.5;
+    const fixture = await createFixture("Inline Ask replaces popup");
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const opened = await api.openNativeReaderInlineAsk({
+      panelId: panel.panelId,
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText: SELECTED_TEXT,
+    });
+    const m = JSON.stringify(opened);
+    assert.isUndefined(opened.error, m);
+    assert.isTrue(opened.cardMounted, m);
+    assert.isFalse(opened.popupOpenAfterPress!.open, `popup after press; ${m}`);
+    const popup = opened.popup!;
+    const card = opened.card!;
+    assert.isAtMost(
+      Math.abs(card.left - popup.left),
+      TOL,
+      `card left ${card.left} vs popup left ${popup.left}; ${m}`,
+    );
+    assert.isAtMost(
+      Math.abs(card.top - popup.top),
+      TOL,
+      `card top ${card.top} vs popup top ${popup.top}; ${m}`,
+    );
+    assert.isTrue(opened.selectionKept, `selection kept; ${m}`);
+    assert.isFalse(opened.popupOpenLater, `popup while card open; ${m}`);
+    assert.isTrue(opened.cardClosed, m);
+    assert.isFalse(opened.popupOpenAfterCardClose, `popup after close; ${m}`);
+  });
+
   it("hides Inline Ask when its setting is off", async function () {
     const fixture = await createFixture("Inline Ask toggle off");
     Zotero.Prefs.set(PREF_PREFIX + "showPopupInlineAsk", false, true);

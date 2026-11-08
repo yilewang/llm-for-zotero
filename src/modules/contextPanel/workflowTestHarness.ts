@@ -148,6 +148,7 @@ import type {
   WorkflowTestReaderSelectionDraft,
   WorkflowTestReaderPopupActionRow,
   WorkflowTestNativePopupGeometry,
+  WorkflowTestNativeInlineAskOpen,
   WorkflowTestSidePanel,
   WorkflowTestStandaloneSidePanelControl,
   WorkflowTestStandaloneSidePanelSlideFrame,
@@ -7593,6 +7594,172 @@ async function cleanupWorkflowInlineAsk(): Promise<void> {
   await closeWorkflowReader(state.reader);
 }
 
+/**
+ * Presses Inline Ask inside Zotero's own selection popup. The popup shows
+ * after a real drag and, in the test profile, clears about 150 ms later, so
+ * a watcher presses the button as soon as the popup holds it.
+ */
+async function openNativeReaderInlineAsk(input: {
+  attachmentItemId: number;
+  pageIndex: number;
+  selectedText: string;
+  panelId?: string;
+}): Promise<WorkflowTestNativeInlineAskOpen> {
+  assertWorkflowTestEnabled();
+  await cleanupWorkflowInlineAsk();
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  if (input.panelId)
+    mountWorkflowPanelInReaderPane(getPanel(input.panelId), reader);
+  let selectionDoc: Document | null = null;
+  let uiDoc: Document | null = null;
+  try {
+    const selected = await selectWorkflowPdfText({
+      reader,
+      pageIndex: input.pageIndex,
+      selectedText: input.selectedText,
+    });
+    selectionDoc = selected.doc;
+    const doc = getWorkflowReaderUiDocument(reader);
+    uiDoc = doc;
+    const win = doc.defaultView;
+    if (!win?.MouseEvent) throw new Error("The reader window has no events");
+    const BUTTON =
+      "[data-llm-reader-popup-actions] [data-llm-inline-ask-button]";
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const rectOf = (node: Element) => {
+      const rect = node.getBoundingClientRect();
+      return {
+        left: round(rect.left),
+        top: round(rect.top),
+        right: round(rect.right),
+        bottom: round(rect.bottom),
+      };
+    };
+    const popupOpen = () => Boolean(doc.querySelector(".selection-popup"));
+    // A real press: pointer and mouse down, up, then click, at the
+    // button's center, as the reader window's own events.
+    const press = (button: Element) => {
+      const rect = button.getBoundingClientRect();
+      const point = {
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      };
+      const PointerCtor = (win as unknown as { PointerEvent?: any })
+        .PointerEvent;
+      const fire = (type: string, buttons: number) => {
+        const init = cloneEventInitIntoWindow(
+          {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            button: 0,
+            buttons,
+            detail: 1,
+            pointerType: "mouse",
+            ...point,
+          },
+          win,
+        );
+        button.dispatchEvent(
+          type.startsWith("pointer") && PointerCtor
+            ? new PointerCtor(type, init)
+            : new win.MouseEvent(type, init),
+        );
+      };
+      fire("pointerdown", 1);
+      fire("mousedown", 1);
+      fire("pointerup", 0);
+      fire("mouseup", 0);
+      fire("click", 0);
+    };
+    let result: WorkflowTestNativeInlineAskOpen | null = null;
+    let shownAt = 0;
+    let watching = true;
+    const watcher = (async () => {
+      while (watching && !result) {
+        const popup = doc.querySelector(".selection-popup");
+        const button = popup?.querySelector(BUTTON);
+        if (popup && button) {
+          if (!shownAt) shownAt = Date.now();
+          const before = rectOf(popup);
+          const side =
+            Array.from(popup.classList).find((name) =>
+              String(name).startsWith("page-popup-"),
+            ) || "";
+          const pressedAt = Date.now();
+          press(button);
+          result = {
+            popup: before,
+            popupSide: side,
+            pressedAfterMs: pressedAt - shownAt,
+          };
+          // Before Zotero's own ~150 ms clear in the test profile.
+          await Zotero.Promise.delay(40);
+          result.popupOpenAfterPress = {
+            ms: Date.now() - pressedAt,
+            open: popupOpen(),
+          };
+        } else {
+          await Zotero.Promise.delay(5);
+        }
+      }
+    })();
+    await Zotero.Promise.delay(300);
+    await dragWorkflowPdfSelection(selected);
+    const startedAt = Date.now();
+    while (!result && Date.now() - startedAt < 5000)
+      await Zotero.Promise.delay(25);
+    watching = false;
+    await watcher;
+    const pressed = result as WorkflowTestNativeInlineAskOpen | null;
+    if (!pressed) {
+      const popupNode = doc.querySelector(".selection-popup");
+      return {
+        error: "Zotero's selection popup never showed the Inline Ask button",
+        diagnostic: JSON.stringify({
+          hasSelectionPopup: Boolean(popupNode),
+          popupHtml: popupNode?.outerHTML.slice(0, 1500) || "",
+        }),
+      };
+    }
+    const editor = await waitForWorkflowInlineAskEditor(doc);
+    const card = doc.querySelector(INLINE_ASK_CARD_SELECTOR);
+    pressed.cardMounted = Boolean(card && editor);
+    if (!card) return pressed;
+    pressed.card = rectOf(card);
+    const view = (
+      (reader as unknown as { _internalReader?: any })._internalReader as any
+    )?._primaryView;
+    const unwrap = (value: any): any => value?.wrappedJSObject || value;
+    const ranges = unwrap(unwrap(view)?._selectionRanges);
+    const domText =
+      selectionDoc.defaultView?.getSelection?.()?.toString() || "";
+    pressed.selectionKept = Boolean(
+      domText.trim() || (ranges?.length && !unwrap(ranges[0])?.collapsed),
+    );
+    await Zotero.Promise.delay(400);
+    pressed.popupOpenLater = popupOpen();
+    const liveEditor = (doc.querySelector(
+      `${INLINE_ASK_CARD_SELECTOR} [data-llm-inline-ask-editor="true"]`,
+    ) || card) as HTMLElement;
+    liveEditor.dispatchEvent(
+      makeReaderPromptKey(doc, { key: "Escape", code: "Escape" }),
+    );
+    await Zotero.Promise.delay(50);
+    pressed.cardClosed = !doc.querySelector(INLINE_ASK_CARD_SELECTOR);
+    await Zotero.Promise.delay(400);
+    pressed.popupOpenAfterCardClose = popupOpen();
+    return pressed;
+  } finally {
+    if (uiDoc) closeReaderOverlay(uiDoc);
+    selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
+    await closeWorkflowReader(reader);
+  }
+}
+
 async function openReaderInlineAsk(
   input: Parameters<WorkflowTestApi["openReaderInlineAsk"]>[0],
 ): Promise<WorkflowTestReaderInlineAskOpen> {
@@ -11341,6 +11508,7 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseReaderPopupPromptDismissal,
     readReaderPopupActionRow,
     readNativeReaderPopupGeometry,
+    openNativeReaderInlineAsk,
     openReaderInlineAsk,
     sendReaderInlineAsk,
     readReaderInlineAsk,

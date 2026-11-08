@@ -162,6 +162,41 @@ describe("openInlineAskOverlay", function () {
     assert.isFalse(handle.hasConversation());
   });
 
+  it("takes the place of a covered box: same left and top, unrounded", function () {
+    const { handle } = open({
+      anchor: {
+        left: 203.3,
+        top: 140.3,
+        right: 401.3,
+        bottom: 243.3,
+        cover: "top",
+      },
+    });
+    const root = handle.root as any;
+    assert.equal(root.style.left, "203.3px");
+    assert.equal(root.style.top, "140.3px");
+  });
+
+  it("a covered box above the selection keeps its bottom edge", function () {
+    const { handle } = open({
+      anchor: { left: 50, top: 300, right: 250, bottom: 400, cover: "bottom" },
+    });
+    const root = handle.root as any;
+    assert.equal(root.style.left, "50px");
+    // The fake card is 120 px tall.
+    assert.equal(root.style.top, "280px");
+  });
+
+  it("a covered box still stays inside the viewport", function () {
+    const { handle } = open({
+      anchor: { left: 700, top: 560, right: 790, bottom: 590, cover: "top" },
+    });
+    const root = handle.root as any;
+    // 800 x 600 viewport, 360 x 120 card, 8 px margin.
+    assert.equal(root.style.left, "432px");
+    assert.equal(root.style.top, "472px");
+  });
+
   it("enables send once there is text and sends the typed question on Enter", function () {
     const { doc, calls } = open();
     type(doc, "  What does drift mean?  ");

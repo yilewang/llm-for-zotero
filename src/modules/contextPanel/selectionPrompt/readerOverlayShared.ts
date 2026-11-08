@@ -17,6 +17,12 @@ export type ReaderOverlayAnchor = {
   top: number;
   right: number;
   bottom: number;
+  /**
+   * Set when the overlay takes this box's place instead of opening below
+   * it: "top" puts its top-left corner on the box's top-left corner,
+   * "bottom" its bottom-left corner on the box's bottom-left corner.
+   */
+  cover?: "top" | "bottom";
 };
 
 export type ReaderOverlayHandle = {
@@ -235,7 +241,9 @@ export function createReaderOverlayElementFactory(doc: Document) {
 
 /**
  * Places a mounted overlay below the anchor, or above it when there is no
- * room below, clamped into the viewport. Call after mount so the measured
+ * room below, clamped into the viewport. An anchor with `cover` is a box the
+ * overlay replaces: the overlay takes its place, at the box's unrounded
+ * edges so they line up with it exactly. Call after mount so the measured
  * size is real.
  */
 export function positionReaderOverlay(
@@ -247,9 +255,16 @@ export function positionReaderOverlay(
   const vw = view?.innerWidth ?? 800;
   const vh = view?.innerHeight ?? 600;
   const rect = root.getBoundingClientRect();
-  let top = anchor.bottom + READER_OVERLAY_GAP;
-  if (top + rect.height > vh - READER_OVERLAY_MARGIN) {
-    top = anchor.top - READER_OVERLAY_GAP - rect.height;
+  let top: number;
+  if (anchor.cover === "top") {
+    top = anchor.top;
+  } else if (anchor.cover === "bottom") {
+    top = anchor.bottom - rect.height;
+  } else {
+    top = anchor.bottom + READER_OVERLAY_GAP;
+    if (top + rect.height > vh - READER_OVERLAY_MARGIN) {
+      top = anchor.top - READER_OVERLAY_GAP - rect.height;
+    }
   }
   top = Math.max(
     READER_OVERLAY_MARGIN,
@@ -259,8 +274,9 @@ export function positionReaderOverlay(
     READER_OVERLAY_MARGIN,
     Math.min(anchor.left, vw - READER_OVERLAY_MARGIN - rect.width),
   );
-  root.style.left = `${Math.round(left)}px`;
-  root.style.top = `${Math.round(top)}px`;
+  const px = (n: number) => `${anchor.cover ? n : Math.round(n)}px`;
+  root.style.left = px(left);
+  root.style.top = px(top);
 }
 
 /** A `setTimeout` bound to the document's window (Gecko chrome needs it). */
