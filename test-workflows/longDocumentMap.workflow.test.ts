@@ -283,6 +283,7 @@ describe("workflow: long documents are read by their map", function () {
     fixture: Fixture,
     input: Record<string, unknown>,
     factories?: ReaderAdapterFactories,
+    options: { contextWindowTokens?: number } = {},
   ): Promise<any> {
     const tool = paperReadTool(factories);
     const validated = tool.validate!({
@@ -309,6 +310,12 @@ describe("workflow: long documents are read by their map", function () {
       exhaustiveReadBackend: "codex_responses",
       executionContext: { permissionOwner: "external_runtime" },
     });
+    if (options.contextWindowTokens !== undefined) {
+      request.runtimeContextBudget = {
+        contextWindowTokens: options.contextWindowTokens,
+        usedContextTokens: 0,
+      };
+    }
     return tool.execute(validated.value, {
       request,
       item: null,
@@ -452,11 +459,24 @@ describe("workflow: long documents are read by their map", function () {
       .join("\n");
     assert.include(pageText, "Paper p2 line 3");
     assert.notInclude(pageText, "Paper p1 line");
-    const over = await read(shortPaper, {
+    // The model's maxChars does not cut a page read.
+    const capped = await read(shortPaper, {
       mode: "targeted",
       pages: [2],
       maxChars: 40,
     });
+    assert.notEqual(capped.papers[0].status, "map");
+    assert.include(
+      capped.papers[0].passages.map((passage: any) => passage.text).join("\n"),
+      "Paper p2 line 3",
+    );
+    // A page holds about 650 tokens; a 400-token window cannot hold it.
+    const over = await read(
+      shortPaper,
+      { mode: "targeted", pages: [2] },
+      undefined,
+      { contextWindowTokens: 400 },
+    );
     assert.equal(over.papers[0].status, "map");
     assert.isEmpty(over.papers[0].passages);
     assert.match(over.papers[0].map[0], /^page 2 \| ~\d+ tokens \| /);
@@ -495,11 +515,24 @@ describe("workflow: long documents are read by their map", function () {
       .join("\n");
     assert.include(text, "Result Paper p2 line 3");
     assert.isNotEmpty(results.quoteCitations);
-    const over = await read(bookmarkedPaper, {
+    // The model's maxChars does not cut a section read.
+    const capped = await read(bookmarkedPaper, {
       mode: "targeted",
       sectionIds: ["s3"],
       maxChars: 40,
     });
+    assert.notEqual(capped.papers[0].status, "map");
+    assert.include(
+      capped.papers[0].passages.map((passage: any) => passage.text).join("\n"),
+      "Result Paper p2 line 3",
+    );
+    // A 400-token window cannot hold the section's page.
+    const over = await read(
+      bookmarkedPaper,
+      { mode: "targeted", sectionIds: ["s3"] },
+      undefined,
+      { contextWindowTokens: 400 },
+    );
     assert.isEmpty(over.papers[0].passages);
     assert.equal(over.papers[0].map[0].reason, "does_not_fit");
     assert.match(over.papers[0].map[0].lines[0], /^page 2 \| ~\d+ tokens \| /);
