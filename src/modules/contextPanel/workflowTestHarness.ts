@@ -138,6 +138,7 @@ import type {
   WorkflowTestEphemeralConversationRowCounts,
   WorkflowTestConversationStoreRowTotals,
   WorkflowTestReaderInlineAskCard,
+  WorkflowTestReaderInlineAskTextSize,
   WorkflowTestReaderInlineAskOpen,
   WorkflowTestReaderInlineAskSave,
   WorkflowTestReaderInlineAskContinue,
@@ -7626,7 +7627,57 @@ function readWorkflowInlineAskCard(
         : NaN;
       return Number.isFinite(max) ? Math.round(max) : 0;
     })(),
+    textSize: Number(card?.getAttribute("data-text-size")) || 0,
+    quoteFontSize: fontPx(
+      card?.querySelector('[data-llm-inline-ask-quote="true"]') ?? null,
+    ),
+    answerFontSize: fontPx(
+      (
+        Array.from(
+          card?.querySelectorAll("[data-llm-inline-ask-answer]") || [],
+        ).pop() as Element | undefined
+      )?.firstElementChild ?? null,
+    ),
+    quoteHasBar: Boolean(
+      card?.querySelector('[data-llm-inline-ask-quote-bar="true"]'),
+    ),
+    // Curly quote marks around the passage are gone; none may be left as the
+    // first or last text of the passage block.
+    quoteHasQuoteMarks: (() => {
+      const section = card?.querySelector(
+        '[data-llm-inline-ask-quote="true"]',
+      )?.parentElement;
+      const text = section?.textContent || "";
+      return /\u201C|\u201D/u.test(
+        text.replace(
+          card?.querySelector('[data-llm-inline-ask-quote="true"]')
+            ?.textContent || "",
+          "",
+        ),
+      );
+    })(),
+    quoteColorAlpha: (() => {
+      const quote = card?.querySelector('[data-llm-inline-ask-quote="true"]');
+      const color = quote ? win?.getComputedStyle(quote)?.color || "" : "";
+      const alpha =
+        /^rgba\(\s*[\d.]+,\s*[\d.]+,\s*[\d.]+,\s*([\d.]+)\s*\)/u.exec(color);
+      return alpha ? Number(alpha[1]) : 1;
+    })(),
+    threadFaded: (() => {
+      const thread = card?.querySelector(
+        '[data-llm-inline-ask-thread="true"]',
+      ) as HTMLElement | null;
+      const mask = thread?.style.getPropertyValue("mask-image") || "";
+      return Boolean(mask) && mask !== "none";
+    })(),
   };
+
+  function fontPx(node: Element | null): number {
+    const size = node
+      ? parseFloat(win?.getComputedStyle(node)?.fontSize || "")
+      : NaN;
+    return Number.isFinite(size) ? size : 0;
+  }
 }
 
 async function waitForWorkflowInlineAskEditor(
@@ -8228,7 +8279,7 @@ async function showNewReaderSelectionPopup(
 }
 
 async function endReaderInlineAsk(input: {
-  via: "discard" | "escape";
+  via: "discard" | "escape" | "escape_page";
 }): Promise<{ cardRemoved: boolean }> {
   assertWorkflowTestEnabled();
   const state = workflowInlineAsk;
@@ -8241,6 +8292,20 @@ async function endReaderInlineAsk(input: {
           '[data-llm-inline-ask-action="discard"]',
         ) as HTMLButtonElement | null
       )?.click();
+    } else if (card && input.via === "escape_page") {
+      // Escape with focus on the page: sent to the PDF view's document (the
+      // first nested reader frame), outside the card.
+      const viewDoc =
+        Array.from(
+          state.popupDoc.querySelectorAll(
+            "iframe",
+          ) as ArrayLike<HTMLIFrameElement>,
+        )
+          .map((frame) => frame.contentDocument)
+          .find((frameDoc) => frameDoc?.body) || state.popupDoc;
+      (viewDoc.body || viewDoc.documentElement).dispatchEvent(
+        makeReaderPromptKey(viewDoc, { key: "Escape", code: "Escape" }),
+      );
     } else if (card) {
       const editor = card.querySelector(
         '[data-llm-inline-ask-editor="true"]',
@@ -8363,6 +8428,49 @@ async function clickReaderInlineAskPromptMenuItem(
   if (!item) throw new Error(`No Inline Ask menu item "${action}"`);
   item.click();
   await Zotero.Promise.delay(50);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
+/** Clicks the More button or a step button of its text-size menu. */
+async function clickReaderInlineAskTextSize(
+  step: "toggle" | "smaller" | "larger" | "reset",
+): Promise<WorkflowTestReaderInlineAskTextSize> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const target = card.querySelector(
+    step === "toggle"
+      ? '[data-llm-inline-ask-more="true"]'
+      : `[data-llm-inline-ask-text-size-step="${step}"]`,
+  ) as HTMLButtonElement | null;
+  if (!target) throw new Error(`No Inline Ask text-size control "${step}"`);
+  target.click();
+  await Zotero.Promise.delay(50);
+  const menu = card.querySelector('[data-llm-inline-ask-more-menu="true"]');
+  return {
+    card: readWorkflowInlineAskCard(state.popupDoc),
+    moreMenuShown: Boolean(menu),
+    menuPercent:
+      menu?.querySelector('[data-llm-inline-ask-text-size-value="true"]')
+        ?.textContent || "",
+  };
+}
+
+/** Moves the pointer onto or off the passage (mouseenter or mouseleave). */
+async function hoverReaderInlineAskPassage(
+  on: boolean,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card, win } = requireWorkflowInlineAskCardElement();
+  const bar = card.querySelector('[data-llm-inline-ask-quote-bar="true"]');
+  const section = bar?.parentElement;
+  if (!section) throw new Error("The Inline Ask card has no passage");
+  section.dispatchEvent(
+    new win.MouseEvent(on ? "mouseenter" : "mouseleave", {
+      bubbles: false,
+    }),
+  );
+  // The color fades over 0.2 s.
+  await Zotero.Promise.delay(350);
   return readWorkflowInlineAskCard(state.popupDoc);
 }
 
@@ -11677,6 +11785,8 @@ export function installWorkflowTestHarness(targetAddon: {
     continueReaderInlineAskInSidebar,
     openReaderInlineAskPromptMenu,
     clickReaderInlineAskPromptMenuItem,
+    clickReaderInlineAskTextSize,
+    hoverReaderInlineAskPassage,
     dragReaderInlineAsk,
     editReaderInlineAskPrompt,
     openReaderInlineAskModelMenu,

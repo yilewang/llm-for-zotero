@@ -33,6 +33,7 @@ declare namespace _ZoteroTypes {
       "inlineAskDeletedPrompts": string;
       "inlineAskModelEntryId": string;
       "inlineAskReasoning": string;
+      "inlineAskTextSize": number;
       "semanticScholarApiKey": string;
       "temperaturePrimary": string;
       "maxTokensPrimary": string;

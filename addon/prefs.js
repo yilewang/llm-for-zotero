@@ -24,6 +24,7 @@ pref("inlineAskPrompts", "");
 pref("inlineAskDeletedPrompts", "");
 pref("inlineAskModelEntryId", "");
 pref("inlineAskReasoning", "");
+pref("inlineAskTextSize", 100);
 pref("semanticScholarApiKey", "");
 pref("temperaturePrimary", "0.3");
 pref("maxTokensPrimary", "4096");

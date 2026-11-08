@@ -4,6 +4,9 @@
  * code, all with inline styles (plugin CSS does not reach reader documents).
  * Math stays as text. Text goes in through text nodes only, never as markup.
  *
+ * Code sizes are relative (0.88em of the 12.5px answer text = 11px), so the
+ * card scales the answer by setting one font size on the container.
+ *
  * The card asks for no citation markers; any `[[cite:…]]` or `[[quote:…]]`
  * token the model writes anyway is removed before rendering.
  */
@@ -201,7 +204,7 @@ function appendInlines(
     if (inline.kind === "code") {
       node.style.cssText = [
         `font-family:${MONO}`,
-        "font-size:11px",
+        "font-size:0.88em",
         `background:${palette.fieldBg}`,
         "border-radius:4px",
         "padding:0 3px",
@@ -252,7 +255,7 @@ export function renderInlineAskAnswer(
         `background:${palette.fieldBg}`,
         "border-radius:6px",
         `font-family:${MONO}`,
-        "font-size:11px",
+        "font-size:0.88em",
         "white-space:pre-wrap",
         "overflow-wrap:anywhere",
       ].join(";");

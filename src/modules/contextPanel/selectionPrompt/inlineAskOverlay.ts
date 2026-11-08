@@ -2,12 +2,14 @@
  * The Inline Ask card: a floating box in the reader document where the user
  * asks about the selected text without opening the sidebar.
  *
- * Compose, top to bottom: the passage header (a "Creator, year:" label, then
- * the selected text in curly quotes, in the reader's serif; three lines, a
- * click shows all of it), the quick prompts as plain grey words, and one
+ * Compose, top to bottom: the passage header (a grey quote line, then a
+ * "Creator, year:" label and the selected text in the reader's serif; the
+ * text is dimmer until the pointer is over it; three lines, a click shows
+ * all of it; it stays put while the thread scrolls), the quick prompts as plain grey words, and one
  * filled composer box. The box holds the question field on its top line and,
- * on its bottom line, the model and effort buttons (left) and the send arrow
- * (right). The key hints are the field's tooltip. After a question the header
+ * on its bottom line, the model and effort buttons (left), the More button
+ * and the send arrow (right). The More menu sets the text size of the whole
+ * card (90 to 135 percent; Cmd/Ctrl with + - 0 does the same). The key hints are the field's tooltip. After a question the header
  * shrinks to two lines and the thread follows: the question in a bubble on
  * the right and the streamed answer. Under the latest answer sit quiet
  * message actions (Save as annotation, Continue in sidebar, Discard), and
@@ -97,6 +99,10 @@ export type InlineAskOverlayLabels = {
   continueInSidebar: string;
   saveAsAnnotation: string;
   reasoningEffort: string;
+  /** The More button's tooltip, and the text-size menu's strings. */
+  more: string;
+  textSize: string;
+  resetTextSize: string;
   /** Shown when no model can answer. */
   modelUnavailable: string;
 };
@@ -201,6 +207,10 @@ export type InlineAskOverlayInput = {
   save?: InlineAskSaveSetup;
   /** Without it, Continue in sidebar stays disabled. */
   continueInSidebar?: InlineAskContinueInSidebar;
+  /** The saved text size in percent (one of INLINE_ASK_TEXT_SIZES). */
+  textSize?: number;
+  /** Called when the user picks a new text size. */
+  onTextSizeChange?: (size: number) => void;
   /** Called exactly once on any close path. */
   onClose?: () => void;
 };
@@ -252,6 +262,15 @@ function sendIcon(doc: Document): Element {
   ]);
 }
 
+/** +1, -1 or 0 (reset) for Cmd/Ctrl with = + - 0; null for other keys. */
+function textSizeKeyDirection(event: KeyboardEvent): number | null {
+  if (!(event.metaKey || event.ctrlKey) || event.altKey) return null;
+  if (event.key === "=" || event.key === "+") return 1;
+  if (event.key === "-") return -1;
+  if (event.key === "0") return 0;
+  return null;
+}
+
 function closeIcon(doc: Document): Element {
   return svgIcon(
     doc,
@@ -270,6 +289,11 @@ function closeIcon(doc: Document): Element {
 function markBackground(hex: string): string {
   return `${hex}66`;
 }
+
+/** The text sizes the More menu steps through, in percent. */
+export const INLINE_ASK_TEXT_SIZES: readonly number[] = [
+  90, 100, 110, 120, 135,
+];
 
 const PAPER_FONT = '"STIX Two Text","Times New Roman",Times,serif';
 
@@ -293,6 +317,10 @@ type InlineAskPalette = ReaderOverlayPalette & {
   cardShadow: string;
   menuShadow: string;
   floatShadow: string;
+  /** The passage text at rest (the full color on hover and when open). */
+  quoteRestFg: string;
+  /** The quote line beside the passage. */
+  quoteBar: string;
 };
 
 function inlineAskPalette(dark: boolean): InlineAskPalette {
@@ -319,6 +347,8 @@ function inlineAskPalette(dark: boolean): InlineAskPalette {
         cardShadow: "0 4px 14px rgba(0,0,0,.38)",
         menuShadow: "0 8px 18px rgba(0,0,0,.24)",
         floatShadow: "0 12px 30px rgba(0,0,0,.5)",
+        quoteRestFg: "rgba(244,244,246,0.7)",
+        quoteBar: "rgba(255,255,255,0.17)",
       }
     : {
         bg: "#ffffff",
@@ -342,6 +372,8 @@ function inlineAskPalette(dark: boolean): InlineAskPalette {
         cardShadow: "0 4px 14px rgba(0,0,0,.16)",
         menuShadow: "0 8px 18px rgba(0,0,0,.14)",
         floatShadow: "0 12px 30px rgba(0,0,0,.2)",
+        quoteRestFg: "rgba(26,26,26,0.7)",
+        quoteBar: "rgba(0,0,0,0.16)",
       };
 }
 
@@ -451,6 +483,19 @@ export function openInlineAskOverlay(
   const { bg, fg, border, quoteFg, labelFg } = palette;
   const el = createReaderOverlayElementFactory(doc);
   const schedule = readerOverlayScheduler(doc);
+  // One multiplier scales every text of the card (not the More button or its
+  // menu). Each size below is its 100% value in px.
+  let textSize = INLINE_ASK_TEXT_SIZES.includes(input.textSize ?? 100)
+    ? (input.textSize ?? 100)
+    : 100;
+  const sizePx = (base: number) =>
+    `${Math.round(base * textSize * 10) / 1000}px`;
+  const scaled: Array<[HTMLElement, number]> = [];
+  const scaleText = <T extends HTMLElement>(node: T, base: number): T => {
+    scaled.push([node, base]);
+    node.style.fontSize = sizePx(base);
+    return node;
+  };
   const currentLine = (): InlineAskModelLine | null => {
     if (!input.modelPicker) return input.model;
     try {
@@ -489,41 +534,59 @@ export function openInlineAskOverlay(
   ]);
   root.setAttribute("data-llm-inline-ask", "true");
 
-  // The passage header: "Creator, year:" then the selected text in curly
-  // quotes, in the reader's serif. Clamped; a click shows all of it.
+  // The passage header: a quote line, then "Creator, year:" and the selected
+  // text in the reader's serif. Clamped; a click shows all of it. The text is
+  // dimmer until the pointer is over the passage or it is open.
   const quoteSection = el("div", [
+    "display:grid",
+    "grid-template-columns:3px minmax(0,1fr)",
+    "column-gap:10px",
     "min-width:0",
-    "padding:0 2px",
-    `color:${quoteFg}`,
+    "padding:0 2px 0 0",
     "cursor:pointer",
-    "overflow-wrap:anywhere",
   ]);
+  const quoteBar = el("span", [
+    "border-radius:2px",
+    "align-self:stretch",
+    "margin:4px 0",
+    `background:${palette.quoteBar}`,
+  ]);
+  quoteBar.setAttribute("data-llm-inline-ask-quote-bar", "true");
+  const quoteBody = el("div", ["min-width:0", "overflow-wrap:anywhere"]);
+  quoteSection.append(quoteBar, quoteBody);
   const sourceText = (input.sourceLabel || "").trim();
   if (sourceText) {
-    const quoteLabel = el("span", [
-      "font-size:11.5px",
-      "font-weight:600",
-      "letter-spacing:0.01em",
-      `color:${labelFg}`,
-    ]);
+    const quoteLabel = scaleText(
+      el("span", [
+        "font-weight:600",
+        "letter-spacing:0.01em",
+        `color:${labelFg}`,
+      ]),
+      11.5,
+    );
     quoteLabel.setAttribute("data-llm-inline-ask-quote-label", "true");
     quoteLabel.textContent = `${sourceText}:`;
-    quoteSection.append(quoteLabel, doc.createTextNode(" "));
+    quoteBody.append(quoteLabel, doc.createTextNode(" "));
   }
-  const quoteFont = [
-    `font-family:${PAPER_FONT}`,
-    "font-size:13.5px",
-    "line-height:1.6",
-  ];
-  const quote = el("span", [...quoteFont, "white-space:pre-wrap"]);
+  const quote = scaleText(
+    el("span", [
+      `font-family:${PAPER_FONT}`,
+      "line-height:1.6",
+      "white-space:pre-wrap",
+      `color:${palette.quoteRestFg}`,
+      "transition:color 0.2s ease",
+    ]),
+    13.5,
+  );
   quote.setAttribute("data-llm-inline-ask-quote", "true");
   quote.textContent = input.selectedText;
-  const openQuote = el("span", quoteFont);
-  openQuote.textContent = "\u201C";
-  const closeQuote = el("span", quoteFont);
-  closeQuote.textContent = "\u201D";
-  quoteSection.append(openQuote, quote, closeQuote);
+  quoteBody.append(quote);
   let quoteExpanded = false;
+  let quoteHover = false;
+  const syncQuoteColor = () => {
+    quote.style.color =
+      quoteHover || quoteExpanded ? quoteFg : palette.quoteRestFg;
+  };
   const syncQuote = () => {
     const lines = session.getState().turns.length > 0 ? 2 : 3;
     const css = quoteExpanded
@@ -539,14 +602,15 @@ export function openInlineAskOverlay(
           "max-height": "none",
           overflow: "hidden",
         };
-    quoteSection.style.setProperty("-webkit-box-orient", "vertical");
+    quoteBody.style.setProperty("-webkit-box-orient", "vertical");
     for (const [name, value] of Object.entries(css)) {
-      quoteSection.style.setProperty(name, value);
+      quoteBody.style.setProperty(name, value);
     }
     quoteSection.setAttribute(
       "data-expanded",
       quoteExpanded ? "true" : "false",
     );
+    syncQuoteColor();
   };
   const onQuoteClick = () => {
     // A drag-select inside the passage is not a toggle.
@@ -558,6 +622,14 @@ export function openInlineAskOverlay(
     quoteExpanded = !quoteExpanded;
     syncQuote();
   };
+  const onQuoteEnter = () => {
+    quoteHover = true;
+    syncQuoteColor();
+  };
+  const onQuoteLeave = () => {
+    quoteHover = false;
+    syncQuoteColor();
+  };
 
   // The thread: questions, answers, and the reading line.
   const thread = el("div", [
@@ -568,12 +640,23 @@ export function openInlineAskOverlay(
     "overflow:auto",
   ]);
   thread.setAttribute("data-llm-inline-ask-thread", "true");
-  const reading = el("div", [
-    `color:${labelFg}`,
-    "font-style:italic",
-    "padding:0 2px",
-    "display:none",
-  ]);
+  // Scrolled text fades out under the pinned passage.
+  const syncThreadFade = () => {
+    const fade =
+      thread.scrollTop > 2
+        ? "linear-gradient(to bottom, transparent 0, #000 16px)"
+        : "none";
+    thread.style.setProperty("mask-image", fade);
+  };
+  const reading = scaleText(
+    el("div", [
+      `color:${labelFg}`,
+      "font-style:italic",
+      "padding:0 2px",
+      "display:none",
+    ]),
+    12,
+  );
   reading.setAttribute("data-llm-inline-ask-reading", "true");
   reading.textContent = labels.reading;
   thread.append(reading);
@@ -644,6 +727,8 @@ export function openInlineAskOverlay(
     onInput: () => syncSend(),
   });
   const { field, editor } = textBox;
+  scaleText(editor, 12);
+  scaleText(textBox.placeholder, 12);
   field.setAttribute("data-llm-inline-ask-field", "true");
   // The key hints are the field's tooltip.
   editor.setAttribute("title", labels.hint);
@@ -680,17 +765,15 @@ export function openInlineAskOverlay(
         "cursor:pointer",
       ]
     : ["cursor:default"];
-  const modelLabel = el(pairTag, [
-    ...modelPairCss,
-    ...pairButtonCss,
-    "max-width:170px",
-  ]);
+  const modelLabel = scaleText(
+    el(pairTag, [...modelPairCss, ...pairButtonCss, "max-width:170px"]),
+    11,
+  );
   modelLabel.setAttribute("data-llm-inline-ask-model", "true");
-  const effortLabel = el(pairTag, [
-    ...modelPairCss,
-    ...pairButtonCss,
-    "max-width:90px",
-  ]);
+  const effortLabel = scaleText(
+    el(pairTag, [...modelPairCss, ...pairButtonCss, "max-width:90px"]),
+    11,
+  );
   effortLabel.setAttribute("data-llm-inline-ask-effort", "true");
   effortLabel.setAttribute("title", labels.reasoningEffort);
   for (const button of picker ? [modelLabel, effortLabel] : []) {
@@ -729,7 +812,28 @@ export function openInlineAskOverlay(
     sendBtn.style.opacity = "";
     sendBtn.style.cursor = disabled ? "default" : "pointer";
   };
-  fieldBar.append(spacer, sendBtn);
+  // The More button opens the text-size menu; it is not scaled itself.
+  const moreBtn = el("button", [
+    "flex:none",
+    "margin:0",
+    "padding:3px 6px",
+    "border:none",
+    "background:transparent",
+    `color:${palette.fill2}`,
+    "font-family:inherit",
+    "font-size:15px",
+    "letter-spacing:1px",
+    "line-height:1",
+    "cursor:pointer",
+  ]) as HTMLButtonElement;
+  moreBtn.setAttribute("type", "button");
+  moreBtn.setAttribute("data-llm-inline-ask-more", "true");
+  moreBtn.setAttribute("title", labels.more);
+  moreBtn.setAttribute("aria-label", labels.more);
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", "false");
+  moreBtn.textContent = "\u22EF";
+  fieldBar.append(spacer, moreBtn, sendBtn);
   field.append(fieldBar);
   // Secondary at rest, primary on hover or while the button's menu is open.
   const hoverTint = (node: HTMLElement, rest: () => string, on: string) => {
@@ -751,6 +855,12 @@ export function openInlineAskOverlay(
       );
     }
   }
+  hoverTint(
+    moreBtn,
+    () =>
+      moreBtn.getAttribute("aria-expanded") === "true" ? fg : palette.fill2,
+    fg,
+  );
   sendBtn.addEventListener("mouseenter", () => {
     if (!sendBtn.disabled) sendBtn.style.opacity = "0.85";
   });
@@ -758,11 +868,10 @@ export function openInlineAskOverlay(
     sendBtn.style.opacity = "";
   });
 
-  const notice = el("div", [
-    "font-size:11px",
-    `color:${labelFg}`,
-    "line-height:1.3",
-  ]);
+  const notice = scaleText(
+    el("div", [`color:${labelFg}`, "line-height:1.3"]),
+    11,
+  );
   notice.setAttribute("data-llm-inline-ask-notice", "true");
   notice.textContent = labels.modelUnavailable;
 
@@ -822,6 +931,7 @@ export function openInlineAskOverlay(
       pill.setAttribute("title", prompt.prompt);
       if (editing) pill.setAttribute("data-editing", "true");
       pill.textContent = prompt.label;
+      pill.style.fontSize = sizePx(12);
       pill.addEventListener("mouseenter", () => {
         if (pill.disabled) return;
         pill.style.background = palette.hover;
@@ -939,8 +1049,19 @@ export function openInlineAskOverlay(
   promptEditor.append(labelInput, promptBox.field, promptFooter);
 
   // ── Menus: the pill menu, and the model and effort menus ───────────────
-  type OpenMenu = { kind: "prompt" | "model" | "effort"; node: HTMLElement };
+  type OpenMenu = {
+    kind: "prompt" | "model" | "effort" | "more";
+    node: HTMLElement;
+  };
   let openMenu: OpenMenu | null = null;
+  /** The parts of the open More menu, updated in place on a size change. */
+  let moreMenu: {
+    value: HTMLElement;
+    smaller: HTMLButtonElement;
+    larger: HTMLButtonElement;
+    dots: HTMLElement[];
+    reset: HTMLButtonElement;
+  } | null = null;
   /** A pointerdown that only closed the pill menu also swallows its click. */
   let swallowPillClick = false;
 
@@ -977,7 +1098,10 @@ export function openInlineAskOverlay(
     const menu = openMenu;
     if (!menu) return;
     openMenu = null;
+    moreMenu = null;
     menu.node.remove();
+    moreBtn.setAttribute("aria-expanded", "false");
+    moreBtn.style.color = palette.fill2;
     for (const button of [modelLabel, effortLabel]) {
       if (!picker) break;
       button.setAttribute("aria-expanded", "false");
@@ -1380,7 +1504,6 @@ export function openInlineAskOverlay(
     "background:none",
     `color:${labelFg}`,
     "font:inherit",
-    "font-size:11.5px",
     "line-height:1.35",
     "padding:4px 6px",
     "border-radius:6px",
@@ -1388,7 +1511,10 @@ export function openInlineAskOverlay(
     "cursor:pointer",
   ];
   const quietAction = (): HTMLButtonElement => {
-    const button = el("button", actionCss) as HTMLButtonElement;
+    const button = scaleText(
+      el("button", actionCss) as HTMLButtonElement,
+      11.5,
+    );
     button.setAttribute("type", "button");
     button.addEventListener("mouseenter", () => {
       if (button.disabled) return;
@@ -1418,14 +1544,16 @@ export function openInlineAskOverlay(
   setButtonDisabled(saveBtn, true);
   footer.append(saveBtn, sidebarBtn, footerSpacer, discardBtn);
   // Why Continue in sidebar did not move the conversation.
-  const sidebarError = el("div", [
-    "display:none",
-    "font-size:11px",
-    `color:${labelFg}`,
-    "line-height:1.3",
-    "padding:0 2px",
-    "overflow-wrap:anywhere",
-  ]);
+  const sidebarError = scaleText(
+    el("div", [
+      "display:none",
+      `color:${labelFg}`,
+      "line-height:1.3",
+      "padding:0 2px",
+      "overflow-wrap:anywhere",
+    ]),
+    11,
+  );
   sidebarError.setAttribute("data-llm-inline-ask-sidebar-error", "true");
   // The message actions and the reason sit at the end of the thread, after
   // the latest answer (turns are inserted before the reading line).
@@ -1464,12 +1592,10 @@ export function openInlineAskOverlay(
   colorSquare.setAttribute("title", saveSetup?.labels.color || "");
   colorSquare.setAttribute("aria-label", saveSetup?.labels.color || "");
   colorSquare.setAttribute("aria-expanded", "false");
-  const pageText = el("span", [
-    "font-size:11px",
-    `color:${labelFg}`,
-    "line-height:1.2",
-    "white-space:nowrap",
-  ]);
+  const pageText = scaleText(
+    el("span", [`color:${labelFg}`, "line-height:1.2", "white-space:nowrap"]),
+    11,
+  );
   pageText.setAttribute("data-llm-inline-ask-page", "true");
   pageText.textContent = saveSetup?.pageText || "";
   show(pageText, Boolean(saveSetup?.pageText));
@@ -1506,16 +1632,18 @@ export function openInlineAskOverlay(
     return dot;
   });
 
-  const markClamp = el("div", [
-    `font-family:${PAPER_FONT}`,
-    "font-size:13px",
-    "line-height:1.4",
-    "display:-webkit-box",
-    "-webkit-box-orient:vertical",
-    "-webkit-line-clamp:3",
-    "overflow:hidden",
-    "overflow-wrap:anywhere",
-  ]);
+  const markClamp = scaleText(
+    el("div", [
+      `font-family:${PAPER_FONT}`,
+      "line-height:1.4",
+      "display:-webkit-box",
+      "-webkit-box-orient:vertical",
+      "-webkit-line-clamp:3",
+      "overflow:hidden",
+      "overflow-wrap:anywhere",
+    ]),
+    13,
+  );
   const mark = el("mark", [
     `background:${markBackground(colors[0].hex)}`,
     "color:inherit",
@@ -1566,13 +1694,15 @@ export function openInlineAskOverlay(
     placeholderAttribute: "data-llm-inline-ask-comment-placeholder",
   });
 
-  const saveError = el("div", [
-    "display:none",
-    "font-size:11px",
-    `color:${labelFg}`,
-    "line-height:1.3",
-    "overflow-wrap:anywhere",
-  ]);
+  const saveError = scaleText(
+    el("div", [
+      "display:none",
+      `color:${labelFg}`,
+      "line-height:1.3",
+      "overflow-wrap:anywhere",
+    ]),
+    11,
+  );
   saveError.setAttribute("data-llm-inline-ask-save-error", "true");
 
   const saveFooter = el("div", [
@@ -1580,17 +1710,17 @@ export function openInlineAskOverlay(
     "gap:6px",
     "align-items:center",
   ]);
-  const cancelSaveBtn = el(
-    "button",
-    buttonCss(palette, "ghost"),
-  ) as HTMLButtonElement;
+  const cancelSaveBtn = scaleText(
+    el("button", buttonCss(palette, "ghost")) as HTMLButtonElement,
+    12,
+  );
   cancelSaveBtn.setAttribute("type", "button");
   cancelSaveBtn.setAttribute("data-llm-inline-ask-save-action", "cancel");
   cancelSaveBtn.textContent = saveSetup?.labels.cancel || "";
-  const confirmSaveBtn = el(
-    "button",
-    buttonCss(palette, "primary"),
-  ) as HTMLButtonElement;
+  const confirmSaveBtn = scaleText(
+    el("button", buttonCss(palette, "primary")) as HTMLButtonElement,
+    12,
+  );
   confirmSaveBtn.setAttribute("type", "button");
   confirmSaveBtn.setAttribute("data-llm-inline-ask-save-action", "save");
   confirmSaveBtn.textContent = saveSetup?.labels.save || "";
@@ -1600,6 +1730,8 @@ export function openInlineAskOverlay(
     confirmSaveBtn,
   );
 
+  scaleText(commentBox.editor, 12);
+  scaleText(commentBox.placeholder, 12);
   saveView.append(
     saveHeader,
     colorRow,
@@ -1649,7 +1781,11 @@ export function openInlineAskOverlay(
   );
 
   // ── Rendering ──────────────────────────────────────────────────────────
-  const turnNodes: Array<{ node: HTMLElement; rendered: string }> = [];
+  const turnNodes: Array<{
+    node: HTMLElement;
+    rendered: string;
+    base: number;
+  }> = [];
   let lastPhase: InlineAskState["phase"] = "compose";
 
   const renderTurn = (turn: InlineAskTurn, index: number) => {
@@ -1681,8 +1817,10 @@ export function openInlineAskOverlay(
         node.setAttribute("data-llm-inline-ask-question", "true");
         node.textContent = turn.shownText;
       }
+      const base = turn.role === "user" ? 12 : 12.5;
+      node.style.fontSize = sizePx(base);
       thread.insertBefore(node, reading);
-      entry = { node, rendered: "" };
+      entry = { node, rendered: "", base };
       turnNodes[index] = entry;
     }
     if (turn.role !== "assistant") return;
@@ -1888,7 +2026,206 @@ export function openInlineAskOverlay(
     syncSidebar();
     applyView();
     thread.scrollTop = thread.scrollHeight;
+    syncThreadFade();
     if (root.isConnected) keepInViewport();
+  };
+
+  // ── Text size ──────────────────────────────────────────────────────────
+  const applyTextSize = () => {
+    const atBottom =
+      thread.scrollHeight - thread.scrollTop - thread.clientHeight < 4;
+    for (const [node, base] of scaled) node.style.fontSize = sizePx(base);
+    for (const pill of Array.from(pills.children)) {
+      (pill as HTMLElement).style.fontSize = sizePx(12);
+    }
+    for (const entry of turnNodes) {
+      if (entry) entry.node.style.fontSize = sizePx(entry.base);
+    }
+    root.setAttribute("data-text-size", String(textSize));
+    syncQuote();
+    if (atBottom) thread.scrollTop = thread.scrollHeight;
+    syncThreadFade();
+    if (editingPrompt) placePromptEditor();
+    if (root.isConnected) keepInViewport();
+    if (moreMenu) refreshMoreMenu();
+  };
+  const setTextSize = (size: number) => {
+    if (size === textSize || !INLINE_ASK_TEXT_SIZES.includes(size)) return;
+    textSize = size;
+    applyTextSize();
+    try {
+      input.onTextSizeChange?.(size);
+    } catch {
+      // The size still applies to this card.
+    }
+  };
+  /** Moves one step: 1 larger, -1 smaller, 0 back to 100. */
+  const stepTextSize = (direction: number) => {
+    if (direction === 0) {
+      setTextSize(100);
+      return;
+    }
+    const index = INLINE_ASK_TEXT_SIZES.indexOf(textSize);
+    const next = INLINE_ASK_TEXT_SIZES[index + direction];
+    if (next !== undefined) setTextSize(next);
+  };
+  root.setAttribute("data-text-size", String(textSize));
+
+  const toggleMoreMenu = () => {
+    if (openMenu?.kind === "more") {
+      closeMenus();
+      return;
+    }
+    closeMenus();
+    showMoreMenu();
+  };
+  /** Opens above the button, right-aligned to it, in the card's coordinates. */
+  const placeMoreMenu = () => {
+    if (!openMenu || openMenu.kind !== "more") return;
+    const node = openMenu.node;
+    const rootRect = root.getBoundingClientRect();
+    const buttonRect = moreBtn.getBoundingClientRect();
+    const menuRect = node.getBoundingClientRect();
+    const originX = rootRect.left + root.clientLeft;
+    const originY = rootRect.top + root.clientTop;
+    let top = buttonRect.top - originY - 4 - menuRect.height;
+    // No room above the window's top edge: open below the button instead.
+    if (buttonRect.top - 4 - menuRect.height < READER_OVERLAY_MARGIN) {
+      top = buttonRect.bottom - originY + 4;
+    }
+    node.style.left = `${Math.max(
+      0,
+      Math.round(buttonRect.right - originX - menuRect.width),
+    )}px`;
+    node.style.top = `${Math.round(top)}px`;
+  };
+  const refreshMoreMenu = () => {
+    const parts = moreMenu;
+    if (!parts) return;
+    parts.value.textContent = `${textSize}%`;
+    const index = INLINE_ASK_TEXT_SIZES.indexOf(textSize);
+    const atEnd = [index <= 0, index >= INLINE_ASK_TEXT_SIZES.length - 1];
+    [parts.smaller, parts.larger].forEach((button, i) => {
+      button.disabled = atEnd[i];
+      button.style.color = atEnd[i] ? palette.fill3 : fg;
+      button.style.cursor = atEnd[i] ? "default" : "pointer";
+      button.style.background = "none";
+    });
+    parts.dots.forEach((dot, i) => {
+      dot.style.background = i === index ? fg : palette.fill3;
+    });
+    // Reset stays in the menu, inactive at 100 percent: a row that came and
+    // went would change the menu's height and move the A buttons under the
+    // pointer between two clicks.
+    const atDefault = textSize === 100;
+    parts.reset.disabled = atDefault;
+    parts.reset.style.color = atDefault ? palette.fill3 : fg;
+    parts.reset.style.cursor = atDefault ? "default" : "pointer";
+    parts.reset.style.pointerEvents = atDefault ? "none" : "";
+  };
+  const showMoreMenu = () => {
+    const menu = el("div", menuPanelCss);
+    menu.setAttribute("data-llm-inline-ask-more-menu", "true");
+    menu.setAttribute("role", "menu");
+    const heading = el("div", sectionCss);
+    heading.setAttribute("data-llm-inline-ask-menu-section", "true");
+    heading.textContent = labels.textSize;
+    const row = el("div", [
+      "display:flex",
+      "align-items:center",
+      "justify-content:space-between",
+      "gap:6px",
+    ]);
+    const stepButton = (
+      step: "smaller" | "larger",
+      glyphSize: number,
+      direction: number,
+    ) => {
+      const button = el("button", [
+        "flex:none",
+        "width:34px",
+        "height:30px",
+        "box-sizing:border-box",
+        "margin:0",
+        "padding:0",
+        "border:none",
+        "border-radius:7px",
+        "background:none",
+        `color:${fg}`,
+        `font-family:${PAPER_FONT}`,
+        `font-size:${glyphSize}px`,
+        "line-height:1",
+        "cursor:pointer",
+      ]) as HTMLButtonElement;
+      button.setAttribute("type", "button");
+      button.setAttribute("role", "menuitem");
+      button.setAttribute("data-llm-inline-ask-text-size-step", step);
+      button.textContent = "A";
+      addHover(
+        button,
+        () => {
+          if (!button.disabled) button.style.background = palette.hover;
+        },
+        () => {
+          button.style.background = "none";
+        },
+      );
+      button.addEventListener("click", (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (button.disabled) return;
+        stepTextSize(direction);
+        refocusEditor();
+      });
+      return button;
+    };
+    const smaller = stepButton("smaller", 12, -1);
+    const larger = stepButton("larger", 18, 1);
+    const value = el("span", [
+      "font-size:11px",
+      `color:${palette.fill2}`,
+      "font-variant-numeric:tabular-nums",
+    ]);
+    value.setAttribute("data-llm-inline-ask-text-size-value", "true");
+    row.append(smaller, value, larger);
+    const dotRow = el("div", [
+      "display:flex",
+      "justify-content:center",
+      "gap:5px",
+      "padding:0 0 3px",
+    ]);
+    const dots = INLINE_ASK_TEXT_SIZES.map(() =>
+      el("span", ["width:5px", "height:5px", "border-radius:50%"]),
+    );
+    dotRow.append(...dots);
+    const reset = menuOption(
+      "data-llm-inline-ask-text-size-step",
+      "reset",
+      labels.resetTextSize,
+      false,
+      () => {
+        stepTextSize(0);
+        refocusEditor();
+      },
+    );
+    reset.setAttribute("role", "menuitem");
+    reset.removeAttribute("aria-checked");
+    menu.append(heading, row, dotRow, reset);
+    moreBtn.setAttribute("aria-expanded", "true");
+    moreBtn.style.color = fg;
+    mountMenu("more", menu, 0, 0);
+    moreMenu = { value, smaller, larger, dots, reset };
+    refreshMoreMenu();
+    // Placed once: a size step grows the card under the menu, and a menu
+    // that followed the More button would move the A buttons between clicks.
+    placeMoreMenu();
+  };
+  /** After a menu click the editor takes the keys again. */
+  const refocusEditor = () => {
+    schedule(() => {
+      if (closed || editingPrompt || view !== "thread") return;
+      editor.focus({ preventScroll: true });
+    }, 0);
   };
 
   const openSaveView = (): boolean => {
@@ -1982,6 +2319,74 @@ export function openInlineAskOverlay(
     if (session.hasConversation()) return;
     close();
   };
+  // Escape steps back one level: an open menu, then the prompt editor, then
+  // the save view, and last the card itself.
+  const handleEscape = () => {
+    if (openMenu) {
+      closeMenus();
+      return;
+    }
+    if (editingPrompt && view === "thread") {
+      closePromptEditor(true);
+      return;
+    }
+    if (view === "save") {
+      closeSaveView();
+      return;
+    }
+    // Not while Continue in sidebar moves the conversation (see Discard).
+    if (continuing) return;
+    close();
+  };
+  // Escape from the page or a reader view: keys outside the card never reach
+  // onKeyDown, so the card would stay open until the user clicked into it.
+  const onDocKeyDown = (e: Event) => {
+    const keyEvent = e as KeyboardEvent;
+    if (classifySelectionPromptKey(keyEvent) !== "close") return;
+    const target = e.target as Node | null;
+    if (target && root.contains(target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handleEscape();
+  };
+  // Zotero's window handles Cmd/Ctrl + = - 0 before the reader page sees
+  // them, so the card takes them in the window that holds the reader, while
+  // the key comes from inside the card.
+  const chromeWin = ((): Window | null => {
+    try {
+      const top = (
+        doc.defaultView as unknown as {
+          browsingContext?: { topChromeWindow?: Window | null };
+        } | null
+      )?.browsingContext?.topChromeWindow;
+      if (top) return top;
+    } catch {
+      // Not reachable from here; the reader instance knows its window.
+    }
+    try {
+      const readers = (
+        Zotero.Reader as unknown as {
+          _readers?: Array<{ _iframeWindow?: Window; _window?: Window }>;
+        }
+      )._readers;
+      const reader = readers?.find((candidate) => {
+        const readerDoc = candidate._iframeWindow?.document;
+        return Boolean(readerDoc && readerDoc.isSameNode(doc));
+      });
+      return reader?._window ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  const onChromeKeyDown = (e: Event) => {
+    const direction = textSizeKeyDirection(e as KeyboardEvent);
+    if (direction === null) return;
+    const target = e.target as Node | null;
+    if (!target || !root.contains(target)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    stepTextSize(direction);
+  };
   const onKeyDown = (e: Event) => {
     const keyEvent = e as KeyboardEvent;
     const action = classifySelectionPromptKey(keyEvent);
@@ -1990,18 +2395,20 @@ export function openInlineAskOverlay(
     // Keeps bubble-phase listeners above the card out. The reader's window
     // capture listeners have already run; see createReaderOverlayEditor.
     e.stopPropagation();
-    if (action === "close" && openMenu) {
+    // Cmd/Ctrl with + - 0 sets the card's text size, not the reader's zoom.
+    const direction = textSizeKeyDirection(keyEvent);
+    if (direction !== null) {
       e.preventDefault();
-      closeMenus();
+      stepTextSize(direction);
+      return;
+    }
+    if (action === "close") {
+      e.preventDefault();
+      handleEscape();
       return;
     }
     if (editingPrompt && view === "thread") {
       const target = e.target as Node | null;
-      if (action === "close") {
-        e.preventDefault();
-        closePromptEditor(true);
-        return;
-      }
       if (target && labelInput.contains(target)) {
         // Enter in Label saves; other keys type.
         if (action === "submit") {
@@ -2020,12 +2427,9 @@ export function openInlineAskOverlay(
       }
     }
     if (view === "save") {
-      // Escape goes back to the answer; Mod+Enter saves; a plain Enter is
-      // a new line in the comment (or the focused button's own key).
-      if (action === "close") {
-        e.preventDefault();
-        closeSaveView();
-      } else if (modEnter) {
+      // Mod+Enter saves; a plain Enter is a new line in the comment (or the
+      // focused button's own key).
+      if (modEnter) {
         e.preventDefault();
         runSave();
       }
@@ -2035,13 +2439,6 @@ export function openInlineAskOverlay(
       // Mod+Enter on an answer opens the save view; it never sends.
       e.preventDefault();
       openSaveView();
-      return;
-    }
-    if (action === "close") {
-      e.preventDefault();
-      // Not while Continue in sidebar moves the conversation (see Discard).
-      if (continuing) return;
-      close();
       return;
     }
     if (action !== "submit") return;
@@ -2115,7 +2512,9 @@ export function openInlineAskOverlay(
     if (
       menu.kind !== "prompt" &&
       target &&
-      (modelLabel.contains(target) || effortLabel.contains(target))
+      (modelLabel.contains(target) ||
+        effortLabel.contains(target) ||
+        moreBtn.contains(target))
     )
       return;
     closeMenus();
@@ -2182,6 +2581,11 @@ export function openInlineAskOverlay(
     e.stopPropagation();
     toggleModelMenu("effort");
   };
+  const onMoreClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleMoreMenu();
+  };
   const onCancelPromptClick = (e: Event) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2206,7 +2610,7 @@ export function openInlineAskOverlay(
   const onFieldMouseDown = (e: Event) => {
     const target = e.target as Node | null;
     if (!target || editor.contains(target)) return;
-    for (const control of [modelLabel, effortLabel, sendBtn]) {
+    for (const control of [modelLabel, effortLabel, moreBtn, sendBtn]) {
       if (control.contains(target)) return;
     }
     e.preventDefault();
@@ -2309,6 +2713,7 @@ export function openInlineAskOverlay(
       Math.max(80, Math.min(current.startThreadMax + dy, current.threadLimit)),
     );
     thread.style.maxHeight = `${chosenThreadMax}px`;
+    syncThreadFade();
   };
   const onDragEnd = (e: Event) => {
     if (drag && (e as PointerEvent).pointerId !== drag.pointerId) return;
@@ -2379,11 +2784,17 @@ export function openInlineAskOverlay(
     for (const pointerDoc of pointerDocs) {
       try {
         pointerDoc.removeEventListener("pointerdown", onDocPointerDown, true);
+        pointerDoc.removeEventListener("keydown", onDocKeyDown, true);
       } catch {
         // The reader recreated that view; its listeners are gone with it.
       }
     }
     root.removeEventListener("keydown", onKeyDown);
+    try {
+      chromeWin?.removeEventListener("keydown", onChromeKeyDown, true);
+    } catch {
+      // The window closed with the reader.
+    }
     root.removeEventListener("keyup", stop);
     root.removeEventListener("keypress", stop);
     sendBtn.removeEventListener("click", onSendClick);
@@ -2395,6 +2806,10 @@ export function openInlineAskOverlay(
     commentBox.detach();
     field.removeEventListener("mousedown", onFieldMouseDown);
     quoteSection.removeEventListener("click", onQuoteClick);
+    quoteSection.removeEventListener("mouseenter", onQuoteEnter);
+    quoteSection.removeEventListener("mouseleave", onQuoteLeave);
+    thread.removeEventListener("scroll", syncThreadFade);
+    moreBtn.removeEventListener("click", onMoreClick);
     textBox.detach();
     root.removeEventListener("pointerdown", onRootPointerDown);
     root.removeEventListener("pointerdown", onCardPointerDown);
@@ -2433,8 +2848,10 @@ export function openInlineAskOverlay(
   pointerDocs = collectPointerDocuments(doc);
   for (const pointerDoc of pointerDocs) {
     pointerDoc.addEventListener("pointerdown", onDocPointerDown, true);
+    pointerDoc.addEventListener("keydown", onDocKeyDown, true);
   }
   root.addEventListener("keydown", onKeyDown);
+  chromeWin?.addEventListener("keydown", onChromeKeyDown, true);
   root.addEventListener("keyup", stop);
   root.addEventListener("keypress", stop);
   sendBtn.addEventListener("click", onSendClick);
@@ -2446,6 +2863,10 @@ export function openInlineAskOverlay(
   commentBox.attach();
   field.addEventListener("mousedown", onFieldMouseDown);
   quoteSection.addEventListener("click", onQuoteClick);
+  quoteSection.addEventListener("mouseenter", onQuoteEnter);
+  quoteSection.addEventListener("mouseleave", onQuoteLeave);
+  thread.addEventListener("scroll", syncThreadFade);
+  moreBtn.addEventListener("click", onMoreClick);
   textBox.attach();
   root.addEventListener("pointerdown", onRootPointerDown);
   root.addEventListener("pointerdown", onCardPointerDown);

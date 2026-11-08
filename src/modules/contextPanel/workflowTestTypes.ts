@@ -460,6 +460,27 @@ export type WorkflowTestReaderInlineAskCard = {
   rect: { left: number; top: number; width: number; height: number };
   /** The answer area's max height in pixels (0 when it has none). */
   threadMaxHeight: number;
+  /** The card's text size in percent. */
+  textSize: number;
+  /** Computed px of the passage text, and of the latest answer's first block. */
+  quoteFontSize: number;
+  answerFontSize: number;
+  /** The grey quote line beside the passage exists. */
+  quoteHasBar: boolean;
+  /** Curly quote marks remain around the passage. */
+  quoteHasQuoteMarks: boolean;
+  /** Alpha of the passage text color (1 when opaque). */
+  quoteColorAlpha: number;
+  /** The answer area has its top fade (it is scrolled). */
+  threadFaded: boolean;
+};
+
+/** The card after a click on the More button or a text-size menu control. */
+export type WorkflowTestReaderInlineAskTextSize = {
+  card: WorkflowTestReaderInlineAskCard;
+  moreMenuShown: boolean;
+  /** The percentage shown in the menu ("" when it is closed). */
+  menuPercent: string;
 };
 
 /** The card's right-click menu on a pill or the empty pill row. */
@@ -2074,9 +2095,9 @@ export type WorkflowTestApi = {
     /** Add Text's question box is open in the reader. */
     addTextPromptOpen: boolean;
   }>;
-  /** Closes the card (Discard button or Escape) and the reader. */
+  /** Closes the card (Discard, Escape in the card, or Escape on the page) and the reader. */
   endReaderInlineAsk: (input: {
-    via: "discard" | "escape";
+    via: "discard" | "escape" | "escape_page";
   }) => Promise<{ cardRemoved: boolean }>;
   /** Clicks Continue in sidebar; resolves when the card closed or says why not. */
   continueReaderInlineAskInSidebar: () => Promise<WorkflowTestReaderInlineAskContinue>;
@@ -2087,6 +2108,14 @@ export type WorkflowTestApi = {
   /** Clicks an item of the open pill menu ("edit", "delete", ...). */
   clickReaderInlineAskPromptMenuItem: (
     action: string,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Clicks the More button ("toggle") or a text-size step of its menu. */
+  clickReaderInlineAskTextSize: (
+    step: "toggle" | "smaller" | "larger" | "reset",
+  ) => Promise<WorkflowTestReaderInlineAskTextSize>;
+  /** Moves the pointer onto or off the passage. */
+  hoverReaderInlineAskPassage: (
+    on: boolean,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Drags a blank point of the card ("card") or its corner grip ("resize"). */
   dragReaderInlineAsk: (input: {

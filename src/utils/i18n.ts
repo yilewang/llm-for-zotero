@@ -900,6 +900,8 @@ const zhCN: Record<string, string> = {
     '一个 JSON 对象，会合并进发往该模型的每次请求，例如 {"top_k": 40, "options": {"repeat_penalty": 1.1}}。',
   "Invalid JSON: ": "JSON 无效：",
   "Reset to detected": "恢复为检测值",
+  "Text size": "文字大小",
+  "Reset to 100%": "恢复为 100%",
   "customized for this model": "已为该模型自定义",
   // Label / Auto / Yes / No are already defined above.
   "codex auth reuses local `codex login` credentials from ~/.codex/auth.json":
