@@ -2,11 +2,16 @@
  * The Inline Ask card: a floating box in the reader document where the user
  * asks about the selected text without opening the sidebar.
  *
- * Compose: "Selected text" and the quote, the question field (model and
- * effort on the left, the send arrow on the right), the quick-prompt pills,
- * and the key hint. After a question: the thread (questions and streamed
- * answers), a follow-up field once the answer is in, and the footer
- * (Discard, Continue in sidebar, Save as annotation).
+ * Compose, top to bottom: the passage header (a "Creator, year:" label, then
+ * the selected text in curly quotes, in the reader's serif; three lines, a
+ * click shows all of it), the quick prompts as plain grey words, and one
+ * filled composer box. The box holds the question field on its top line and,
+ * on its bottom line, the model and effort buttons (left) and the send arrow
+ * (right). The key hints are the field's tooltip. After a question the header
+ * shrinks to two lines and the thread follows: the question in a bubble on
+ * the right and the streamed answer. Under the latest answer sit quiet
+ * message actions (Save as annotation, Continue in sidebar, Discard), and
+ * the same composer box takes a follow-up.
  *
  * Save as annotation switches the card to an annotation card: the color
  * square (a click shows Zotero's eight colors), the page, the selected text
@@ -17,13 +22,14 @@
  *
  * Continue in sidebar hands the finished turns to the sidebar; the card
  * closes when the sidebar took them, and otherwise shows the reason under
- * the footer and keeps its conversation.
+ * the message actions and keeps its conversation.
  *
- * Quick prompts: right-clicking a pill opens Edit, Delete, Add and Reset;
- * right-clicking the empty space of the pill row opens Add and Reset. Edit
- * and Add open an editor in the card (Label is an <input type=text>, Prompt
- * a contenteditable box) with Cancel and Save; Enter in Label or Mod+Enter
- * in Prompt saves, Escape cancels. Every change is saved at once.
+ * Quick prompts: right-clicking a word opens Edit, Delete, Add and Reset;
+ * right-clicking the empty space of the row opens Add and Reset. Edit and
+ * Add open a floating editor over the card (just under the row; Label is an
+ * <input type=text>, Prompt a contenteditable box) with Cancel and Save;
+ * Enter in Label or Mod+Enter in Prompt saves, Escape or a click outside the
+ * editor cancels. Every change is saved at once.
  *
  * Model line: clicking the model opens the API models grouped by provider
  * (with a short note first when the sidebar's runtime cannot run here);
@@ -36,7 +42,11 @@
  * Discard, or another overlay on the same document closes it; a new text
  * selection popup leaves it open (keepsOpenOnNewSelection).
  *
- * Inline styles only: plugin CSS does not reach reader documents.
+ * Width: the native selection popup's measured width when the card replaces
+ * the popup (at least MIN_CARD_WIDTH), otherwise DEFAULT_CARD_WIDTH.
+ *
+ * Inline styles only: plugin CSS does not reach reader documents. The card
+ * has its own palette (inlineAskPalette), separate from the Add Text prompt.
  */
 import {
   inlineAskAnswerToPlainText,
@@ -63,7 +73,6 @@ import {
   positionReaderOverlay,
   prepareReaderOverlaySlot,
   READER_OVERLAY_MARGIN,
-  readerOverlayPalette,
   readerOverlayScheduler,
   registerReaderOverlay,
   releaseReaderOverlay,
@@ -77,9 +86,9 @@ import { classifySelectionPromptKey } from "./selectionPromptKeys";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 export type InlineAskOverlayLabels = {
-  selectedText: string;
   placeholder: string;
   followUpPlaceholder: string;
+  /** The key hints; the question field's tooltip. */
   hint: string;
   send: string;
   /** Shown while the first chunk of an answer is on its way. */
@@ -176,6 +185,8 @@ export type InlineAskOverlayInput = {
   /** Popup row rect in viewport coordinates, measured at pointerdown. */
   anchor: ReaderOverlayAnchor;
   selectedText: string;
+  /** "Ratzon et al., 2024": the passage's source; empty shows no label. */
+  sourceLabel?: string;
   prompts: InlineAskQuickPrompt[];
   /** Null when no usable model exists; picker.line() replaces it. */
   model: InlineAskModelLine | null;
@@ -262,6 +273,64 @@ function markBackground(hex: string): string {
 
 const PAPER_FONT = '"STIX Two Text","Times New Roman",Times,serif';
 
+const DEFAULT_CARD_WIDTH = 330;
+/** Below this the composer's model line and send arrow crowd each other. */
+const MIN_CARD_WIDTH = 240;
+/** The floating prompt editor; narrower when the card is. */
+const FLOATING_EDITOR_WIDTH = 286;
+
+/** The Inline Ask card's colors; the Add Text prompt keeps its own. */
+type InlineAskPalette = ReaderOverlayPalette & {
+  /** Placeholder text. */
+  tertiary: string;
+  menuBorder: string;
+  cardShadow: string;
+  menuShadow: string;
+  floatShadow: string;
+};
+
+function inlineAskPalette(dark: boolean): InlineAskPalette {
+  return dark
+    ? {
+        bg: "#1e1e20",
+        fg: "#ececee",
+        border: "rgba(255,255,255,0.1)",
+        fieldBg: "#2c2c2f",
+        quoteFg: "#f4f4f6",
+        labelFg: "#9a9aa0",
+        fill2: "#9a9aa0",
+        fill3: "#4a4a50",
+        accent: "#0a84ff",
+        accentTint: "rgba(10,132,255,0.16)",
+        accentFg: "#ffffff",
+        hover: "rgba(255,255,255,0.07)",
+        tertiary: "#6c6c72",
+        menuBorder: "rgba(255,255,255,0.12)",
+        cardShadow: "0 4px 14px rgba(0,0,0,.38)",
+        menuShadow: "0 8px 18px rgba(0,0,0,.24)",
+        floatShadow: "0 12px 30px rgba(0,0,0,.5)",
+      }
+    : {
+        bg: "#ffffff",
+        fg: "#1f1f1f",
+        border: "rgba(0,0,0,0.12)",
+        fieldBg: "#f1f1f2",
+        quoteFg: "#1a1a1a",
+        labelFg: "#6b6b70",
+        fill2: "#6b6b70",
+        fill3: "#c4c4c8",
+        accent: "#3478f6",
+        accentTint: "rgba(52,120,246,0.1)",
+        accentFg: "#ffffff",
+        hover: "rgba(0,0,0,0.055)",
+        tertiary: "#a2a2a7",
+        menuBorder: "rgba(0,0,0,0.14)",
+        cardShadow: "0 4px 14px rgba(0,0,0,.16)",
+        menuShadow: "0 8px 18px rgba(0,0,0,.14)",
+        floatShadow: "0 12px 30px rgba(0,0,0,.2)",
+      };
+}
+
 function sidebarIcon(doc: Document): Element {
   return svgIcon(
     doc,
@@ -274,6 +343,20 @@ function sidebarIcon(doc: Document): Element {
       },
       { tag: "path", attrs: { d: "M10 2.5v11" } },
     ],
+  );
+}
+
+function noteIcon(doc: Document): Element {
+  return svgIcon(
+    doc,
+    13,
+    {
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "1.4",
+      "stroke-linejoin": "round",
+    },
+    [{ tag: "path", attrs: { d: "M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" } }],
   );
 }
 
@@ -298,7 +381,7 @@ export function createInlineAskSparkIcon(doc: Document): Element {
 }
 
 function buttonCss(
-  palette: ReaderOverlayPalette,
+  palette: InlineAskPalette,
   variant: "plain" | "ghost" | "primary",
   extra: string[] = [],
 ): string[] {
@@ -350,7 +433,7 @@ export function openInlineAskOverlay(
 ): InlineAskOverlayHandle {
   const { doc, labels } = input;
   prepareReaderOverlaySlot(doc);
-  const palette = readerOverlayPalette(isDarkReaderDocument(doc));
+  const palette = inlineAskPalette(isDarkReaderDocument(doc));
   const { bg, fg, border, quoteFg, labelFg } = palette;
   const el = createReaderOverlayElementFactory(doc);
   const schedule = readerOverlayScheduler(doc);
@@ -364,21 +447,27 @@ export function openInlineAskOverlay(
   };
   const hasModel = () => Boolean(currentLine());
 
+  // Over the native popup the card takes the popup's exact width, so both
+  // edges line up with it; elsewhere 330px.
+  const cardWidth = input.anchor.cover
+    ? Math.max(MIN_CARD_WIDTH, input.anchor.right - input.anchor.left)
+    : DEFAULT_CARD_WIDTH;
+  const editorWidth = Math.min(FLOATING_EDITOR_WIDTH, cardWidth - 16);
   const root = el("div", [
     "position:fixed",
     "z-index:10000",
     "display:flex",
     "flex-direction:column",
     "gap:8px",
-    "width:360px",
+    `width:${cardWidth}px`,
     "max-width:calc(100vw - 16px)",
-    "padding:10px",
+    "padding:12px 10px 10px",
     "box-sizing:border-box",
     `background:${bg}`,
     `color:${fg}`,
     `border:1px solid ${border}`,
-    "border-radius:10px",
-    "box-shadow:0 6px 18px rgba(0,0,0,0.22)",
+    "border-radius:16px",
+    `box-shadow:${palette.cardShadow}`,
     "font-size:12px",
     "line-height:1.35",
     "user-select:text",
@@ -386,47 +475,89 @@ export function openInlineAskOverlay(
   ]);
   root.setAttribute("data-llm-inline-ask", "true");
 
-  // Selected text, clamped to three lines.
+  // The passage header: "Creator, year:" then the selected text in curly
+  // quotes, in the reader's serif. Clamped; a click shows all of it.
   const quoteSection = el("div", [
-    "display:flex",
-    "flex-direction:column",
-    "gap:2px",
     "min-width:0",
-  ]);
-  const quoteLabel = el("div", [
-    "font-size:11px",
-    `color:${labelFg}`,
-    "line-height:1.2",
-  ]);
-  quoteLabel.setAttribute("data-llm-inline-ask-quote-label", "true");
-  quoteLabel.textContent = labels.selectedText;
-  const quote = el("div", [
+    "padding:0 2px",
     `color:${quoteFg}`,
-    "white-space:pre-wrap",
+    "cursor:pointer",
     "overflow-wrap:anywhere",
-    "display:-webkit-box",
-    "-webkit-box-orient:vertical",
-    "-webkit-line-clamp:3",
-    "overflow:hidden",
   ]);
+  const sourceText = (input.sourceLabel || "").trim();
+  if (sourceText) {
+    const quoteLabel = el("span", [
+      "font-size:11.5px",
+      "font-weight:600",
+      "letter-spacing:0.01em",
+      `color:${labelFg}`,
+    ]);
+    quoteLabel.setAttribute("data-llm-inline-ask-quote-label", "true");
+    quoteLabel.textContent = `${sourceText}:`;
+    quoteSection.append(quoteLabel, doc.createTextNode(" "));
+  }
+  const quoteFont = [
+    `font-family:${PAPER_FONT}`,
+    "font-size:13.5px",
+    "line-height:1.6",
+  ];
+  const quote = el("span", [...quoteFont, "white-space:pre-wrap"]);
   quote.setAttribute("data-llm-inline-ask-quote", "true");
   quote.textContent = input.selectedText;
-  quoteSection.append(quoteLabel, quote);
+  const openQuote = el("span", quoteFont);
+  openQuote.textContent = "\u201C";
+  const closeQuote = el("span", quoteFont);
+  closeQuote.textContent = "\u201D";
+  quoteSection.append(openQuote, quote, closeQuote);
+  let quoteExpanded = false;
+  const syncQuote = () => {
+    const lines = session.getState().turns.length > 0 ? 2 : 3;
+    const css = quoteExpanded
+      ? {
+          display: "block",
+          "-webkit-line-clamp": "unset",
+          "max-height": "170px",
+          overflow: "auto",
+        }
+      : {
+          display: "-webkit-box",
+          "-webkit-line-clamp": String(lines),
+          "max-height": "none",
+          overflow: "hidden",
+        };
+    quoteSection.style.setProperty("-webkit-box-orient", "vertical");
+    for (const [name, value] of Object.entries(css)) {
+      quoteSection.style.setProperty(name, value);
+    }
+    quoteSection.setAttribute(
+      "data-expanded",
+      quoteExpanded ? "true" : "false",
+    );
+  };
+  const onQuoteClick = () => {
+    // A drag-select inside the passage is not a toggle.
+    try {
+      if (doc.defaultView?.getSelection?.()?.toString()) return;
+    } catch {
+      // Toggle anyway.
+    }
+    quoteExpanded = !quoteExpanded;
+    syncQuote();
+  };
 
   // The thread: questions, answers, and the reading line.
   const thread = el("div", [
     "display:none",
     "flex-direction:column",
-    "gap:6px",
-    "max-height:min(260px, 38vh)",
+    "gap:8px",
+    "max-height:min(330px, 46vh)",
     "overflow:auto",
-    `border-top:1px solid ${border}`,
-    "padding-top:8px",
   ]);
   thread.setAttribute("data-llm-inline-ask-thread", "true");
   const reading = el("div", [
     `color:${labelFg}`,
     "font-style:italic",
+    "padding:0 2px",
     "display:none",
   ]);
   reading.setAttribute("data-llm-inline-ask-reading", "true");
@@ -457,16 +588,19 @@ export function openInlineAskOverlay(
       "position:relative",
       "display:flex",
       "flex-direction:column",
-      `border:1px solid ${border}`,
-      "border-radius:6px",
+      "gap:2px",
+      "box-sizing:border-box",
+      "padding:9px 4px 3px 11px",
+      "border-radius:14px",
       `background:${palette.fieldBg}`,
+      "cursor:text",
     ],
     editorCss: [
-      "min-height:28px",
-      "max-height:120px",
+      "min-height:18px",
+      "max-height:140px",
       "overflow-y:auto",
       "box-sizing:border-box",
-      "padding:6px 8px 2px",
+      "padding:0 7px 0 0",
       "border:none",
       "background:transparent",
       `color:${fg}`,
@@ -480,14 +614,14 @@ export function openInlineAskOverlay(
     ],
     placeholderCss: [
       "position:absolute",
-      "left:9px",
-      "top:7px",
-      "right:9px",
+      "left:11px",
+      "top:9px",
+      "right:11px",
       "overflow:hidden",
       "white-space:nowrap",
       "text-overflow:ellipsis",
       "pointer-events:none",
-      `color:${labelFg}`,
+      `color:${palette.tertiary}`,
       "font-size:12px",
       "line-height:1.35",
     ],
@@ -497,19 +631,23 @@ export function openInlineAskOverlay(
   });
   const { field, editor } = textBox;
   field.setAttribute("data-llm-inline-ask-field", "true");
+  // The key hints are the field's tooltip.
+  editor.setAttribute("title", labels.hint);
+  // The model pair and the send arrow share the box's bottom line.
   const fieldBar = el("div", [
     "display:flex",
     "align-items:center",
-    "gap:0",
-    "padding:0 0 0 2px",
+    "min-height:28px",
+    "margin-left:-4px",
     "min-width:0",
+    "cursor:default",
   ]);
   const modelPairCss = [
     `color:${palette.fill2}`,
     "font-weight:600",
     "font-size:11px",
     "line-height:1",
-    "padding:5px 5px",
+    "padding:5px 4px",
     "border-radius:5px",
     "white-space:nowrap",
     "overflow:hidden",
@@ -574,6 +712,31 @@ export function openInlineAskOverlay(
   };
   fieldBar.append(spacer, sendBtn);
   field.append(fieldBar);
+  // Secondary at rest, primary on hover or while the button's menu is open.
+  const hoverTint = (node: HTMLElement, rest: () => string, on: string) => {
+    node.addEventListener("mouseenter", () => {
+      if ((node as HTMLButtonElement).disabled) return;
+      node.style.color = on;
+    });
+    node.addEventListener("mouseleave", () => {
+      node.style.color = rest();
+    });
+  };
+  if (picker) {
+    for (const button of [modelLabel, effortLabel]) {
+      hoverTint(
+        button,
+        () =>
+          button.getAttribute("aria-expanded") === "true" ? fg : palette.fill2,
+        fg,
+      );
+    }
+  }
+  hoverTint(
+    sendBtn,
+    () => (sendBtn.disabled ? palette.fill3 : palette.fill2),
+    fg,
+  );
 
   const notice = el("div", [
     "font-size:11px",
@@ -595,12 +758,14 @@ export function openInlineAskOverlay(
   };
   syncModelLine();
 
-  // Quick prompts.
+  // Quick prompts: plain grey words, shifted left so the text lines up with
+  // the passage.
   const pills = el("div", [
     "display:flex",
-    "gap:4px",
+    "gap:2px",
     "flex-wrap:wrap",
-    "min-height:24px",
+    "margin-left:-4px",
+    "min-height:22px",
   ]);
   pills.setAttribute("data-llm-inline-ask-pills", "true");
   const promptSetup = input.promptEditing;
@@ -610,14 +775,13 @@ export function openInlineAskOverlay(
   const pillCss = (editing: boolean) => [
     "display:inline-flex",
     "align-items:center",
-    "min-height:24px",
-    "padding:3px 9px",
-    `border:1px solid ${editing ? palette.accent : border}`,
-    "border-radius:999px",
-    `background:${editing ? palette.accentTint : palette.fieldBg}`,
-    `color:${fg}`,
+    "padding:3px 6px",
+    "border:none",
+    "border-radius:6px",
+    `background:${editing ? palette.hover : "none"}`,
+    `color:${editing ? fg : labelFg}`,
     "font:inherit",
-    "font-size:11px",
+    "font-size:12px",
     "max-width:100%",
     "overflow:hidden",
     "text-overflow:ellipsis",
@@ -639,13 +803,13 @@ export function openInlineAskOverlay(
       pill.textContent = prompt.label;
       pill.addEventListener("mouseenter", () => {
         if (pill.disabled) return;
-        pill.style.background = palette.accentTint;
-        pill.style.borderColor = palette.accent;
+        pill.style.background = palette.hover;
+        pill.style.color = fg;
       });
       pill.addEventListener("mouseleave", () => {
         if (editingPrompt?.id === prompt.id) return;
-        pill.style.background = palette.fieldBg;
-        pill.style.borderColor = border;
+        pill.style.background = "none";
+        pill.style.color = labelFg;
       });
       setButtonDisabled(pill, !hasModel());
       pills.append(pill);
@@ -653,21 +817,20 @@ export function openInlineAskOverlay(
   };
   renderPills();
 
-  const hint = el("div", [
-    "font-size:10px",
-    `color:${labelFg}`,
-    "line-height:1.25",
-  ]);
-  hint.setAttribute("data-llm-inline-ask-hint", "true");
-  hint.textContent = labels.hint;
-
-  // ── Quick-prompt editor (Edit / Add) ───────────────────────────────────
+  // ── Quick-prompt editor (Edit / Add): floats over the card ─────────────
   const promptEditor = el("div", [
     "display:none",
+    "position:absolute",
+    "z-index:5",
     "flex-direction:column",
     "gap:6px",
-    `border-top:1px solid ${border}`,
-    "padding-top:8px",
+    `width:${editorWidth}px`,
+    "box-sizing:border-box",
+    "padding:10px",
+    `background:${bg}`,
+    `border:1px solid ${palette.menuBorder}`,
+    "border-radius:12px",
+    `box-shadow:${palette.floatShadow}`,
     "min-width:0",
   ]);
   promptEditor.setAttribute("data-llm-inline-ask-prompt-editor", "true");
@@ -676,7 +839,7 @@ export function openInlineAskOverlay(
     "min-width:0",
     "box-sizing:border-box",
     "padding:5px 8px",
-    `border:1px solid ${border}`,
+    "border:1px solid transparent",
     "border-radius:6px",
     `background:${palette.fieldBg}`,
     `color:${fg}`,
@@ -715,7 +878,7 @@ export function openInlineAskOverlay(
       "white-space:nowrap",
       "text-overflow:ellipsis",
       "pointer-events:none",
-      `color:${labelFg}`,
+      `color:${palette.tertiary}`,
       "font-size:12px",
       "line-height:1.35",
     ],
@@ -829,9 +992,9 @@ export function openInlineAskOverlay(
       "padding:4px",
       "box-sizing:border-box",
       `background:${bg}`,
-      `border:1px solid ${border}`,
+      `border:1px solid ${palette.menuBorder}`,
       "border-radius:6px",
-      "box-shadow:0 8px 18px rgba(0,0,0,0.2)",
+      `box-shadow:${palette.menuShadow}`,
     ]);
     menu.setAttribute("data-llm-inline-ask-prompt-menu", promptId || "");
     menu.setAttribute("role", "menu");
@@ -874,7 +1037,7 @@ export function openInlineAskOverlay(
       });
       menu.append(item);
     }
-    const width = root.getBoundingClientRect().width || 360;
+    const width = root.getBoundingClientRect().width || cardWidth;
     mountMenu("prompt", menu, Math.min(x, width - 130), y);
   };
 
@@ -890,10 +1053,10 @@ export function openInlineAskOverlay(
     "overflow-y:auto",
     "padding:6px",
     "box-sizing:border-box",
-    `border:1px solid ${border}`,
+    `border:1px solid ${palette.menuBorder}`,
     "border-radius:12px",
     `background:${bg}`,
-    "box-shadow:0 8px 18px rgba(0,0,0,0.24)",
+    `box-shadow:${palette.menuShadow}`,
   ];
   const sectionCss = [
     "padding:4px 10px",
@@ -935,7 +1098,7 @@ export function openInlineAskOverlay(
     addHover(
       option,
       () => {
-        if (!selected) option.style.borderColor = border;
+        if (!selected) option.style.borderColor = palette.menuBorder;
       },
       () => {
         if (!selected) option.style.borderColor = "transparent";
@@ -997,7 +1160,7 @@ export function openInlineAskOverlay(
             "padding:4px 10px 8px",
             "font-size:9.5px",
             "line-height:1.45",
-            `color:${palette.fill2}`,
+            `color:${labelFg}`,
             "white-space:normal",
           ]);
           explain.setAttribute("data-llm-inline-ask-model-note", "true");
@@ -1072,10 +1235,26 @@ export function openInlineAskOverlay(
     }
     renderPills();
   };
+  /** Where the floating editor's left edge goes: the clicked word's left. */
+  let editAnchorX = 0;
+  const placePromptEditor = () => {
+    const rootRect = root.getBoundingClientRect();
+    const rowRect = pills.getBoundingClientRect();
+    const editorHeight = promptEditor.getBoundingClientRect().height;
+    const maxLeft = Math.max(6, rootRect.width - editorWidth - 8);
+    const maxTop = Math.max(6, rootRect.height - editorHeight - 8);
+    promptEditor.style.left = `${Math.round(
+      Math.min(Math.max(6, editAnchorX - 14), maxLeft),
+    )}px`;
+    promptEditor.style.top = `${Math.round(
+      Math.min(Math.max(6, rowRect.bottom - rootRect.top + 6), maxTop),
+    )}px`;
+  };
   const syncPromptEditor = () => {
     const inCompose = session.getState().phase === "compose";
-    show(promptEditor, Boolean(editingPrompt) && inCompose, "flex");
-    show(hint, !editingPrompt && inCompose);
+    const visible = Boolean(editingPrompt) && inCompose;
+    show(promptEditor, visible, "flex");
+    if (visible) placePromptEditor();
   };
   const openPromptEditor = (prompt: InlineAskQuickPrompt | null) => {
     if (!promptSetup) return;
@@ -1155,45 +1334,73 @@ export function openInlineAskOverlay(
     refreshPrompts();
   }
 
-  // Footer: Discard · Continue in sidebar · Save as annotation.
-  const footer = el("div", ["display:none", "gap:6px", "align-items:center"]);
+  // Message actions under the latest answer: Save as annotation, Continue in
+  // sidebar (icon only), then Discard on the right.
+  const footer = el("div", [
+    "display:none",
+    "align-items:center",
+    "gap:2px",
+    "margin:-3px 0 0 -4px",
+  ]);
   footer.setAttribute("data-llm-inline-ask-footer", "true");
-  const discardBtn = el(
-    "button",
-    buttonCss(palette, "ghost"),
-  ) as HTMLButtonElement;
-  discardBtn.setAttribute("type", "button");
+  const actionCss = [
+    "display:inline-flex",
+    "align-items:center",
+    "gap:5px",
+    "border:none",
+    "background:none",
+    `color:${labelFg}`,
+    "font:inherit",
+    "font-size:11.5px",
+    "line-height:1.35",
+    "padding:4px 6px",
+    "border-radius:6px",
+    "white-space:nowrap",
+    "cursor:pointer",
+  ];
+  const quietAction = (): HTMLButtonElement => {
+    const button = el("button", actionCss) as HTMLButtonElement;
+    button.setAttribute("type", "button");
+    button.addEventListener("mouseenter", () => {
+      if (button.disabled) return;
+      button.style.color = fg;
+      button.style.background = palette.hover;
+    });
+    button.addEventListener("mouseleave", () => {
+      button.style.color = labelFg;
+      button.style.background = "none";
+    });
+    return button;
+  };
+  const discardBtn = quietAction();
   discardBtn.setAttribute("data-llm-inline-ask-action", "discard");
   discardBtn.textContent = labels.discard;
   const footerSpacer = el("span", ["flex:1 1 auto"]);
-  const sidebarBtn = el(
-    "button",
-    buttonCss(palette, "ghost", ["padding:4px 6px"]),
-  ) as HTMLButtonElement;
-  sidebarBtn.setAttribute("type", "button");
+  const sidebarBtn = quietAction();
   sidebarBtn.setAttribute("data-llm-inline-ask-action", "sidebar");
   sidebarBtn.setAttribute("title", labels.continueInSidebar);
   sidebarBtn.setAttribute("aria-label", labels.continueInSidebar);
   sidebarBtn.appendChild(sidebarIcon(doc));
-  const saveBtn = el(
-    "button",
-    buttonCss(palette, "primary"),
-  ) as HTMLButtonElement;
-  saveBtn.setAttribute("type", "button");
+  const saveBtn = quietAction();
   saveBtn.setAttribute("data-llm-inline-ask-action", "save");
-  saveBtn.textContent = labels.saveAsAnnotation;
+  saveBtn.appendChild(noteIcon(doc));
+  saveBtn.appendChild(doc.createTextNode(labels.saveAsAnnotation));
   setButtonDisabled(sidebarBtn, true);
   setButtonDisabled(saveBtn, true);
-  footer.append(discardBtn, footerSpacer, sidebarBtn, saveBtn);
+  footer.append(saveBtn, sidebarBtn, footerSpacer, discardBtn);
   // Why Continue in sidebar did not move the conversation.
   const sidebarError = el("div", [
     "display:none",
     "font-size:11px",
     `color:${labelFg}`,
     "line-height:1.3",
+    "padding:0 2px",
     "overflow-wrap:anywhere",
   ]);
   sidebarError.setAttribute("data-llm-inline-ask-sidebar-error", "true");
+  // The message actions and the reason sit at the end of the thread, after
+  // the latest answer (turns are inserted before the reading line).
+  thread.append(footer, sidebarError);
 
   // ── The annotation card (Save as annotation) ───────────────────────────
   const saveSetup = input.save;
@@ -1376,13 +1583,10 @@ export function openInlineAskOverlay(
   root.append(
     quoteSection,
     thread,
+    pills,
     field,
     notice,
-    pills,
-    hint,
     promptEditor,
-    footer,
-    sidebarError,
     saveView,
   );
 
@@ -1396,11 +1600,25 @@ export function openInlineAskOverlay(
       const node =
         turn.role === "user"
           ? el("div", [
-              "font-weight:600",
+              "align-self:flex-end",
+              "max-width:88%",
+              "box-sizing:border-box",
+              `background:${palette.fieldBg}`,
+              "border-radius:12px",
+              "padding:6px 10px",
+              `color:${fg}`,
+              "font-size:12px",
+              "line-height:1.4",
               "white-space:pre-wrap",
               "overflow-wrap:anywhere",
             ])
-          : el("div", ["line-height:1.5", "overflow-wrap:anywhere"]);
+          : el("div", [
+              `color:${fg}`,
+              "font-size:12.5px",
+              "line-height:1.55",
+              "padding:0 2px",
+              "overflow-wrap:anywhere",
+            ]);
       if (turn.role === "user") {
         node.setAttribute("data-llm-inline-ask-question", "true");
         node.textContent = turn.shownText;
@@ -1510,10 +1728,7 @@ export function openInlineAskOverlay(
       field,
       notice,
       pills,
-      hint,
       promptEditor,
-      footer,
-      sidebarError,
     ])
       show(node, false);
   };
@@ -1585,6 +1800,7 @@ export function openInlineAskOverlay(
     root.setAttribute("data-phase", phase);
     turns.forEach(renderTurn);
     show(thread, turns.length > 0, "flex");
+    syncQuote();
     show(reading, phase === "waiting");
     const canType = phase === "compose" || phase === "answered";
     show(field, canType, "flex");
@@ -1821,6 +2037,18 @@ export function openInlineAskOverlay(
   );
   const onRootPointerDown = (e: Event) => {
     swallowPillClick = false;
+    // A press outside the floating editor cancels it (the right-click menu
+    // that Edit or Add came from is already closed by then).
+    const pressed = e.target as Node | null;
+    if (
+      editingPrompt &&
+      pressed &&
+      !promptEditor.contains(pressed) &&
+      !(openMenu && openMenu.node.contains(pressed))
+    ) {
+      closePromptEditor(false);
+      if (pills.contains(pressed)) swallowPillClick = true;
+    }
     const menu = openMenu;
     if (!menu) return;
     const target = e.target as Node | null;
@@ -1876,6 +2104,10 @@ export function openInlineAskOverlay(
     const pill = findPill(e.target);
     const mouse = e as MouseEvent;
     const rootRect = root.getBoundingClientRect();
+    // The floating editor starts near the clicked word (or the click).
+    editAnchorX = pill
+      ? pill.getBoundingClientRect().left - rootRect.left
+      : (Number(mouse.clientX) || rootRect.left) - rootRect.left;
     openPromptMenu(
       pill?.getAttribute("data-llm-inline-ask-pill") || null,
       (Number(mouse.clientX) || rootRect.left) - rootRect.left,
@@ -1907,16 +2139,21 @@ export function openInlineAskOverlay(
       node.style.borderColor = palette.accent;
     },
     blur: () => {
-      node.style.borderColor = border;
+      node.style.borderColor = "transparent";
     },
   });
   const labelFocus = focusBorder(labelInput);
   const promptFocus = focusBorder(promptBox.editor);
-  const onEditorFocus = () => {
-    field.style.borderColor = palette.accent;
-  };
-  const onEditorBlur = () => {
-    field.style.borderColor = border;
+  // A click on the empty space of the composer box focuses the field.
+  const onFieldMouseDown = (e: Event) => {
+    const target = e.target as Node | null;
+    if (!target || editor.contains(target)) return;
+    for (const control of [modelLabel, effortLabel, sendBtn]) {
+      if (control.contains(target)) return;
+    }
+    e.preventDefault();
+    editor.focus({ preventScroll: true });
+    textBox.placeCaretAtEnd();
   };
 
   function close() {
@@ -1944,8 +2181,8 @@ export function openInlineAskOverlay(
     for (const [node, listener] of saveViewListeners)
       node.removeEventListener("click", listener);
     commentBox.detach();
-    editor.removeEventListener("focus", onEditorFocus);
-    editor.removeEventListener("blur", onEditorBlur);
+    field.removeEventListener("mousedown", onFieldMouseDown);
+    quoteSection.removeEventListener("click", onQuoteClick);
     textBox.detach();
     root.removeEventListener("pointerdown", onRootPointerDown);
     pills.removeEventListener("click", onPillsClick);
@@ -1991,8 +2228,8 @@ export function openInlineAskOverlay(
   for (const [node, listener] of saveViewListeners)
     node.addEventListener("click", listener);
   commentBox.attach();
-  editor.addEventListener("focus", onEditorFocus);
-  editor.addEventListener("blur", onEditorBlur);
+  field.addEventListener("mousedown", onFieldMouseDown);
+  quoteSection.addEventListener("click", onQuoteClick);
   textBox.attach();
   root.addEventListener("pointerdown", onRootPointerDown);
   pills.addEventListener("click", onPillsClick);

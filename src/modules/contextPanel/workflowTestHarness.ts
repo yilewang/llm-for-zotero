@@ -1166,12 +1166,23 @@ async function createPaperWithPdfFixture(input: {
   title: string;
   pdfTitle?: string;
   pages?: string[];
+  /** Author last names, in order. */
+  creators?: string[];
+  date?: string;
 }): Promise<WorkflowTestFixture> {
   assertWorkflowTestEnabled();
   const libraryID = Zotero.Libraries.userLibraryID;
   const parentItem = new Zotero.Item("journalArticle");
   parentItem.libraryID = libraryID;
   parentItem.setField("title", input.title);
+  (input.creators || []).forEach((lastName, index) =>
+    parentItem.setCreator(index, {
+      lastName,
+      firstName: "",
+      creatorType: "author",
+    }),
+  );
+  if (input.date) parentItem.setField("date", input.date);
   const savedParentItemId = await parentItem.saveTx();
   const parentItemId = Math.floor(Number(savedParentItemId));
   if (!Number.isFinite(parentItemId) || parentItemId <= 0) {
@@ -7555,8 +7566,38 @@ function readWorkflowInlineAskCard(
       label: (node as Element).textContent?.trim() || "",
       title: (node as Element).getAttribute("title") || "",
     })),
-    hintShown: shown('[data-llm-inline-ask-hint="true"]'),
     promptEditorShown: shown('[data-llm-inline-ask-prompt-editor="true"]'),
+    promptEditorFloating: Boolean(
+      card &&
+      (() => {
+        const node = card.querySelector(
+          '[data-llm-inline-ask-prompt-editor="true"]',
+        ) as HTMLElement | null;
+        return (
+          Boolean(node) &&
+          node!.parentNode === card &&
+          win?.getComputedStyle(node!)?.position === "absolute"
+        );
+      })(),
+    ),
+    composerHoldsControls: Boolean(
+      card &&
+      (() => {
+        const box = card.querySelector('[data-llm-inline-ask-field="true"]');
+        if (!box) return false;
+        return [
+          '[data-llm-inline-ask-editor="true"]',
+          '[data-llm-inline-ask-model="true"]',
+          '[data-llm-inline-ask-send="true"]',
+        ].every((selector) => Boolean(box.querySelector(selector)));
+      })(),
+    ),
+    messageActions: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-footer] button") || [],
+    ).map(
+      (node) =>
+        (node as Element).getAttribute("data-llm-inline-ask-action") || "",
+    ),
     modelLabel: shown('[data-llm-inline-ask-model="true"]')
       ? card
           ?.querySelector('[data-llm-inline-ask-model="true"]')
@@ -7916,9 +7957,8 @@ async function openReaderInlineAsk(
     pillLabels: Array.from(
       card.querySelectorAll("[data-llm-inline-ask-pill]"),
     ).map((node) => (node as Element).textContent?.trim() || ""),
-    hint:
-      card.querySelector('[data-llm-inline-ask-hint="true"]')?.textContent ||
-      "",
+    // The key hints are the question field's tooltip.
+    hint: editor.getAttribute("title") || "",
     editorContentEditable: editor.getAttribute("contenteditable") || "",
     editorKeys,
     readerKeyStateBefore,

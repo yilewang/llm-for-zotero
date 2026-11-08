@@ -373,6 +373,41 @@ type ReaderAttachment = {
   isPDFAttachment?: () => boolean;
 };
 
+type SourceLabelItem = {
+  getField?: (name: string) => unknown;
+};
+
+/**
+ * "Ratzon et al., 2024": Zotero's firstCreator ("Smith", "Smith and Lee",
+ * "Smith et al.") and the year of the date field, from the paper (the
+ * attachment's parent). One part alone is shown alone; none gives "".
+ */
+export function readInlineAskSourceLabel(attachmentId: number): string {
+  try {
+    const attachment = Zotero.Items.get(attachmentId) as
+      | ReaderAttachment
+      | false
+      | null;
+    const parentId = attachment ? attachment.parentItemID : 0;
+    if (!parentId) return "";
+    const parent = Zotero.Items.get(parentId) as SourceLabelItem | false | null;
+    if (!parent) return "";
+    const field = (name: string): string => {
+      try {
+        const value = parent.getField?.(name);
+        return typeof value === "string" ? value.trim() : "";
+      } catch {
+        return "";
+      }
+    };
+    const creator = field("firstCreator");
+    const year = (field("date").match(/\b(\d{4})\b/) || [])[1] || "";
+    return [creator, year].filter(Boolean).join(", ");
+  } catch {
+    return "";
+  }
+}
+
 /** What Save needs from Zotero now, read on each check. */
 function readSaveFacts(
   snapshot: InlineAskPopupSnapshot,
@@ -518,6 +553,7 @@ export function openInlineAskCardForReader(params: {
     doc: params.doc,
     anchor: params.anchor,
     selectedText: snapshot.selectedText,
+    sourceLabel: readInlineAskSourceLabel(snapshot.readerItemId),
     prompts: getInlineAskQuickPrompts(),
     model: state.choice?.line ?? null,
     modelPicker: createInlineAskModelPicker(params.reasoningItemId, state),
@@ -535,9 +571,8 @@ export function openInlineAskCardForReader(params: {
       },
     },
     labels: {
-      selectedText: t("Selected text"),
-      placeholder: t("Ask about this selection…"),
-      followUpPlaceholder: t("Ask a follow-up…"),
+      placeholder: t("Ask about the selection"),
+      followUpPlaceholder: t("Ask a follow-up"),
       hint: t("Enter to send · Shift+Enter for a new line · Esc to close"),
       send: t("Send"),
       reading: t("Reading the selection…"),

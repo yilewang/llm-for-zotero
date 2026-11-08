@@ -447,8 +447,13 @@ export type WorkflowTestReaderInlineAskCard = {
   saveDisabled: boolean;
   /** The quick-prompt pills: id, label, and tooltip (the prompt). */
   pills: Array<{ id: string; label: string; title: string }>;
-  hintShown: boolean;
   promptEditorShown: boolean;
+  /** The prompt editor floats (absolute) over the card, not inside its flow. */
+  promptEditorFloating: boolean;
+  /** The composer box holds the field, the model button, and the send arrow. */
+  composerHoldsControls: boolean;
+  /** The message actions under the latest answer, in order. */
+  messageActions: string[];
   modelLabel: string;
   effortLabel: string;
 };
@@ -1209,6 +1214,9 @@ export type WorkflowTestApi = {
     title: string;
     pdfTitle?: string;
     pages?: string[];
+    /** Author last names, in order. */
+    creators?: string[];
+    date?: string;
   }) => Promise<WorkflowTestFixture>;
   trashWorkflowItem: (itemId: number) => Promise<void>;
   setWorkflowProviderSession: (

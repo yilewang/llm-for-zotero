@@ -60,8 +60,12 @@ describe("workflow: Inline Ask in the reader", function () {
   const previousPrefs = new Map<string, unknown>();
   const fixtures: WorkflowTestFixture[] = [];
 
-  async function createFixture(title: string): Promise<WorkflowTestFixture> {
+  async function createFixture(
+    title: string,
+    source: { creators?: string[]; date?: string } = {},
+  ): Promise<WorkflowTestFixture> {
     const fixture = await api.createPaperWithPdfFixture({
+      ...source,
       title,
       pdfTitle: `${title} PDF`,
       pages: [
@@ -254,7 +258,10 @@ describe("workflow: Inline Ask in the reader", function () {
   });
 
   it("streams an answer, takes a follow-up, stays open on a page click or new selection, and saves nothing", async function () {
-    const fixture = await createFixture("Inline Ask conversation");
+    const fixture = await createFixture("Inline Ask conversation", {
+      creators: ["Ratzon", "Derdikman", "Barak"],
+      date: "2024-03-15",
+    });
     const rowsBefore = await api.getConversationStoreRowTotals();
 
     const opened = await api.openReaderInlineAsk({
@@ -266,7 +273,8 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.deepEqual(opened.popupButtonLabels, ["Add Text", "Inline Ask"]);
     assert.isTrue(opened.mounted, message);
     assert.match(opened.overlayDocumentUrl, /reader\.html/, message);
-    assert.equal(opened.quoteLabel, "Selected text", message);
+    // The passage header starts with the paper's "Creator, year:" label.
+    assert.equal(opened.quoteLabel, "Ratzon et al., 2024:", message);
     assert.equal(opened.quoteText, SELECTED_TEXT, message);
     assert.equal(opened.modelLabel, MODEL, message);
     assert.deepEqual(
@@ -301,6 +309,9 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.equal(opened.card.phase, "compose", message);
     assert.isTrue(opened.card.pillsShown, message);
     assert.isFalse(opened.card.footerShown, message);
+    // One composer box holds the field, the model button, and the send arrow.
+    assert.isTrue(opened.card.composerHoldsControls, message);
+    assert.isFalse(opened.card.promptEditorShown, message);
 
     // First question.
     const Q1 = "inline-ask-first-question-marker";
@@ -329,7 +340,13 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isTrue(answered.fieldShown, "the follow-up field shows");
     assert.isFalse(answered.pillsShown);
     assert.isTrue(answered.footerShown);
-    assert.equal(answered.placeholder, "Ask a follow-up…");
+    assert.deepEqual(
+      answered.messageActions,
+      ["save", "sidebar", "discard"],
+      "the quiet message actions sit under the answer",
+    );
+    assert.isTrue(answered.composerHoldsControls);
+    assert.equal(answered.placeholder, "Ask a follow-up");
     assert.isFalse(
       answered.sidebarDisabled,
       "Continue in sidebar is offered once an answer exists",

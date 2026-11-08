@@ -237,7 +237,7 @@ describe("workflow: Inline Ask prompts and model choice", function () {
     );
     const editing = await api.clickReaderInlineAskPromptMenuItem("edit");
     assert.isTrue(editing.promptEditorShown, JSON.stringify(editing));
-    assert.isFalse(editing.hintShown, JSON.stringify(editing));
+    assert.isTrue(editing.promptEditorFloating, JSON.stringify(editing));
 
     const LABEL = "Explain simply";
     const PROMPT = "WF_EDITED_PROMPT Explain it simply.";

@@ -1695,7 +1695,8 @@ const zhCN: Record<string, string> = {
   // Inline Ask card in the reader.
   "Inline Ask": "划词提问",
   "Ask about the selected text here": "在这里就选中文字提问",
-  "Ask a follow-up…": "继续追问…",
+  "Ask about the selection": "就选中文字提问",
+  "Ask a follow-up": "继续追问",
   "Enter to send · Shift+Enter for a new line · Esc to close":
     "Enter 发送 · Shift+Enter 换行 · Esc 关闭",
   "Reading the selection…": "正在阅读选中文字…",
