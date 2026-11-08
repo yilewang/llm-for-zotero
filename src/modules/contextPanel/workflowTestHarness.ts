@@ -17,7 +17,10 @@ import { createProviderRequestScope } from "../../utils/providerTransport";
 import { waitForElementGeometrySettled } from "./workflowLayout";
 import { getChatScrollSnapshot } from "./chatScrollSnapshots";
 import { exerciseNativeQuestionReview } from "./nativePlanReviewReplay";
+import { exerciseCodexApprovalFailClosed } from "./codexApprovalReplay";
+import { exerciseInterruptedLegacyContract } from "./interruptedContractReplay";
 import { exercisePlanHistoryReplay } from "./planHistoryReplay";
+import { readBuiltinSkillFiles, runUserSkillsInit } from "./userSkillsReplay";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import {
   exerciseStreamingReplay,
@@ -57,6 +60,11 @@ import {
   exerciseLongJobNoteResume,
   exerciseLongJobReplay,
 } from "./longJobReplay";
+import {
+  panelConversationKey,
+  resumeNoteBatchAfterRestart,
+  startNoteBatchUntilQuit,
+} from "./noteBatchRestartReplay";
 import { exerciseAgentStopRules } from "./stopRulesReplay";
 import {
   callScopedMcpToolForConversation,
@@ -11283,6 +11291,41 @@ export function installWorkflowTestHarness(targetAddon: {
       const panel = getPanel(panelId);
       return exerciseNativeQuestionReview(panel.body, panel.item);
     },
+    exerciseInterruptedLegacyContract: (input) => {
+      assertWorkflowTestEnabled();
+      return exerciseInterruptedLegacyContract(getPanel(input.panelId), input);
+    },
+    exerciseCodexApprovalFailClosed: (input) => {
+      assertWorkflowTestEnabled();
+      const panel = getPanel(input.panelId);
+      return exerciseCodexApprovalFailClosed(panel, {
+        itemId: input.itemId,
+        tag: input.tag,
+        switchToOtherPanel: async () => {
+          const other = Zotero.Items.get(input.otherItemId);
+          disposeSetupHandlers(panel.body);
+          bindTestPanelHost(panel.body, other);
+          mountPanelShell({
+            body: panel.body,
+            renderItem: other,
+            getMountedItem: () => other,
+            rawItem: other,
+            setupItem: other,
+          });
+          await ensureConversationLoaded(other);
+          panel.item = other;
+          refreshChat(panel.body, other);
+        },
+      });
+    },
+    runUserSkillsInit: () => {
+      assertWorkflowTestEnabled();
+      return runUserSkillsInit();
+    },
+    readBuiltinSkillFiles: () => {
+      assertWorkflowTestEnabled();
+      return readBuiltinSkillFiles();
+    },
     exercisePlanHistoryReplay: (input) =>
       exercisePlanHistoryReplay(getPanel(input.panelId), input),
     exerciseStreamingReplay: (input) =>
@@ -11499,6 +11542,23 @@ export function installWorkflowTestHarness(targetAddon: {
         papers: input.papers,
         inputTokenCap: input.inputTokenCap,
         stopAfterNotes: input.stopAfterNotes,
+      }),
+    getPanelConversationKey: (input) =>
+      panelConversationKey(getPanel(input.panelId)),
+    startNoteBatchUntilQuit: (input) =>
+      startNoteBatchUntilQuit(getPanel(input.panelId), {
+        collection: input.collection,
+        papers: input.papers,
+        inputTokenCap: input.inputTokenCap,
+        killAfterNotes: input.killAfterNotes,
+        variant: input.variant,
+      }),
+    resumeNoteBatchAfterRestart: (input) =>
+      resumeNoteBatchAfterRestart(getPanel(input.panelId), {
+        collection: input.collection,
+        papers: input.papers,
+        inputTokenCap: input.inputTokenCap,
+        rewritePapers: input.rewritePapers,
       }),
     renderStartupPanelForItem,
     startNewPanelConversation,

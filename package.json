@@ -36,6 +36,8 @@
     "check:skill-hashes": "tsx scripts/compute_obsolete_hashes.mjs",
     "test:claude-bridge": "npm --prefix packages/claude-bridge test",
     "test:mineru-restart": "node scripts/run-mineru-restart-tests.mjs",
+    "test:document-store-upgrade": "node scripts/run-document-store-upgrade-test.mjs",
+    "test:note-batch-restart": "node scripts/run-note-batch-restart-test.mjs && node scripts/run-note-batch-restart-test.mjs --quit",
     "test:bulk-edit-restart": "node scripts/run-bulk-edit-restart-test.mjs && node scripts/run-bulk-edit-restart-test.mjs --crash",
     "test:workflow": "node scripts/run-workflow-tests.mjs",
     "test:workflow:parallel": "node scripts/run-workflow-tests.mjs --parallel 3",

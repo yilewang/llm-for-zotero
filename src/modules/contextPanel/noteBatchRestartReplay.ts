@@ -1,0 +1,313 @@
+/**
+ * Native acceptance fixture for a note batch that survives a real Zotero
+ * restart. The model is scripted; the runtime, note_write_batch, its notes,
+ * the change journal and the panel's send flow are the real ones.
+ *
+ * Two functions, one for each Zotero process (test-workflows/
+ * noteBatchRestart.workflow.test.ts): `startNoteBatchUntilQuit` writes a
+ * batch of notes and ends this Zotero process while the batch writes;
+ * `resumeNoteBatchAfterRestart` runs in the next process and answers
+ * "continue".
+ */
+import { getConversationKey } from "./chat";
+import { listAgentRunsForConversation } from "../../agent/store/traceStore";
+import { listResumableBatches } from "../../agent/store/batchItemStore";
+import {
+  getOriginalAgentPermissionMode,
+  setOriginalAgentPermissionMode,
+} from "../../agent/originalAgentPermissionMode";
+import { scriptedJobTurn } from "./longJobReplay";
+import type { CollectionContextRef } from "../../shared/types";
+import type { TaskPaperScopeSet } from "../../agent/context/taskPaperScopeListing";
+import type {
+  AgentModelMessage,
+  AgentModelStep,
+  AgentToolCall,
+} from "../../agent/types";
+
+const NOTE_ALL = "Write a short reading note on each paper";
+
+type PanelRef = { body: HTMLElement; item: Zotero.Item };
+type JobInput = {
+  collection: CollectionContextRef;
+  papers: Array<{ itemId: number; title: string }>;
+  inputTokenCap: number;
+};
+
+function contentText(message: AgentModelMessage): string {
+  const content = (message as { content?: unknown }).content;
+  return typeof content === "string" ? content : JSON.stringify(content ?? "");
+}
+
+function scopeOf(input: JobInput): TaskPaperScopeSet {
+  const ids = input.papers.map((paper) => paper.itemId);
+  return {
+    wholeLibrary: false,
+    itemIds: ids,
+    withText: ids.length,
+    papers: Object.fromEntries(
+      input.papers.map((paper) => [
+        paper.itemId,
+        { title: paper.title, text: "pdf" as const },
+      ]),
+    ),
+  };
+}
+
+function toolStep(calls: AgentToolCall[]): AgentModelStep {
+  return {
+    kind: "tool_calls",
+    calls,
+    assistantMessage: { role: "assistant", content: "", tool_calls: calls },
+  };
+}
+
+function final(text: string): AgentModelStep {
+  return {
+    kind: "final",
+    text,
+    assistantMessage: { role: "assistant", content: text },
+  };
+}
+
+let callCounter = 0;
+function readCall(itemId: number, libraryID: number): AgentToolCall {
+  return {
+    id: `read-${itemId}-${(callCounter += 1)}`,
+    name: "paper_read",
+    arguments: { target: { itemId, contextItemId: itemId, libraryID } },
+  };
+}
+function batchCall(papers: number[]): AgentToolCall {
+  return {
+    id: `batch-${(callCounter += 1)}`,
+    name: "note_write_batch",
+    arguments: {
+      target: "item",
+      notes: papers.map((itemId) => ({
+        targetItemId: itemId,
+        content: `# Paper ${itemId}\n\nReading note on the finding of paper ${itemId}.`,
+      })),
+    },
+  };
+}
+
+/** The conversation key this panel's chat is stored under. */
+export function panelConversationKey(panel: PanelRef): number {
+  return getConversationKey(panel.item);
+}
+
+/**
+ * Sends the first turn of a note job: the model reads every paper, then
+ * writes all the notes in one note_write_batch. When the batch's
+ * `killAfterNotes`th note exists, this Zotero process ends:
+ * - `crash`: SIGKILL aimed at this process id only; nothing runs after it.
+ * - `quit`: a forced application quit.
+ * The function does not return while the process ends; if it returns, the
+ * process did not end.
+ */
+export async function startNoteBatchUntilQuit(
+  panel: PanelRef,
+  input: JobInput & { killAfterNotes: number; variant: "crash" | "quit" },
+): Promise<{ survived: true; notesSeen: number }> {
+  const { body, item } = panel;
+  body.style.left = "0";
+  body.style.width = "420px";
+  body.style.zIndex = "99999";
+  const ids = input.papers.map((paper) => paper.itemId);
+  const paperIds = new Set(ids);
+  setOriginalAgentPermissionMode("auto");
+  let notesSeen = 0;
+  let ended = false;
+  Zotero.Notifier.registerObserver(
+    {
+      notify(event: string, type: string, addedIds: Array<number | string>) {
+        if (event !== "add" || type !== "item" || ended) return;
+        for (const id of addedIds) {
+          const added = Zotero.Items.get(Number(id));
+          if (added?.isNote() && paperIds.has(Number(added.parentID)))
+            notesSeen += 1;
+        }
+        if (notesSeen < input.killAfterNotes) return;
+        ended = true;
+        if (input.variant === "quit") {
+          // eForceQuit: leave without waiting for windows or the batch.
+          (
+            Services as unknown as { startup: { quit: (mode: number) => void } }
+          ).startup.quit(3);
+          return;
+        }
+        // The kill names this process id only, never a process name. The
+        // blocking call does not return: the kill ends this process.
+        const file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+        file.initWithPath("/bin/kill");
+        const process = Cc["@mozilla.org/process/util;1"].createInstance(
+          Ci.nsIProcess,
+        );
+        process.init(file);
+        process.run(true, ["-9", String(Services.appinfo.processID)], 2);
+      },
+    },
+    ["item"],
+    "llm-note-batch-restart",
+  );
+  let declared = false;
+  let readUpTo = 0;
+  let batched = false;
+  await scriptedJobTurn(panel, {
+    collection: input.collection,
+    scope: scopeOf(input),
+    inputTokenCap: input.inputTokenCap,
+    writeTool: "note_write_batch",
+    paperCharacters: 1_200,
+    question: `Write a short reading note for each paper in ${input.collection.name}`,
+    step: () => {
+      if (!declared) {
+        declared = true;
+        return toolStep([
+          {
+            id: "declare-1",
+            name: "task_update",
+            arguments: {
+              tasks: [
+                {
+                  taskId: "read-all",
+                  description: `Read each paper in ${input.collection.name}`,
+                  expectedEffect: "read",
+                  scope: true,
+                },
+                {
+                  taskId: "note-all",
+                  description: NOTE_ALL,
+                  expectedEffect: "mutation",
+                  expectedCapability: "zotero.notes",
+                  scope: true,
+                },
+              ],
+            },
+          },
+        ]);
+      }
+      if (readUpTo < ids.length) {
+        const papers = ids.slice(readUpTo, readUpTo + 10);
+        readUpTo += papers.length;
+        return toolStep(papers.map((id) => readCall(id, item.libraryID)));
+      }
+      if (!batched) {
+        batched = true;
+        return toolStep([batchCall(ids)]);
+      }
+      return final("Every paper has its note.");
+    },
+  });
+  // Only reached when the process did not end.
+  return { survived: true, notesSeen };
+}
+
+/**
+ * The "continue" turn in the new process. The model resumes the stopped
+ * batch by the id the host names, then writes a note again on the papers in
+ * `rewritePapers`, whose notes the user trashed meanwhile.
+ */
+export async function resumeNoteBatchAfterRestart(
+  panel: PanelRef,
+  input: JobInput & { rewritePapers: number[] },
+) {
+  const key = getConversationKey(panel.item);
+  const previousMode = getOriginalAgentPermissionMode();
+  setOriginalAgentPermissionMode("auto");
+  try {
+    const priorRun = (await listAgentRunsForConversation(key)).at(-1);
+    const resumable = await listResumableBatches(key);
+    let resumeBatchId = "";
+    let resumed = false;
+    let rewritten = false;
+    const turn = await scriptedJobTurn(panel, {
+      collection: input.collection,
+      scope: scopeOf(input),
+      inputTokenCap: input.inputTokenCap,
+      writeTool: "note_write_batch",
+      paperCharacters: 1_200,
+      question: "continue",
+      step: (messages) => {
+        if (!resumed) {
+          resumed = true;
+          resumeBatchId =
+            /resumeBatchId=([^;\s]+)/.exec(
+              messages.map(contentText).join("\n"),
+            )?.[1] || "";
+          if (resumeBatchId)
+            return toolStep([
+              {
+                id: `batch-${(callCounter += 1)}`,
+                name: "note_write_batch",
+                arguments: { resumeBatchId },
+              },
+            ]);
+        }
+        if (!rewritten && input.rewritePapers.length) {
+          rewritten = true;
+          return toolStep([batchCall(input.rewritePapers)]);
+        }
+        return final("Every paper has its note.");
+      },
+    });
+    const appliedBy = (
+      receipts:
+        | readonly import("../../agent/types").AgentActionReceipt[]
+        | undefined,
+    ) =>
+      (receipts || []).flatMap((receipt) =>
+        receipt.verification === "verified" &&
+        (receipt.status === "applied" || receipt.status === "partial")
+          ? receipt.appliedTargets.map((target) =>
+              Number(target.replace(/^item:/, "")),
+            )
+          : [],
+      );
+    const batchResults = turn.events.flatMap((event) =>
+      event.type === "tool_result" && event.name === "note_write_batch"
+        ? [
+            {
+              ok: event.ok,
+              error: String(
+                (event.content as { error?: unknown } | undefined)?.error || "",
+              ),
+              applied: appliedBy(event.actionReceipts),
+            },
+          ]
+        : [],
+    );
+    // The ledger the resumed run published first, before any model step.
+    const firstCheckpoint = turn.events.flatMap((event) =>
+      event.type === "execution_checkpoint" ? [event.checkpoint] : [],
+    )[0];
+    const notePart = firstCheckpoint?.tasks.find((task) =>
+      task.taskId.endsWith(":task:note-all"),
+    );
+    return {
+      conversationKey: key,
+      priorRun: priorRun
+        ? {
+            runId: priorRun.runId,
+            status: priorRun.status,
+            finalText: priorRun.finalText || "",
+          }
+        : null,
+      resumableBatchIds: resumable.map((batch) => batch.batchId),
+      resumeBatchId,
+      runStatus: turn.runStatus,
+      end: turn.end,
+      batchResults,
+      initialNotePart: notePart
+        ? {
+            status: notePart.status,
+            doneTargets: [...(notePart.doneTargets || [])],
+            receiptIds: [...(notePart.receiptIds || [])],
+          }
+        : null,
+    };
+  } finally {
+    setOriginalAgentPermissionMode(previousMode);
+  }
+}

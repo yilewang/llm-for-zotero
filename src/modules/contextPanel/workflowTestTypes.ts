@@ -1310,6 +1310,34 @@ export type WorkflowTestApi = {
   ) => ReturnType<
     typeof import("./nativePlanReviewReplay").exerciseNativeQuestionReview
   >;
+  /**
+   * The real Codex approval bridge for a Zotero write, with the real card,
+   * when the card UI is missing and when the panel's owner is stale.
+   */
+  /**
+   * A run left running with a legacy agent_action_contract checkpoint, then
+   * the next turn (Auto mode, scripted model) that tags the paper.
+   */
+  exerciseInterruptedLegacyContract: (input: {
+    panelId: string;
+    legacyRunId: string;
+    legacyContractId: string;
+    tag: string;
+  }) => ReturnType<
+    typeof import("./interruptedContractReplay").exerciseInterruptedLegacyContract
+  >;
+  exerciseCodexApprovalFailClosed: (input: {
+    panelId: string;
+    itemId: number;
+    tag: string;
+    otherItemId: number;
+  }) => ReturnType<
+    typeof import("./codexApprovalReplay").exerciseCodexApprovalFailClosed
+  >;
+  /** Runs the plugin's own `initUserSkills` against the real skills folder. */
+  runUserSkillsInit: () => Promise<void>;
+  /** The skill files shipped in this build, by filename. */
+  readBuiltinSkillFiles: () => Record<string, string>;
   exercisePlanHistoryReplay: (input: {
     panelId: string;
     historyTurns: number;
@@ -1385,6 +1413,32 @@ export type WorkflowTestApi = {
     inputTokenCap: number;
     stopAfterNotes: number;
   }) => ReturnType<typeof import("./longJobReplay").exerciseLongJobBatchStop>;
+  /** The conversation key the panel's chat is stored under. */
+  getPanelConversationKey: (input: { panelId: string }) => number;
+  /**
+   * Real-restart scenario, first process: a note batch whose writing ends
+   * this Zotero process. Does not return when the process ends.
+   */
+  startNoteBatchUntilQuit: (input: {
+    panelId: string;
+    collection: import("../../shared/types").CollectionContextRef;
+    papers: Array<{ itemId: number; title: string }>;
+    inputTokenCap: number;
+    killAfterNotes: number;
+    variant: "crash" | "quit";
+  }) => ReturnType<
+    typeof import("./noteBatchRestartReplay").startNoteBatchUntilQuit
+  >;
+  /** Real-restart scenario, second process: "continue" the note batch. */
+  resumeNoteBatchAfterRestart: (input: {
+    panelId: string;
+    collection: import("../../shared/types").CollectionContextRef;
+    papers: Array<{ itemId: number; title: string }>;
+    inputTokenCap: number;
+    rewritePapers: number[];
+  }) => ReturnType<
+    typeof import("./noteBatchRestartReplay").resumeNoteBatchAfterRestart
+  >;
   exerciseStreamingReplay: (input: {
     panelId: string;
     historyTurns: number;
