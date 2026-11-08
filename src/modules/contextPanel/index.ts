@@ -1375,12 +1375,27 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
             e.preventDefault();
             e.stopPropagation();
             // Measure now: Zotero may remove the popup before the add settles.
-            const anchorRect = addTextBtn.getBoundingClientRect();
-            const anchor = {
+            // In Zotero's own popup the question box takes the popup's place
+            // (as the Inline Ask card does); otherwise it opens below the
+            // button.
+            const nativePopup = addTextBtn.closest(".selection-popup");
+            const anchorRect = (
+              nativePopup || addTextBtn
+            ).getBoundingClientRect();
+            const anchor: ReaderOverlayAnchor = {
               left: anchorRect.left,
               top: anchorRect.top,
               right: anchorRect.right,
               bottom: anchorRect.bottom,
+              ...(nativePopup
+                ? {
+                    cover: nativePopup.classList.contains(
+                      "page-popup-top-center",
+                    )
+                      ? ("bottom" as const)
+                      : ("top" as const),
+                  }
+                : {}),
             };
             void addTextToPanel().then(
               ({ result, targetBody, conversationKey, paperContext }) => {
@@ -1396,7 +1411,7 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                   return;
                 }
                 try {
-                  openReaderSelectionPromptForChip({
+                  const box = openReaderSelectionPromptForChip({
                     doc: event.doc,
                     anchor,
                     outcome: result.outcome,
@@ -1430,6 +1445,12 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                         question,
                       }),
                   });
+                  // The box now sits where the popup is; close the popup
+                  // (the text selection stays). Without a box, or if the
+                  // popup cannot be closed, Zotero's popup stays as before.
+                  if (box && nativePopup?.isConnected) {
+                    closeReaderSelectionPopup(event.reader, nativePopup);
+                  }
                 } catch (err) {
                   appLogger.warn("LLM: reader selection prompt failed", err);
                 }

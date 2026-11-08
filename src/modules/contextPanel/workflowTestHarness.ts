@@ -7604,6 +7604,8 @@ async function openNativeReaderInlineAsk(input: {
   pageIndex: number;
   selectedText: string;
   panelId?: string;
+  /** Which plugin button to press; default "Inline Ask". */
+  button?: "Inline Ask" | "Add Text";
 }): Promise<WorkflowTestNativeInlineAskOpen> {
   assertWorkflowTestEnabled();
   await cleanupWorkflowInlineAsk();
@@ -7626,8 +7628,26 @@ async function openNativeReaderInlineAsk(input: {
     uiDoc = doc;
     const win = doc.defaultView;
     if (!win?.MouseEvent) throw new Error("The reader window has no events");
+    const addText = input.button === "Add Text";
     const BUTTON =
       "[data-llm-reader-popup-actions] [data-llm-inline-ask-button]";
+    const findButton = (popup: Element): Element | null => {
+      if (!addText) return popup.querySelector(BUTTON);
+      const buttons = popup.querySelectorAll(
+        "[data-llm-reader-popup-actions] button",
+      );
+      for (let i = 0; i < buttons.length; i++) {
+        const node = buttons[i] as Element;
+        if (node.textContent?.trim() === "Add Text") return node;
+      }
+      return null;
+    };
+    const BOX_SELECTOR = addText
+      ? '[data-llm-reader-selection-prompt="true"]'
+      : INLINE_ASK_CARD_SELECTOR;
+    const EDITOR_SELECTOR = addText
+      ? "[data-llm-reader-selection-prompt-editor]"
+      : '[data-llm-inline-ask-editor="true"]';
     const round = (n: number) => Math.round(n * 100) / 100;
     const rectOf = (node: Element) => {
       const rect = node.getBoundingClientRect();
@@ -7681,7 +7701,7 @@ async function openNativeReaderInlineAsk(input: {
     const watcher = (async () => {
       while (watching && !result) {
         const popup = doc.querySelector(".selection-popup");
-        const button = popup?.querySelector(BUTTON);
+        const button = popup ? findButton(popup) : null;
         if (popup && button) {
           if (!shownAt) shownAt = Date.now();
           const before = rectOf(popup);
@@ -7718,15 +7738,20 @@ async function openNativeReaderInlineAsk(input: {
     if (!pressed) {
       const popupNode = doc.querySelector(".selection-popup");
       return {
-        error: "Zotero's selection popup never showed the Inline Ask button",
+        error: `Zotero's selection popup never showed the ${input.button || "Inline Ask"} button`,
         diagnostic: JSON.stringify({
           hasSelectionPopup: Boolean(popupNode),
           popupHtml: popupNode?.outerHTML.slice(0, 1500) || "",
         }),
       };
     }
-    const editor = await waitForWorkflowInlineAskEditor(doc);
-    const card = doc.querySelector(INLINE_ASK_CARD_SELECTOR);
+    const waitStart = Date.now();
+    let editor: Element | null = null;
+    while (!editor && Date.now() - waitStart < 3000) {
+      editor = doc.querySelector(`${BOX_SELECTOR} ${EDITOR_SELECTOR}`);
+      if (!editor) await Zotero.Promise.delay(25);
+    }
+    const card = doc.querySelector(BOX_SELECTOR);
     pressed.cardMounted = Boolean(card && editor);
     if (!card) return pressed;
     pressed.card = rectOf(card);
@@ -7742,14 +7767,26 @@ async function openNativeReaderInlineAsk(input: {
     );
     await Zotero.Promise.delay(400);
     pressed.popupOpenLater = popupOpen();
+    if (addText && input.panelId) {
+      const mainDocument = Zotero.getMainWindow?.()?.document || null;
+      const root = (
+        mainDocument
+          ? getReaderContextPanelForTab(mainDocument, reader.tabID)
+          : null
+      )?.querySelector("#llm-main") as HTMLElement | null;
+      const key = Number(root?.dataset.itemId || 0);
+      pressed.chipTexts = key
+        ? getSelectedTextContextEntries(key).map((context) => context.text)
+        : [];
+    }
     const liveEditor = (doc.querySelector(
-      `${INLINE_ASK_CARD_SELECTOR} [data-llm-inline-ask-editor="true"]`,
+      `${BOX_SELECTOR} ${EDITOR_SELECTOR}`,
     ) || card) as HTMLElement;
     liveEditor.dispatchEvent(
       makeReaderPromptKey(doc, { key: "Escape", code: "Escape" }),
     );
     await Zotero.Promise.delay(50);
-    pressed.cardClosed = !doc.querySelector(INLINE_ASK_CARD_SELECTOR);
+    pressed.cardClosed = !doc.querySelector(BOX_SELECTOR);
     await Zotero.Promise.delay(400);
     pressed.popupOpenAfterCardClose = popupOpen();
     return pressed;

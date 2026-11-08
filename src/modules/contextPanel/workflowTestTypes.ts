@@ -419,6 +419,8 @@ export type WorkflowTestNativeInlineAskOpen = {
   cardClosed?: boolean;
   /** `.selection-popup` is in the document 400 ms after the card closed. */
   popupOpenAfterCardClose?: boolean;
+  /** Add Text only: the panel's selected-text chips after the box opened. */
+  chipTexts?: string[];
 };
 
 export type WorkflowTestReaderPopupActionRow = {
@@ -2005,6 +2007,11 @@ export type WorkflowTestApi = {
     selectedText: string;
     /** Mounts this workflow panel as the reader tab's panel first. */
     panelId?: string;
+    /**
+     * Which plugin button to press; default "Inline Ask". "Add Text" reads
+     * its question box (not the card) and needs panelId.
+     */
+    button?: "Inline Ask" | "Add Text";
   }) => Promise<WorkflowTestNativeInlineAskOpen>;
   /**
    * Opens the reader, shows the selection popup, presses Inline Ask, and
