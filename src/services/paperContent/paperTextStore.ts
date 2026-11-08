@@ -32,6 +32,11 @@ export type PaperTextLoadOptions = {
   preferFulltextCache?: boolean;
   /** Background index loads: fill the cache without firing the write-through hook. */
   silentLoad?: boolean;
+  /**
+   * Cancels this caller's load: a cancelled load stores nothing, so a caller
+   * that waited on it, or a later load, extracts again.
+   */
+  signal?: AbortSignal;
 };
 
 /** Extracts one item's text and stores it with `paperTextStore.write`. */
@@ -65,6 +70,23 @@ function cachedContextMatchesSourceMode(
   return true;
 }
 
+/**
+ * Entries a silent (index) load stored from a PDF's own text. Such a load
+ * skips the document structure, and the index may take the full-text cache
+ * where a chat takes the page-aware text, so a chat must not take one: the
+ * same paper would preload whole on one turn and as a map on the next.
+ */
+const silentPdfTextEntries = new WeakSet<PdfContext>();
+
+function servesLoad(
+  cached: PdfContext,
+  options: PaperTextLoadOptions | undefined,
+): boolean {
+  if (!cachedContextMatchesSourceMode(cached, options?.sourceMode))
+    return false;
+  return Boolean(options?.silentLoad) || !silentPdfTextEntries.has(cached);
+}
+
 function entryText(itemId: number): string {
   const cached = pdfTextCache.get(itemId);
   return Array.isArray(cached?.chunks) ? cached.chunks.join("\n\n") : "";
@@ -87,7 +109,7 @@ async function load(
   extract: PaperTextExtractor,
 ): Promise<void> {
   const cached = pdfTextCache.get(item.id);
-  if (cached && cachedContextMatchesSourceMode(cached, options?.sourceMode)) {
+  if (cached && servesLoad(cached, options)) {
     return;
   }
   if (cached) {
@@ -97,7 +119,7 @@ async function load(
   if (existingTask) {
     await existingTask;
     const latest = pdfTextCache.get(item.id);
-    if (latest && cachedContextMatchesSourceMode(latest, options?.sourceMode)) {
+    if (latest && servesLoad(latest, options)) {
       return;
     }
     if (latest) {
@@ -112,6 +134,13 @@ async function load(
       await extract(item, options);
       // Fresh loads with text only; cache hits and waits on an existing task return before this.
       const loaded = pdfTextCache.get(item.id);
+      if (
+        loaded &&
+        options?.silentLoad &&
+        (loaded.sourceType === "zotero-worker" ||
+          loaded.sourceType === "zotero-fulltext-cache")
+      )
+        silentPdfTextEntries.add(loaded);
       if (loaded && loaded.chunks.length && !options?.silentLoad) {
         notifyPdfContextLoaded(item.id);
       }
@@ -209,7 +238,8 @@ export const paperTextStore = {
   },
   /**
    * Ensures text for `item` is cached. A cached entry is reused only when it
-   * matches `options.sourceMode`; a mismatched one is dropped and reloaded.
+   * matches `options.sourceMode`, and a silent load's PDF text only by
+   * another silent load; any other entry is dropped and reloaded.
    * Concurrent callers share one in-progress load. Listeners hear only a
    * fresh, non-silent load that produced chunks.
    */

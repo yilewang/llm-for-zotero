@@ -1,4 +1,7 @@
-import { buildPaperRetrievalCandidates } from "../../services/paperContent/pdfContext";
+import {
+  buildPaperRetrievalCandidates,
+  sectionIdForIndex,
+} from "../../services/paperContent/pdfContext";
 import type { RetrievalExplanation } from "../../services/paperContent/types";
 import {
   resolveRetrievalQueryPlan,
@@ -27,6 +30,8 @@ type RetrievalResult = {
   chunkIndex: number;
   sectionLabel?: string;
   sectionPath?: string;
+  /** The outline id of the chunk's section (`s<n>`), to open it next. */
+  sectionId?: string;
   chunkKind?: string;
   citationLabel: string;
   sourceLabel: string;
@@ -315,6 +320,9 @@ export class RetrievalService {
             candidate.title,
           ),
           sectionPath: candidate.sectionPath,
+          ...(candidate.sectionIndex !== undefined
+            ? { sectionId: sectionIdForIndex(candidate.sectionIndex) }
+            : {}),
           chunkKind: candidate.chunkKind,
           citationLabel: formatPaperCitationLabel(paperContext),
           sourceLabel: formatPaperSourceLabel(paperContext),

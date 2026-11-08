@@ -156,6 +156,7 @@ describe("paper_read quote anchors", function () {
   it("never shows an overview result an id that the returned citations lack", async function () {
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async ({
           paperContext,
         }: {

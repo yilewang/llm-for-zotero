@@ -9,9 +9,52 @@ import {
   windowBodyRanges,
 } from "../../services/quotes/sentenceSplit";
 import { formatPaperSourceLabel } from "../../services/paperContent/paperAttribution";
+import {
+  buildBookmarkOutline,
+  buildDocumentOutline,
+} from "../../services/paperContent/pdfContext";
+import { formatDocumentMap } from "../../services/paperContent/documentMap";
 import { estimateTextTokens } from "../../utils/modelInputCap";
+import { documentPageMap } from "../tools/read/documentSectionReads";
 import { resolveAgentPromptBudgetLimits } from "./promptBudget";
 import { buildTurnPaperKey } from "./turnPaperScope";
+
+/**
+ * What a chaptered document's block says instead of its text: the map
+ * follows, and paper_read reads the parts.
+ */
+const DOCUMENT_MAP_PRELOAD_NOTE =
+  "This document has chapters, so its text is not preloaded: the map below lists its top-level parts with their pages and sizes. Read the parts the answer needs with paper_read: mode:'targeted' with sectionIds (a part with sections returns its sections and sizes; add whole:true to read all of it), mode:'outline' with a sectionId to list a part's sections, or mode:'targeted' with a query to search. A read the remaining context cannot hold returns sections or pages instead of text; sections:[names] picks text runs, not this map.";
+
+/**
+ * What the block of a document too large for the context left says instead
+ * of part of its text: the page map follows, and paper_read reads pages.
+ */
+const PAGE_MAP_PRELOAD_NOTE =
+  "This document's whole text does not fit the context left, so its text is not preloaded: the map below lists its pages with their sizes and first lines. Read the pages the answer needs with paper_read: mode:'targeted' with pages, numbered as in the map (such as pages:[4,5,6]), or mode:'targeted' with a query to search. A read larger than the remaining context or than a given maxChars returns the pages' map instead of text.";
+
+/**
+ * What the block of a bookmarked document too large for the context left
+ * says instead of part of its text: the map of its bookmarks follows, and
+ * paper_read reads its sections.
+ */
+const BOOKMARK_MAP_PRELOAD_NOTE =
+  "This document's whole text does not fit the context left, so its text is not preloaded: the map below lists its top-level parts, from its bookmarks, with their pages and sizes. Read the parts the answer needs with paper_read: mode:'targeted' with sectionIds (a part with sections returns its sections and sizes; add whole:true to read all of it), with pages, numbered as in the map (such as pages:[4,5,6]), or with a query to search. A read larger than the remaining context or than a given maxChars returns sections or pages instead of text.";
+
+/**
+ * What a document too long for even its page or section map says: its
+ * size, and how to read it.
+ */
+function longDocumentNote(context: PdfContext): string {
+  const pages = context.textPages || [];
+  const tokens = pages.reduce((sum, page) => sum + page.tokens, 0);
+  const mapName = context.bookmarkSections ? "section map" : "page map";
+  return `This document is long: its ${pages.length} pages hold about ${tokens} tokens of text, more than the context left can hold, so neither its text nor its ${mapName} is preloaded. Read it with paper_read: mode:'targeted' with a query to search it, or with pages, numbered from 1 (such as pages:[4,5,6]), to read pages.`;
+}
+
+/** The citation rule for a turn whose passages come from reads. */
+const PASSAGE_ID_RULE =
+  "Cite with the Q_ passage IDs that paper_read results carry: [[cite:ID]] for sentence citations, [[quote:ID]] for reading recommendations. To use text without a passage ID, quote it as a `>` blockquote with the source label on the next line and no cite token; never construct an ID.";
 
 export type PaperPromptContext = {
   blocks: string[];
@@ -142,8 +185,10 @@ export async function preparePaperPromptContext(
   let remaining =
     options.tokenBudget ?? Math.floor(limits.softLimitTokens * 0.55);
   const load =
-    options.load || ((paper) => new PdfService().ensurePaperContext(paper));
-  for (const { paper } of papers) {
+    options.load ||
+    ((paper) =>
+      new PdfService().ensurePaperContext(paper, { signal: options.signal }));
+  for (const { paper, roles } of papers) {
     if (options.signal?.aborted)
       throw new Error("Paper context loading cancelled.");
     const label = formatPaperSourceLabel(paper);
@@ -162,11 +207,19 @@ export async function preparePaperPromptContext(
       );
       continue;
     }
-    const passages: string[] = [];
-    const citations: QuoteCitation[] = [];
-    let used = estimateTextTokens(header) + 120;
-    let included = 0;
-    for (const [index, text] of context.chunks.entries()) {
+    // A document with chapters is read by its map; the user's explicit
+    // full-text attach still preloads its whole text.
+    if (context.documentStructure && !roles.includes("full_text")) {
+      result.blocks.push(
+        `${header}${DOCUMENT_MAP_PRELOAD_NOTE}\n${PASSAGE_ID_RULE}\n\n${formatDocumentMap(
+          buildDocumentOutline(context),
+        )}`,
+      );
+      continue;
+    }
+    // Every chunk as the passage block would carry it, with its IDs and its
+    // cost: what the block costs whole decides whether the text fits.
+    const built = context.chunks.map((text, index) => {
       const meta = context.chunkMeta[index];
       const chunkCitations: QuoteCitation[] = [];
       const passage = text
@@ -197,7 +250,39 @@ export async function preparePaperPromptContext(
           return `${citation ? `[passage ${citation.id}]` : "[no passage ID]"}${meta?.sectionLabel ? ` ${meta.sectionLabel}` : ""}\n${paragraph}`;
         })
         .join("\n\n");
-      const cost = estimateTextTokens(passage);
+      return {
+        passage,
+        citations: chunkCitations,
+        cost: estimateTextTokens(passage),
+      };
+    });
+    const fixedTokens = estimateTextTokens(header) + 120;
+    const wholeCost = built.reduce(
+      (sum, chunk) => sum + chunk.cost,
+      fixedTokens,
+    );
+    // A document whose whole text does not fit what is left is read by its
+    // bookmarks' sections when it has usable ones, else by its pages; text
+    // without pages keeps today's partial preload.
+    const tooLarge = !roles.includes("full_text") && wholeCost > remaining;
+    const bookmarkMap = tooLarge ? buildBookmarkOutline(context) : null;
+    const pageMap = tooLarge && !bookmarkMap ? documentPageMap(context) : null;
+    if (bookmarkMap || pageMap) {
+      let block = bookmarkMap
+        ? `${header}${BOOKMARK_MAP_PRELOAD_NOTE}\n${PASSAGE_ID_RULE}\n\n${formatDocumentMap(bookmarkMap)}`
+        : `${header}${PAGE_MAP_PRELOAD_NOTE}\n${PASSAGE_ID_RULE}\n\n${pageMap!.join("\n")}`;
+      // A map that does not fit either: only the document's size.
+      if (estimateTextTokens(block) > remaining)
+        block = `${header}${longDocumentNote(context)}\n${PASSAGE_ID_RULE}`;
+      result.blocks.push(block);
+      remaining = Math.max(0, remaining - estimateTextTokens(block));
+      continue;
+    }
+    const passages: string[] = [];
+    const citations: QuoteCitation[] = [];
+    let used = fixedTokens;
+    let included = 0;
+    for (const { passage, citations: chunkCitations, cost } of built) {
       if (used + cost > remaining) break;
       passages.push(passage);
       citations.push(...chunkCitations);

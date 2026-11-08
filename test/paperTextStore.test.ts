@@ -200,6 +200,76 @@ describe("paper text store", function () {
       assert.isFalse(pdfTextLoadingTasks.has(9520));
     });
 
+    it("a chat load that joins a silent index load of a PDF loads it with its structure", async function () {
+      const calls: Array<boolean | undefined> = [];
+      const extract = async (
+        target: Zotero.Item,
+        options?: { silentLoad?: boolean },
+      ) => {
+        calls.push(options?.silentLoad);
+        await Promise.resolve();
+        const context = fakeContext("zotero-worker");
+        if (!options?.silentLoad)
+          context.documentStructure = {
+            source: "bookmarks",
+          } as PdfContext["documentStructure"];
+        paperTextStore.write(target.id, context);
+      };
+      // The index starts first; the chat arrives while it runs.
+      await Promise.all([
+        paperTextStore.load(item(9540), { silentLoad: true }, extract),
+        paperTextStore.load(item(9540), undefined, extract),
+      ]);
+      assert.deepEqual(calls, [true, undefined]);
+      assert.exists(paperTextStore.peek(9540)?.documentStructure);
+      // A silent entry already cached is not served to a chat either.
+      pdfTextCache.clear();
+      calls.length = 0;
+      await paperTextStore.load(item(9541), { silentLoad: true }, extract);
+      await paperTextStore.load(item(9541), undefined, extract);
+      assert.deepEqual(calls, [true, undefined]);
+      assert.exists(paperTextStore.peek(9541)?.documentStructure);
+      // The index still reuses a chat's entry, and a chat reuses its own.
+      await paperTextStore.load(item(9541), { silentLoad: true }, extract);
+      await paperTextStore.load(item(9541), undefined, extract);
+      assert.deepEqual(calls, [true, undefined]);
+    });
+
+    it("a chat load reuses a silent entry whose source carries no structure", async function () {
+      let loads = 0;
+      const extract = async (target: Zotero.Item) => {
+        loads += 1;
+        paperTextStore.write(target.id, fakeContext("mineru"));
+      };
+      await paperTextStore.load(item(9545), { silentLoad: true }, extract);
+      await paperTextStore.load(item(9545), undefined, extract);
+      assert.equal(loads, 1);
+    });
+
+    it("a cancelled load stores nothing, and a waiter loads again", async function () {
+      const controller = new AbortController();
+      let loads = 0;
+      const extract = async (
+        target: Zotero.Item,
+        options?: { signal?: AbortSignal },
+      ) => {
+        loads += 1;
+        await Promise.resolve();
+        if (options?.signal?.aborted) return;
+        paperTextStore.write(target.id, fakeContext("zotero-worker"));
+      };
+      const cancelled = paperTextStore.load(
+        item(9546),
+        { signal: controller.signal },
+        extract,
+      );
+      const waiter = paperTextStore.load(item(9546), undefined, extract);
+      controller.abort();
+      await Promise.all([cancelled, waiter]);
+      assert.equal(loads, 2);
+      assert.isTrue(paperTextStore.has(9546));
+    });
+
     it("a silent load or a load without chunks notifies nobody", async function () {
       const seen: number[] = [];
       const off = onPdfContextLoaded((id) => seen.push(id));

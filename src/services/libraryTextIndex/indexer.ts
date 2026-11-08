@@ -134,9 +134,13 @@ export function buildIndexDocumentFromPdfContext(params: {
   ctx: PdfContext;
 }): IndexDocumentInput {
   const { ctx } = params;
+  // A chat may have loaded the text with its chapter structure; the index
+  // stores the metadata without it, so its rows do not depend on who loaded
+  // the text first.
+  const chunkMeta = ctx.documentStructure?.plainChunkMeta || ctx.chunkMeta;
   const chunks = ctx.chunks.map((text, chunkIndex) => {
     const stat = ctx.chunkStats[chunkIndex];
-    const full = ctx.chunkMeta[chunkIndex];
+    const full = chunkMeta[chunkIndex];
     // Copied key by key from a full PdfChunkMeta, so required keys (chunkKind) are present.
     const meta = {} as StoredChunkMeta;
     for (const key of META_KEYS) {
@@ -171,11 +175,12 @@ export function buildIndexDocumentFromPdfContext(params: {
 
 /** fnv1a32 over chunk boundaries and section labels; pinned by a unit test. */
 export function computeChunkerFingerprint(ctx: PdfContext): string {
+  const chunkMeta = ctx.documentStructure?.plainChunkMeta || ctx.chunkMeta;
   return fnv1a32(
     ctx.chunks
       .map(
         (c, i) =>
-          `${c.length}:${ctx.chunkMeta[i]?.sectionLabel || ""}:${ctx.chunkMeta[i]?.chunkKind || ""}:${ctx.chunkMeta[i]?.enclosingSection || ""}`,
+          `${c.length}:${chunkMeta[i]?.sectionLabel || ""}:${chunkMeta[i]?.chunkKind || ""}:${chunkMeta[i]?.enclosingSection || ""}`,
       )
       .join("|"),
   );

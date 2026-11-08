@@ -217,4 +217,24 @@ describe("PdfService overview provenance", function () {
       );
     }
   });
+
+  it("stores nothing for a load its caller cancelled, and loads again later", async function () {
+    Zotero.Prefs.get = (() => false) as typeof Zotero.Prefs.get;
+    const controller = new AbortController();
+    (Zotero as unknown as { PDFWorker: unknown }).PDFWorker = {
+      getFullText: async () => {
+        controller.abort();
+        return { text: "Page one text.", totalPages: 1, pageChars: [14] };
+      },
+    };
+    const service = new PdfService();
+    assert.isUndefined(
+      await service.ensurePaperContext(paperContext, {
+        signal: controller.signal,
+      }),
+    );
+    assert.isFalse(paperTextStore.has(attachmentId));
+    const loaded = await service.ensurePaperContext(paperContext);
+    assert.include(loaded?.chunks.join("") || "", "Page one text.");
+  });
 });

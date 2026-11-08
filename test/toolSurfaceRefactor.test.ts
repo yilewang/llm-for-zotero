@@ -605,7 +605,7 @@ describe("semantic tool surface", function () {
 
   it("paper_read fails loudly for invalid explicit targets", async function () {
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {
@@ -705,7 +705,7 @@ describe("semantic tool surface", function () {
 
   it("paper_read rejects malformed non-empty selector syntax", function () {
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -773,7 +773,7 @@ describe("semantic tool surface", function () {
 
   it("paper_read names invalid metadata fields so a failed batch can be corrected", function () {
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -790,7 +790,7 @@ describe("semantic tool surface", function () {
 
   it("paper_read applies one target contract regardless of mode", function () {
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -823,7 +823,7 @@ describe("semantic tool surface", function () {
 
   it("paper_read visual target validation names the offending field and requires itemId", function () {
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -853,7 +853,7 @@ describe("semantic tool surface", function () {
 
   it("paper_read advertises non-empty target shapes without root composition", function () {
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -890,6 +890,7 @@ describe("semantic tool surface", function () {
     };
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => ({
           text: "should not be read",
           paperContext: activeReaderPaper,
@@ -939,6 +940,7 @@ describe("semantic tool surface", function () {
     };
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async ({
           paperContext,
         }: {
@@ -984,6 +986,7 @@ describe("semantic tool surface", function () {
     };
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async ({
           paperContext,
         }: {
@@ -1033,6 +1036,7 @@ describe("semantic tool surface", function () {
     const receivedMaxChars: number[] = [];
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async ({
           paperContext,
           maxChars,
@@ -1104,6 +1108,7 @@ describe("semantic tool surface", function () {
     };
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => {
           throw new Error("No extractable PDF text available for this paper");
         },
@@ -1245,6 +1250,7 @@ describe("semantic tool surface", function () {
     ]);
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => {
           throw new Error("No extractable PDF text available");
         },
@@ -1291,6 +1297,7 @@ describe("semantic tool surface", function () {
     try {
       const tool = createPaperReadTool(
         {
+          ensurePaperContext: async () => undefined,
           getOverviewExcerpt: async () => {
             throw new Error("PDF text extraction failed");
           },
@@ -1379,6 +1386,7 @@ describe("semantic tool surface", function () {
     };
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => {
           throw new Error(
             "No PDF attachment is available for this Zotero item",
@@ -1473,7 +1481,7 @@ describe("semantic tool surface", function () {
     };
     try {
       const tool = createPaperReadTool(
-        {} as never,
+        { ensurePaperContext: async () => undefined } as never,
         {} as never,
         {} as never,
         {
@@ -1548,7 +1556,7 @@ describe("semantic tool surface", function () {
     };
     try {
       const tool = createPaperReadTool(
-        {} as never,
+        { ensurePaperContext: async () => undefined } as never,
         {} as never,
         {} as never,
         {
@@ -1625,7 +1633,7 @@ describe("semantic tool surface", function () {
     };
     let prepareCalls = 0;
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {
         preparePagesForModel: async () => {
@@ -1690,7 +1698,7 @@ describe("semantic tool surface", function () {
     };
     let requestedPages: number[] = [];
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {
         preparePagesForModel: async ({ pages }: { pages: number[] }) => {
@@ -1777,7 +1785,7 @@ describe("semantic tool surface", function () {
     };
     const extractionContexts: unknown[] = [];
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {
@@ -1829,7 +1837,7 @@ describe("semantic tool surface", function () {
 
   it("paper_read rejects malformed figure labels instead of expanding them into all figures", function () {
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -1858,7 +1866,7 @@ describe("semantic tool surface", function () {
     };
     const extractionContexts: unknown[] = [];
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {
@@ -1927,7 +1935,7 @@ describe("semantic tool surface", function () {
       mineruCacheDir: "/tmp/mineru-paper",
     };
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {} as never,
       {
@@ -2186,7 +2194,7 @@ describe("semantic tool surface", function () {
     };
     let requestedPages: number[] = [];
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {} as never,
       {
         preparePagesForModel: async ({ pages }: { pages: number[] }) => {
@@ -2264,6 +2272,7 @@ describe("semantic tool surface", function () {
     let overviewCalls = 0;
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => {
           overviewCalls += 1;
           return {
@@ -2320,6 +2329,7 @@ describe("semantic tool surface", function () {
     };
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => ({
           backend: "raw_pdf_text",
           text:
@@ -2391,6 +2401,7 @@ describe("semantic tool surface", function () {
     };
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => ({
           backend: "raw_pdf_text",
           text: "This substantive-looking sentence has no paper identity on its source result and therefore must not become a verified quote.",
@@ -2433,6 +2444,7 @@ describe("semantic tool surface", function () {
       "Full article and list of author affiliations: https://doi.org/10.1126/science.adw7707";
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async () => ({
           backend: "raw_pdf_text",
           text:
@@ -3185,7 +3197,7 @@ describe("semantic tool surface", function () {
     };
     const pageReadItemIds: number[] = [];
     const tool = createPaperReadTool(
-      {} as never,
+      { ensurePaperContext: async () => undefined } as never,
       {
         retrieveEvidence: async () => {
           throw new Error(
@@ -3391,7 +3403,11 @@ describe("semantic tool surface", function () {
   });
 
   it("paper_read targeted success text counts passages separately from papers", function () {
-    const tool = createPaperReadTool({} as never, {} as never, {} as never);
+    const tool = createPaperReadTool(
+      { ensurePaperContext: async () => undefined } as never,
+      {} as never,
+      {} as never,
+    );
     const onSuccess = tool.presentation?.summaries?.onSuccess;
     assert.isFunction(onSuccess);
     if (typeof onSuccess !== "function") return;
