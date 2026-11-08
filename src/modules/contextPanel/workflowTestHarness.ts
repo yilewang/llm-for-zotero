@@ -147,6 +147,7 @@ import type {
   WorkflowTestPanelChatMessages,
   WorkflowTestReaderSelectionDraft,
   WorkflowTestReaderPopupActionRow,
+  WorkflowTestNativePopupGeometry,
   WorkflowTestSidePanel,
   WorkflowTestStandaloneSidePanelControl,
   WorkflowTestStandaloneSidePanelSlideFrame,
@@ -7404,6 +7405,97 @@ async function readReaderPopupActionRow(input: {
   }
 }
 
+async function readNativeReaderPopupGeometry(input: {
+  attachmentItemId: number;
+  pageIndex: number;
+  selectedText: string;
+  panelId?: string;
+}): Promise<WorkflowTestNativePopupGeometry> {
+  assertWorkflowTestEnabled();
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  if (input.panelId)
+    mountWorkflowPanelInReaderPane(getPanel(input.panelId), reader);
+  let selectionDoc: Document | null = null;
+  try {
+    const selected = await selectWorkflowPdfText({
+      reader,
+      pageIndex: input.pageIndex,
+      selectedText: input.selectedText,
+    });
+    selectionDoc = selected.doc;
+    const uiDoc = getWorkflowReaderUiDocument(reader);
+    const ROW = "[data-llm-reader-popup-actions]";
+    const round = (n: number) => Math.round(n * 10) / 10;
+    const box = (node: Element | null) => {
+      if (!node) return undefined;
+      const rect = node.getBoundingClientRect();
+      return {
+        left: round(rect.left),
+        right: round(rect.right),
+        width: round(rect.width),
+        top: round(rect.top),
+        bottom: round(rect.bottom),
+      };
+    };
+    const measure = (popup: Element): WorkflowTestNativePopupGeometry => {
+      const rowNode = popup.querySelector(ROW);
+      const toggleNode = popup.querySelector(".tool-toggle");
+      const buttonNodes: Element[] = rowNode
+        ? (Array.from(rowNode.querySelectorAll("button")) as Element[])
+        : [];
+      return {
+        colors: box(popup.querySelector(".colors")),
+        toggle: box(toggleNode),
+        highlight: box(popup.querySelector(".tool-toggle .highlight")),
+        underline: box(popup.querySelector(".tool-toggle .underline")),
+        row: box(rowNode),
+        buttons: buttonNodes.map((button) => ({
+          label: button.textContent?.trim() || "",
+          ...box(button)!,
+        })),
+        rowTop: rowNode ? box(rowNode)!.top : undefined,
+        toggleBottom: toggleNode ? box(toggleNode)!.bottom : undefined,
+      };
+    };
+    // Zotero's own popup shows while the drag runs and clears about
+    // 150 ms after it ends, so a watcher reads it as soon as it holds the
+    // plugin row.
+    let measured: WorkflowTestNativePopupGeometry | null = null;
+    let watching = true;
+    const watcher = (async () => {
+      while (watching && !measured) {
+        const popup = uiDoc.querySelector(".selection-popup");
+        if (popup?.querySelector(ROW)) measured = measure(popup);
+        else await Zotero.Promise.delay(5);
+      }
+    })();
+    await Zotero.Promise.delay(300);
+    await dragWorkflowPdfSelection(selected);
+    const startedAt = Date.now();
+    while (!measured && Date.now() - startedAt < 5000)
+      await Zotero.Promise.delay(25);
+    watching = false;
+    await watcher;
+    if (measured) return measured;
+    const popupNode = uiDoc.querySelector(".selection-popup");
+    return {
+      error: "Zotero's selection popup never showed the plugin row",
+      diagnostic: JSON.stringify({
+        url: uiDoc.location?.href,
+        hasSelectionPopup: Boolean(popupNode),
+        popupHtml: popupNode?.outerHTML.slice(0, 1500) || "",
+        rowCount: uiDoc.querySelectorAll(ROW).length,
+      }),
+    };
+  } finally {
+    selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
+    await closeWorkflowReader(reader);
+  }
+}
+
 const INLINE_ASK_CARD_SELECTOR = '[data-llm-inline-ask="true"]';
 
 /** The reader and documents of the Inline Ask card a workflow test opened. */
@@ -11248,6 +11340,7 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseReaderPopupDuplicateAttach,
     exerciseReaderPopupPromptDismissal,
     readReaderPopupActionRow,
+    readNativeReaderPopupGeometry,
     openReaderInlineAsk,
     sendReaderInlineAsk,
     readReaderInlineAsk,

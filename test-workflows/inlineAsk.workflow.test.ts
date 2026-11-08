@@ -155,6 +155,60 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.equal(row.rowDisplay, "flex", message);
   });
 
+  it("lines the popup row up with Zotero's highlight/underline toggle", async function () {
+    const TOL = 0.5;
+    const near = (a: number, b: number, what: string, msg: string) =>
+      assert.isAtMost(Math.abs(a - b), TOL, `${what}: ${a} vs ${b}; ${msg}`);
+    const fixture = await createFixture("Inline Ask popup alignment");
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const input = {
+      panelId: panel.panelId,
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText: SELECTED_TEXT,
+    };
+
+    const both = await api.readNativeReaderPopupGeometry(input);
+    const m = JSON.stringify(both);
+    assert.isUndefined(both.error, m);
+    const toggle = both.toggle!;
+    const row = both.row!;
+    const buttons = both.buttons!;
+    assert.isOk(toggle && row, m);
+    assert.deepEqual(
+      buttons.map((b) => b.label),
+      ["Add Text", "Inline Ask"],
+      m,
+    );
+    near(
+      both.rowTop! - toggle.bottom,
+      toggle.top - both.colors!.bottom,
+      "gap below toggle vs gap above toggle",
+      m,
+    );
+    near(row.left, toggle.left, "row left vs toggle left", m);
+    near(row.right, toggle.right, "row right vs toggle right", m);
+    near(buttons[0].left, toggle.left, "first button left", m);
+    near(buttons[1].right, toggle.right, "last button right", m);
+    near(buttons[0].width, buttons[1].width, "button widths", m);
+    near(buttons[1].left - buttons[0].right, 8, "gap", m);
+
+    Zotero.Prefs.set(PREF_PREFIX + "showPopupInlineAsk", false, true);
+    // A new paper, so no popup from the first reader can be reused.
+    const second = await createFixture("Inline Ask popup alignment single");
+    const secondPanel = await api.renderPanelForItem(second.parentItemId);
+    const single = await api.readNativeReaderPopupGeometry({
+      ...input,
+      attachmentItemId: second.pdfAttachmentId,
+      panelId: secondPanel.panelId,
+    });
+    const ms = JSON.stringify(single);
+    assert.isUndefined(single.error, ms);
+    assert.lengthOf(single.buttons!, 1, ms);
+    near(single.buttons![0].left, single.toggle!.left, "single left", ms);
+    near(single.buttons![0].right, single.toggle!.right, "single right", ms);
+  });
+
   it("hides Inline Ask when its setting is off", async function () {
     const fixture = await createFixture("Inline Ask toggle off");
     Zotero.Prefs.set(PREF_PREFIX + "showPopupInlineAsk", false, true);

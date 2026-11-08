@@ -368,6 +368,27 @@ export type WorkflowTestStandaloneSidePanelDiagnostics = {
   };
 };
 
+export type WorkflowTestBox = {
+  left: number;
+  right: number;
+  width: number;
+};
+
+export type WorkflowTestNativePopupGeometry = {
+  /** Set when Zotero's own popup never showed the plugin row. */
+  error?: string;
+  /** What the reader document held when the popup was missing. */
+  diagnostic?: string;
+  colors?: WorkflowTestBox & { top: number; bottom: number };
+  toggle?: WorkflowTestBox & { top: number; bottom: number };
+  highlight?: WorkflowTestBox;
+  underline?: WorkflowTestBox;
+  row?: WorkflowTestBox;
+  buttons?: Array<WorkflowTestBox & { label: string }>;
+  rowTop?: number;
+  toggleBottom?: number;
+};
+
 export type WorkflowTestReaderPopupActionRow = {
   /** Calls the handler made to the popup's append. */
   appendCalls: number;
@@ -1928,6 +1949,18 @@ export type WorkflowTestApi = {
     pageIndex: number;
     selectedText: string;
   }) => Promise<WorkflowTestReaderPopupActionRow>;
+  /**
+   * Opens the reader, makes a real selection, waits for Zotero's own
+   * selection popup, and measures the plugin row against the native
+   * highlight/underline toggle (pixel boxes in the reader UI document).
+   */
+  readNativeReaderPopupGeometry: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    /** Mounts this workflow panel as the reader tab's panel first. */
+    panelId?: string;
+  }) => Promise<WorkflowTestNativePopupGeometry>;
   /**
    * Opens the reader, shows the selection popup, presses Inline Ask, and
    * reads the card. Editing keys typed into the card must leave the

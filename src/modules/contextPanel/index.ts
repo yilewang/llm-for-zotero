@@ -1270,8 +1270,22 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
           row.style.display = "none";
         } else {
           row.style.width = "100%";
-          row.style.padding = "0 12px";
+          // No side inset: the row's edges are the native highlight /
+          // underline toggle's edges, and its buttons split that width.
+          row.style.padding = "0";
+          row.style.boxSizing = "border-box";
           row.style.margin = "0";
+          // The popup puts its own gap between rows; as the first section,
+          // cancel the sections box's top padding so the gap above the row
+          // equals the gap between the colors and the toggle.
+          const sections = row.parentElement;
+          if (sections && sections.firstElementChild === row) {
+            const topPadding = Number.parseFloat(
+              event.doc.defaultView?.getComputedStyle(sections)?.paddingTop ||
+                "0",
+            );
+            if (topPadding > 0) row.style.marginTop = `-${topPadding}px`;
+          }
           row.style.borderTop = "none";
           row.style.borderBottom = "none";
           row.style.boxShadow = "none";
