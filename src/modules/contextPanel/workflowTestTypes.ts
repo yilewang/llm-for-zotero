@@ -368,6 +368,54 @@ export type WorkflowTestStandaloneSidePanelDiagnostics = {
   };
 };
 
+export type WorkflowTestReaderPopupActionRow = {
+  /** Calls the handler made to the popup's append. */
+  appendCalls: number;
+  /** Button labels in the plugin's popup row, in order. */
+  buttonLabels: string[];
+  /** All buttons share one row element. */
+  sharedRow: boolean;
+  /** The row lays its buttons out side by side. */
+  rowDisplay: string;
+};
+
+export type WorkflowTestReaderInlineAskCard = {
+  mounted: boolean;
+  phase: string;
+  questions: string[];
+  answers: Array<{ status: string; text: string }>;
+  fieldShown: boolean;
+  pillsShown: boolean;
+  footerShown: boolean;
+  placeholder: string;
+  sidebarDisabled: boolean;
+  saveDisabled: boolean;
+};
+
+export type WorkflowTestReaderInlineAskOpen = {
+  popupButtonLabels: string[];
+  mounted: boolean;
+  /** The card mounts in reader.html, where the popup lives. */
+  overlayDocumentUrl: string;
+  quoteLabel: string;
+  quoteText: string;
+  modelLabel: string;
+  pillLabels: string[];
+  hint: string;
+  editorContentEditable: string;
+  editorKeys: Array<{ key: string; defaultPrevented: boolean }>;
+  readerKeyStateBefore: string;
+  readerKeyStateAfter: string;
+  card: WorkflowTestReaderInlineAskCard;
+};
+
+export type WorkflowTestConversationStoreRowTotals = {
+  catalogs: number;
+  messages: number;
+  registry: number;
+  usageEvents: number;
+};
+
 export type WorkflowTestEphemeralConversationRowCounts = {
   globalCatalog: number;
   paperCatalog: number;
@@ -1769,6 +1817,43 @@ export type WorkflowTestApi = {
     chipsWithQuestion: number;
     sent: boolean;
   }>;
+  /**
+   * Shows the reader selection popup for `selectedText` and reads the
+   * plugin's action row: how many times the handler appended, and the
+   * buttons in the row.
+   */
+  readReaderPopupActionRow: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+  }) => Promise<WorkflowTestReaderPopupActionRow>;
+  /**
+   * Opens the reader, shows the selection popup, presses Inline Ask, and
+   * reads the card. Editing keys typed into the card must leave the
+   * reader's key state alone. The card stays open for the calls below.
+   */
+  openReaderInlineAsk: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+  }) => Promise<WorkflowTestReaderInlineAskOpen>;
+  /** Sends typed text (Enter in the editor) or clicks a quick-prompt pill. */
+  sendReaderInlineAsk: (
+    input: { text: string } | { pillId: string },
+  ) => Promise<void>;
+  readReaderInlineAsk: () => WorkflowTestReaderInlineAskCard;
+  /** A pointerdown on the PDF page (the nested view document). */
+  pointerDownOutsideReaderInlineAsk: () => Promise<{ cardOpen: boolean }>;
+  /** A new text selection popup on the same reader. */
+  showNewReaderSelectionPopup: (input: {
+    selectedText: string;
+  }) => Promise<{ cardOpen: boolean }>;
+  /** Closes the card (Discard button or Escape) and the reader. */
+  endReaderInlineAsk: (input: {
+    via: "discard" | "escape";
+  }) => Promise<{ cardRemoved: boolean }>;
+  /** Total rows in the conversation catalogs, message, registry and usage tables. */
+  getConversationStoreRowTotals: () => Promise<WorkflowTestConversationStoreRowTotals>;
   exerciseHighlightAwareContextRetrieval: (input: {
     panelId: string;
     attachmentItemId: number;

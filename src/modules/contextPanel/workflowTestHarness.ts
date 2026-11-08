@@ -136,6 +136,10 @@ import type {
   WorkflowTestSeededTurn,
   WorkflowTestConversationPersistenceSnapshot,
   WorkflowTestEphemeralConversationRowCounts,
+  WorkflowTestConversationStoreRowTotals,
+  WorkflowTestReaderInlineAskCard,
+  WorkflowTestReaderInlineAskOpen,
+  WorkflowTestReaderPopupActionRow,
   WorkflowTestSidePanel,
   WorkflowTestStandaloneSidePanelControl,
   WorkflowTestStandaloneSidePanelSlideFrame,
@@ -267,6 +271,7 @@ import type { RuntimeConversationSystem } from "./runtimeSystemControls";
 import { collectReaderSelectionDocuments } from "../../services/pdf/readerSelection";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import { closeReaderSelectionPromptOverlay } from "./selectionPrompt/readerSelectionPromptOverlay";
+import { closeReaderOverlay } from "./selectionPrompt/readerOverlayShared";
 import type {
   AttachedConversationRef,
   ConversationSystem,
@@ -7155,6 +7160,423 @@ async function exerciseReaderPopupPromptDismissal(
   }
 }
 
+/**
+ * Runs the plugin's selection popup handler for `selectedText`, as Zotero
+ * does: in the reader UI document, with a host that records each append.
+ */
+async function dispatchWorkflowReaderSelectionPopup(input: {
+  reader: _ZoteroTypes.ReaderInstance;
+  pageIndex: number;
+  selectedText: string;
+}): Promise<{
+  popupHost: HTMLElement;
+  popupDoc: Document;
+  selectionDoc: Document;
+  appendCalls: number;
+}> {
+  const selected = await selectWorkflowPdfText(input);
+  const popupDoc = getWorkflowReaderUiDocument(input.reader);
+  const popupHost = popupDoc.createElement("div");
+  popupHost.dataset.workflowSelectionPopup = "true";
+  (popupDoc.body || popupDoc.documentElement).appendChild(popupHost);
+  const readerApi = Zotero.Reader as unknown as ReaderSelectionTrackingReader<
+    _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">
+  >;
+  const handler = readerApi.__llmSelectionTracking?.handler;
+  if (!handler) {
+    popupHost.remove();
+    throw new Error("Reader selection popup handler is unavailable");
+  }
+  let appendCalls = 0;
+  await handler({
+    reader: input.reader,
+    doc: popupDoc,
+    params: {
+      annotation: {
+        text: input.selectedText,
+        position: { pageIndex: input.pageIndex },
+      } as any,
+    },
+    append: (node: Node | string) => {
+      appendCalls += 1;
+      popupHost.append(node);
+    },
+    type: READER_TEXT_SELECTION_POPUP_EVENT,
+  });
+  return { popupHost, popupDoc, selectionDoc: selected.doc, appendCalls };
+}
+
+function readWorkflowPopupButtons(popupHost: HTMLElement): HTMLButtonElement[] {
+  return Array.from(
+    popupHost.querySelectorAll("button"),
+  ) as HTMLButtonElement[];
+}
+
+async function readReaderPopupActionRow(input: {
+  attachmentItemId: number;
+  pageIndex: number;
+  selectedText: string;
+}): Promise<WorkflowTestReaderPopupActionRow> {
+  assertWorkflowTestEnabled();
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  let popupHost: HTMLElement | null = null;
+  let selectionDoc: Document | null = null;
+  try {
+    const popup = await dispatchWorkflowReaderSelectionPopup({
+      reader,
+      pageIndex: input.pageIndex,
+      selectedText: input.selectedText,
+    });
+    popupHost = popup.popupHost;
+    selectionDoc = popup.selectionDoc;
+    const buttons = readWorkflowPopupButtons(popupHost);
+    const row = buttons[0]?.parentElement || null;
+    return {
+      appendCalls: popup.appendCalls,
+      buttonLabels: buttons.map((button) => button.textContent?.trim() || ""),
+      sharedRow:
+        buttons.length > 0 &&
+        buttons.every((button) => button.parentElement === row),
+      rowDisplay: row
+        ? popup.popupDoc.defaultView?.getComputedStyle(row)?.display || ""
+        : "",
+    };
+  } finally {
+    selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
+    popupHost?.remove();
+    await closeWorkflowReader(reader);
+  }
+}
+
+const INLINE_ASK_CARD_SELECTOR = '[data-llm-inline-ask="true"]';
+
+/** The reader and documents of the Inline Ask card a workflow test opened. */
+let workflowInlineAsk: {
+  reader: _ZoteroTypes.ReaderInstance;
+  popupDoc: Document;
+  selectionDoc: Document;
+  popupHosts: HTMLElement[];
+} | null = null;
+
+function requireWorkflowInlineAsk() {
+  if (!workflowInlineAsk) throw new Error("No Inline Ask card is open");
+  return workflowInlineAsk;
+}
+
+function readWorkflowInlineAskCard(
+  popupDoc: Document,
+): WorkflowTestReaderInlineAskCard {
+  const card = popupDoc.querySelector(
+    INLINE_ASK_CARD_SELECTOR,
+  ) as HTMLElement | null;
+  const win = popupDoc.defaultView;
+  const shown = (selector: string) => {
+    const node = card?.querySelector(selector) as HTMLElement | null;
+    return Boolean(node) && win?.getComputedStyle(node!)?.display !== "none";
+  };
+  const button = (name: string) =>
+    card?.querySelector(
+      `[data-llm-inline-ask-action="${name}"]`,
+    ) as HTMLButtonElement | null;
+  return {
+    mounted: Boolean(card),
+    phase: card?.getAttribute("data-phase") || "",
+    questions: Array.from(
+      card?.querySelectorAll('[data-llm-inline-ask-question="true"]') || [],
+    ).map((node) => (node as Element).textContent?.trim() || ""),
+    answers: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-answer]") || [],
+    ).map((node) => ({
+      status:
+        (node as Element).getAttribute("data-llm-inline-ask-answer") || "",
+      text: (node as Element).textContent?.trim() || "",
+    })),
+    fieldShown: shown('[data-llm-inline-ask-field="true"]'),
+    pillsShown: shown('[data-llm-inline-ask-pills="true"]'),
+    footerShown: shown('[data-llm-inline-ask-footer="true"]'),
+    placeholder:
+      card?.querySelector('[data-llm-inline-ask-placeholder="true"]')
+        ?.textContent || "",
+    sidebarDisabled: Boolean(button("sidebar")?.disabled),
+    saveDisabled: Boolean(button("save")?.disabled),
+  };
+}
+
+async function waitForWorkflowInlineAskEditor(
+  popupDoc: Document,
+): Promise<HTMLElement | null> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 3000) {
+    const editor = popupDoc.querySelector(
+      `${INLINE_ASK_CARD_SELECTOR} [data-llm-inline-ask-editor="true"]`,
+    ) as HTMLElement | null;
+    if (editor) return editor;
+    await Zotero.Promise.delay(25);
+  }
+  return null;
+}
+
+async function cleanupWorkflowInlineAsk(): Promise<void> {
+  const state = workflowInlineAsk;
+  workflowInlineAsk = null;
+  if (!state) return;
+  closeReaderOverlay(state.popupDoc);
+  state.selectionDoc.defaultView?.getSelection?.()?.removeAllRanges();
+  for (const host of state.popupHosts) host.remove();
+  await closeWorkflowReader(state.reader);
+}
+
+async function openReaderInlineAsk(input: {
+  attachmentItemId: number;
+  pageIndex: number;
+  selectedText: string;
+}): Promise<WorkflowTestReaderInlineAskOpen> {
+  assertWorkflowTestEnabled();
+  await cleanupWorkflowInlineAsk();
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  const popup = await dispatchWorkflowReaderSelectionPopup({
+    reader,
+    pageIndex: input.pageIndex,
+    selectedText: input.selectedText,
+  });
+  workflowInlineAsk = {
+    reader,
+    popupDoc: popup.popupDoc,
+    selectionDoc: popup.selectionDoc,
+    popupHosts: [popup.popupHost],
+  };
+  const { popupDoc } = popup;
+  const buttons = readWorkflowPopupButtons(popup.popupHost);
+  const inlineAskButton = buttons.find((button) =>
+    button.hasAttribute("data-llm-inline-ask-button"),
+  );
+  const popupWindow = popupDoc.defaultView;
+  if (!inlineAskButton || !popupWindow?.MouseEvent) {
+    throw new Error(
+      `Inline Ask button was not rendered: ${JSON.stringify(
+        buttons.map((button) => button.textContent?.trim()),
+      )}`,
+    );
+  }
+  inlineAskButton.dispatchEvent(
+    new popupWindow.MouseEvent(
+      "pointerdown",
+      cloneEventInitIntoWindow(
+        { bubbles: true, cancelable: true, button: 0 },
+        popupWindow,
+      ),
+    ),
+  );
+  const editor = await waitForWorkflowInlineAskEditor(popupDoc);
+  const card = popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR);
+  const popupButtonLabels = buttons.map(
+    (button) => button.textContent?.trim() || "",
+  );
+  if (!editor || !card) {
+    return {
+      popupButtonLabels,
+      mounted: false,
+      overlayDocumentUrl: "",
+      quoteLabel: "",
+      quoteText: "",
+      modelLabel: "",
+      pillLabels: [],
+      hint: "",
+      editorContentEditable: "",
+      editorKeys: [],
+      readerKeyStateBefore: "",
+      readerKeyStateAfter: "",
+      card: readWorkflowInlineAskCard(popupDoc),
+    };
+  }
+  // Keys that Zotero's reader binds unless the target is a text box.
+  const mod = Zotero.isMac ? { metaKey: true } : { ctrlKey: true };
+  const readerKeyStateBefore = JSON.stringify(
+    readWorkflowReaderKeyState(reader),
+  );
+  editor.textContent = "draft";
+  const editorKeys: Array<{ key: string; defaultPrevented: boolean }> = [];
+  for (const [label, init] of [
+    ["Mod+A", { key: "a", code: "KeyA", ...mod }],
+    ["Backspace", { key: "Backspace", code: "Backspace" }],
+    ["ArrowRight", { key: "ArrowRight", code: "ArrowRight" }],
+    ["h", { key: "h", code: "KeyH" }],
+  ] as Array<[string, KeyboardEventInit]>) {
+    const event = makeReaderPromptKey(popupDoc, init);
+    editor.dispatchEvent(event);
+    editorKeys.push({ key: label, defaultPrevented: event.defaultPrevented });
+  }
+  await Zotero.Promise.delay(50);
+  const readerKeyStateAfter = JSON.stringify(
+    readWorkflowReaderKeyState(reader),
+  );
+  editor.textContent = "";
+  editor.dispatchEvent(new (popupWindow.Event as typeof Event)("input"));
+  return {
+    popupButtonLabels,
+    mounted: true,
+    overlayDocumentUrl: popupDoc.URL,
+    quoteLabel:
+      card.querySelector('[data-llm-inline-ask-quote-label="true"]')
+        ?.textContent || "",
+    quoteText:
+      card.querySelector('[data-llm-inline-ask-quote="true"]')?.textContent ||
+      "",
+    modelLabel:
+      card.querySelector('[data-llm-inline-ask-model="true"]')?.textContent ||
+      "",
+    pillLabels: Array.from(
+      card.querySelectorAll("[data-llm-inline-ask-pill]"),
+    ).map((node) => (node as Element).textContent?.trim() || ""),
+    hint:
+      card.querySelector('[data-llm-inline-ask-hint="true"]')?.textContent ||
+      "",
+    editorContentEditable: editor.getAttribute("contenteditable") || "",
+    editorKeys,
+    readerKeyStateBefore,
+    readerKeyStateAfter,
+    card: readWorkflowInlineAskCard(popupDoc),
+  };
+}
+
+async function sendReaderInlineAsk(
+  input: { text: string } | { pillId: string },
+): Promise<void> {
+  assertWorkflowTestEnabled();
+  const { popupDoc } = requireWorkflowInlineAsk();
+  const card = popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR);
+  if (!card) throw new Error("The Inline Ask card is not open");
+  if ("pillId" in input) {
+    const pill = card.querySelector(
+      `[data-llm-inline-ask-pill="${input.pillId}"]`,
+    ) as HTMLButtonElement | null;
+    if (!pill) throw new Error(`No Inline Ask pill "${input.pillId}"`);
+    pill.click();
+    return;
+  }
+  const editor = card.querySelector(
+    '[data-llm-inline-ask-editor="true"]',
+  ) as HTMLElement | null;
+  if (!editor) throw new Error("The Inline Ask editor is not rendered");
+  submitReaderPrompt(popupDoc, editor, input.text);
+}
+
+function readReaderInlineAsk(): WorkflowTestReaderInlineAskCard {
+  assertWorkflowTestEnabled();
+  return readWorkflowInlineAskCard(requireWorkflowInlineAsk().popupDoc);
+}
+
+async function pointerDownOutsideReaderInlineAsk(): Promise<{
+  cardOpen: boolean;
+}> {
+  assertWorkflowTestEnabled();
+  const { popupDoc, selectionDoc } = requireWorkflowInlineAsk();
+  const viewWindow = selectionDoc.defaultView;
+  const target = selectionDoc.body || selectionDoc.documentElement;
+  if (!viewWindow?.MouseEvent || !target) {
+    throw new Error("Workflow PDF view window is unavailable");
+  }
+  target.dispatchEvent(
+    new viewWindow.MouseEvent(
+      "pointerdown",
+      cloneEventInitIntoWindow(
+        { bubbles: true, cancelable: true, button: 0 },
+        viewWindow,
+      ),
+    ),
+  );
+  await Zotero.Promise.delay(50);
+  return {
+    cardOpen: Boolean(popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR)),
+  };
+}
+
+async function showNewReaderSelectionPopup(input: {
+  selectedText: string;
+}): Promise<{ cardOpen: boolean }> {
+  assertWorkflowTestEnabled();
+  const state = requireWorkflowInlineAsk();
+  const pageIndex = 0;
+  const popup = await dispatchWorkflowReaderSelectionPopup({
+    reader: state.reader,
+    pageIndex,
+    selectedText: input.selectedText,
+  });
+  state.popupHosts.push(popup.popupHost);
+  await Zotero.Promise.delay(50);
+  return {
+    cardOpen: Boolean(state.popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR)),
+  };
+}
+
+async function endReaderInlineAsk(input: {
+  via: "discard" | "escape";
+}): Promise<{ cardRemoved: boolean }> {
+  assertWorkflowTestEnabled();
+  const state = workflowInlineAsk;
+  if (!state) return { cardRemoved: true };
+  try {
+    const card = state.popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR);
+    if (card && input.via === "discard") {
+      (
+        card.querySelector(
+          '[data-llm-inline-ask-action="discard"]',
+        ) as HTMLButtonElement | null
+      )?.click();
+    } else if (card) {
+      const editor = card.querySelector(
+        '[data-llm-inline-ask-editor="true"]',
+      ) as HTMLElement | null;
+      (editor || card).dispatchEvent(
+        makeReaderPromptKey(state.popupDoc, { key: "Escape", code: "Escape" }),
+      );
+    }
+    await Zotero.Promise.delay(50);
+    return {
+      cardRemoved: !state.popupDoc.querySelector(INLINE_ASK_CARD_SELECTOR),
+    };
+  } finally {
+    await cleanupWorkflowInlineAsk();
+  }
+}
+
+async function getConversationStoreRowTotals(): Promise<WorkflowTestConversationStoreRowTotals> {
+  assertWorkflowTestEnabled();
+  const countAll = async (tables: string[]) => {
+    let total = 0;
+    for (const table of tables) {
+      try {
+        total += await countWorkflowRows(table, "1 = 1", []);
+      } catch (error) {
+        // A store that never initialized has no table, so it holds no rows.
+        if (!/no such table/i.test(String(error))) throw error;
+      }
+    }
+    return total;
+  };
+  return {
+    catalogs: await countAll([
+      "llm_for_zotero_global_conversations",
+      "llm_for_zotero_paper_conversations",
+      "llm_for_zotero_claude_conversations",
+      "llm_for_zotero_codex_conversations",
+    ]),
+    messages: await countAll([
+      "llm_for_zotero_chat_messages",
+      "llm_for_zotero_claude_messages",
+      "llm_for_zotero_codex_messages",
+    ]),
+    registry: await countAll(["llm_for_zotero_conversation_registry"]),
+    usageEvents: await countAll(["llm_for_zotero_usage_events"]),
+  };
+}
+
 async function exerciseHighlightAwareContextRetrieval(input: {
   panelId: string;
   attachmentItemId: number;
@@ -10136,6 +10558,14 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseReaderPopupInlinePrompt,
     exerciseReaderPopupDuplicateAttach,
     exerciseReaderPopupPromptDismissal,
+    readReaderPopupActionRow,
+    openReaderInlineAsk,
+    sendReaderInlineAsk,
+    readReaderInlineAsk,
+    pointerDownOutsideReaderInlineAsk,
+    showNewReaderSelectionPopup,
+    endReaderInlineAsk,
+    getConversationStoreRowTotals,
     exerciseHighlightAwareContextRetrieval,
     exerciseContextChipCardVisibility,
     exerciseAssistantSelectionInlinePrompt,

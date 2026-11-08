@@ -548,6 +548,10 @@ const zhCN: Record<string, string> = {
     '在阅读器选区弹出菜单中显示"添加文本"',
   "Disable this if you prefer not to show the Add Text option in Zotero's text selection popup menu.":
     '如果你不想在 Zotero 文本选区弹出菜单中显示"添加文本"选项，请禁用此项。',
+  'Show "Inline Ask" in reader selection popup':
+    '在阅读器选区弹出菜单中显示"划词提问"',
+  "Disable this if you prefer not to show the Inline Ask option in Zotero's text selection popup menu.":
+    '如果你不想在 Zotero 文本选区弹出菜单中显示"划词提问"选项，请禁用此项。',
   "Enable Agent Mode (Beta)": "启用 Agent 模式（测试版）",
   'Shows the "Agent" runtime in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
     '在上下文栏显示"Agent"运行时，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',
@@ -1688,6 +1692,25 @@ const zhCN: Record<string, string> = {
     "Enter 添加 · Shift+Enter 换行 · Esc 关闭",
   Add: "添加",
   "Question attached to the selected text": "问题已附加到选中文字",
+  // Inline Ask card in the reader.
+  "Inline Ask": "划词提问",
+  "Ask about the selected text here": "在这里就选中文字提问",
+  "Ask a follow-up…": "继续追问…",
+  "Enter to send · Shift+Enter for a new line · Esc to close":
+    "Enter 发送 · Shift+Enter 换行 · Esc 关闭",
+  "Reading the selection…": "正在阅读选中文字…",
+  Discard: "丢弃",
+  "Continue in sidebar": "在侧边栏中继续",
+  "Save as annotation": "保存为注释",
+  "Reasoning effort": "推理强度",
+  "Inline Ask needs an API model.": "划词提问需要一个 API 模型。",
+  Explain: "解释",
+  "Define terms": "术语释义",
+  Translate: "翻译",
+  "Explain this passage in plain language, using the context of the paper.":
+    "结合论文的上下文，用通俗的语言解释这段文字。",
+  "Define the technical terms in this passage.": "解释这段文字中的专业术语。",
+  "Translate this passage into English.": "把这段文字翻译成中文。",
   "Quote selected text": "引用选中文字",
   "Quote in side chat": "在侧边对话中引用",
   "Quote selected text in a side chat": "在侧边对话中引用选中文字",

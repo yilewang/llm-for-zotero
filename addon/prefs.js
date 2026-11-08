@@ -19,6 +19,7 @@ pref("readerChoiceCodex", "");
 pref("readerChoiceClaude", "");
 pref("systemPrompt", "");
 pref("showPopupAddText", true);
+pref("showPopupInlineAsk", true);
 pref("semanticScholarApiKey", "");
 pref("temperaturePrimary", "0.3");
 pref("maxTokensPrimary", "4096");
