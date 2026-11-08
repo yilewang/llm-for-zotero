@@ -244,47 +244,66 @@ describe("paper_read on a document with chapters", function () {
     assert.notInclude(text, "Page 7 body");
   });
 
-  it("returns sections or a page map, never cut text, when the model's maxChars cannot hold the read", async function () {
+  it("ignores the model's maxChars on a section read and returns the text that fits the context left", async function () {
     const part = ctxOutlineSection("s1");
-    const over = await run({
+    const whole = await run({
       mode: "targeted",
       sectionIds: ["s1"],
       whole: true,
       maxChars: part.chars - 1,
     });
-    const row = over.papers[0];
-    assert.isEmpty(row.passages);
-    assert.equal(row.status, "map");
-    assert.equal(row.map[0].reason, "does_not_fit");
-    assert.match(row.map[0].lines[0], /^s2 \| .* \| ~\d+ tokens$/);
+    assert.equal(whole.papers[0].status, "complete");
+    assert.isNotEmpty(whole.papers[0].passages);
+    assert.isUndefined(whole.papers[0].map);
+    assert.isUndefined(whole.warnings);
     const leaf = ctxOutlineSection("s8");
     const page = await run({
       mode: "targeted",
       sectionIds: ["s8"],
       maxChars: leaf.chars - 1,
     });
-    assert.isEmpty(page.papers[0].passages);
-    assert.match(page.papers[0].map[0].lines[0], /^page 9 \| ~\d+ tokens \| /);
-    // A maxChars that holds the part reads it whole, as without one.
-    const fits = await run({
-      mode: "targeted",
-      sectionIds: ["s1"],
-      whole: true,
-      maxChars: part.chars,
-    });
-    assert.equal(fits.papers[0].status, "complete");
-    // Each section spends from one paper's maxChars, in document order.
+    assert.equal(page.papers[0].status, "complete");
+    assert.isNotEmpty(page.papers[0].passages);
+    // Several sections: none is held back by a small maxChars.
     const two = await run({
       mode: "targeted",
       sectionIds: ["s8", "s1"],
       whole: true,
-      maxChars: part.chars,
+      maxChars: 1,
     });
-    assert.equal(two.papers[0].status, "partial");
-    assert.deepEqual(
-      two.papers[0].map.map((entry: any) => entry.sectionId),
-      ["s8"],
+    assert.equal(two.papers[0].status, "complete");
+    assert.isUndefined(two.papers[0].map);
+  });
+
+  it("still returns sections or a page map when the context left cannot hold the read, whatever maxChars says", async function () {
+    const whole = await run(
+      {
+        mode: "targeted",
+        sectionIds: ["s1"],
+        whole: true,
+        maxChars: 1_000_000,
+      },
+      9_000,
     );
+    assert.equal(whole.papers[0].status, "map");
+    assert.equal(whole.papers[0].map[0].reason, "does_not_fit");
+    assert.isEmpty(whole.papers[0].passages);
+    const warnings = (whole.warnings || []).join(" ");
+    assert.include(warnings, "Sections listed in map were not read");
+    assert.notInclude(warnings, "whole:true");
+    assert.notInclude(warnings, "maxChars");
+    // A part named without whole still learns that whole:true reads it all.
+    const parts = await run({ mode: "targeted", sectionIds: ["s1"] });
+    assert.include((parts.warnings || []).join(" "), "whole:true");
+  });
+
+  it("describes maxChars as an overview limit that section and page reads ignore", function () {
+    const schema = (tool() as any).spec.inputSchema;
+    const description = String(schema.properties.maxChars.description || "");
+    assert.match(description, /character/i);
+    assert.match(description, /overview/i);
+    assert.match(description, /ignore/i);
+    assert.match(description, /context left/);
   });
 
   it("returns sections or a page map when the measured context cannot hold the read", async function () {
@@ -536,15 +555,22 @@ describe("paper_read on a document with chapters", function () {
       assert.include(read, "3 Results");
       assert.notInclude(read, "Page 1 body");
       assert.isNotEmpty(results.quoteCitations);
-      // A leaf over maxChars returns its pages, numbered as in the PDF.
+      // The model's maxChars does not hold a leaf back.
       const leaf = buildBookmarkOutline(ctx)!.sections.find(
         (section) => section.sectionId === "s4",
       )!;
-      const over = await run({
+      const small = await run({
         mode: "targeted",
         sectionIds: ["s4"],
         maxChars: leaf.chars - 1,
       });
+      assert.equal(small.papers[0].status, "complete");
+      assert.isNotEmpty(small.papers[0].passages);
+      // A leaf over the context left returns its pages, numbered as in the PDF.
+      const over = await run(
+        { mode: "targeted", sectionIds: ["s4"], maxChars: leaf.chars + 1 },
+        400,
+      );
       assert.isEmpty(over.papers[0].passages);
       assert.equal(over.papers[0].map[0].reason, "does_not_fit");
       assert.deepEqual(

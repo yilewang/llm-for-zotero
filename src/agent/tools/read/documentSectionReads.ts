@@ -2,7 +2,7 @@
  * Reading a document by its section tree (`buildDocumentOutline`), under
  * the informed-choice rule: a leaf section's text, or any section's text
  * with `whole`; otherwise its sections with their sizes. A read the measured
- * context, or the model's `maxChars`, cannot hold returns the section's
+ * context cannot hold returns the section's
  * sections, or a leaf's pages, instead of text; no read cuts a section in
  * the middle.
  */
@@ -155,7 +155,7 @@ export function pageMapLines(
 /**
  * The informed-choice rule for one section: text for a leaf, or for any
  * section with `whole`, when its size fits `remainingTokens` and, when the
- * model gave a `maxChars`, the characters left of it (`remainingChars`);
+ * overview gave a `maxChars`, the characters left of it (`remainingChars`);
  * otherwise its sections with their sizes, or a leaf's pages.
  */
 export function decideSectionRead(params: {
@@ -176,8 +176,9 @@ export function decideSectionRead(params: {
       reason: "has_sections",
       lines: childLines(),
     };
+  const fitsTokens = section.tokens <= params.remainingTokens;
   if (
-    section.tokens <= params.remainingTokens &&
+    fitsTokens &&
     (params.remainingChars === undefined ||
       section.chars <= params.remainingChars)
   )

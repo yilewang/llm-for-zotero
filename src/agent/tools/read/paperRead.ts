@@ -435,6 +435,14 @@ function normalizePages(value: unknown): number[] | undefined {
   return parsePageSelectionValue(value)?.pageIndexes;
 }
 
+/** True when a call gives `pages` a value: not absent, blank or empty. */
+function hasPagesValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return Boolean(value.trim());
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
+}
+
 function resolveFullReadTargets(params: {
   input: PaperReadInput;
   context: AgentToolContext;
@@ -1243,16 +1251,15 @@ function cutSectionText(text: string, budget: number): string {
 }
 
 /**
- * The per-paper read size: an explicit `maxChars` never exceeds the
- * adaptive budget when the runtime has one.
+ * The per-paper size of a read of named sections: the adaptive budget when
+ * the runtime has one, else the default. The model's `maxChars` does not
+ * apply.
  */
-function capAtAdaptiveBudget(
-  requested: number | undefined,
+function adaptiveBudgetOrDefault(
   budget: number | undefined,
   fallback: number,
 ): number {
-  if (requested && budget) return Math.min(requested, budget);
-  return requested || budget || fallback;
+  return budget || fallback;
 }
 
 /** A whole-sections read of one paper, as the result lists it. */
@@ -1677,7 +1684,10 @@ function readOutlineSections(params: {
   sectionIds: readonly string[];
   whole: boolean;
   remaining: number;
-  /** The model's `maxChars` for this paper, when it gave one. */
+  /**
+   * The model's `maxChars` for this paper. Only the overview passes it; a
+   * read of named sections does not.
+   */
   maxChars?: number;
   quoteCitations: QuoteCitation[];
 }): {
@@ -1796,9 +1806,16 @@ function readOutlineSections(params: {
   };
 }
 
-/** What the model is told when a section read answers with a map. */
-const SECTION_MAP_NEXT_STEP =
-  "Sections listed in map were not read: read the ones the answer needs with sectionIds, or a whole part with sectionIds and whole:true.";
+/**
+ * What the model is told when a section read answers with a map. A part
+ * named without `whole` is listed by its sections; one named with it, by
+ * the smaller parts that fit.
+ */
+function sectionMapNextStep(params: { whole: boolean }): string {
+  return params.whole
+    ? "Sections listed in map were not read: they do not fit. Read the parts the answer needs from the sections or pages each map entry lists, with sectionIds or pages."
+    : "Sections listed in map were not read: read the ones the answer needs with sectionIds, or a whole part with sectionIds and whole:true.";
+}
 
 /**
  * paper_read with `sectionIds` and no query: each named section by the
@@ -1813,8 +1830,6 @@ async function readSectionsById(params: {
   pdfService: PdfService;
   displayLabelFor: (paper: NonNullable<PdfTarget["paperContext"]>) => string;
   remainingTokens: number;
-  /** The model's `maxChars` per paper, when it gave one. */
-  maxChars?: number;
 }): Promise<Record<string, unknown>> {
   const quoteCitations: QuoteCitation[] = [];
   const warnings: string[] = [];
@@ -1860,7 +1875,6 @@ async function readSectionsById(params: {
       sectionIds: params.sectionIds,
       whole: params.whole,
       remaining,
-      ...(params.maxChars ? { maxChars: params.maxChars } : {}),
       quoteCitations,
     });
     remaining = read.remaining;
@@ -1895,7 +1909,7 @@ async function readSectionsById(params: {
     });
   }
   if (anyNotFound) warnings.push(SECTIONS_NOT_FOUND_RULE);
-  if (anyMap) warnings.push(SECTION_MAP_NEXT_STEP);
+  if (anyMap) warnings.push(sectionMapNextStep({ whole: params.whole }));
   return {
     mode: "targeted",
     read: "whole_sections",
@@ -2905,15 +2919,15 @@ async function hydrateFigureTargetsWithMineruMetadata(
   return hydrated;
 }
 
-/** What the model is told when a page read answers with the pages' map. */
+/** What the model is told when a page read answers with a map. */
 const PAGE_MAP_NEXT_STEP =
-  "Pages listed in map were not read: they do not fit the remaining context or the given maxChars. Read fewer pages at a time.";
+  "Pages listed in map were not read: they do not fit the remaining context. Read fewer pages at a time.";
 
 /**
  * paper_read with `pages`: each paper's pages as text, by the informed-choice
- * rule: when their text is larger than the measured context left or than the
- * model's `maxChars` (per paper), the paper answers with its requested pages'
- * map (page, size, first line) instead, never with cut text.
+ * rule: when their text is larger than the measured context left, the paper
+ * answers with its requested pages' map (page, size, first line) instead,
+ * never with cut text. The model's `maxChars` does not apply.
  */
 async function readExplicitPageTargets(params: {
   input: PaperReadInput;
@@ -2936,13 +2950,8 @@ async function readExplicitPageTargets(params: {
     const tokens = pageResult.pages.map((page) =>
       estimateTextTokens(page.text || ""),
     );
-    const chars = pageResult.pages.reduce(
-      (sum, page) => sum + (page.text || "").length,
-      0,
-    );
     const total = tokens.reduce((sum, value) => sum + value, 0);
-    const maxChars = params.input.maxChars;
-    if (total > remaining || (maxChars !== undefined && chars > maxChars)) {
+    if (total > remaining) {
       mapByPaper.set(
         paperContextKey(paperContext),
         pageResult.pages.map((page, index) =>
@@ -3147,7 +3156,11 @@ export function createPaperReadTool(
             ],
           },
           neighborPages: { type: "number" },
-          maxChars: { type: "number" },
+          maxChars: {
+            type: "number",
+            description:
+              "A character limit on the text of an overview. Reads by sectionIds, sections, or pages ignore it: they return the text when it fits the context left, else a map with sizes in tokens.",
+          },
           topK: { type: "number" },
         },
       },
@@ -3375,6 +3388,13 @@ export function createPaperReadTool(
         maxChars: normalizePositiveInt(args.maxChars),
         topK: normalizePositiveInt(args.topK),
       };
+      // Pages the call names but that name no page would otherwise drop out
+      // and leave an unscoped search of the whole document.
+      if (hasPagesValue(args.pages) && !input.pages?.length) {
+        return fail(
+          `pages: ${JSON.stringify(args.pages)} names no page. Give PDF page numbers from 1: pages:[4,5], pages:'4-5' or pages:'4, 5'.`,
+        );
+      }
       // A targeted read that names one section by sectionId means that
       // section, the same as sectionIds with one id. Ignoring it would fall
       // through to an unscoped search of the whole document.
@@ -3970,7 +3990,6 @@ export function createPaperReadTool(
           pdfService,
           displayLabelFor,
           remainingTokens: measuredRemainingTokens(),
-          ...(input.maxChars ? { maxChars: input.maxChars } : {}),
         });
       }
 
@@ -3993,8 +4012,7 @@ export function createPaperReadTool(
           ...(picking ? { pickSections: picking.picker } : {}),
           queryIgnored: Boolean(input.query),
           targets,
-          maxCharsPerPaper: capAtAdaptiveBudget(
-            input.maxChars,
+          maxCharsPerPaper: adaptiveBudgetOrDefault(
             adaptiveReadingBudget()?.maxCharactersPerPaper,
             WHOLE_SECTIONS_DEFAULT_MAX_CHARS,
           ),
