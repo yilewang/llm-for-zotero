@@ -119,21 +119,19 @@ describe("runtime system control layout", function () {
       "display: grid",
       "Stacked shows the chip",
     );
-    for (const hidden of [
-      ".llm-header-toggle-row",
-      ".llm-header-runtime-divider",
-    ]) {
-      assert.include(
-        cssRulesFor(css, `${STACKED} ${hidden}`).join("\n"),
-        "display: none",
-        `Stacked hides ${hidden}: one row, with the chip in the divider's place`,
-      );
-      assert.lengthOf(
-        cssRulesFor(css, `:root[data-llm-pane-view="stacked"] ${hidden}`),
-        0,
-        "the pane view is not the layout: an empty Stacked library opens the full-pane view",
-      );
-    }
+    // The divider is the capsule's separator in Stacked (see the capsule
+    // header test), so only the toggle row goes.
+    const hidden = ".llm-header-toggle-row";
+    assert.include(
+      cssRulesFor(css, `${STACKED} ${hidden}`).join("\n"),
+      "display: none",
+      `Stacked hides ${hidden}: one row, with the chip in the divider's place`,
+    );
+    assert.lengthOf(
+      cssRulesFor(css, `:root[data-llm-pane-view="stacked"] ${hidden}`),
+      0,
+      "the pane view is not the layout: an empty Stacked library opens the full-pane view",
+    );
     // Independent keeps its toggle row exactly as before.
     assert.include(
       extractCssRule(css, ".llm-header-toggle-row"),
@@ -384,5 +382,200 @@ describe("runtime system control layout", function () {
       'iconClear.title = t("Delete conversation")',
     );
     assert.notInclude(standaloneSource, 'iconClear.title = t("Clear")');
+  });
+
+  it("lays the Stacked header out as left block, capsule, right block", function () {
+    const css = source("addon/content/zoteroPane.css");
+    const nav = `${STACKED} .llm-header-nav-row`;
+    const rules = (selector: string) => cssRulesFor(css, selector).join("\n");
+
+    // Sizes: 28px boxes and 10px between blocks; compact and tight are 24px
+    // and 8px.
+    assert.include(rules(nav), "--llm-header-box: 28px");
+    assert.include(rules(nav), "--llm-header-gap-min: 10px");
+    assert.include(rules(nav), "column-gap: var(--llm-header-gap-min)");
+    assert.include(
+      rules(`${nav}[data-fit="compact"]`),
+      "--llm-header-box: 24px",
+    );
+    assert.include(
+      rules(`${nav}[data-fit="compact"]`),
+      "--llm-header-gap-min: 8px",
+    );
+
+    // The capsule: the existing runtime wrapper, 26px with 2px padding and gap.
+    const capsule = rules(`${nav} .llm-header-runtime-controls`);
+    for (const declaration of [
+      "height: 26px",
+      "padding: 2px",
+      "gap: 2px",
+      "border-radius: 13px",
+      "background: var(--fill-quinary)",
+      "margin-inline: auto",
+    ]) {
+      assert.include(capsule, declaration);
+    }
+    for (const stage of ["compact", "tight"]) {
+      assert.include(
+        rules(`${nav}[data-fit="${stage}"]`),
+        "--llm-header-box: 24px",
+      );
+      assert.include(
+        rules(`${nav}[data-fit="${stage}"]`),
+        "--llm-header-gap-min: 8px",
+      );
+    }
+    // The chip is a fixed 12px in this header, so the capsule has one width
+    // at every plugin font scale; the base rule still scales it.
+    const fixedChip = rules(`${nav} .llm-mode-switch-sizer > span`);
+    assert.match(fixedChip, /font-size: 12px/);
+    assert.match(rules(`${nav} .llm-mode-switch-option`), /font-size: 12px/);
+    assert.notInclude(fixedChip, "--llm-font-scale");
+    assert.match(
+      css.replace(/\s+/g, " "),
+      /\.llm-mode-switch-sizer > span, \.llm-mode-switch-option \{[^}]*font-size: var\(--llm-fs-12\)/,
+      "outside the Stacked header the chip still scales with the font",
+    );
+    // Runtime toggles are 22px circles; the chip keeps its 22px height.
+    assert.include(
+      rules(`${STACKED} .llm-header .llm-runtime-system-controls`),
+      "--llm-runtime-button-width: 22px",
+    );
+    const toggle = rules(`${STACKED} .llm-header .llm-runtime-system-toggle`);
+    assert.include(toggle, "height: 22px");
+    assert.include(toggle, "border-radius: 11px");
+    // The capsule is quinary, so a hovered toggle needs a darker fill.
+    assert.include(
+      rules(
+        `${STACKED} .llm-header .llm-runtime-system-toggle:hover:not(:disabled)`,
+      ),
+      "background: var(--fill-quarternary)",
+    );
+    assert.include(extractCssRule(css, ".llm-mode-switch"), "height: 22px");
+    // The separator is the existing divider, moved between chip and toggles.
+    const sep = rules(`${nav} .llm-header-runtime-divider`);
+    assert.include(sep, "display: block");
+    assert.include(sep, "order: 1");
+    assert.include(sep, "height: 12px");
+    assert.include(
+      rules(`${STACKED} .llm-header .llm-runtime-system-controls`),
+      "order: 2",
+    );
+
+    // Every icon button: a 28px box (24px compact), 6px radius, 0.72 at rest,
+    // the quinary fill and full opacity on hover.
+    const box = rules(`${nav} .llm-history-new`);
+    for (const declaration of [
+      "width: var(--llm-header-box)",
+      "height: var(--llm-header-box)",
+      "border-radius: 6px",
+    ]) {
+      assert.include(box, declaration);
+    }
+    assert.include(
+      rules(`${nav} .llm-history-new:not(:disabled)`),
+      "opacity: 0.72",
+    );
+    const hover = rules(`${nav} .llm-history-new:hover:not(:disabled)`);
+    assert.include(hover, "background: var(--fill-quinary)");
+    assert.include(hover, "opacity: 1");
+    assert.include(hover, "color: var(--fill-primary)");
+    // 2px between buttons inside a block.
+    assert.include(rules(`${nav} .llm-header-actions`), "gap: 2px");
+    assert.include(rules(`${nav} .llm-header-actions`), "min-height: 28px");
+    assert.include(
+      rules(`${nav} .llm-history-toggle`),
+      "margin-inline: 2px var(--llm-header-gap-min)",
+    );
+
+    // More: hidden outside the folded stages, in every layout.
+    assert.include(
+      extractCssRule(css, ".llm-header-more-btn"),
+      "display: none",
+    );
+    const flat = css.replace(/\s+/g, " ");
+    for (const stage of ["menu", "compact", "tight"]) {
+      assert.include(flat, `${nav}[data-fit="${stage}"] .llm-header-more-btn`);
+      for (const button of ["settings", "export", "clear"]) {
+        assert.include(flat, `${nav}[data-fit="${stage}"] .llm-${button}-btn`);
+      }
+    }
+    // Only the tight stage also hides Task progress and Open in window.
+    for (const button of ["task-progress", "popout"]) {
+      assert.include(flat, `${nav}[data-fit="tight"] .llm-${button}-btn`);
+      for (const stage of ["menu", "compact"]) {
+        assert.notInclude(
+          flat,
+          `${nav}[data-fit="${stage}"] .llm-${button}-btn`,
+        );
+      }
+    }
+    assert.match(
+      flat,
+      /\.llm-header-nav-row\[data-fit="tight"\] \.llm-popout-btn \{ display: none; \}/,
+    );
+    assert.match(
+      flat,
+      /\.llm-header-nav-row\[data-fit="tight"\] \.llm-header-more-btn \{ display: inline-flex; \}/,
+    );
+  });
+
+  it("leaves the Independent header on its own rules", function () {
+    const css = source("addon/content/zoteroPane.css");
+    // Every capsule rule is scoped to the Stacked root, so none reaches
+    // Independent or the standalone window.
+    const flat = css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+    let scoped = 0;
+    for (const match of flat.matchAll(
+      /([^{}]*(?:--llm-header-box|data-fit)[^{}]*)\{/g,
+    )) {
+      for (const selector of match[1].split(",")) {
+        const text = selector.trim();
+        if (!text || text.startsWith("@")) continue;
+        assert.include(text, STACKED, `scoped to Stacked: ${text}`);
+        scoped++;
+      }
+    }
+    assert.isAtLeast(scoped, 6, "the scan found the capsule rules");
+    // The compress-and-squeeze rules Independent keeps.
+    assert.include(css, "--llm-runtime-compression");
+    assert.include(css, "@container (max-width: 380px)");
+    assert.include(
+      source("src/modules/contextPanel/setupHandlers.ts"),
+      "updateHeaderSpacing(headerRow)",
+    );
+  });
+
+  it("builds the More button and its menu from existing menu styles", function () {
+    const ui = source("src/modules/contextPanel/buildUI.ts");
+    assert.include(ui, 'id: "llm-header-more"');
+    assert.include(ui, "llm-btn-icon llm-header-more-btn");
+    assert.include(ui, 'moreBtn.setAttribute("aria-haspopup", "menu")');
+    assert.include(ui, 'moreBtn.setAttribute("aria-expanded", "false")');
+    assert.include(ui, 't("More actions")');
+    // Items reuse the standalone More menu's classes; Delete is the
+    // destructive one, after a separator.
+    assert.include(ui, "llm-standalone-skill-ctx-menu llm-header-more-menu");
+    assert.include(ui, "llm-follower-menu-separator");
+    // The tight stage adds Task progress and Open in window above Settings.
+    for (const id of [
+      "llm-header-more-task-progress",
+      "llm-header-more-popout",
+    ]) {
+      assert.include(ui, `"${id}"`);
+    }
+    assert.include(ui, 'id: "llm-header-more-top-separator"');
+    assert.match(
+      ui,
+      /headerMoreMenu\.append\(\s*headerMoreTaskItem,\s*headerMorePopoutItem,\s*headerMoreTopSeparator,\s*createHeaderMoreItem\("llm-header-more-settings"/,
+    );
+    assert.include(
+      ui,
+      'headerMoreDeleteItem.classList.add("llm-standalone-skill-ctx-delete")',
+    );
+    assert.include(
+      source("addon/content/zoteroPane.css"),
+      'url("icons/action-more.svg")',
+    );
   });
 });

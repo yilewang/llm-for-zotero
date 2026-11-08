@@ -5,7 +5,8 @@
  * choice and binds the button to its chat panel. The button is pressed while the row shows, whether the user or the
  * automatic rule showed it, and is out of the title bar where the row never
  * shows (WebChat, a note chat, no conversation). The Stacked sidebar header
- * also drops it below its compact width (CSS).
+ * keeps it until its tightest stage, which folds it into the More menu
+ * with Open in window (its menu item clicks this button).
  */
 import { HTML_NS } from "../../../utils/domHelpers";
 import { t } from "../../../utils/i18n";

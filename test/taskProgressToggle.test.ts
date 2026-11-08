@@ -3,8 +3,8 @@
  * bar and left of Open in Window in the sidebar header, it shows or hides the
  * row for the conversation on screen. The choice holds for that conversation
  * in that panel (a new run does not undo it) and goes when the panel shows
- * another conversation. The Stacked sidebar header drops the button below
- * its compact width.
+ * another conversation. The Stacked sidebar header keeps the button until its
+ * tight stage, which folds it into the More menu.
  */
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -502,7 +502,7 @@ describe("task progress button", function () {
     it("sits immediately left of Open in Window, with the header's icon-button look", function () {
       assert.match(
         buildUiSource,
-        /headerActions\.append\(\s*taskProgressBtn,\s*popoutBtn,\s*settingsBtn,\s*exportBtn,\s*clearBtn,?\s*\)/,
+        /headerActions\.append\(\s*taskProgressBtn,\s*popoutBtn,\s*settingsBtn,\s*exportBtn,\s*clearBtn,\s*moreBtn,?\s*\)/,
       );
       assert.match(
         buildUiSource,
@@ -583,19 +583,29 @@ describe("task progress button", function () {
       assert.match(css, /\.llm-popout-btn,\s*\.llm-task-progress-btn\s*\{/);
     });
 
-    it("leaves the Stacked header at the width where its actions compact, and only there", function () {
+    it("keeps the button in full, menu and compact, and folds it only in tight", function () {
       const start = css.indexOf("@container (max-width: 380px) {");
       assert.isAtLeast(start, 0);
       const block = css.slice(start, css.indexOf("\n}\n", start));
       assert.include(block, ".llm-header-actions {");
-      assert.match(
-        block,
-        /:root\[data-llm-sidebar-layout="stacked"\] \.llm-task-progress-btn\s*\{\s*display: none;\s*\}/,
+      const flat = css.replace(/\s+/g, " ");
+      const stacked =
+        ':root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row';
+      for (const stage of ["full", "menu", "compact"]) {
+        assert.notInclude(
+          flat,
+          `${stacked}[data-fit="${stage}"] .llm-task-progress-btn`,
+          `${stage} keeps Task progress`,
+        );
+      }
+      assert.include(
+        flat,
+        `${stacked}[data-fit="tight"] .llm-task-progress-btn`,
+        "tight folds it into More",
       );
-      const outside = css.slice(0, start) + css.slice(start + block.length);
       assert.notMatch(
-        outside,
-        /\.llm-task-progress-btn\s*\{\s*display: none/,
+        flat,
+        /(?<!\[data-fit="tight"\] )\.llm-task-progress-btn \{ display: none/,
         "no other rule hides it",
       );
     });

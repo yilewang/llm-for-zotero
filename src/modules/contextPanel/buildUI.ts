@@ -333,12 +333,28 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     title: t("Delete conversation"),
   });
   clearBtn.setAttribute("aria-label", t("Delete conversation"));
+  // Stacked only: when the row runs out of room, Settings, Export and Delete
+  // fold into this menu button. It stays hidden until the row is collapsed.
+  const moreBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-header-more-btn",
+    {
+      id: "llm-header-more",
+      type: "button",
+      title: t("More actions"),
+    },
+  );
+  moreBtn.setAttribute("aria-label", t("More actions"));
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", "false");
   headerActions.append(
     taskProgressBtn,
     popoutBtn,
     settingsBtn,
     exportBtn,
     clearBtn,
+    moreBtn,
   );
   headerNavRow.appendChild(headerActions);
   headerTop.append(toggleRow, headerNavRow);
@@ -573,6 +589,68 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   exportMenu.append(exportMenuCopyBtn, exportMenuNoteBtn);
   container.appendChild(exportMenu);
+
+  // More menu: the actions the collapsed Stacked header folds away. It looks
+  // like the standalone window's More menu and sits in the panel, outside the
+  // header, whose size containment would anchor a fixed menu to the header.
+  const headerMoreMenu = createElement(
+    doc,
+    "div",
+    "llm-standalone-skill-ctx-menu llm-header-more-menu",
+    { id: "llm-header-more-menu" },
+  );
+  headerMoreMenu.setAttribute("role", "menu");
+  headerMoreMenu.style.display = "none";
+  const createHeaderMoreItem = (id: string, label: string) => {
+    const item = createElement(doc, "button", "llm-standalone-skill-ctx-item", {
+      id,
+      type: "button",
+      textContent: label,
+    });
+    item.setAttribute("role", "menuitem");
+    return item;
+  };
+  const headerMoreSeparator = createElement(
+    doc,
+    "div",
+    "llm-follower-menu-separator",
+  );
+  headerMoreSeparator.setAttribute("role", "separator");
+  const headerMoreDeleteItem = createHeaderMoreItem(
+    "llm-header-more-delete",
+    t("Delete conversation"),
+  );
+  headerMoreDeleteItem.classList.add("llm-standalone-skill-ctx-delete");
+  // Task progress and Open in window join the menu in the tight stage only;
+  // the controller shows these two items and their separator then.
+  const headerMoreTopSeparator = createElement(
+    doc,
+    "div",
+    "llm-follower-menu-separator",
+    { id: "llm-header-more-top-separator" },
+  );
+  headerMoreTopSeparator.setAttribute("role", "separator");
+  headerMoreTopSeparator.style.display = "none";
+  const headerMoreTaskItem = createHeaderMoreItem(
+    "llm-header-more-task-progress",
+    t("Show task progress"),
+  );
+  const headerMorePopoutItem = createHeaderMoreItem(
+    "llm-header-more-popout",
+    t("Open in Window"),
+  );
+  headerMoreTaskItem.style.display = "none";
+  headerMorePopoutItem.style.display = "none";
+  headerMoreMenu.append(
+    headerMoreTaskItem,
+    headerMorePopoutItem,
+    headerMoreTopSeparator,
+    createHeaderMoreItem("llm-header-more-settings", t("Settings")),
+    createHeaderMoreItem("llm-header-more-export", t("Export")),
+    headerMoreSeparator,
+    headerMoreDeleteItem,
+  );
+  container.appendChild(headerMoreMenu);
 
   const slashMenu = createElement(
     doc,
