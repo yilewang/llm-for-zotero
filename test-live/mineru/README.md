@@ -32,10 +32,9 @@ Pause requests V1 job cancellation; legacy synchronous servers can continue proc
 
 ## Automated checks
 
-Run the unit checks:
+Run the static checks:
 
 ```sh
-npx tsx node_modules/mocha/bin/mocha.js --require ./test/register.cjs 'test/mineru*.test.ts'
 npm run typecheck
 ```
 
