@@ -141,6 +141,9 @@ import type {
   WorkflowTestReaderInlineAskOpen,
   WorkflowTestReaderInlineAskSave,
   WorkflowTestReaderInlineAskContinue,
+  WorkflowTestReaderInlineAskModelMenu,
+  WorkflowTestReaderInlineAskPromptEdit,
+  WorkflowTestReaderInlineAskPromptMenu,
   WorkflowTestPanelChatMessages,
   WorkflowTestReaderSelectionDraft,
   WorkflowTestReaderPopupActionRow,
@@ -7452,6 +7455,25 @@ function readWorkflowInlineAskCard(
         ?.textContent || "",
     sidebarDisabled: Boolean(button("sidebar")?.disabled),
     saveDisabled: Boolean(button("save")?.disabled),
+    pills: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-pill]") || [],
+    ).map((node) => ({
+      id: (node as Element).getAttribute("data-llm-inline-ask-pill") || "",
+      label: (node as Element).textContent?.trim() || "",
+      title: (node as Element).getAttribute("title") || "",
+    })),
+    hintShown: shown('[data-llm-inline-ask-hint="true"]'),
+    promptEditorShown: shown('[data-llm-inline-ask-prompt-editor="true"]'),
+    modelLabel: shown('[data-llm-inline-ask-model="true"]')
+      ? card
+          ?.querySelector('[data-llm-inline-ask-model="true"]')
+          ?.textContent?.trim() || ""
+      : "",
+    effortLabel: shown('[data-llm-inline-ask-effort="true"]')
+      ? card
+          ?.querySelector('[data-llm-inline-ask-effort="true"]')
+          ?.textContent?.trim() || ""
+      : "",
   };
 }
 
@@ -7890,6 +7912,223 @@ async function continueReaderInlineAskInSidebar(): Promise<WorkflowTestReaderInl
     cardOpen: card.isConnected,
     error: readError(),
   };
+}
+
+function requireWorkflowInlineAskCardElement(): {
+  state: NonNullable<typeof workflowInlineAsk>;
+  card: HTMLElement;
+  win: Window;
+} {
+  const state = requireWorkflowInlineAsk();
+  const card = state.popupDoc.querySelector(
+    INLINE_ASK_CARD_SELECTOR,
+  ) as HTMLElement | null;
+  const win = state.popupDoc.defaultView;
+  if (!card || !win) throw new Error("The Inline Ask card is not open");
+  return { state, card, win };
+}
+
+function readWorkflowInlineAskPromptMenu(
+  card: HTMLElement,
+): WorkflowTestReaderInlineAskPromptMenu["items"] {
+  return Array.from(
+    card.querySelectorAll("[data-llm-inline-ask-prompt-menu-item]"),
+  ).map((node) => ({
+    action:
+      (node as Element).getAttribute("data-llm-inline-ask-prompt-menu-item") ||
+      "",
+    text: (node as Element).textContent?.trim() || "",
+    disabled: Boolean((node as HTMLButtonElement).disabled),
+  }));
+}
+
+/** Right-clicks a pill, or the pill row's empty space, as a mouse would. */
+async function openReaderInlineAskPromptMenu(input: {
+  pillId?: string;
+}): Promise<WorkflowTestReaderInlineAskPromptMenu> {
+  assertWorkflowTestEnabled();
+  const { card, win } = requireWorkflowInlineAskCardElement();
+  const target = (
+    input.pillId
+      ? card.querySelector(`[data-llm-inline-ask-pill="${input.pillId}"]`)
+      : card.querySelector('[data-llm-inline-ask-pills="true"]')
+  ) as HTMLElement | null;
+  if (!target) throw new Error(`No Inline Ask pill "${input.pillId || ""}"`);
+  const rect = target.getBoundingClientRect();
+  const init = cloneEventInitIntoWindow(
+    {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientX: input.pillId ? rect.left + 4 : rect.right - 2,
+      clientY: rect.top + rect.height / 2,
+    },
+    win,
+  );
+  target.dispatchEvent(new win.MouseEvent("pointerdown", init));
+  const event = new win.MouseEvent("contextmenu", init);
+  target.dispatchEvent(event);
+  await Zotero.Promise.delay(25);
+  return {
+    defaultPrevented: event.defaultPrevented,
+    items: readWorkflowInlineAskPromptMenu(card),
+  };
+}
+
+async function clickReaderInlineAskPromptMenuItem(
+  action: string,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const item = card.querySelector(
+    `[data-llm-inline-ask-prompt-menu-item="${action}"]`,
+  ) as HTMLButtonElement | null;
+  if (!item) throw new Error(`No Inline Ask menu item "${action}"`);
+  item.click();
+  await Zotero.Promise.delay(50);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
+async function editReaderInlineAskPrompt(input: {
+  label: string;
+  prompt: string;
+  via: "enter-in-label" | "mod-enter-in-prompt" | "save-button";
+}): Promise<WorkflowTestReaderInlineAskPromptEdit> {
+  assertWorkflowTestEnabled();
+  const { state, card, win } = requireWorkflowInlineAskCardElement();
+  const labelInput = card.querySelector(
+    '[data-llm-inline-ask-prompt-label="true"]',
+  ) as HTMLInputElement | null;
+  const promptBox = card.querySelector(
+    '[data-llm-inline-ask-prompt-text="true"]',
+  ) as HTMLElement | null;
+  if (!labelInput || !promptBox) {
+    throw new Error("The Inline Ask prompt editor is not open");
+  }
+  const labelBefore = labelInput.value;
+  const promptBefore = promptBox.textContent || "";
+  // Keys the reader binds to tools, colors and navigation unless the
+  // target is a text box: they must reach the fields untouched.
+  const readerKeyStateBefore = JSON.stringify(
+    readWorkflowReaderKeyState(state.reader),
+  );
+  const keys: WorkflowTestReaderInlineAskPromptEdit["keys"] = [];
+  for (const [field, node] of [
+    ["label", labelInput],
+    ["prompt", promptBox],
+  ] as Array<[string, HTMLElement]>) {
+    for (const init of [
+      { key: "h", code: "KeyH" },
+      { key: "s", code: "KeyS" },
+      { key: "1", code: "Digit1" },
+      { key: "ArrowLeft", code: "ArrowLeft" },
+    ] as KeyboardEventInit[]) {
+      const event = makeReaderPromptKey(state.popupDoc, init);
+      node.dispatchEvent(event);
+      keys.push({
+        field,
+        key: String(init.key),
+        defaultPrevented: event.defaultPrevented,
+      });
+    }
+  }
+  await Zotero.Promise.delay(50);
+  const readerKeyStateAfter = JSON.stringify(
+    readWorkflowReaderKeyState(state.reader),
+  );
+  labelInput.value = input.label;
+  labelInput.dispatchEvent(new (win.Event as typeof Event)("input"));
+  promptBox.textContent = input.prompt;
+  promptBox.dispatchEvent(new (win.Event as typeof Event)("input"));
+  if (input.via === "enter-in-label") {
+    labelInput.dispatchEvent(
+      makeReaderPromptKey(state.popupDoc, { key: "Enter", code: "Enter" }),
+    );
+  } else if (input.via === "mod-enter-in-prompt") {
+    promptBox.dispatchEvent(
+      makeReaderPromptKey(state.popupDoc, {
+        key: "Enter",
+        code: "Enter",
+        ...(Zotero.isMac ? { metaKey: true } : { ctrlKey: true }),
+      }),
+    );
+  } else {
+    (
+      card.querySelector(
+        '[data-llm-inline-ask-prompt-action="save"]',
+      ) as HTMLButtonElement | null
+    )?.click();
+  }
+  await Zotero.Promise.delay(50);
+  return {
+    labelBefore,
+    promptBefore,
+    labelType: labelInput.getAttribute("type") || "",
+    promptContentEditable: promptBox.getAttribute("contenteditable") || "",
+    keys,
+    readerKeyStateBefore,
+    readerKeyStateAfter,
+    card: readWorkflowInlineAskCard(state.popupDoc),
+  };
+}
+
+function readWorkflowInlineAskModelMenu(
+  card: HTMLElement,
+): WorkflowTestReaderInlineAskModelMenu {
+  const menu = card.querySelector(
+    "[data-llm-inline-ask-model-menu]",
+  ) as HTMLElement | null;
+  const options = Array.from(
+    menu?.querySelectorAll(
+      "[data-llm-inline-ask-model-option], [data-llm-inline-ask-effort-option]",
+    ) || [],
+  ) as HTMLElement[];
+  return {
+    kind: menu?.getAttribute("data-llm-inline-ask-model-menu") || "",
+    note:
+      menu
+        ?.querySelector('[data-llm-inline-ask-model-note="true"]')
+        ?.textContent?.trim() || "",
+    sections: Array.from(
+      menu?.querySelectorAll('[data-llm-inline-ask-menu-section="true"]') || [],
+    ).map((node) => (node as Element).textContent?.trim() || ""),
+    options: options.map((node) => ({
+      value:
+        node.getAttribute("data-llm-inline-ask-model-option") ||
+        node.getAttribute("data-llm-inline-ask-effort-option") ||
+        "",
+      label: node.textContent?.trim() || "",
+      selected: node.getAttribute("aria-checked") === "true",
+    })),
+  };
+}
+
+async function openReaderInlineAskModelMenu(
+  kind: "model" | "effort",
+): Promise<WorkflowTestReaderInlineAskModelMenu> {
+  assertWorkflowTestEnabled();
+  const { card } = requireWorkflowInlineAskCardElement();
+  const button = card.querySelector(
+    `[data-llm-inline-ask-${kind}="true"]`,
+  ) as HTMLButtonElement | null;
+  if (!button) throw new Error(`No Inline Ask ${kind} button`);
+  button.click();
+  await Zotero.Promise.delay(25);
+  return readWorkflowInlineAskModelMenu(card);
+}
+
+async function pickReaderInlineAskMenuOption(
+  value: string,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const option = card.querySelector(
+    `[data-llm-inline-ask-model-option="${value}"], [data-llm-inline-ask-effort-option="${value}"]`,
+  ) as HTMLButtonElement | null;
+  if (!option) throw new Error(`No Inline Ask menu option "${value}"`);
+  option.click();
+  await Zotero.Promise.delay(50);
+  return readWorkflowInlineAskCard(state.popupDoc);
 }
 
 /**
@@ -10991,6 +11230,11 @@ export function installWorkflowTestHarness(targetAddon: {
     showNewReaderSelectionPopup,
     endReaderInlineAsk,
     continueReaderInlineAskInSidebar,
+    openReaderInlineAskPromptMenu,
+    clickReaderInlineAskPromptMenuItem,
+    editReaderInlineAskPrompt,
+    openReaderInlineAskModelMenu,
+    pickReaderInlineAskMenuOption,
     readPanelChatMessages,
     getConversationStoreRowTotals,
     exerciseHighlightAwareContextRetrieval,

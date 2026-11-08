@@ -8,6 +8,10 @@
  *   model; without a Codex Direct provider or a concrete, listed runtime
  *   model, the first API model entry.
  *
+ * The model the user picks in the card (Inline Ask's own pref) comes before
+ * the rule, while that entry exists and is an API model entry; otherwise the
+ * rule applies again.
+ *
  * "API model entry" means an entry the direct chat transport can call: not
  * WebChat, not the Codex app server, and not a Codex Direct model the live
  * catalog no longer lists.
@@ -35,10 +39,12 @@ export type InlineAskModelRuleInput = {
     /** False when the loaded Codex Direct catalog does not list the model. */
     isModelAvailable: (model: string) => boolean;
   };
+  /** The entry the user picked in the card (Inline Ask's own pref). */
+  chosenEntryId?: string;
 };
 
 export type InlineAskModelTarget = {
-  source: "sidebar" | "first_api" | "codex_runtime";
+  source: "inline_choice" | "sidebar" | "first_api" | "codex_runtime";
   entryId?: string;
   model: string;
   apiBase: string;
@@ -124,6 +130,11 @@ function codexRuntimeTarget(
 export function resolveInlineAskModelTarget(
   input: InlineAskModelRuleInput,
 ): InlineAskModelTarget | null {
+  const chosenId = input.chosenEntryId?.trim();
+  if (chosenId) {
+    const chosen = input.entries.find((entry) => entry.entryId === chosenId);
+    if (isInlineAskApiEntry(chosen)) return fromEntry(chosen, "inline_choice");
+  }
   const sidebar = input.sidebarEntry;
   if (input.conversationSystem === "codex") {
     return (
@@ -141,4 +152,78 @@ export function resolveInlineAskModelTarget(
   }
   if (isInlineAskApiEntry(sidebar)) return fromEntry(sidebar, "sidebar");
   return firstApiTarget(input.entries);
+}
+
+export type InlineAskModelMenuOption = {
+  entryId: string;
+  label: string;
+  title: string;
+  selected: boolean;
+};
+
+export type InlineAskModelMenuGroup = {
+  label: string;
+  options: InlineAskModelMenuOption[];
+};
+
+/**
+ * The card's model menu: every API model entry, grouped by provider in
+ * settings order; `selectedEntryId` (the entry in use) is marked.
+ */
+export function buildInlineAskModelMenu(
+  entries: readonly RuntimeModelEntry[],
+  selectedEntryId: string | undefined,
+): InlineAskModelMenuGroup[] {
+  const groups: InlineAskModelMenuGroup[] = [];
+  const byGroupId = new Map<string, InlineAskModelMenuGroup>();
+  for (const entry of entries) {
+    if (!isInlineAskApiEntry(entry)) continue;
+    let group = byGroupId.get(entry.groupId);
+    if (!group) {
+      group = { label: entry.providerLabel, options: [] };
+      byGroupId.set(entry.groupId, group);
+      groups.push(group);
+    }
+    group.options.push({
+      entryId: entry.entryId,
+      label: entry.displayModelLabel || entry.model,
+      title: `${entry.providerLabel} · ${entry.model}`,
+      selected: Boolean(selectedEntryId) && entry.entryId === selectedEntryId,
+    });
+  }
+  return groups;
+}
+
+/**
+ * Why the model menu cannot offer the sidebar's own runtime: the sidebar
+ * runs Claude Code, or its entry is a WebChat target. Null otherwise.
+ */
+export function inlineAskModelMenuNote(
+  input: Pick<InlineAskModelRuleInput, "conversationSystem" | "sidebarEntry">,
+): "claude_code" | "webchat" | null {
+  if (input.conversationSystem === "claude_code") return "claude_code";
+  if (
+    input.conversationSystem !== "codex" &&
+    input.sidebarEntry?.authMode === "webchat"
+  )
+    return "webchat";
+  return null;
+}
+
+export type InlineAskEffortLevel = { value: string; label: string };
+
+/**
+ * The effort a card uses: the saved one when the model offers it, else the
+ * rule's (`fallback`), else the model's first level.
+ */
+export function pickInlineAskEffort(
+  levels: readonly InlineAskEffortLevel[],
+  saved: string,
+  fallback: string,
+): string {
+  const offered = (value: string) =>
+    Boolean(value) && levels.some((level) => level.value === value);
+  if (offered(saved)) return saved;
+  if (offered(fallback)) return fallback;
+  return levels[0]?.value || fallback;
 }

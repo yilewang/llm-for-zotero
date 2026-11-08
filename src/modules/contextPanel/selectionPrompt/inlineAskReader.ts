@@ -1,7 +1,13 @@
 /**
  * Opens an Inline Ask card for a reader text selection: resolves the model
- * (inlineAskModel.ts) and reasoning effort from the sidebar's choices, builds
- * the turn runner with the paper and selection context, and mounts the card.
+ * (inlineAskModel.ts) and reasoning effort, builds the turn runner with the
+ * paper and selection context, and mounts the card.
+ *
+ * Model and effort: the model and effort the user picked in a card (Inline
+ * Ask's own prefs, inlineAskModelEntryId and inlineAskReasoning) while that
+ * entry is still an API model and the model offers that level; otherwise the
+ * rule's model with the sidebar's effort for it. The effort menu offers the
+ * levels the sidebar's reasoning menu offers for that model.
  *
  * The card keeps a snapshot taken when Zotero showed the selection popup:
  * the annotation draft, the reader item, and the paper context. Save as
@@ -17,31 +23,49 @@ import { buildCodexReasoningConfig } from "../../../codex/catalogSelection";
 import {
   getCodexDirectCatalogModel,
   getCodexDirectCatalogSnapshot,
+  getCodexDirectReasoningChoices,
   reconcileCodexDirectReasoningChoice,
 } from "../../../codexAuth/modelCatalog";
 import { getCachedPageTextForAttachment } from "../../../services/pdf/livePdfSelectionLocator";
 import { getAbortController } from "../../../utils/apiHelpers";
 import { t } from "../../../utils/i18n";
 import { getModelProviderGroups } from "../../../utils/modelProviders";
-import { getSelectedReasoningForItem } from "../chat";
-import { getAvailableModelEntries } from "../prefHelpers";
+import {
+  detectReasoningProvider,
+  getReasoningOptions,
+  getSelectedReasoningForItem,
+} from "../chat";
+import {
+  getAvailableModelEntries,
+  getStringPref,
+  setStringPref,
+} from "../prefHelpers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
 import {
   getSelectedModelEntryForSurface,
   surfaceChoices,
 } from "../surfaceChoices";
 import {
+  buildInlineAskModelMenu,
+  inlineAskModelMenuNote,
+  pickInlineAskEffort,
   resolveInlineAskModelTarget,
+  type InlineAskEffortLevel,
+  type InlineAskModelRuleInput,
   type InlineAskModelTarget,
 } from "./inlineAskModel";
 import {
   openInlineAskOverlay,
   type InlineAskModelLine,
+  type InlineAskModelPicker,
   type InlineAskOverlayHandle,
   type InlineAskSaveResult,
   type InlineAskSaveSetup,
 } from "./inlineAskOverlay";
-import { getInlineAskQuickPrompts } from "./inlineAskPrompts";
+import {
+  createInlineAskPromptEditing,
+  getInlineAskQuickPrompts,
+} from "./inlineAskPrompts";
 import {
   createInlineAskContinueInSidebar,
   type InlineAskPanelReach,
@@ -67,17 +91,21 @@ export type InlineAskCardHandle = InlineAskOverlayHandle & {
   snapshot: InlineAskPopupSnapshot;
 };
 
+/** Inline Ask's own model choice: the entry and effort picked in a card. */
+export const INLINE_ASK_MODEL_ENTRY_PREF = "inlineAskModelEntryId";
+export const INLINE_ASK_REASONING_PREF = "inlineAskReasoning";
+
 export type InlineAskModelChoice = {
   target: InlineAskModelTarget;
   reasoning?: ReasoningConfig;
+  /** The effort in use (a level value) and the levels the model offers. */
+  effort: string;
+  levels: InlineAskEffortLevel[];
   line: InlineAskModelLine;
 };
 
-/** The model, effort and model line for a card opened now. */
-export function resolveInlineAskModelChoice(
-  reasoningItemId: number,
-): InlineAskModelChoice | null {
-  const target = resolveInlineAskModelTarget({
+function readRuleInput(): InlineAskModelRuleInput {
+  return {
     conversationSystem: surfaceChoices.conversationSystem.get(READER_SURFACE),
     sidebarEntry: getSelectedModelEntryForSurface(READER_SURFACE),
     entries: getAvailableModelEntries(),
@@ -92,10 +120,45 @@ export function resolveInlineAskModelChoice(
         getCodexDirectCatalogSnapshot().status !== "ready" ||
         Boolean(getCodexDirectCatalogModel(model)),
     },
-  });
-  if (!target) return null;
-  let reasoning: ReasoningConfig | undefined;
-  let effort: string | undefined;
+  };
+}
+
+function reasoningProviderFor(target: InlineAskModelTarget) {
+  return detectReasoningProvider(target.model, target.apiBase);
+}
+
+/** The levels the sidebar's reasoning menu offers for the target's model. */
+export function inlineAskEffortLevels(
+  target: InlineAskModelTarget,
+): InlineAskEffortLevel[] {
+  if (target.authMode === "codex_auth") {
+    return getCodexDirectReasoningChoices(target.model).map((choice) => ({
+      value: choice.value,
+      label: choice.label,
+    }));
+  }
+  const levels = getReasoningOptions(
+    reasoningProviderFor(target),
+    target.model,
+    target.apiBase,
+    target.providerProtocol,
+    target.advanced?.profileOverride as Parameters<
+      typeof getReasoningOptions
+    >[4],
+  )
+    .filter((option) => option.enabled)
+    .map((option) => ({
+      value: option.level,
+      label: option.label || option.level,
+    }));
+  return levels.length ? levels : [{ value: "auto", label: "Auto" }];
+}
+
+/** The sidebar's effort for the target's model (the rule's effort). */
+function ruleEffort(
+  target: InlineAskModelTarget,
+  reasoningItemId: number,
+): string {
   if (target.authMode === "codex_auth") {
     const stored =
       target.source === "codex_runtime"
@@ -104,11 +167,10 @@ export function resolveInlineAskModelChoice(
             target.model,
             READER_SURFACE,
           );
-    const selection = reconcileCodexDirectReasoningChoice(target.model, stored);
-    reasoning = buildCodexReasoningConfig(selection);
-    effort = selection;
-  } else {
-    reasoning = getSelectedReasoningForItem(
+    return reconcileCodexDirectReasoningChoice(target.model, stored);
+  }
+  return (
+    getSelectedReasoningForItem(
       reasoningItemId,
       target.model,
       target.apiBase,
@@ -117,16 +179,103 @@ export function resolveInlineAskModelChoice(
         typeof getSelectedReasoningForItem
       >[4],
       READER_SURFACE,
-    );
-    effort = reasoning?.level;
+    )?.level || "auto"
+  );
+}
+
+function reasoningFor(
+  target: InlineAskModelTarget,
+  effort: string,
+): ReasoningConfig | undefined {
+  if (target.authMode === "codex_auth") {
+    return buildCodexReasoningConfig(effort);
   }
+  const provider = reasoningProviderFor(target);
+  return {
+    provider: provider === "unsupported" ? "customized" : provider,
+    level: effort,
+  } as ReasoningConfig;
+}
+
+/** The model, effort and model line for a card opened (or picked) now. */
+export function resolveInlineAskModelChoice(
+  reasoningItemId: number,
+): InlineAskModelChoice | null {
+  const target = resolveInlineAskModelTarget({
+    ...readRuleInput(),
+    chosenEntryId: getStringPref(INLINE_ASK_MODEL_ENTRY_PREF),
+  });
+  if (!target) return null;
+  const levels = inlineAskEffortLevels(target);
+  const effort = pickInlineAskEffort(
+    levels,
+    getStringPref(INLINE_ASK_REASONING_PREF),
+    ruleEffort(target, reasoningItemId),
+  );
   return {
     target,
-    reasoning,
+    reasoning: reasoningFor(target, effort),
+    effort,
+    levels,
     line: {
       label: target.displayLabel,
-      effort,
+      effort: levels.find((level) => level.value === effort)?.label || effort,
       title: `${target.providerLabel} · ${target.model}`,
+    },
+  };
+}
+
+function inlineAskModelNoteText(
+  note: ReturnType<typeof inlineAskModelMenuNote>,
+): string | null {
+  if (note === "claude_code")
+    return t(
+      "Claude Code runs only in the sidebar. Inline Ask uses an API model from this list.",
+    );
+  if (note === "webchat")
+    return t(
+      "WebChat runs only in the sidebar. Inline Ask uses an API model from this list.",
+    );
+  return null;
+}
+
+/**
+ * The card's model and effort menus. A pick is saved in Inline Ask's own
+ * prefs and re-resolved, so a gone entry or an unoffered level falls back.
+ */
+export function createInlineAskModelPicker(
+  reasoningItemId: number,
+  state: { choice: InlineAskModelChoice | null },
+): InlineAskModelPicker {
+  const refresh = () => {
+    state.choice = resolveInlineAskModelChoice(reasoningItemId);
+  };
+  return {
+    line: () => state.choice?.line ?? null,
+    modelMenu: () => {
+      const rule = readRuleInput();
+      return {
+        note: inlineAskModelNoteText(inlineAskModelMenuNote(rule)),
+        groups: buildInlineAskModelMenu(
+          rule.entries,
+          state.choice?.target.entryId,
+        ),
+      };
+    },
+    pickModel: (entryId) => {
+      setStringPref(INLINE_ASK_MODEL_ENTRY_PREF, entryId);
+      refresh();
+    },
+    effortMenu: () => ({
+      title: t("Reasoning"),
+      levels: (state.choice?.levels || []).map((level) => ({
+        ...level,
+        selected: level.value === state.choice?.effort,
+      })),
+    }),
+    pickEffort: (value) => {
+      setStringPref(INLINE_ASK_REASONING_PREF, value);
+      refresh();
     },
   };
 }
@@ -322,34 +471,48 @@ export function openInlineAskCardForReader(params: {
   reachPanel?: InlineAskPanelReach;
 }): InlineAskCardHandle {
   const { snapshot } = params;
-  const choice = resolveInlineAskModelChoice(params.reasoningItemId);
-  const runTurn = choice
-    ? createInlineAskTurnRunner({
-        target: choice.target,
-        reasoning: choice.reasoning,
-        getContext: async () =>
-          buildInlineAskContext({
-            paper: snapshot.paperContext,
-            selectedText: snapshot.selectedText,
-            pageLabel: snapshot.pageLabel,
-            surroundingText: await resolveInlineAskSurroundingText({
-              resolveAnchorText: () => resolveAnchorText(snapshot),
-              getCachedPageText: () =>
-                readCachedPageText(snapshot.readerItemId, snapshot.pageIndex),
-              timeoutMs: INLINE_ASK_CONTEXT_TIMEOUT_MS,
-            }),
-          }),
-      })
-    : async () => ({
-        text: "",
-        errorMessage: t("Inline Ask needs an API model."),
-      });
+  const state = {
+    choice: resolveInlineAskModelChoice(params.reasoningItemId),
+  };
+  const runTurn = createInlineAskTurnRunner({
+    getModel: () =>
+      state.choice
+        ? { target: state.choice.target, reasoning: state.choice.reasoning }
+        : null,
+    noModelMessage: t("Inline Ask needs an API model."),
+    getContext: async () =>
+      buildInlineAskContext({
+        paper: snapshot.paperContext,
+        selectedText: snapshot.selectedText,
+        pageLabel: snapshot.pageLabel,
+        surroundingText: await resolveInlineAskSurroundingText({
+          resolveAnchorText: () => resolveAnchorText(snapshot),
+          getCachedPageText: () =>
+            readCachedPageText(snapshot.readerItemId, snapshot.pageIndex),
+          timeoutMs: INLINE_ASK_CONTEXT_TIMEOUT_MS,
+        }),
+      }),
+  });
   const handle = openInlineAskOverlay({
     doc: params.doc,
     anchor: params.anchor,
     selectedText: snapshot.selectedText,
     prompts: getInlineAskQuickPrompts(),
-    model: choice?.line ?? null,
+    model: state.choice?.line ?? null,
+    modelPicker: createInlineAskModelPicker(params.reasoningItemId, state),
+    promptEditing: {
+      api: createInlineAskPromptEditing(),
+      labels: {
+        edit: t("Edit"),
+        delete: t("Delete"),
+        add: t("Add"),
+        reset: t("Reset"),
+        label: t("Label"),
+        prompt: t("Prompt, sent with the selected text"),
+        cancel: t("Cancel"),
+        save: t("Save"),
+      },
+    },
     labels: {
       selectedText: t("Selected text"),
       placeholder: t("Ask about this selection…"),
@@ -369,11 +532,11 @@ export function openInlineAskCardForReader(params: {
       ? createInlineAskContinueInSidebar({
           snapshot,
           getModel: () =>
-            choice
+            state.choice
               ? {
-                  name: choice.target.model,
-                  entryId: choice.target.entryId,
-                  providerLabel: choice.target.providerLabel,
+                  name: state.choice.target.model,
+                  entryId: state.choice.target.entryId,
+                  providerLabel: state.choice.target.providerLabel,
                 }
               : null,
           reachPanel: params.reachPanel,

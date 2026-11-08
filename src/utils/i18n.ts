@@ -1744,6 +1744,14 @@ const zhCN: Record<string, string> = {
     "无法将对话保存到侧边栏。",
   "The sidebar chat for this PDF is not available. Open it and try again.":
     "此 PDF 的侧边栏对话不可用。请打开它后重试。",
+  // Inline Ask: editable prompts, model and effort menus, sidebar handover.
+  Edit: "编辑",
+  Delete: "删除",
+  "Prompt, sent with the selected text": "提示词，与选中文字一起发送",
+  "Claude Code runs only in the sidebar. Inline Ask uses an API model from this list.":
+    "Claude Code 只在侧边栏中运行。划词提问使用此列表中的 API 模型。",
+  "WebChat runs only in the sidebar. Inline Ask uses an API model from this list.":
+    "WebChat 只在侧边栏中运行。划词提问使用此列表中的 API 模型。",
   "Quote selected text": "引用选中文字",
   "Quote in side chat": "在侧边对话中引用",
   "Quote selected text in a side chat": "在侧边对话中引用选中文字",

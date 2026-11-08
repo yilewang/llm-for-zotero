@@ -1,7 +1,17 @@
 import { assert } from "chai";
 import { describe, it } from "mocha";
+import { buildAgentInitialMessages } from "../src/agent/model/messageBuilder";
+import { SIDECHAT_SELECTED_TEXT_MAX_LENGTH } from "../src/modules/contextPanel/constants";
+import { getSelectedTextSourceIconName } from "../src/modules/contextPanel/contextIcons";
+import {
+  buildQuestionWithSelectedTextContexts,
+  normalizeSelectedText,
+} from "../src/modules/contextPanel/textUtils";
+import { normalizeSelectedTextSource } from "../src/services/context/normalizers";
+import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 import {
   buildSeededConversationHandover,
+  SEEDED_CONVERSATION_HANDOVER_SOURCE,
   buildSeededConversationMessages,
   buildSeededConversationTitleSeed,
   normalizeSeededTurns,
@@ -195,5 +205,53 @@ describe("seedPaperConversationRefusal", function () {
         JSON.stringify(state),
       );
     }
+  });
+});
+
+describe("Inline Ask handover chip source", function () {
+  const transcript = "Q: one\n\nA: two\r\nthree";
+
+  it("is its own source, not the side chat's", function () {
+    assert.equal(SEEDED_CONVERSATION_HANDOVER_SOURCE, "inlineask");
+    assert.equal(normalizeSelectedTextSource("inlineask"), "inlineask");
+    assert.equal(getSelectedTextSourceIconName("inlineask"), "model");
+  });
+
+  it("keeps line breaks and the transcript cap", function () {
+    assert.equal(
+      normalizeSelectedText(transcript, "inlineask"),
+      "Q: one\n\nA: two\nthree",
+    );
+    const long = "z".repeat(SIDECHAT_SELECTED_TEXT_MAX_LENGTH + 50);
+    assert.lengthOf(
+      normalizeSelectedText(long, "inlineask"),
+      SIDECHAT_SELECTED_TEXT_MAX_LENGTH,
+    );
+  });
+
+  it("is named an Inline Ask transcript for the model", async function () {
+    const prompt = buildQuestionWithSelectedTextContexts(
+      ["Q: one\n\nA: two"],
+      ["inlineask"],
+      "Go on.",
+    );
+    assert.include(prompt, "inline_ask_transcript");
+    assert.notInclude(prompt, "side_chat_transcript");
+
+    const messages = await buildAgentInitialMessages(
+      resolvedAgentRequest({
+        conversationKey: 30401,
+        mode: "agent",
+        userText: "Go on.",
+        libraryID: 1,
+        selectedTexts: ["Q: one\n\nA: two"],
+        selectedTextSources: ["inlineask"],
+      }),
+      [],
+      [],
+    );
+    const text = JSON.stringify(messages);
+    assert.include(text, "Inline Ask transcript");
+    assert.notInclude(text, "side chat transcript");
   });
 });

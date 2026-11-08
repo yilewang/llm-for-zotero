@@ -19,6 +19,18 @@
  * closes when the sidebar took them, and otherwise shows the reason under
  * the footer and keeps its conversation.
  *
+ * Quick prompts: right-clicking a pill opens Edit, Delete, Add and Reset;
+ * right-clicking the empty space of the pill row opens Add and Reset. Edit
+ * and Add open an editor in the card (Label is an <input type=text>, Prompt
+ * a contenteditable box) with Cancel and Save; Enter in Label or Mod+Enter
+ * in Prompt saves, Escape cancels. Every change is saved at once.
+ *
+ * Model line: clicking the model opens the API models grouped by provider
+ * (with a short note first when the sidebar's runtime cannot run here);
+ * clicking the effort opens the levels the model offers. A pick is Inline
+ * Ask's own choice; the next question uses it. Escape closes an open menu
+ * first; text typed in the field stays.
+ *
  * Close policy: before the first question an outside pointerdown closes the
  * card, as the Add Text prompt does. Once a question exists, only Escape,
  * Discard, or another overlay on the same document closes it; a new text
@@ -30,7 +42,11 @@ import {
   inlineAskAnswerToPlainText,
   renderInlineAskAnswer,
 } from "./inlineAskAnswerRender";
-import type { InlineAskQuickPrompt } from "./inlineAskPrompts";
+import type { InlineAskModelMenuGroup } from "./inlineAskModel";
+import type {
+  InlineAskPromptEditing,
+  InlineAskQuickPrompt,
+} from "./inlineAskPrompts";
 import {
   createInlineAskSession,
   finishedInlineAskTurns,
@@ -51,6 +67,7 @@ import {
   readerOverlayScheduler,
   registerReaderOverlay,
   releaseReaderOverlay,
+  XHTML_NS,
   type ReaderOverlayAnchor,
   type ReaderOverlayHandle,
   type ReaderOverlayPalette,
@@ -75,11 +92,42 @@ export type InlineAskOverlayLabels = {
   modelUnavailable: string;
 };
 
-/** The model line: the model actually used, display only in M1. */
+/** The model line: the model and effort the next question uses. */
 export type InlineAskModelLine = {
   label: string;
   effort?: string;
   title?: string;
+};
+
+/** The model and effort menus behind the model line. */
+export type InlineAskModelPicker = {
+  /** The line now; read again after each pick. */
+  line(): InlineAskModelLine | null;
+  /** A short note shown first (or null), then the models by provider. */
+  modelMenu(): { note: string | null; groups: InlineAskModelMenuGroup[] };
+  pickModel(entryId: string): void;
+  /** The section title and the levels the model in use offers. */
+  effortMenu(): {
+    title: string;
+    levels: Array<{ value: string; label: string; selected: boolean }>;
+  };
+  pickEffort(value: string): void;
+};
+
+export type InlineAskPromptEditingSetup = {
+  api: InlineAskPromptEditing;
+  labels: {
+    edit: string;
+    delete: string;
+    add: string;
+    reset: string;
+    /** Placeholder of the Label field. */
+    label: string;
+    /** Placeholder of the Prompt field. */
+    prompt: string;
+    cancel: string;
+    save: string;
+  };
 };
 
 export type InlineAskSavePayload = { color: string; comment: string };
@@ -123,8 +171,12 @@ export type InlineAskOverlayInput = {
   anchor: ReaderOverlayAnchor;
   selectedText: string;
   prompts: InlineAskQuickPrompt[];
-  /** Null when no usable model exists. */
+  /** Null when no usable model exists; picker.line() replaces it. */
   model: InlineAskModelLine | null;
+  /** Without it, the model line is display only. */
+  modelPicker?: InlineAskModelPicker;
+  /** Without it, right-clicking a pill does nothing of the card's own. */
+  promptEditing?: InlineAskPromptEditingSetup;
   labels: InlineAskOverlayLabels;
   runTurn: InlineAskTurnRunner;
   createAbortController?: () => { signal?: AbortSignal; abort(): void } | null;
@@ -296,7 +348,15 @@ export function openInlineAskOverlay(
   const { bg, fg, border, quoteFg, labelFg } = palette;
   const el = createReaderOverlayElementFactory(doc);
   const schedule = readerOverlayScheduler(doc);
-  const hasModel = Boolean(input.model);
+  const currentLine = (): InlineAskModelLine | null => {
+    if (!input.modelPicker) return input.model;
+    try {
+      return input.modelPicker.line();
+    } catch {
+      return input.model;
+    }
+  };
+  const hasModel = () => Boolean(currentLine());
 
   const root = el("div", [
     "position:fixed",
@@ -379,7 +439,7 @@ export function openInlineAskOverlay(
     const phase = session.getState().phase;
     // While Continue in sidebar runs, the turns it moves must stay complete.
     if (continuing) return false;
-    return hasModel && (phase === "compose" || phase === "answered");
+    return hasModel() && (phase === "compose" || phase === "answered");
   };
   const syncSend = () => {
     setSendDisabled(!canSendNow() || !textBox.readText().trim());
@@ -449,20 +509,38 @@ export function openInlineAskOverlay(
     "overflow:hidden",
     "text-overflow:ellipsis",
   ];
-  if (input.model) {
-    const modelLabel = el("span", [...modelPairCss, "max-width:170px"]);
-    modelLabel.setAttribute("data-llm-inline-ask-model", "true");
-    modelLabel.textContent = input.model.label;
-    if (input.model.title) modelLabel.setAttribute("title", input.model.title);
-    fieldBar.append(modelLabel);
-    if (input.model.effort) {
-      const effortLabel = el("span", [...modelPairCss, "max-width:90px"]);
-      effortLabel.setAttribute("data-llm-inline-ask-effort", "true");
-      effortLabel.textContent = input.model.effort;
-      effortLabel.setAttribute("title", labels.reasoningEffort);
-      fieldBar.append(effortLabel);
-    }
+  // With a picker the pair are buttons that open the model and effort
+  // menus (like the composer's model and reasoning buttons).
+  const picker = input.modelPicker;
+  const pairTag = picker ? "button" : "span";
+  const pairButtonCss = picker
+    ? [
+        "border:none",
+        "background:transparent",
+        "font-family:inherit",
+        "margin:0",
+        "cursor:pointer",
+      ]
+    : [];
+  const modelLabel = el(pairTag, [
+    ...modelPairCss,
+    ...pairButtonCss,
+    "max-width:170px",
+  ]);
+  modelLabel.setAttribute("data-llm-inline-ask-model", "true");
+  const effortLabel = el(pairTag, [
+    ...modelPairCss,
+    ...pairButtonCss,
+    "max-width:90px",
+  ]);
+  effortLabel.setAttribute("data-llm-inline-ask-effort", "true");
+  effortLabel.setAttribute("title", labels.reasoningEffort);
+  for (const button of picker ? [modelLabel, effortLabel] : []) {
+    button.setAttribute("type", "button");
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-expanded", "false");
   }
+  if (input.model || picker) fieldBar.append(modelLabel, effortLabel);
   const spacer = el("span", ["flex:1 1 auto"]);
   const sendBtn = el("button", [
     "flex:none",
@@ -498,7 +576,18 @@ export function openInlineAskOverlay(
   ]);
   notice.setAttribute("data-llm-inline-ask-notice", "true");
   notice.textContent = labels.modelUnavailable;
-  show(notice, !hasModel);
+
+  const syncModelLine = () => {
+    const line = currentLine();
+    show(modelLabel, Boolean(line));
+    modelLabel.textContent = line?.label || "";
+    if (line?.title) modelLabel.setAttribute("title", line.title);
+    else modelLabel.removeAttribute("title");
+    show(effortLabel, Boolean(line?.effort));
+    effortLabel.textContent = line?.effort || "";
+    show(notice, !line);
+  };
+  syncModelLine();
 
   // Quick prompts.
   const pills = el("div", [
@@ -508,49 +597,55 @@ export function openInlineAskOverlay(
     "min-height:24px",
   ]);
   pills.setAttribute("data-llm-inline-ask-pills", "true");
-  const pillButtons: HTMLButtonElement[] = [];
-  for (const prompt of input.prompts) {
-    const pill = el("button", [
-      "display:inline-flex",
-      "align-items:center",
-      "min-height:24px",
-      "padding:3px 9px",
-      `border:1px solid ${border}`,
-      "border-radius:999px",
-      `background:${palette.fieldBg}`,
-      `color:${fg}`,
-      "font:inherit",
-      "font-size:11px",
-      "max-width:100%",
-      "overflow:hidden",
-      "text-overflow:ellipsis",
-      "white-space:nowrap",
-      "cursor:pointer",
-    ]) as HTMLButtonElement;
-    pill.setAttribute("type", "button");
-    pill.setAttribute("data-llm-inline-ask-pill", prompt.id);
-    pill.setAttribute("title", prompt.prompt);
-    pill.textContent = prompt.label;
-    pill.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      // Pills belong to the first question; they hide after it.
-      if (!hasModel || session.getState().phase !== "compose") return;
-      session.send(prompt.prompt, prompt.label);
-    });
-    pill.addEventListener("mouseenter", () => {
-      if (pill.disabled) return;
-      pill.style.background = palette.accentTint;
-      pill.style.borderColor = palette.accent;
-    });
-    pill.addEventListener("mouseleave", () => {
-      pill.style.background = palette.fieldBg;
-      pill.style.borderColor = border;
-    });
-    setButtonDisabled(pill, !hasModel);
-    pillButtons.push(pill);
-    pills.append(pill);
-  }
+  const promptSetup = input.promptEditing;
+  let shownPrompts: InlineAskQuickPrompt[] = input.prompts.slice();
+  /** The prompt the editor is open for; id null for Add. */
+  let editingPrompt: { id: string | null } | null = null;
+  const pillCss = (editing: boolean) => [
+    "display:inline-flex",
+    "align-items:center",
+    "min-height:24px",
+    "padding:3px 9px",
+    `border:1px solid ${editing ? palette.accent : border}`,
+    "border-radius:999px",
+    `background:${editing ? palette.accentTint : palette.fieldBg}`,
+    `color:${fg}`,
+    "font:inherit",
+    "font-size:11px",
+    "max-width:100%",
+    "overflow:hidden",
+    "text-overflow:ellipsis",
+    "white-space:nowrap",
+    "cursor:pointer",
+  ];
+  const renderPills = () => {
+    for (let child = pills.firstChild; child; child = pills.firstChild) {
+      pills.removeChild(child);
+    }
+    for (const prompt of shownPrompts) {
+      const editing = editingPrompt?.id === prompt.id;
+      const pill = el("button", pillCss(editing)) as HTMLButtonElement;
+      pill.setAttribute("type", "button");
+      pill.setAttribute("data-llm-inline-ask-pill", prompt.id);
+      // The tooltip is the prompt the pill sends.
+      pill.setAttribute("title", prompt.prompt);
+      if (editing) pill.setAttribute("data-editing", "true");
+      pill.textContent = prompt.label;
+      pill.addEventListener("mouseenter", () => {
+        if (pill.disabled) return;
+        pill.style.background = palette.accentTint;
+        pill.style.borderColor = palette.accent;
+      });
+      pill.addEventListener("mouseleave", () => {
+        if (editingPrompt?.id === prompt.id) return;
+        pill.style.background = palette.fieldBg;
+        pill.style.borderColor = border;
+      });
+      setButtonDisabled(pill, !hasModel());
+      pills.append(pill);
+    }
+  };
+  renderPills();
 
   const hint = el("div", [
     "font-size:10px",
@@ -559,6 +654,481 @@ export function openInlineAskOverlay(
   ]);
   hint.setAttribute("data-llm-inline-ask-hint", "true");
   hint.textContent = labels.hint;
+
+  // ── Quick-prompt editor (Edit / Add) ───────────────────────────────────
+  const promptEditor = el("div", [
+    "display:none",
+    "flex-direction:column",
+    "gap:6px",
+    `border-top:1px solid ${border}`,
+    "padding-top:8px",
+    "min-width:0",
+  ]);
+  promptEditor.setAttribute("data-llm-inline-ask-prompt-editor", "true");
+  const inputCss = [
+    "width:100%",
+    "min-width:0",
+    "box-sizing:border-box",
+    "padding:5px 8px",
+    `border:1px solid ${border}`,
+    "border-radius:6px",
+    `background:${palette.fieldBg}`,
+    `color:${fg}`,
+    "font:inherit",
+    "font-size:12px",
+    "line-height:1.35",
+    "outline:none",
+  ];
+  // <input type=text>: the reader's key handlers skip it (see
+  // createReaderOverlayEditor), so letters and digits type.
+  const labelInput = doc.createElementNS(XHTML_NS, "input") as HTMLInputElement;
+  labelInput.style.cssText = inputCss.join(";");
+  labelInput.setAttribute("type", "text");
+  labelInput.setAttribute("data-llm-inline-ask-prompt-label", "true");
+  labelInput.setAttribute("placeholder", promptSetup?.labels.label || "");
+  labelInput.setAttribute("aria-label", promptSetup?.labels.label || "");
+  const promptBox = createReaderOverlayEditor({
+    doc,
+    placeholder: promptSetup?.labels.prompt || "",
+    fieldCss: ["position:relative", "min-width:0"],
+    editorCss: [
+      ...inputCss,
+      "min-height:58px",
+      "max-height:120px",
+      "overflow-y:auto",
+      "white-space:pre-wrap",
+      "overflow-wrap:anywhere",
+      "cursor:text",
+    ],
+    placeholderCss: [
+      "position:absolute",
+      "left:9px",
+      "top:6px",
+      "right:9px",
+      "overflow:hidden",
+      "white-space:nowrap",
+      "text-overflow:ellipsis",
+      "pointer-events:none",
+      `color:${labelFg}`,
+      "font-size:12px",
+      "line-height:1.35",
+    ],
+    editorAttribute: "data-llm-inline-ask-prompt-text",
+    placeholderAttribute: "data-llm-inline-ask-prompt-placeholder",
+  });
+  const promptFooter = el("div", [
+    "display:flex",
+    "gap:6px",
+    "align-items:center",
+  ]);
+  const cancelPromptBtn = el(
+    "button",
+    buttonCss(palette, "ghost"),
+  ) as HTMLButtonElement;
+  cancelPromptBtn.setAttribute("type", "button");
+  cancelPromptBtn.setAttribute("data-llm-inline-ask-prompt-action", "cancel");
+  cancelPromptBtn.textContent = promptSetup?.labels.cancel || "";
+  const savePromptBtn = el(
+    "button",
+    buttonCss(palette, "primary"),
+  ) as HTMLButtonElement;
+  savePromptBtn.setAttribute("type", "button");
+  savePromptBtn.setAttribute("data-llm-inline-ask-prompt-action", "save");
+  savePromptBtn.textContent = promptSetup?.labels.save || "";
+  promptFooter.append(
+    el("span", ["flex:1 1 auto"]),
+    cancelPromptBtn,
+    savePromptBtn,
+  );
+  promptEditor.append(labelInput, promptBox.field, promptFooter);
+
+  // ── Menus: the pill menu, and the model and effort menus ───────────────
+  type OpenMenu = { kind: "prompt" | "model" | "effort"; node: HTMLElement };
+  let openMenu: OpenMenu | null = null;
+  /** A pointerdown that only closed the pill menu also swallows its click. */
+  let swallowPillClick = false;
+
+  const menuItemCss = [
+    "display:flex",
+    "align-items:center",
+    "justify-content:flex-start",
+    "box-sizing:border-box",
+    "width:100%",
+    "min-height:24px",
+    "margin:0",
+    "background:none",
+    "border:none",
+    `color:${fg}`,
+    "padding:4px 8px",
+    "font:inherit",
+    "font-size:11px",
+    "line-height:1.2",
+    "text-align:left",
+    "cursor:pointer",
+    "border-radius:4px",
+    "white-space:nowrap",
+  ];
+  const addHover = (
+    node: HTMLElement,
+    on: () => void,
+    off: () => void,
+  ): void => {
+    node.addEventListener("mouseenter", on);
+    node.addEventListener("mouseleave", off);
+  };
+
+  const closeMenus = () => {
+    const menu = openMenu;
+    if (!menu) return;
+    openMenu = null;
+    menu.node.remove();
+    for (const button of [modelLabel, effortLabel]) {
+      if (!picker) break;
+      button.setAttribute("aria-expanded", "false");
+      button.style.color = palette.fill2;
+    }
+  };
+
+  /** Mounts `node` in the card at a point relative to the card's corner. */
+  const mountMenu = (
+    kind: OpenMenu["kind"],
+    node: HTMLElement,
+    left: number,
+    top: number,
+    flipAbove?: number,
+  ) => {
+    node.style.left = `${Math.max(0, Math.round(left))}px`;
+    node.style.top = `${Math.round(top)}px`;
+    root.append(node);
+    openMenu = { kind, node };
+    if (flipAbove === undefined) return;
+    // Open upwards when the menu would leave the window at the bottom.
+    const vh = doc.defaultView?.innerHeight ?? 600;
+    const menuRect = node.getBoundingClientRect();
+    if (menuRect.bottom > vh - READER_OVERLAY_MARGIN && menuRect.height) {
+      node.style.top = `${Math.round(flipAbove - menuRect.height)}px`;
+    }
+  };
+
+  const openPromptMenu = (promptId: string | null, x: number, y: number) => {
+    if (!promptSetup) return;
+    closeMenus();
+    const menu = el("div", [
+      "position:absolute",
+      "z-index:3",
+      "display:flex",
+      "flex-direction:column",
+      "gap:2px",
+      "min-width:64px",
+      "padding:4px",
+      "box-sizing:border-box",
+      `background:${bg}`,
+      `border:1px solid ${border}`,
+      "border-radius:6px",
+      "box-shadow:0 8px 18px rgba(0,0,0,0.2)",
+    ]);
+    menu.setAttribute("data-llm-inline-ask-prompt-menu", promptId || "");
+    menu.setAttribute("role", "menu");
+    const items: Array<[string, string, boolean]> = promptId
+      ? [
+          ["edit", promptSetup.labels.edit, true],
+          ["delete", promptSetup.labels.delete, true],
+          ["add", promptSetup.labels.add, promptSetup.api.canAdd()],
+          ["reset", promptSetup.labels.reset, true],
+        ]
+      : [
+          ["add", promptSetup.labels.add, promptSetup.api.canAdd()],
+          ["reset", promptSetup.labels.reset, true],
+        ];
+    for (const [action, text, enabled] of items) {
+      const item = el("button", menuItemCss) as HTMLButtonElement;
+      item.setAttribute("type", "button");
+      item.setAttribute("role", "menuitem");
+      item.setAttribute("data-llm-inline-ask-prompt-menu-item", action);
+      item.textContent = text;
+      if (!enabled) {
+        item.disabled = true;
+        item.style.opacity = "0.45";
+        item.style.cursor = "not-allowed";
+      }
+      addHover(
+        item,
+        () => {
+          if (!item.disabled) item.style.background = palette.hover;
+        },
+        () => {
+          item.style.background = "none";
+        },
+      );
+      item.addEventListener("click", (e: Event) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (item.disabled) return;
+        runPromptMenuAction(action, promptId);
+      });
+      menu.append(item);
+    }
+    const width = root.getBoundingClientRect().width || 360;
+    mountMenu("prompt", menu, Math.min(x, width - 130), y);
+  };
+
+  const menuPanelCss = [
+    "position:absolute",
+    "z-index:4",
+    "display:grid",
+    "gap:3px",
+    "width:max-content",
+    "min-width:150px",
+    "max-width:240px",
+    "max-height:min(320px, 60vh)",
+    "overflow-y:auto",
+    "padding:6px",
+    "box-sizing:border-box",
+    `border:1px solid ${border}`,
+    "border-radius:12px",
+    `background:${bg}`,
+    "box-shadow:0 8px 18px rgba(0,0,0,0.24)",
+  ];
+  const sectionCss = [
+    "padding:4px 10px",
+    "font-size:10px",
+    "font-weight:600",
+    `color:${labelFg}`,
+  ];
+  const optionCss = (selected: boolean) => [
+    `border:1px solid ${selected ? palette.accent : "transparent"}`,
+    "border-radius:8px",
+    "background:none",
+    `color:${fg}`,
+    "text-align:left",
+    "padding:7px 9px",
+    "margin:0",
+    "font:inherit",
+    "font-size:11px",
+    "line-height:1.2",
+    "white-space:nowrap",
+    "overflow:hidden",
+    "text-overflow:ellipsis",
+    "cursor:pointer",
+  ];
+  const menuOption = (
+    attribute: string,
+    value: string,
+    text: string,
+    selected: boolean,
+    pick: () => void,
+    title?: string,
+  ): HTMLButtonElement => {
+    const option = el("button", optionCss(selected)) as HTMLButtonElement;
+    option.setAttribute("type", "button");
+    option.setAttribute("role", "menuitemradio");
+    option.setAttribute(attribute, value);
+    option.setAttribute("aria-checked", selected ? "true" : "false");
+    if (title) option.setAttribute("title", title);
+    option.textContent = text;
+    addHover(
+      option,
+      () => {
+        if (!selected) option.style.borderColor = border;
+      },
+      () => {
+        if (!selected) option.style.borderColor = "transparent";
+      },
+    );
+    option.addEventListener("click", (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      pick();
+    });
+    return option;
+  };
+  const afterPick = () => {
+    closeMenus();
+    syncModelLine();
+    syncSend();
+    renderPills();
+    schedule(() => {
+      if (closed || editingPrompt) return;
+      editor.focus({ preventScroll: true });
+    }, 0);
+  };
+
+  const toggleModelMenu = (kind: "model" | "effort") => {
+    if (!picker) return;
+    if (openMenu?.kind === kind) {
+      closeMenus();
+      return;
+    }
+    closeMenus();
+    const button = kind === "model" ? modelLabel : effortLabel;
+    const menu = el("div", menuPanelCss);
+    menu.setAttribute("data-llm-inline-ask-model-menu", kind);
+    menu.setAttribute("role", "menu");
+    try {
+      if (kind === "model") {
+        const { note, groups } = picker.modelMenu();
+        if (note) {
+          const explain = el("div", [
+            "padding:4px 10px 8px",
+            "font-size:9.5px",
+            "line-height:1.45",
+            `color:${palette.fill2}`,
+            "white-space:normal",
+          ]);
+          explain.setAttribute("data-llm-inline-ask-model-note", "true");
+          explain.textContent = note;
+          menu.append(explain);
+        }
+        for (const group of groups) {
+          const section = el("div", sectionCss);
+          section.setAttribute("data-llm-inline-ask-menu-section", "true");
+          section.textContent = group.label;
+          menu.append(section);
+          for (const option of group.options) {
+            menu.append(
+              menuOption(
+                "data-llm-inline-ask-model-option",
+                option.entryId,
+                option.label,
+                option.selected,
+                () => {
+                  picker.pickModel(option.entryId);
+                  afterPick();
+                },
+                option.title,
+              ),
+            );
+          }
+        }
+      } else {
+        const { title, levels } = picker.effortMenu();
+        const section = el("div", sectionCss);
+        section.setAttribute("data-llm-inline-ask-menu-section", "true");
+        section.textContent = title;
+        menu.append(section);
+        for (const level of levels) {
+          menu.append(
+            menuOption(
+              "data-llm-inline-ask-effort-option",
+              level.value,
+              level.label,
+              level.selected,
+              () => {
+                picker.pickEffort(level.value);
+                afterPick();
+              },
+            ),
+          );
+        }
+      }
+    } catch {
+      return;
+    }
+    button.setAttribute("aria-expanded", "true");
+    button.style.color = fg;
+    const rootRect = root.getBoundingClientRect();
+    const rect = button.getBoundingClientRect();
+    mountMenu(
+      kind,
+      menu,
+      rect.left - rootRect.left,
+      rect.bottom - rootRect.top + 4,
+      rect.top - rootRect.top - 4,
+    );
+  };
+
+  const refreshPrompts = () => {
+    if (promptSetup) {
+      try {
+        shownPrompts = promptSetup.api.list();
+      } catch {
+        // Keep the pills shown; the prefs could not be read.
+      }
+    }
+    renderPills();
+  };
+  const syncPromptEditor = () => {
+    const inCompose = session.getState().phase === "compose";
+    show(promptEditor, Boolean(editingPrompt) && inCompose, "flex");
+    show(hint, !editingPrompt && inCompose);
+  };
+  const openPromptEditor = (prompt: InlineAskQuickPrompt | null) => {
+    if (!promptSetup) return;
+    closeMenus();
+    editingPrompt = { id: prompt?.id ?? null };
+    labelInput.value = prompt?.label || "";
+    promptBox.setText(prompt?.prompt || "");
+    renderPills();
+    syncPromptEditor();
+    schedule(() => {
+      if (closed || !editingPrompt) return;
+      labelInput.focus({ preventScroll: true });
+    }, 0);
+  };
+  const closePromptEditor = (refocus: boolean) => {
+    if (!editingPrompt) return;
+    editingPrompt = null;
+    renderPills();
+    syncPromptEditor();
+    if (!refocus) return;
+    schedule(() => {
+      if (closed || editingPrompt) return;
+      editor.focus({ preventScroll: true });
+    }, 0);
+  };
+  const savePrompt = () => {
+    if (!promptSetup || !editingPrompt) return;
+    const value = {
+      label: (labelInput.value || "").trim(),
+      prompt: promptBox.readText().trim(),
+    };
+    if (!value.label) {
+      labelInput.focus({ preventScroll: true });
+      return;
+    }
+    if (!value.prompt) {
+      promptBox.editor.focus({ preventScroll: true });
+      return;
+    }
+    try {
+      if (editingPrompt.id) promptSetup.api.edit(editingPrompt.id, value);
+      else promptSetup.api.add(value);
+    } catch {
+      // The prefs refused the write; the pills show what is stored.
+    }
+    editingPrompt = null;
+    refreshPrompts();
+    syncPromptEditor();
+    schedule(() => {
+      if (closed || editingPrompt) return;
+      editor.focus({ preventScroll: true });
+    }, 0);
+  };
+  function runPromptMenuAction(action: string, promptId: string | null) {
+    closeMenus();
+    if (!promptSetup) return;
+    const prompt = shownPrompts.find((entry) => entry.id === promptId) || null;
+    if (action === "edit" && prompt) {
+      openPromptEditor(prompt);
+      return;
+    }
+    if (action === "add") {
+      if (promptSetup.api.canAdd()) openPromptEditor(null);
+      return;
+    }
+    try {
+      if (action === "delete" && promptId) promptSetup.api.remove(promptId);
+      else if (action === "reset") promptSetup.api.reset();
+      else return;
+    } catch {
+      // The prefs refused the write; the pills show what is stored.
+    }
+    if (action === "reset" || editingPrompt?.id === promptId) {
+      editingPrompt = null;
+      syncPromptEditor();
+    }
+    refreshPrompts();
+  }
 
   // Footer: Discard · Continue in sidebar · Save as annotation.
   const footer = el("div", ["display:none", "gap:6px", "align-items:center"]);
@@ -785,6 +1355,7 @@ export function openInlineAskOverlay(
     notice,
     pills,
     hint,
+    promptEditor,
     footer,
     sidebarError,
     saveView,
@@ -907,6 +1478,7 @@ export function openInlineAskOverlay(
     root.setAttribute("data-view", view);
     show(saveView, inSave, "flex");
     if (!inSave) return;
+    closeMenus();
     for (const node of [
       quoteSection,
       thread,
@@ -914,6 +1486,7 @@ export function openInlineAskOverlay(
       notice,
       pills,
       hint,
+      promptEditor,
       footer,
       sidebarError,
     ])
@@ -988,7 +1561,13 @@ export function openInlineAskOverlay(
     const canType = phase === "compose" || phase === "answered";
     show(field, canType, "flex");
     show(pills, phase === "compose", "flex");
-    show(hint, phase === "compose");
+    if (phase !== lastPhase) {
+      // A question leaves compose: the pill editor and any menu close.
+      closeMenus();
+      if (phase !== "compose") editingPrompt = null;
+      renderPills();
+    }
+    syncPromptEditor();
     show(footer, phase !== "compose", "flex");
     textBox.setPlaceholder(
       phase === "compose" ? labels.placeholder : labels.followUpPlaceholder,
@@ -1096,6 +1675,7 @@ export function openInlineAskOverlay(
   const onDocPointerDown = (e: Event) => {
     const target = e.target as Node | null;
     if (target && root.contains(target)) return;
+    closeMenus();
     // Once a question exists, a click elsewhere keeps the conversation.
     if (session.hasConversation()) return;
     close();
@@ -1108,6 +1688,35 @@ export function openInlineAskOverlay(
     // Keeps bubble-phase listeners above the card out. The reader's window
     // capture listeners have already run; see createReaderOverlayEditor.
     e.stopPropagation();
+    if (action === "close" && openMenu) {
+      e.preventDefault();
+      closeMenus();
+      return;
+    }
+    if (editingPrompt && view === "thread") {
+      const target = e.target as Node | null;
+      if (action === "close") {
+        e.preventDefault();
+        closePromptEditor(true);
+        return;
+      }
+      if (target && labelInput.contains(target)) {
+        // Enter in Label saves; other keys type.
+        if (action === "submit") {
+          e.preventDefault();
+          savePrompt();
+        }
+        return;
+      }
+      if (target && promptBox.editor.contains(target)) {
+        // Mod+Enter in Prompt saves; Enter is a new line.
+        if (modEnter) {
+          e.preventDefault();
+          savePrompt();
+        }
+        return;
+      }
+    }
     if (view === "save") {
       // Escape goes back to the answer; Mod+Enter saves; a plain Enter is
       // a new line in the comment (or the focused button's own key).
@@ -1179,6 +1788,99 @@ export function openInlineAskOverlay(
       },
     ],
   );
+  const onRootPointerDown = (e: Event) => {
+    swallowPillClick = false;
+    const menu = openMenu;
+    if (!menu) return;
+    const target = e.target as Node | null;
+    if (target && menu.node.contains(target)) return;
+    // The model and effort buttons toggle their own menu on click.
+    if (
+      menu.kind !== "prompt" &&
+      target &&
+      (modelLabel.contains(target) || effortLabel.contains(target))
+    )
+      return;
+    closeMenus();
+    if (menu.kind === "prompt" && target && pills.contains(target)) {
+      swallowPillClick = true;
+    }
+  };
+  const findPill = (target: unknown): HTMLElement | null => {
+    for (
+      let node = target as HTMLElement | null;
+      node && node !== pills;
+      node = node.parentNode as HTMLElement | null
+    ) {
+      if (
+        typeof node.getAttribute === "function" &&
+        node.getAttribute("data-llm-inline-ask-pill") !== null
+      )
+        return node;
+    }
+    return null;
+  };
+  const onPillsClick = (e: Event) => {
+    const pill = findPill(e.target);
+    if (!pill) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (swallowPillClick) {
+      swallowPillClick = false;
+      return;
+    }
+    // Pills belong to the first question; they hide after it. While the
+    // prompt editor is open a pill does not send.
+    if (!hasModel() || editingPrompt) return;
+    if (session.getState().phase !== "compose") return;
+    const prompt = shownPrompts.find(
+      (entry) => entry.id === pill.getAttribute("data-llm-inline-ask-pill"),
+    );
+    if (prompt) session.send(prompt.prompt, prompt.label);
+  };
+  const onPillsContextMenu = (e: Event) => {
+    if (!promptSetup || session.getState().phase !== "compose") return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pill = findPill(e.target);
+    const mouse = e as MouseEvent;
+    const rootRect = root.getBoundingClientRect();
+    openPromptMenu(
+      pill?.getAttribute("data-llm-inline-ask-pill") || null,
+      (Number(mouse.clientX) || rootRect.left) - rootRect.left,
+      (Number(mouse.clientY) || rootRect.top) - rootRect.top,
+    );
+  };
+  const onModelClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleModelMenu("model");
+  };
+  const onEffortClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleModelMenu("effort");
+  };
+  const onCancelPromptClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closePromptEditor(true);
+  };
+  const onSavePromptClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    savePrompt();
+  };
+  const focusBorder = (node: HTMLElement) => ({
+    focus: () => {
+      node.style.borderColor = palette.accent;
+    },
+    blur: () => {
+      node.style.borderColor = border;
+    },
+  });
+  const labelFocus = focusBorder(labelInput);
+  const promptFocus = focusBorder(promptBox.editor);
   const onEditorFocus = () => {
     field.style.borderColor = palette.accent;
   };
@@ -1214,6 +1916,20 @@ export function openInlineAskOverlay(
     editor.removeEventListener("focus", onEditorFocus);
     editor.removeEventListener("blur", onEditorBlur);
     textBox.detach();
+    root.removeEventListener("pointerdown", onRootPointerDown);
+    pills.removeEventListener("click", onPillsClick);
+    pills.removeEventListener("contextmenu", onPillsContextMenu);
+    if (picker) {
+      modelLabel.removeEventListener("click", onModelClick);
+      effortLabel.removeEventListener("click", onEffortClick);
+    }
+    cancelPromptBtn.removeEventListener("click", onCancelPromptClick);
+    savePromptBtn.removeEventListener("click", onSavePromptClick);
+    labelInput.removeEventListener("focus", labelFocus.focus);
+    labelInput.removeEventListener("blur", labelFocus.blur);
+    promptBox.editor.removeEventListener("focus", promptFocus.focus);
+    promptBox.editor.removeEventListener("blur", promptFocus.blur);
+    promptBox.detach();
     input.onClose?.();
   }
 
@@ -1247,6 +1963,20 @@ export function openInlineAskOverlay(
   editor.addEventListener("focus", onEditorFocus);
   editor.addEventListener("blur", onEditorBlur);
   textBox.attach();
+  root.addEventListener("pointerdown", onRootPointerDown);
+  pills.addEventListener("click", onPillsClick);
+  pills.addEventListener("contextmenu", onPillsContextMenu);
+  if (picker) {
+    modelLabel.addEventListener("click", onModelClick);
+    effortLabel.addEventListener("click", onEffortClick);
+  }
+  cancelPromptBtn.addEventListener("click", onCancelPromptClick);
+  savePromptBtn.addEventListener("click", onSavePromptClick);
+  labelInput.addEventListener("focus", labelFocus.focus);
+  labelInput.addEventListener("blur", labelFocus.blur);
+  promptBox.editor.addEventListener("focus", promptFocus.focus);
+  promptBox.editor.addEventListener("blur", promptFocus.blur);
+  promptBox.attach();
   // Deferred so focus lands after the popup's pointerdown handler finishes.
   schedule(() => {
     if (closed) return;

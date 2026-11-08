@@ -106,8 +106,10 @@ describe("createInlineAskTurnRunner", function () {
     const requests: ChatParams[] = [];
     let contextCalls = 0;
     const runTurn = createInlineAskTurnRunner({
-      target,
-      reasoning: { provider: "openai", level: "high" },
+      getModel: () => ({
+        target,
+        reasoning: { provider: "openai", level: "high" },
+      }),
       getContext: async () => {
         contextCalls += 1;
         return "CONTEXT";
@@ -162,7 +164,7 @@ describe("createInlineAskTurnRunner", function () {
 
   it("reports an empty answer as an error message", async function () {
     const runTurn = createInlineAskTurnRunner({
-      target,
+      getModel: () => ({ target }),
       getContext: async () => "",
       call: (async () => ({
         text: "",
@@ -176,6 +178,53 @@ describe("createInlineAskTurnRunner", function () {
     });
     assert.equal(result.text, "");
     assert.equal(result.errorMessage, "The model refused this request.");
+  });
+
+  it("reads the model for each turn, so a follow-up uses a newly chosen one", async function () {
+    const requests: ChatParams[] = [];
+    let current: { target: InlineAskModelTarget; reasoning?: any } = {
+      target,
+    };
+    const runTurn = createInlineAskTurnRunner({
+      getModel: () => current,
+      getContext: async () => "",
+      call: (async (request: ChatParams) => {
+        requests.push(request);
+        return { text: "ok", completion: { status: "complete" } };
+      }) as any,
+    });
+    await runTurn({ prompt: "Q1", history: [], onDelta: () => {} });
+    current = {
+      target: { ...target, model: "model-y", entryId: "entry-2" },
+      reasoning: { provider: "openai", level: "low" },
+    };
+    await runTurn({ prompt: "Q2", history: [], onDelta: () => {} });
+    assert.deepEqual(
+      requests.map((request) => request.model),
+      ["model-x", "model-y"],
+    );
+    assert.deepEqual(requests[1].reasoning, {
+      provider: "openai",
+      level: "low",
+    });
+    assert.strictEqual(requests[0].requestScope, requests[1].requestScope);
+  });
+
+  it("returns the no-model message when no model is chosen", async function () {
+    const runTurn = createInlineAskTurnRunner({
+      getModel: () => null,
+      getContext: async () => "",
+      noModelMessage: "No model.",
+      call: (async () => {
+        throw new Error("must not call");
+      }) as any,
+    });
+    const result = await runTurn({
+      prompt: "Q",
+      history: [],
+      onDelta: () => {},
+    });
+    assert.deepEqual(result, { text: "", errorMessage: "No model." });
   });
 
   it("asks briefly, in the user's language, without citation markers", function () {

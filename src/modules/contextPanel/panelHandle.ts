@@ -26,7 +26,7 @@ export type PanelHandle = {
   addTextContext(
     text: string,
     opts: {
-      source: "model" | "sidechat";
+      source: "model" | "sidechat" | "inlineask";
       focusInput?: boolean;
       question?: string;
     },

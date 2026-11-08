@@ -928,3 +928,460 @@ describe("Inline Ask continue in sidebar", function () {
     assert.equal(button.listenerCount("click"), 0);
   });
 });
+
+describe("Inline Ask prompt menu and editor", function () {
+  afterEach(() => closeAllReaderOverlays());
+
+  const promptLabels = {
+    edit: "Edit",
+    delete: "Delete",
+    add: "Add",
+    reset: "Reset",
+    label: "Label",
+    prompt: "Prompt, sent with the selected text",
+    cancel: "Cancel",
+    save: "Save",
+  };
+
+  /** An in-memory prompt list with the editing API the card calls. */
+  function memoryPrompts(cap = 20) {
+    let list = prompts.map((entry) => ({ ...entry }));
+    const calls: string[] = [];
+    let next = 0;
+    const api = {
+      list: () => list.map((entry) => ({ ...entry })),
+      canAdd: () => list.length < cap,
+      edit: (id: string, value: { label: string; prompt: string }) => {
+        calls.push(`edit:${id}:${value.label}:${value.prompt}`);
+        list = list.map((entry) =>
+          entry.id === id ? { id, ...value } : entry,
+        );
+      },
+      add: (value: { label: string; prompt: string }) => {
+        calls.push(`add:${value.label}:${value.prompt}`);
+        list.push({ id: `c${++next}`, ...value });
+        return true;
+      },
+      remove: (id: string) => {
+        calls.push(`remove:${id}`);
+        list = list.filter((entry) => entry.id !== id);
+      },
+      reset: () => {
+        calls.push("reset");
+        list = prompts.map((entry) => ({ ...entry }));
+      },
+    };
+    return { api, calls };
+  }
+
+  function openWithPrompts(cap?: number) {
+    const memory = memoryPrompts(cap);
+    const opened = open({
+      promptEditing: { api: memory.api, labels: promptLabels },
+    });
+    return { ...opened, memory };
+  }
+
+  const pill = (doc: any, id: string) => q(doc, "data-llm-inline-ask-pill", id);
+  const pillLabels = (doc: any) =>
+    q(doc, "data-llm-inline-ask-pills").children.map(
+      (node: any) => node.textContent,
+    );
+  const menuItems = (doc: any) => {
+    const menu = doc.body.querySelector("[data-llm-inline-ask-prompt-menu]");
+    if (!menu) return null;
+    return menu.children.map((node: any) => ({
+      action: node.attributes["data-llm-inline-ask-prompt-menu-item"],
+      text: node.textContent,
+      disabled: node.disabled,
+    }));
+  };
+  const menuItem = (doc: any, name: string) =>
+    q(doc, "data-llm-inline-ask-prompt-menu-item", name);
+  const labelInput = (doc: any) => q(doc, "data-llm-inline-ask-prompt-label");
+  const promptText = (doc: any) => q(doc, "data-llm-inline-ask-prompt-text");
+  const promptEditor = (doc: any) =>
+    q(doc, "data-llm-inline-ask-prompt-editor");
+
+  it("right-click on a pill offers Edit, Delete, Add and Reset", function () {
+    const { doc } = openWithPrompts();
+    const event = pill(doc, "define").dispatch("contextmenu", {
+      clientX: 40,
+      clientY: 90,
+    });
+    assert.isTrue(event.defaultPrevented, "the native menu does not open");
+    assert.deepEqual(menuItems(doc), [
+      { action: "edit", text: "Edit", disabled: false },
+      { action: "delete", text: "Delete", disabled: false },
+      { action: "add", text: "Add", disabled: false },
+      { action: "reset", text: "Reset", disabled: false },
+    ]);
+    const menu = doc.body.querySelector("[data-llm-inline-ask-prompt-menu]");
+    assert.equal(menu.attributes["data-llm-inline-ask-prompt-menu"], "define");
+    assert.equal(menu.style.position, "absolute");
+    assert.equal(menu.parentNode, doc.body.children[0], "inside the card");
+  });
+
+  it("right-click on the empty pill row offers Add and Reset", function () {
+    const { doc } = openWithPrompts();
+    q(doc, "data-llm-inline-ask-pills").dispatch("contextmenu", {});
+    assert.deepEqual(
+      menuItems(doc)!.map((item: any) => item.action),
+      ["add", "reset"],
+    );
+  });
+
+  it("Add is disabled when the card is full", function () {
+    const { doc } = openWithPrompts(3);
+    pill(doc, "explain").dispatch("contextmenu", {});
+    assert.isTrue(menuItem(doc, "add").disabled);
+  });
+
+  it("Edit opens the editor in the card; Enter in Label saves and re-renders", function () {
+    const { doc, memory, calls } = openWithPrompts();
+    pill(doc, "define").dispatch("contextmenu", {});
+    menuItem(doc, "edit").click();
+    assert.isNull(menuItems(doc), "the menu closes");
+    assert.isTrue(isFakeShown(promptEditor(doc)));
+    assert.isFalse(isFakeShown(q(doc, "data-llm-inline-ask-hint")));
+    const input = labelInput(doc);
+    assert.equal(input.tagName, "INPUT");
+    assert.equal(input.attributes.type, "text");
+    assert.equal(input.value, "Define terms");
+    assert.isTrue(input.focused);
+    const text = promptText(doc);
+    assert.equal(text.attributes.contenteditable, "true");
+    assert.equal(text.textContent, "Define the terms.");
+    assert.equal(pill(doc, "define").attributes["data-editing"], "true");
+    // A pill does not send while the editor is open.
+    pill(doc, "explain").click();
+    assert.lengthOf(calls, 0);
+
+    // Letters and digits type in the label: the card prevents nothing.
+    for (const k of ["h", "s", "1"]) {
+      assert.isFalse(input.dispatch("keydown", key(k)).defaultPrevented, k);
+    }
+    input.value = "Terms";
+    text.textContent = "List the terms.";
+    const enter = input.dispatch("keydown", key("Enter"));
+    assert.isTrue(enter.defaultPrevented);
+    assert.deepEqual(memory.calls, ["edit:define:Terms:List the terms."]);
+    assert.isFalse(isFakeShown(promptEditor(doc)));
+    assert.isTrue(isFakeShown(q(doc, "data-llm-inline-ask-hint")));
+    assert.deepEqual(pillLabels(doc), ["Explain", "Terms", "Translate"]);
+    assert.equal(pill(doc, "define").attributes.title, "List the terms.");
+    assert.isTrue(editorOf(doc).focused, "focus returns to the question");
+  });
+
+  it("Enter in Prompt is a new line; Mod+Enter saves an added prompt", function () {
+    const { doc, memory } = openWithPrompts();
+    q(doc, "data-llm-inline-ask-pills").dispatch("contextmenu", {});
+    menuItem(doc, "add").click();
+    assert.equal(labelInput(doc).value, "");
+    assert.equal(promptText(doc).textContent, "");
+    labelInput(doc).value = "Critique";
+    promptText(doc).textContent = "Critique it.";
+    const plain = promptText(doc).dispatch("keydown", key("Enter"));
+    assert.isFalse(plain.defaultPrevented, "a plain Enter is a new line");
+    assert.lengthOf(memory.calls, 0);
+    const save = promptText(doc).dispatch(
+      "keydown",
+      key("Enter", { metaKey: true }),
+    );
+    assert.isTrue(save.defaultPrevented);
+    assert.deepEqual(memory.calls, ["add:Critique:Critique it."]);
+    assert.deepEqual(pillLabels(doc), [
+      "Explain",
+      "Define terms",
+      "Translate",
+      "Critique",
+    ]);
+  });
+
+  it("Save with an empty field keeps the editor and focuses that field", function () {
+    const { doc, memory } = openWithPrompts();
+    q(doc, "data-llm-inline-ask-pills").dispatch("contextmenu", {});
+    menuItem(doc, "add").click();
+    labelInput(doc).focused = false;
+    q(doc, "data-llm-inline-ask-prompt-action", "save").click();
+    assert.isTrue(labelInput(doc).focused);
+    labelInput(doc).value = "Only label";
+    q(doc, "data-llm-inline-ask-prompt-action", "save").click();
+    assert.isTrue(promptText(doc).focused);
+    assert.lengthOf(memory.calls, 0);
+    assert.isTrue(isFakeShown(promptEditor(doc)));
+  });
+
+  it("Escape and Cancel close the editor and keep the card", function () {
+    const { doc, handle, memory, closedCount } = openWithPrompts();
+    pill(doc, "explain").dispatch("contextmenu", {});
+    menuItem(doc, "edit").click();
+    labelInput(doc).dispatch("keydown", key("Escape"));
+    assert.isFalse(isFakeShown(promptEditor(doc)));
+    assert.isTrue((handle.root as any).isConnected);
+    assert.equal(closedCount(), 0);
+
+    pill(doc, "explain").dispatch("contextmenu", {});
+    menuItem(doc, "edit").click();
+    q(doc, "data-llm-inline-ask-prompt-action", "cancel").click();
+    assert.isFalse(isFakeShown(promptEditor(doc)));
+    assert.lengthOf(memory.calls, 0);
+  });
+
+  it("Delete and Reset save at once and re-render the pills", function () {
+    const { doc, memory } = openWithPrompts();
+    pill(doc, "explain").dispatch("contextmenu", {});
+    menuItem(doc, "delete").click();
+    assert.deepEqual(pillLabels(doc), ["Define terms", "Translate"]);
+    q(doc, "data-llm-inline-ask-pills").dispatch("contextmenu", {});
+    menuItem(doc, "reset").click();
+    assert.deepEqual(pillLabels(doc), ["Explain", "Define terms", "Translate"]);
+    assert.deepEqual(memory.calls, ["remove:explain", "reset"]);
+  });
+
+  it("Escape closes an open menu before the card; a click elsewhere closes it", function () {
+    const { doc, handle, calls } = openWithPrompts();
+    pill(doc, "explain").dispatch("contextmenu", {});
+    editorOf(doc).dispatch("keydown", key("Escape"));
+    assert.isNull(menuItems(doc));
+    assert.isTrue((handle.root as any).isConnected, "the card stays");
+
+    // Pressing a pill while the menu is open only closes the menu.
+    pill(doc, "explain").dispatch("contextmenu", {});
+    pill(doc, "define").dispatch("pointerdown", {});
+    assert.isNull(menuItems(doc));
+    pill(doc, "define").click();
+    assert.lengthOf(calls, 0);
+    pill(doc, "define").dispatch("pointerdown", {});
+    pill(doc, "define").click();
+    assert.lengthOf(calls, 1, "the next click sends");
+  });
+
+  it("sending closes the editor and the menu", function () {
+    const { doc, calls } = openWithPrompts();
+    pill(doc, "explain").dispatch("contextmenu", {});
+    menuItem(doc, "edit").click();
+    type(doc, "A typed question");
+    editorOf(doc).dispatch("keydown", key("Enter"));
+    assert.lengthOf(calls, 1);
+    assert.isFalse(isFakeShown(promptEditor(doc)));
+    assert.isNull(menuItems(doc));
+  });
+
+  it("without prompt editing a right-click is left to the reader", function () {
+    const { doc } = open();
+    const event = pill(doc, "explain").dispatch("contextmenu", {});
+    assert.isFalse(event.defaultPrevented);
+    assert.isNull(menuItems(doc));
+  });
+
+  it("close removes the prompt listeners", function () {
+    const { doc, handle } = openWithPrompts();
+    const pills = q(doc, "data-llm-inline-ask-pills");
+    const input = labelInput(doc);
+    const text = promptText(doc);
+    handle.close();
+    assert.equal(pills.listenerCount("click"), 0);
+    assert.equal(pills.listenerCount("contextmenu"), 0);
+    assert.equal(input.listenerCount("focus"), 0);
+    assert.equal(text.listenerCount("input"), 0);
+    assert.equal((handle.root as any).listenerCount("pointerdown"), 0);
+  });
+});
+
+describe("Inline Ask model and effort menus", function () {
+  afterEach(() => closeAllReaderOverlays());
+
+  function fakePicker(note: string | null = null) {
+    const state = { entryId: "a", effort: "high" };
+    const picks: string[] = [];
+    const names: Record<string, string> = {
+      a: "Model A",
+      b: "Model B",
+      c: "Model C",
+    };
+    const picker = {
+      line: () => ({
+        label: names[state.entryId],
+        effort: state.effort,
+        title: `P · ${state.entryId}`,
+      }),
+      modelMenu: () => ({
+        note,
+        groups: [
+          {
+            label: "Provider 1",
+            options: ["a", "b"].map((id) => ({
+              entryId: id,
+              label: names[id],
+              title: `Provider 1 · ${id}`,
+              selected: id === state.entryId,
+            })),
+          },
+          {
+            label: "Provider 2",
+            options: [
+              {
+                entryId: "c",
+                label: names.c,
+                title: "Provider 2 · c",
+                selected: state.entryId === "c",
+              },
+            ],
+          },
+        ],
+      }),
+      pickModel: (id: string) => {
+        picks.push(`model:${id}`);
+        state.entryId = id;
+      },
+      effortMenu: () => ({
+        title: "Reasoning",
+        levels: ["auto", "low", "high"].map((value) => ({
+          value,
+          label: value,
+          selected: value === state.effort,
+        })),
+      }),
+      pickEffort: (value: string) => {
+        picks.push(`effort:${value}`);
+        state.effort = value;
+      },
+    };
+    return { picker, picks };
+  }
+
+  const modelMenu = (doc: any) =>
+    doc.body.querySelector("[data-llm-inline-ask-model-menu]");
+
+  it("the model opens the API models by provider with the one in use marked", function () {
+    const { picker } = fakePicker();
+    const { doc } = open({ modelPicker: picker });
+    const button = q(doc, "data-llm-inline-ask-model");
+    assert.equal(button.tagName, "BUTTON");
+    assert.equal(button.textContent, "Model A");
+    button.click();
+    const menu = modelMenu(doc);
+    assert.equal(menu.attributes["data-llm-inline-ask-model-menu"], "model");
+    assert.equal(button.attributes["aria-expanded"], "true");
+    assert.isNull(
+      menu.querySelector("[data-llm-inline-ask-model-note]"),
+      "no note in API mode",
+    );
+    assert.deepEqual(
+      menu.children.map((node: any) => [
+        node.attributes["data-llm-inline-ask-menu-section"]
+          ? "section"
+          : node.attributes["data-llm-inline-ask-model-option"],
+        node.textContent,
+        node.attributes["aria-checked"] || "",
+      ]),
+      [
+        ["section", "Provider 1", ""],
+        ["a", "Model A", "true"],
+        ["b", "Model B", "false"],
+        ["section", "Provider 2", ""],
+        ["c", "Model C", "false"],
+      ],
+    );
+    const selected = q(doc, "data-llm-inline-ask-model-option", "a");
+    assert.include(selected.style.border, "#3478f6", "accent border");
+  });
+
+  it("shows the note first when the sidebar cannot run here", function () {
+    const note =
+      "Claude Code runs only in the sidebar. Inline Ask uses an API model from this list.";
+    const { picker } = fakePicker(note);
+    const { doc } = open({ modelPicker: picker });
+    q(doc, "data-llm-inline-ask-model").click();
+    const first = modelMenu(doc).children[0];
+    assert.equal(first.attributes["data-llm-inline-ask-model-note"], "true");
+    assert.equal(first.textContent, note);
+  });
+
+  it("a pick updates the line, closes the menu and keeps the typed text", function () {
+    const { picker, picks } = fakePicker();
+    const { doc } = open({ modelPicker: picker });
+    type(doc, "half-typed question");
+    q(doc, "data-llm-inline-ask-model").click();
+    q(doc, "data-llm-inline-ask-model-option", "c").click();
+    assert.deepEqual(picks, ["model:c"]);
+    assert.isNull(modelMenu(doc));
+    assert.equal(q(doc, "data-llm-inline-ask-model").textContent, "Model C");
+    assert.equal(q(doc, "data-llm-inline-ask-model").attributes.title, "P · c");
+    assert.equal(editorOf(doc).textContent, "half-typed question");
+    assert.isFalse(sendOf(doc).disabled);
+    assert.isTrue(editorOf(doc).focused);
+  });
+
+  it("the effort opens the model's levels; a pick updates it", function () {
+    const { picker, picks } = fakePicker();
+    const { doc } = open({ modelPicker: picker });
+    q(doc, "data-llm-inline-ask-effort").click();
+    const menu = modelMenu(doc);
+    assert.equal(menu.attributes["data-llm-inline-ask-model-menu"], "effort");
+    assert.equal(menu.children[0].textContent, "Reasoning");
+    assert.deepEqual(
+      menu.children
+        .slice(1)
+        .map((node: any) => [
+          node.attributes["data-llm-inline-ask-effort-option"],
+          node.attributes["aria-checked"],
+        ]),
+      [
+        ["auto", "false"],
+        ["low", "false"],
+        ["high", "true"],
+      ],
+    );
+    q(doc, "data-llm-inline-ask-effort-option", "low").click();
+    assert.deepEqual(picks, ["effort:low"]);
+    assert.equal(q(doc, "data-llm-inline-ask-effort").textContent, "low");
+  });
+
+  it("a second click toggles the menu; the other button switches it; Escape closes it", function () {
+    const { picker } = fakePicker();
+    const { doc, handle } = open({ modelPicker: picker });
+    const model = q(doc, "data-llm-inline-ask-model");
+    model.dispatch("pointerdown", {});
+    model.click();
+    assert.isOk(modelMenu(doc));
+    model.dispatch("pointerdown", {});
+    model.click();
+    assert.isNull(modelMenu(doc));
+    model.click();
+    q(doc, "data-llm-inline-ask-effort").click();
+    assert.equal(
+      modelMenu(doc).attributes["data-llm-inline-ask-model-menu"],
+      "effort",
+    );
+    editorOf(doc).dispatch("keydown", key("Escape"));
+    assert.isNull(modelMenu(doc));
+    assert.isTrue((handle.root as any).isConnected);
+    // A pointerdown elsewhere in the card closes it too.
+    model.click();
+    q(doc, "data-llm-inline-ask-quote").dispatch("pointerdown", {});
+    assert.isNull(modelMenu(doc));
+  });
+
+  it("an outside pointerdown closes the menu and keeps a card with a conversation", async function () {
+    const { picker } = fakePicker();
+    const { doc, handle, calls } = open({ modelPicker: picker });
+    type(doc, "Q1");
+    editorOf(doc).dispatch("keydown", key("Enter"));
+    calls[0].resolve({ text: "A1" });
+    await flush();
+    q(doc, "data-llm-inline-ask-model").click();
+    doc.dispatch("pointerdown", { target: { nodeType: 1 } });
+    assert.isNull(modelMenu(doc));
+    assert.isTrue((handle.root as any).isConnected);
+  });
+
+  it("without a picker the line is display only", function () {
+    const { doc } = open();
+    const model = q(doc, "data-llm-inline-ask-model");
+    assert.equal(model.tagName, "SPAN");
+    model.click();
+    assert.isNull(modelMenu(doc));
+  });
+});

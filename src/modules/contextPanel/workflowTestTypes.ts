@@ -390,6 +390,41 @@ export type WorkflowTestReaderInlineAskCard = {
   placeholder: string;
   sidebarDisabled: boolean;
   saveDisabled: boolean;
+  /** The quick-prompt pills: id, label, and tooltip (the prompt). */
+  pills: Array<{ id: string; label: string; title: string }>;
+  hintShown: boolean;
+  promptEditorShown: boolean;
+  modelLabel: string;
+  effortLabel: string;
+};
+
+/** The card's right-click menu on a pill or the empty pill row. */
+export type WorkflowTestReaderInlineAskPromptMenu = {
+  /** The contextmenu event was cancelled (no native menu). */
+  defaultPrevented: boolean;
+  items: Array<{ action: string; text: string; disabled: boolean }>;
+};
+
+/** The card's prompt editor after typing into it and finishing. */
+export type WorkflowTestReaderInlineAskPromptEdit = {
+  /** What the editor showed when it opened. */
+  labelBefore: string;
+  promptBefore: string;
+  labelType: string;
+  promptContentEditable: string;
+  /** Typing keys in Label and Prompt; none may be prevented. */
+  keys: Array<{ field: string; key: string; defaultPrevented: boolean }>;
+  readerKeyStateBefore: string;
+  readerKeyStateAfter: string;
+  card: WorkflowTestReaderInlineAskCard;
+};
+
+/** The card's model or effort menu. */
+export type WorkflowTestReaderInlineAskModelMenu = {
+  kind: string;
+  note: string;
+  sections: string[];
+  options: Array<{ value: string; label: string; selected: boolean }>;
 };
 
 /** Zotero's annotation draft for a real selection, and where it came from. */
@@ -1940,6 +1975,32 @@ export type WorkflowTestApi = {
   }) => Promise<{ cardRemoved: boolean }>;
   /** Clicks Continue in sidebar; resolves when the card closed or says why not. */
   continueReaderInlineAskInSidebar: () => Promise<WorkflowTestReaderInlineAskContinue>;
+  /** Right-clicks a pill (or the empty pill row) and reads the menu. */
+  openReaderInlineAskPromptMenu: (input: {
+    pillId?: string;
+  }) => Promise<WorkflowTestReaderInlineAskPromptMenu>;
+  /** Clicks an item of the open pill menu ("edit", "delete", ...). */
+  clickReaderInlineAskPromptMenuItem: (
+    action: string,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /**
+   * In the open prompt editor: presses typing keys in both fields, fills
+   * Label and Prompt, and finishes with Enter in Label, Mod+Enter in Prompt,
+   * or the Save button.
+   */
+  editReaderInlineAskPrompt: (input: {
+    label: string;
+    prompt: string;
+    via: "enter-in-label" | "mod-enter-in-prompt" | "save-button";
+  }) => Promise<WorkflowTestReaderInlineAskPromptEdit>;
+  /** Clicks the model or effort button and reads the menu it opened. */
+  openReaderInlineAskModelMenu: (
+    kind: "model" | "effort",
+  ) => Promise<WorkflowTestReaderInlineAskModelMenu>;
+  /** Clicks an option (entry id or effort level) of the open model menu. */
+  pickReaderInlineAskMenuOption: (
+    value: string,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** The messages a workflow panel renders and stores for its conversation. */
   readPanelChatMessages: (
     panelId: string,

@@ -2,7 +2,9 @@
  * The model request behind an Inline Ask card: a short system message, the
  * paper and the selection as context, and the card's earlier turns as
  * history, streamed through the direct chat path (with its empty-output
- * recovery). One provider request scope serves every turn of one card.
+ * recovery). One provider request scope serves every turn of one card; the
+ * model is read for each turn, so a follow-up uses the model the user picked
+ * in the card since the last answer.
  * No usage is recorded and nothing is saved.
  */
 import type { ReasoningConfig } from "../../../shared/llm";
@@ -91,17 +93,26 @@ export async function resolveInlineAskSurroundingText(input: {
   }
 }
 
-export function createInlineAskTurnRunner(input: {
+export type InlineAskTurnModel = {
   target: InlineAskModelTarget;
   reasoning?: ReasoningConfig;
+};
+
+export function createInlineAskTurnRunner(input: {
+  /** The model and effort for the next turn; null when none can answer. */
+  getModel: () => InlineAskTurnModel | null;
   getContext: () => Promise<string>;
+  /** The card's answer when getModel gives null. */
+  noModelMessage?: string;
   /** Test seam: the streaming call. */
   call?: typeof callLLMStream;
 }): InlineAskTurnRunner {
-  const { target } = input;
   const requestScope: ProviderRequestScope = createProviderRequestScope();
   let context: Promise<string> | null = null;
   return async ({ prompt, history, signal, onDelta }) => {
+    const model = input.getModel();
+    if (!model) return { text: "", errorMessage: input.noModelMessage || "" };
+    const { target } = model;
     context ||= input.getContext().catch(() => "");
     const request: ChatParams = {
       prompt,
@@ -113,7 +124,7 @@ export function createInlineAskTurnRunner(input: {
       apiKey: target.apiKey,
       authMode: target.authMode,
       providerProtocol: target.providerProtocol,
-      reasoning: input.reasoning,
+      reasoning: model.reasoning,
       temperature: target.advanced?.temperature,
       outputTokenLimit: target.advanced?.outputTokenLimit,
       inputTokenCap: target.advanced?.inputTokenCap,

@@ -6,8 +6,8 @@
  *
  * Claude Code and Codex app-server chats keep their history in the
  * provider's own session, which never saw these turns; the panel attaches
- * them as a transcript to the first sidebar message instead (the side chat's
- * transcript format).
+ * them to the first sidebar message instead, as an "Inline Ask" transcript
+ * chip in the side chat's transcript format.
  */
 import type { StoredChatMessage } from "../../utils/chatStore";
 import type {
@@ -138,6 +138,9 @@ export function buildSeededConversationTitleSeed(
   const first = normalizeSeededTurns(turns)[0];
   return first ? normalizeConversationTitleSeed(first.text) : "";
 }
+
+/** The selected-text source of the handover chip ("Inline Ask"). */
+export const SEEDED_CONVERSATION_HANDOVER_SOURCE = "inlineask" as const;
 
 /** Claude Code and Codex app-server sessions never saw the turns. */
 export function seededConversationNeedsHandover(

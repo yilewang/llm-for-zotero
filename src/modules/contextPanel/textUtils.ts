@@ -91,8 +91,9 @@ export function normalizeSelectedText(
 ): string {
   const sanitized = sanitizeText(text);
   // Editing needs the selected characters, including paragraph boundaries;
-  // a side-chat transcript keeps its Q:/A: lines.
-  const keepsLineBreaks = source === "note-edit" || source === "sidechat";
+  // a side-chat or Inline Ask transcript keeps its Q:/A: lines.
+  const isTranscript = source === "sidechat" || source === "inlineask";
+  const keepsLineBreaks = source === "note-edit" || isTranscript;
   const normalized = keepsLineBreaks
     ? sanitized.replace(/\r\n?/g, "\n")
     : sanitized.replace(/\s+/g, " ");
@@ -100,7 +101,7 @@ export function normalizeSelectedText(
     .trim()
     .slice(
       0,
-      source === "sidechat"
+      isTranscript
         ? SIDECHAT_SELECTED_TEXT_MAX_LENGTH
         : SELECTED_TEXT_MAX_LENGTH,
     );
@@ -254,7 +255,9 @@ export function buildQuestionWithSelectedTextContexts(
             ? "note_editor"
             : source === "sidechat"
               ? "side_chat_transcript"
-              : "pdf_reader";
+              : source === "inlineask"
+                ? "inline_ask_transcript"
+                : "pdf_reader";
     const paperLabel =
       includePaperAttribution && source === "pdf"
         ? formatPaperCitationLabel(selectedTextPaperContexts[index])

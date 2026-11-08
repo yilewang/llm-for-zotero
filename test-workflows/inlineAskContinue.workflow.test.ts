@@ -290,7 +290,7 @@ describe("workflow: Inline Ask continue in sidebar", function () {
     const composer = await api.getDiagnostics(panel.panelId);
     assert.notInclude(
       composer.selectedContextLabels,
-      "Side chat",
+      "Inline Ask",
       "an API chat needs no handover",
     );
 
@@ -484,9 +484,10 @@ describe("workflow: Inline Ask continue in sidebar", function () {
     const composer = await api.getDiagnostics(panel.panelId);
     assert.include(
       composer.selectedContextLabels,
-      "Side chat",
-      `the turns wait in the composer: ${JSON.stringify(composer.selectedContextLabels)}`,
+      "Inline Ask",
+      `the turns wait in the composer as an Inline Ask chip: ${JSON.stringify(composer.selectedContextLabels)}`,
     );
+    assert.notInclude(composer.selectedContextLabels, "Side chat");
     const rows = await api.listPanelHistory(panel.panelId, { reopen: true });
     const row = rows.find(
       (entry) => entry.conversationKey === shown.conversationKey,

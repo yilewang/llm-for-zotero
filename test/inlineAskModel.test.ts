@@ -1,6 +1,9 @@
 import { assert } from "chai";
 import { describe, it } from "mocha";
 import {
+  buildInlineAskModelMenu,
+  inlineAskModelMenuNote,
+  pickInlineAskEffort,
   resolveInlineAskModelTarget,
   type InlineAskModelRuleInput,
 } from "../src/modules/contextPanel/selectionPrompt/inlineAskModel";
@@ -191,5 +194,135 @@ describe("resolveInlineAskModelTarget", function () {
     assert.isNull(
       resolveInlineAskModelTarget(input({ sidebarEntry: null, entries: [] })),
     );
+  });
+});
+
+describe("Inline Ask's own model choice", function () {
+  it("takes precedence over the rule", function () {
+    const target = resolveInlineAskModelTarget(
+      input({ chosenEntryId: "a", sidebarEntry: apiB }),
+    );
+    assert.equal(target?.source, "inline_choice");
+    assert.equal(target?.entryId, "a");
+    assert.equal(target?.model, "model-a");
+  });
+
+  it("wins in Claude Code and Codex app-server mode too", function () {
+    for (const conversationSystem of ["claude_code", "codex"]) {
+      const target = resolveInlineAskModelTarget(
+        input({
+          conversationSystem,
+          chosenEntryId: "b",
+          codexDirect: {
+            configured: true,
+            runtimeModel: "gpt-5.4",
+            isModelAvailable: () => true,
+          },
+        }),
+      );
+      assert.equal(target?.entryId, "b", conversationSystem);
+      assert.equal(target?.source, "inline_choice", conversationSystem);
+    }
+  });
+
+  it("falls back to the rule when the chosen entry is gone or not API-capable", function () {
+    const gone = entry("gone", {
+      authMode: "codex_auth",
+      catalogAvailability: "saved-unavailable",
+    });
+    for (const chosenEntryId of ["missing", "web", "app", "gone", ""]) {
+      const target = resolveInlineAskModelTarget(
+        input({
+          chosenEntryId,
+          entries: [webchat, appServer, gone, apiA, apiB],
+        }),
+      );
+      assert.equal(target?.source, "sidebar", chosenEntryId);
+      assert.equal(target?.entryId, "b", chosenEntryId);
+    }
+  });
+});
+
+describe("buildInlineAskModelMenu", function () {
+  it("lists API entries grouped by provider and marks the one in use", function () {
+    const a2 = entry("a2", { groupId: "group-a", providerLabel: "Provider a" });
+    const groups = buildInlineAskModelMenu(
+      [webchat, apiA, appServer, apiB, a2, codexDirect],
+      "a2",
+    );
+    assert.deepEqual(
+      groups.map((group) => [
+        group.label,
+        group.options.map((option) => [option.entryId, option.selected]),
+      ]),
+      [
+        [
+          "Provider a",
+          [
+            ["a", false],
+            ["a2", true],
+          ],
+        ],
+        ["Provider b", [["b", false]]],
+        ["Codex Direct (Legacy)", [["cd", false]]],
+      ],
+    );
+    assert.equal(groups[0].options[0].label, "Model a");
+    assert.equal(groups[0].options[0].title, "Provider a · model-a");
+  });
+
+  it("marks nothing when the model in use has no entry", function () {
+    const groups = buildInlineAskModelMenu([apiA], undefined);
+    assert.isFalse(groups[0].options[0].selected);
+  });
+});
+
+describe("inlineAskModelMenuNote", function () {
+  it("explains the list when the sidebar runs Claude Code or WebChat", function () {
+    assert.equal(
+      inlineAskModelMenuNote({
+        conversationSystem: "claude_code",
+        sidebarEntry: apiA,
+      }),
+      "claude_code",
+    );
+    assert.equal(
+      inlineAskModelMenuNote({
+        conversationSystem: "upstream",
+        sidebarEntry: webchat,
+      }),
+      "webchat",
+    );
+    assert.isNull(
+      inlineAskModelMenuNote({
+        conversationSystem: "upstream",
+        sidebarEntry: apiA,
+      }),
+    );
+    assert.isNull(
+      inlineAskModelMenuNote({
+        conversationSystem: "codex",
+        sidebarEntry: null,
+      }),
+    );
+  });
+});
+
+describe("pickInlineAskEffort", function () {
+  const levels = [
+    { value: "auto", label: "Auto" },
+    { value: "low", label: "Low" },
+    { value: "high", label: "High" },
+  ];
+  it("keeps a saved level the model offers", function () {
+    assert.equal(pickInlineAskEffort(levels, "high", "low"), "high");
+  });
+  it("uses the rule's level when the saved one is not offered", function () {
+    assert.equal(pickInlineAskEffort(levels, "xhigh", "low"), "low");
+    assert.equal(pickInlineAskEffort(levels, "", "low"), "low");
+  });
+  it("uses the first level when neither is offered", function () {
+    assert.equal(pickInlineAskEffort(levels, "max", "max"), "auto");
+    assert.equal(pickInlineAskEffort([], "high", "auto"), "auto");
   });
 });
