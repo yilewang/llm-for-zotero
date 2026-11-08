@@ -2,6 +2,7 @@ import { assert } from "chai";
 import {
   buildChunkIndex,
   buildDocumentOutline,
+  allowsChapterMap,
   chunkPlainPdfText,
 } from "../src/services/paperContent/pdfContext";
 import { buildIndexDocumentFromPdfContext } from "../src/services/libraryTextIndex/indexer";
@@ -9,7 +10,13 @@ import type {
   PdfChunkMeta,
   PdfContext,
 } from "../src/services/paperContent/types";
-import { DISSERTATION_PAGES, joinPages } from "./fixtures/longdoc/pageTexts";
+import {
+  BOOK_BOOKMARKS,
+  BOOK_LEADING_BLANK_PAGES,
+  BOOK_PAGES,
+  DISSERTATION_PAGES,
+  joinPages,
+} from "./fixtures/longdoc/pageTexts";
 
 const PAPER_TEXT = joinPages([
   [
@@ -235,5 +242,57 @@ describe("MinerU outline hierarchy", function () {
       assert.isUndefined(section.parentId);
       assert.deepEqual(section.childIds, []);
     }
+  });
+});
+
+describe("chapter map by item type", function () {
+  it("turns the map off for article types only", function () {
+    for (const type of [
+      "journalArticle",
+      "preprint",
+      "conferencePaper",
+      "magazineArticle",
+      "newspaperArticle",
+    ]) {
+      assert.isFalse(allowsChapterMap(type), type);
+    }
+    for (const type of ["book", "thesis", "report", undefined]) {
+      assert.isTrue(allowsChapterMap(type), String(type));
+    }
+  });
+
+  it("keeps pages, bookmark sections and the shift when chapters are off", function () {
+    const text = joinPages(DISSERTATION_PAGES.map((lines) => [...lines, BODY]));
+    const layout = { totalPages: DISSERTATION_PAGES.length };
+    const on = chunkPlainPdfText(text, "zotero-worker", {
+      layout,
+      structure: { bookmarks: null },
+    });
+    const off = chunkPlainPdfText(text, "zotero-worker", {
+      layout,
+      structure: { bookmarks: null, chapters: false },
+    });
+    assert.isDefined(on.documentStructure);
+    assert.isUndefined(off.documentStructure);
+    assert.deepEqual(off.chunks, on.chunks);
+    assert.deepEqual(off.chunkMeta, on.documentStructure?.plainChunkMeta);
+    assert.isDefined(off.textPages);
+    assert.isUndefined(off.textPageOffset);
+  });
+
+  it("keeps the bookmark sections and proven shift of a bookmarked book", function () {
+    const text = joinPages(BOOK_PAGES);
+    const layout = {
+      totalPages: BOOK_PAGES.length + BOOK_LEADING_BLANK_PAGES,
+    };
+    const base = { layout, structure: { bookmarks: BOOK_BOOKMARKS } };
+    const off = chunkPlainPdfText(text, "zotero-worker", {
+      ...base,
+      structure: { ...base.structure, chapters: false },
+    });
+    assert.isUndefined(off.documentStructure);
+    assert.isDefined(off.bookmarkSections);
+    assert.equal(off.textPageOffset?.pageOffset, BOOK_LEADING_BLANK_PAGES);
+    assert.isDefined(off.textPages);
   });
 });

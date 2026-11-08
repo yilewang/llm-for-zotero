@@ -26,6 +26,7 @@ import {
   BOOK_BOOKMARKS,
   BOOK_LEADING_BLANK_PAGES,
   BOOK_PAGES,
+  DISSERTATION_PAGES,
   joinPages,
 } from "./fixtures/longdoc/pageTexts";
 
@@ -45,11 +46,13 @@ type FakeFulltextCache = {
 };
 
 const PDF_PATH_PREFIX = "/zotero/storage/";
+const PARENT_ID_SHIFT = 50_000;
 
 function installZotero(options: {
   worker?: (itemId: number) => Promise<WorkerResult | null>;
   fulltext?: Record<number, FakeFulltextCache>;
   nonPdfIds?: number[];
+  parentTypes?: Record<number, string>;
   /** A PDF file's size and modification time; change one to replace it. */
   pdfFiles?: Record<number, { size: number; mtime: number }>;
 }): { workerCalls: number[]; pdfReads: string[]; restore: () => void } {
@@ -63,7 +66,7 @@ function installZotero(options: {
   const fulltext = options.fulltext || {};
   const attachment = (id: number) => ({
     id,
-    parentID: undefined,
+    parentID: options.parentTypes?.[id] ? id + PARENT_ID_SHIFT : undefined,
     attachmentContentType: options.nonPdfIds?.includes(id)
       ? "text/html"
       : "application/pdf",
@@ -77,7 +80,16 @@ function installZotero(options: {
   });
   g.Zotero = {
     Prefs: { get: () => undefined, set: () => undefined },
-    Items: { get: (id: number) => attachment(id) },
+    Items: {
+      get: (id: number) =>
+        id >= PARENT_ID_SHIFT
+          ? {
+              id,
+              itemType: options.parentTypes?.[id - PARENT_ID_SHIFT],
+              getField: () => "Parent",
+            }
+          : attachment(id),
+    },
     PDFWorker: {
       getFullText: async (itemId: number) => {
         workerCalls.push(itemId);
@@ -649,6 +661,28 @@ describe("page text of a PDF whose text lost blank leading pages", function () {
     assert.equal(warmed?.pages[0]?.text, "");
     assert.match(warmed?.pages[2]?.text || "", /^CONTENTS/);
     assert.match(warmed?.pages[3]?.text || "", /^Preface/);
+  });
+
+  it("loads a chaptered PDF without its map under an article parent, and with it under a book", async function () {
+    const body = "The argument continues with further detail. ".repeat(60);
+    const text = joinPages(DISSERTATION_PAGES.map((lines) => [...lines, body]));
+    const totalPages = DISSERTATION_PAGES.length;
+    const zotero = installZotero({
+      parentTypes: { 1020: "journalArticle", 1021: "book" },
+      worker: async () => ({ text, totalPages, extractedPages: totalPages }),
+    });
+    restore = zotero.restore;
+    const Z = (globalThis as any).Zotero;
+
+    await ensurePDFTextCached(Z.Items.get(1020));
+    await ensurePDFTextCached(Z.Items.get(1021));
+
+    assert.isUndefined(pdfTextCache.get(1020)?.documentStructure);
+    assert.isDefined(pdfTextCache.get(1021)?.documentStructure);
+    assert.deepEqual(
+      pdfTextCache.get(1020)?.chunks,
+      pdfTextCache.get(1021)?.chunks,
+    );
   });
 
   it("reads requested pages by the offset the paper's text store proved", async function () {

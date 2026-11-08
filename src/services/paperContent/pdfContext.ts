@@ -693,7 +693,14 @@ async function cachePDFText(
             pageChars: pdfWorkerPageChars,
             totalPages: pdfWorkerTotalPages,
           },
-          ...(structured ? { structure: { bookmarks } } : {}),
+          ...(structured
+            ? {
+                structure: {
+                  bookmarks,
+                  chapters: allowsChapterMap(mainItem?.itemType),
+                },
+              }
+            : {}),
         });
         seedPageText(plain.textPageOffset);
         // The proof names the file it was shown on, so a replaced PDF is
@@ -1874,6 +1881,19 @@ function textPageEntries(
   return entries;
 }
 
+/** Article item types read as whole text; they never get a chapter map. */
+const ARTICLE_ITEM_TYPES = new Set([
+  "journalArticle",
+  "preprint",
+  "conferencePaper",
+  "magazineArticle",
+  "newspaperArticle",
+]);
+
+export function allowsChapterMap(itemType: string | undefined): boolean {
+  return !itemType || !ARTICLE_ITEM_TYPES.has(itemType);
+}
+
 /**
  * Plain PDF text as chunks with their metadata: `buildChunkMetadata`, and,
  * with `structure` and a chaptered text (`detectDocumentStructure`), the
@@ -1891,7 +1911,11 @@ export function chunkPlainPdfText(
   sourceType: PdfContext["sourceType"],
   options: {
     layout?: PdfPageLayout;
-    structure?: { bookmarks?: PdfOutlineEntry[] | null };
+    structure?: {
+      bookmarks?: PdfOutlineEntry[] | null;
+      /** False turns off chapter detection only; default true. */
+      chapters?: boolean;
+    };
   } = {},
 ): Pick<
   PdfContext,
@@ -1936,6 +1960,7 @@ export function chunkPlainPdfText(
       ...shift,
     };
   };
+  if (options.structure.chapters === false) return unstructured();
   const detected = detectDocumentStructure({
     text,
     layout: options.layout,

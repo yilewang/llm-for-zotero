@@ -146,10 +146,15 @@ describe("workflow: long documents are read by their map", function () {
   let shortPaper: Fixture;
   let bookmarkedPaper: Fixture;
   let cacheOnly: Fixture;
+  let articleGuide: Fixture;
   const getFullText = Zotero.PDFWorker.getFullText;
 
-  async function importPdf(title: string, bytes: Uint8Array): Promise<Fixture> {
-    const parent = new Zotero.Item("book");
+  async function importPdf(
+    title: string,
+    bytes: Uint8Array,
+    parentType = "book",
+  ): Promise<Fixture> {
+    const parent = new Zotero.Item(parentType);
     parent.libraryID = Zotero.Libraries.userLibraryID;
     parent.setField("title", title);
     const parentItemId = Number(await parent.saveTx());
@@ -206,6 +211,16 @@ describe("workflow: long documents are read by their map", function () {
         pages: PAPER_PAGES,
         outline: PAPER_BOOKMARKS,
       }),
+    );
+    // The same chaptered pages under an article parent: no chapter map.
+    articleGuide = await importPdf(
+      `Field guide as a journal article ${stamp}`,
+      await createPdfWithOutline({
+        pages: BOOK_PAGES,
+        outline: BOOK_BOOKMARKS,
+        pageHeight: PAGE_HEIGHT,
+      }),
+      "journalArticle",
     );
     // Only Zotero's full-text cache holds this copy's text: the PDF worker
     // answers nothing for it.
@@ -412,6 +427,17 @@ describe("workflow: long documents are read by their map", function () {
     assert.notInclude(block, "Results p8 line");
     assert.include(block, "`>` blockquote");
     assert.isEmpty(prepared.quoteCitations);
+  });
+
+  it("keeps the whole-text preload for a chaptered PDF under an article parent", async function () {
+    const context = await new PdfService().ensurePaperContext(
+      articleGuide.paper,
+    );
+    assert.equal(context?.sourceType, "zotero-worker");
+    assert.isUndefined(context?.documentStructure);
+    const prepared = await preload(articleGuide);
+    assert.include(prepared.blocks[0], "Complete extracted paper text");
+    assert.include(prepared.blocks[0], "Results p8 line 3");
   });
 
   it("still preloads a short paper's whole text", async function () {
