@@ -52,12 +52,14 @@ function installZotero(options: {
   nonPdfIds?: number[];
   /** A PDF file's size and modification time; change one to replace it. */
   pdfFiles?: Record<number, { size: number; mtime: number }>;
-}): { workerCalls: number[]; restore: () => void } {
+}): { workerCalls: number[]; pdfReads: string[]; restore: () => void } {
   const g = globalThis as any;
   const originalZotero = g.Zotero;
   const originalZtoolkit = g.ztoolkit;
   const originalIOUtils = g.IOUtils;
   const workerCalls: number[] = [];
+  // A PDF's bytes are read only for its bookmarks.
+  const pdfReads: string[] = [];
   const fulltext = options.fulltext || {};
   const attachment = (id: number) => ({
     id,
@@ -119,12 +121,17 @@ function installZotero(options: {
       }
       return entry.text;
     },
+    read: async (path: string) => {
+      pdfReads.push(path);
+      throw new Error(`no PDF bytes in unit tests: ${path}`);
+    },
     write: async () => {
       throw new Error("the Zotero full-text cache must never be written");
     },
   };
   return {
     workerCalls,
+    pdfReads,
     restore: () => {
       for (const [key, value] of [
         ["Zotero", originalZotero],
@@ -791,5 +798,232 @@ describe("page text of a PDF whose text lost blank leading pages", function () {
 
     assert.deepEqual(zotero.workerCalls, []);
     assert.equal(warmed?.pages[2]?.text, PAGE_ONE);
+  });
+  describe("without a stored offset, the warm proves it from the bookmarks", function () {
+    const BOOK_TEXT = joinPages(BOOK_PAGES);
+    const BOOK_TOTAL = BOOK_PAGES.length + BOOK_LEADING_BLANK_PAGES;
+    const FILE = { size: 100, mtime: 1_000 };
+
+    // Bookmarks as a paper load of this file state read them; the warm
+    // reuses the same per-file read.
+    const seedBookmarks = async (
+      itemId: number,
+      file: { size: number; mtime: number },
+      entries: typeof BOOK_BOOKMARKS,
+    ) => {
+      let reads = 0;
+      await readPdfBookmarks(
+        itemId,
+        { path: `${PDF_PATH_PREFIX}${itemId}/paper.pdf`, ...file },
+        {
+          readOutline: async () => {
+            reads += 1;
+            return { status: "ok", pageCount: 0, entries };
+          },
+        },
+      );
+      return () => reads;
+    };
+    const bookmark = (title: string, pageIndex: number) => ({
+      depth: 0,
+      title,
+      pageIndex,
+      top: null,
+      fitsPage: false,
+    });
+
+    it("places PDFWorker text by the shift its bookmarks prove", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1010: FILE },
+        worker: async () => ({
+          text: BOOK_TEXT,
+          totalPages: BOOK_TOTAL,
+          extractedPages: BOOK_TOTAL,
+        }),
+      });
+      restore = zotero.restore;
+      const outlineReads = await seedBookmarks(1010, FILE, BOOK_BOOKMARKS);
+      assert.isFalse(pdfTextCache.has(1010));
+
+      const warmed = await warmPageTextCacheForAttachment(1010);
+
+      assert.equal(warmed?.pageCount, BOOK_TOTAL);
+      assert.equal(warmed?.pages[0]?.text, "");
+      assert.equal(warmed?.pages[1]?.text, "");
+      assert.match(warmed?.pages[2]?.text || "", /^CONTENTS/);
+      assert.match(warmed?.pages[3]?.text || "", /^Preface/);
+      assert.equal(outlineReads(), 1);
+      assert.deepEqual(zotero.pdfReads, []);
+      // The placed pages serve the next read.
+      await warmPageTextCacheForAttachment(1010);
+      assert.deepEqual(zotero.workerCalls, [1010]);
+    });
+
+    it("places a Zotero full-text cache that lost leading pages without PDFWorker", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1011: FILE },
+        fulltext: {
+          1011: {
+            text: BOOK_TEXT,
+            indexedPages: BOOK_TOTAL,
+            totalPages: BOOK_TOTAL,
+          },
+        },
+      });
+      restore = zotero.restore;
+      await seedBookmarks(1011, FILE, BOOK_BOOKMARKS);
+
+      const warmed = await warmPageTextCacheForAttachment(1011);
+
+      assert.deepEqual(zotero.workerCalls, []);
+      assert.equal(warmed?.pageCount, BOOK_TOTAL);
+      assert.match(warmed?.pages[2]?.text || "", /^CONTENTS/);
+      assert.match(warmed?.pages[3]?.text || "", /^Preface/);
+    });
+
+    it("refuses when the bookmarks place equally many titles under two shifts, or there are none", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1012: FILE, 1013: FILE },
+        worker: async () => ({
+          text: TRIMMED,
+          totalPages: 4,
+          extractedPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+      // Shifts 1 and 2 each put one title on its page.
+      await seedBookmarks(1012, FILE, [
+        bookmark("Representational drift", 1),
+        bookmark("Representational drift", 2),
+      ]);
+      await seedBookmarks(1013, FILE, []);
+
+      assert.isNull(await warmPageTextCacheForAttachment(1012));
+      assert.isNull(await warmPageTextCacheForAttachment(1013));
+    });
+
+    it("refuses without throwing when the bookmarks cannot be read", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1014: FILE },
+        worker: async () => ({
+          text: TRIMMED,
+          totalPages: 4,
+          extractedPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+
+      assert.isNull(await warmPageTextCacheForAttachment(1014));
+      assert.deepEqual(zotero.pdfReads, [`${PDF_PATH_PREFIX}1014/paper.pdf`]);
+    });
+
+    it("reads the bookmarks once when both text sources lost leading pages", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1019: FILE },
+        fulltext: { 1019: { text: TRIMMED, indexedPages: 4, totalPages: 4 } },
+        worker: async () => ({
+          text: TRIMMED,
+          totalPages: 4,
+          extractedPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+
+      assert.isNull(await warmPageTextCacheForAttachment(1019));
+      assert.deepEqual(zotero.workerCalls, [1019]);
+      assert.lengthOf(zotero.pdfReads, 1);
+    });
+
+    it("never reads bookmarks for text that has every page", async function () {
+      const text = pdfWorkerText([PAGE_ONE, PAGE_THREE]);
+      const zotero = installZotero({
+        pdfFiles: { 1015: FILE },
+        worker: async () => ({ text, totalPages: 2, extractedPages: 2 }),
+      });
+      restore = zotero.restore;
+
+      const warmed = await warmPageTextCacheForAttachment(1015);
+
+      assert.equal(warmed?.pages[1]?.text, PAGE_THREE);
+      assert.deepEqual(zotero.pdfReads, []);
+    });
+
+    it("never reads bookmarks for text that pageChars places", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1016: FILE },
+        worker: async () => ({
+          text: `${PAGE_ONE}${PAGE_THREE}`,
+          pageChars: [PAGE_ONE.length, PAGE_THREE.length],
+          totalPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+
+      const warmed = await warmPageTextCacheForAttachment(1016);
+
+      assert.equal(warmed?.pages[1]?.text, PAGE_THREE);
+      assert.deepEqual(zotero.pdfReads, []);
+    });
+
+    it("uses a stored offset for the same file instead of the bookmarks", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1017: FILE },
+        worker: async () => ({
+          text: TRIMMED,
+          totalPages: 4,
+          extractedPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+      // These bookmarks alone would put the first text page on page 1.
+      await seedBookmarks(1017, FILE, [bookmark("Representational drift", 1)]);
+      storeOffset(1017, { ...SHIFT, file: FILE });
+
+      const warmed = await warmPageTextCacheForAttachment(1017);
+
+      assert.equal(warmed?.pages[2]?.text, PAGE_ONE);
+      assert.equal(warmed?.pages[1]?.text, "");
+    });
+
+    it("proves the shift again when the stored offset was proven for a different part count", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1020: FILE },
+        worker: async () => ({
+          text: TRIMMED,
+          totalPages: 4,
+          extractedPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+      await seedBookmarks(1020, FILE, [bookmark("Representational drift", 1)]);
+      // Same file, but proven for 3 text parts; the text in hand has 2.
+      storeOffset(1020, { pageOffset: 2, textParts: 3, file: FILE });
+
+      const warmed = await warmPageTextCacheForAttachment(1020);
+
+      assert.equal(warmed?.pages[1]?.text, PAGE_ONE);
+      assert.equal(warmed?.pages[2]?.text, PAGE_THREE);
+    });
+
+    it("ignores a stored offset proven on another file and proves the shift again", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1018: { size: 120, mtime: 2_000 } },
+        worker: async () => ({
+          text: TRIMMED,
+          totalPages: 4,
+          extractedPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+      await seedBookmarks(1018, { size: 120, mtime: 2_000 }, [
+        bookmark("Representational drift", 1),
+      ]);
+      storeOffset(1018, { ...SHIFT, file: FILE });
+
+      const warmed = await warmPageTextCacheForAttachment(1018);
+
+      assert.equal(warmed?.pages[1]?.text, PAGE_ONE);
+      assert.equal(warmed?.pages[2]?.text, PAGE_THREE);
+    });
   });
 });

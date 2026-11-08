@@ -72,6 +72,15 @@ function getIOUtils(): FulltextIOUtils | null {
   );
 }
 
+/**
+ * The shift of form-feed text that may have lost blank leading pages, shown
+ * for that same text and its PDF's page count; undefined when none is shown.
+ */
+export type ProveTextPageOffset = (text: {
+  text: string;
+  totalPages: number;
+}) => Promise<TextPageOffset | undefined>;
+
 async function getModifiedTime(
   io: FulltextIOUtils,
   path: string,
@@ -84,12 +93,21 @@ async function getModifiedTime(
  * Read an attachment's Zotero full-text cache when it can stand in for a
  * fresh PDFWorker extraction. Returns null for anything that cannot be
  * verified: no cache, an unknown or mismatched page count, a cache older than
- * the PDF, or a read failure.
+ * the PDF, or a read failure. Text that lost blank leading pages is accepted
+ * with `textPageOffset`, or else with the shift `proveShift` shows for this
+ * same text; the result names the shift it was accepted with.
  */
 export async function readPageCompleteZoteroFulltextCache(
   attachmentId: number,
-  options: { textPageOffset?: TextPageOffset } = {},
-): Promise<{ text: string; totalPages: number } | null> {
+  options: {
+    textPageOffset?: TextPageOffset;
+    proveShift?: ProveTextPageOffset;
+  } = {},
+): Promise<{
+  text: string;
+  totalPages: number;
+  textPageOffset?: TextPageOffset;
+} | null> {
   try {
     const itemId = positiveInt(attachmentId);
     if (!itemId) return null;
@@ -120,17 +138,21 @@ export async function readPageCompleteZoteroFulltextCache(
     if (cacheModified === null || pdfModified === null) return null;
     if (cacheModified < pdfModified) return null;
     const text = await io.readUTF8(cachePath);
-    if (
-      !isPageCompleteZoteroFulltextCache({
+    const pageComplete = (textPageOffset?: TextPageOffset) =>
+      isPageCompleteZoteroFulltextCache({
         text,
         indexedPages: positiveInt(pages.indexedPages),
         totalPages,
-        textPageOffset: options.textPageOffset,
-      })
-    ) {
-      return null;
+        textPageOffset,
+      });
+    if (pageComplete(options.textPageOffset)) {
+      return { text, totalPages, textPageOffset: options.textPageOffset };
     }
-    return { text, totalPages };
+    const proven = await options.proveShift?.({ text, totalPages });
+    if (proven && pageComplete(proven)) {
+      return { text, totalPages, textPageOffset: proven };
+    }
+    return null;
   } catch (error) {
     appLogger.debug("LLM: Zotero full-text page cache unavailable", {
       attachmentId,

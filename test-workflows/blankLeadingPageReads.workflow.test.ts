@@ -6,6 +6,8 @@
  *   the shift from the bookmarks (`textPageOffset.pageOffset`);
  * - a page read puts each body page's own text on that PDF page, never a
  *   neighbour's;
+ * - a page read of a paper that was never loaded proves the shift itself from
+ *   the bookmarks, from PDFWorker's text and from Zotero's full-text cache;
  * - without bookmarks the shift cannot be proven, and the page read refuses
  *   rather than place text on the wrong page.
  */
@@ -16,6 +18,7 @@ import { PdfService } from "../src/agent/services/pdfService";
 import { PdfPageService } from "../src/agent/services/pdfPageService";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { paperTextStore } from "../src/services/paperContent/paperTextStore";
+import { clearPdfBookmarksCache } from "../src/services/paperContent/pdfBookmarks";
 import { clearPageTextCache } from "../src/services/pdf/livePdfSelectionLocator";
 import type { PaperContextRef } from "../src/shared/types";
 
@@ -43,6 +46,12 @@ const PAGES: string[][] = [
     ];
   }),
 ];
+
+/** One bookmark per body page, titled by the heading that opens it. */
+const OUTLINE = Array.from({ length: BODY_PAGES }, (_, index) => ({
+  title: `Heading ${BLANK_LEADING + index + 1} opens here`,
+  page: BLANK_LEADING + index,
+}));
 
 type Fixture = { paper: PaperContextRef; parentItemId: number; path: string };
 
@@ -105,13 +114,7 @@ describe("workflow: page reads on a PDF with blank leading pages", function () {
     assert.include(Zotero.DataDirectory.dir, ".scaffold/test/data");
     const fixture = await importPdf(
       `Blank leading pages ${Date.now()}`,
-      await createPdfWithOutline({
-        pages: PAGES,
-        outline: Array.from({ length: BODY_PAGES }, (_, index) => ({
-          title: `Heading ${BLANK_LEADING + index + 1} opens here`,
-          page: BLANK_LEADING + index,
-        })),
-      }),
+      await createPdfWithOutline({ pages: PAGES, outline: OUTLINE }),
     );
     assert.isFalse(paperTextStore.has(fixture.paper.contextItemId!));
 
@@ -170,6 +173,129 @@ describe("workflow: page reads on a PDF with blank leading pages", function () {
       pages: [0],
     });
     assert.equal(blank.pages[0].text.trim(), "");
+  });
+
+  it("proves the shift for a paper that was never loaded, from PDFWorker and from Zotero's full-text cache", async function () {
+    assert.include(Zotero.DataDirectory.dir, ".scaffold/test/data");
+    // The import queues a Zotero background index that calls
+    // Zotero.FullText.indexItems([id], { ignoreErrors: true }) about 5 s later
+    // and rewrites the cache file. This wrapper skips that call, so the cache
+    // phase is deterministic. Calls with { complete: true } and calls for other
+    // items go to the original. It stays in place for the whole case.
+    const indexItems = Zotero.Fulltext.indexItems;
+    let queuedAttachmentId: number | undefined;
+    Zotero.Fulltext.indexItems = async (...args: unknown[]) => {
+      const ids = args[0] as number[];
+      const options = (args[1] || {}) as { complete?: boolean };
+      if (
+        !options.complete &&
+        queuedAttachmentId !== undefined &&
+        Array.isArray(ids) &&
+        ids.length === 1 &&
+        ids[0] === queuedAttachmentId
+      ) {
+        return;
+      }
+      return indexItems.apply(Zotero.Fulltext, args);
+    };
+    try {
+      const fixture = await importPdf(
+        `Blank leading pages, never loaded ${Date.now()}`,
+        await createPdfWithOutline({ pages: PAGES, outline: OUTLINE }),
+      );
+      const attachmentId = fixture.paper.contextItemId!;
+      queuedAttachmentId = attachmentId;
+      const cachePath = Zotero.Fulltext.getItemCacheFile(
+        Zotero.Items.get(attachmentId),
+      ).path;
+
+      // Reads every page one at a time from a cold start (no stored text, page
+      // text or bookmarks) and counts the PDFWorker extractions it needed.
+      async function readEachPageCold(): Promise<number> {
+        assert.isFalse(paperTextStore.has(attachmentId), "never loaded");
+        clearPageTextCache();
+        clearPdfBookmarksCache();
+        const getFullText = Zotero.PDFWorker.getFullText;
+        let workerCalls = 0;
+        Zotero.PDFWorker.getFullText = (...args: unknown[]) => {
+          if (Number(args[0]) === attachmentId) workerCalls += 1;
+          return getFullText.apply(Zotero.PDFWorker, args);
+        };
+        try {
+          for (let pageIndex = 0; pageIndex < TOTAL_PAGES; pageIndex += 1) {
+            const result = await pageService().readPageTexts({
+              paperContext: fixture.paper,
+              request: request(fixture),
+              pages: [pageIndex],
+            });
+            const text = result.pages[0].text;
+            const pdfPage = pageIndex + 1;
+            if (pdfPage <= BLANK_LEADING) {
+              assert.equal(text.trim(), "", `blank page ${pdfPage}`);
+              continue;
+            }
+            assert.include(text, marker(pdfPage), `page ${pdfPage} own text`);
+            for (let other = BLANK_LEADING + 1; other <= TOTAL_PAGES; other++) {
+              if (other === pdfPage) continue;
+              assert.notInclude(
+                text,
+                marker(other),
+                `page ${pdfPage} holds page ${other}'s text`,
+              );
+            }
+          }
+        } finally {
+          Zotero.PDFWorker.getFullText = getFullText;
+        }
+        assert.isFalse(paperTextStore.has(attachmentId), "still never loaded");
+        return workerCalls;
+      }
+
+      // Once Zotero has indexed the PDF, its full-text cache serves the read.
+      // The wrapper above skips Zotero's queued index, so only this explicit
+      // call writes the cache. The mtime check below guards that.
+      await Zotero.Fulltext.indexItems([attachmentId], { complete: true });
+      assert.isTrue(await IOUtils.exists(cachePath), "Zotero wrote its cache");
+      const cachedText = await IOUtils.readUTF8(cachePath);
+      assert.isBelow(
+        cachedText.split("\f").length,
+        TOTAL_PAGES,
+        "the cache lost the blank leading pages",
+      );
+      const modifiedBefore = (await IOUtils.stat(cachePath)).lastModified;
+      const fromCache = await readEachPageCold();
+      const modifiedAfter = (await IOUtils.stat(cachePath)).lastModified;
+      console.log(
+        `Never-loaded read from the full-text cache: ${fromCache} extraction(s)`,
+      );
+      assert.equal(
+        modifiedAfter,
+        modifiedBefore,
+        "Zotero's queued index rewrote the cache during the read",
+      );
+      assert.equal(fromCache, 0, "the read used Zotero's full-text cache");
+
+      // Without a Zotero full-text cache entry the text comes from PDFWorker.
+      // The cache is hidden by a stub, not deleted, so a queued background
+      // index cannot bring it back.
+      const getPages = Zotero.Fulltext.getPages;
+      Zotero.Fulltext.getPages = async (...args: unknown[]) =>
+        Number(args[0]) === attachmentId
+          ? null
+          : getPages.apply(Zotero.Fulltext, args);
+      let fromWorker: number;
+      try {
+        fromWorker = await readEachPageCold();
+      } finally {
+        Zotero.Fulltext.getPages = getPages;
+      }
+      console.log(
+        `Never-loaded read from PDFWorker: ${fromWorker} extraction(s)`,
+      );
+      assert.isAbove(fromWorker, 0, "the read extracted the PDF");
+    } finally {
+      Zotero.Fulltext.indexItems = indexItems;
+    }
   });
 
   it("refuses the page read when no bookmarks prove the shift", async function () {

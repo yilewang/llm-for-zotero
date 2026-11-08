@@ -3,9 +3,14 @@ import { appLogger } from "../../core/logging";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
 import { clearCitationPageCache } from "./citationNavigationCache";
-import { readPageCompleteZoteroFulltextCache } from "./zoteroFulltextPageCache";
+import {
+  readPageCompleteZoteroFulltextCache,
+  type ProveTextPageOffset,
+} from "./zoteroFulltextPageCache";
 import type { TextPageOffset } from "../paperContent/types";
 import { paperTextStore } from "../paperContent/paperTextStore";
+import { readPdfBookmarks } from "../paperContent/pdfBookmarks";
+import { textPageOffset as bookmarkTextPageOffset } from "../paperContent/documentStructure";
 import {
   readAttachmentFileState,
   type AttachmentFileState,
@@ -2102,6 +2107,7 @@ export function splitPdfWorkerFullTextIntoPages(
 async function extractPageTextsFromPdfWorkerItemId(
   itemId: number,
   textPageOffset?: TextPageOffset,
+  proveShift?: ProveTextPageOffset,
 ): Promise<ExtractedPageTextIndexSource | null> {
   try {
     if (!Number.isFinite(itemId) || itemId <= 0) {
@@ -2118,9 +2124,25 @@ async function extractPageTextsFromPdfWorkerItemId(
       );
       return null;
     }
-    const extracted = splitPdfWorkerFullTextIntoPages(result, {
+    let extracted = splitPdfWorkerFullTextIntoPages(result, {
       textPageOffset,
     });
+    // `pageChars` places text without a shift.
+    const totalPages = positivePageCount(result.totalPages);
+    const formFeed = !(
+      Array.isArray(result.pageChars) && result.pageChars.length
+    );
+    if (!extracted && proveShift && formFeed && totalPages) {
+      const proven = await proveShift({
+        text: String(result.text),
+        totalPages,
+      });
+      if (proven) {
+        extracted = splitPdfWorkerFullTextIntoPages(result, {
+          textPageOffset: proven,
+        });
+      }
+    }
     if (!extracted) {
       appLogger.warn(
         "LLM quote-locator: PDFWorker — text could not be split into pages",
@@ -2147,14 +2169,16 @@ async function extractPageTextsFromPdfWorkerItemId(
 async function extractPageTextsFromZoteroFulltextCache(
   itemId: number,
   textPageOffset?: TextPageOffset,
+  proveShift?: ProveTextPageOffset,
 ): Promise<ExtractedPageTextIndexSource | null> {
   const cached = await readPageCompleteZoteroFulltextCache(itemId, {
     textPageOffset,
+    proveShift,
   });
   if (!cached) return null;
   return splitPdfWorkerFullTextIntoPages(
     { text: cached.text, totalPages: cached.totalPages },
-    { textPageOffset },
+    { textPageOffset: cached.textPageOffset },
   );
 }
 
@@ -2758,8 +2782,8 @@ export async function warmPageTextCacheForAttachment(
   const cachedTask = getCachedPageTextPromise(keys, !options?.yieldToMain);
   if (cachedTask) return cachedTask;
   // Text that lost blank leading pages is placed by the shift its bookmarks
-  // proved when the paper was loaded, whoever asks; without one the text is
-  // refused. A shift proven on another file is dropped.
+  // proved when the paper was loaded, whoever asks. A shift proven on another
+  // file is dropped.
   const proven =
     options?.textPageOffset ?? paperTextStore.peek(itemId)?.textPageOffset;
   const provenFile = proven?.file;
@@ -2770,6 +2794,33 @@ export async function warmPageTextCacheForAttachment(
         provenFile.mtime === (fileState?.mtime ?? null)))
       ? proven
       : undefined;
+  // Without one, the warm proves the shift as a paper load does, from the
+  // PDF's bookmarks (`readPdfBookmarks`) and this same text; without a proof
+  // the text is refused. Text with every page, or text an offset in hand was
+  // proven for, needs no proof.
+  let bookmarks: ReturnType<typeof readPdfBookmarks> | undefined;
+  const proveShift: ProveTextPageOffset = async ({ text, totalPages }) => {
+    const textParts = text.split("\f").length;
+    if (textParts < 2 || textParts >= totalPages) return undefined;
+    if (textPageOffset?.textParts === textParts) return undefined;
+    // One read per warm, even when both text sources need a proof.
+    bookmarks ??= readPdfBookmarks(itemId, fileState);
+    const pageOffset = bookmarkTextPageOffset({
+      text,
+      layout: { totalPages },
+      bookmarks: await bookmarks,
+    });
+    return pageOffset
+      ? {
+          pageOffset,
+          textParts,
+          file: {
+            size: fileState?.size ?? null,
+            mtime: fileState?.mtime ?? null,
+          },
+        }
+      : undefined;
+  };
 
   let foreground = false;
   let promote: (() => void) | undefined;
@@ -2788,8 +2839,13 @@ export async function warmPageTextCacheForAttachment(
         (await extractPageTextsFromZoteroFulltextCache(
           itemId,
           textPageOffset,
+          proveShift,
         )) ??
-        (await extractPageTextsFromPdfWorkerItemId(itemId, textPageOffset));
+        (await extractPageTextsFromPdfWorkerItemId(
+          itemId,
+          textPageOffset,
+          proveShift,
+        ));
       let coverage: PageTextCacheCoverage = "full-pdfworker";
       let sourceFingerprint: string | undefined;
       if (!extracted?.pages.length && reader) {
