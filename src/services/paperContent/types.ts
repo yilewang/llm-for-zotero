@@ -31,6 +31,13 @@ export type PdfContext = {
    * chat's load computes it; chunkMeta stays as it was.
    */
   bookmarkSections?: Pick<PdfDocumentStructure, "pageCount" | "sections">;
+  /**
+   * A plain PDF text that lost blank leading pages to Zotero's trimming:
+   * the shift its bookmarks prove (`textPageOffset`), with the number of
+   * text pages it was proven on. Only a chat's load computes it; page reads
+   * place text page `i` on PDF page `i + pageOffset` by it.
+   */
+  textPageOffset?: TextPageOffset;
   sourceType?:
     | "mineru"
     | "zotero-worker"
@@ -39,6 +46,21 @@ export type PdfContext = {
     | "attachment-html"
     | "attachment-txt"
     | "attachment-docx";
+};
+
+/**
+ * Text page `i` is PDF page `i + pageOffset`, proven for a text of
+ * `textParts` form-feed separated pages.
+ */
+export type TextPageOffset = {
+  pageOffset: number;
+  textParts: number;
+  /**
+   * The PDF file the shift was proven on. A page-text read applies the
+   * shift only to the file with this size and modification time; a
+   * replaced file is read without it. Absent: not checked.
+   */
+  file?: { size: number | null; mtime: number | null };
 };
 
 /** One section of a chaptered plain PDF's text, in document order. */

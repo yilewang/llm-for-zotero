@@ -320,17 +320,19 @@ function usableBookmarks(
 
 /**
  * Text pages lost at the front (blank pages Zotero trims) shift every
- * destination: the shift under which the most titles are on their page,
- * and how many titles it puts there.
+ * destination: the shift under which the most titles are on their page
+ * (the first such shift on a tie), how many titles it puts there, and
+ * whether no other shift puts as many there.
  */
 function alignBookmarks(
   normalizedPages: string[],
   pageCount: number,
   entries: PdfOutlineEntry[],
-): { pageOffset: number; score: number } {
+): { pageOffset: number; score: number; unique: boolean } {
   const missing = pageCount - normalizedPages.length;
   let pageOffset = 0;
   let bestScore = -1;
+  let unique = false;
   for (let shift = 0; shift <= missing; shift += 1) {
     let score = 0;
     for (const entry of entries) {
@@ -341,16 +343,18 @@ function alignBookmarks(
     if (score > bestScore) {
       bestScore = score;
       pageOffset = shift;
-    }
+      unique = true;
+    } else if (score === bestScore) unique = false;
   }
-  return { pageOffset, score: Math.max(0, bestScore) };
+  return { pageOffset, score: Math.max(0, bestScore), unique };
 }
 
 /**
  * The PDF page of the text's first page: 0 when the text has every page;
- * when it has fewer, the shift its bookmarks show (`alignBookmarks`). Null
- * when no shift can be shown: no bookmarks, none on its page, or more text
- * pages than the PDF has.
+ * when it has fewer, the shift its bookmarks show (`alignBookmarks`), only
+ * when that shift puts more titles on their page than any other. Null when
+ * no shift can be shown: no bookmarks, none on its page, two shifts that
+ * place equally many, or more text pages than the PDF has.
  */
 export function textPageOffset(params: {
   text: string;
@@ -364,14 +368,14 @@ export function textPageOffset(params: {
   if (pageCount === pages.length) return 0;
   const entries = usableBookmarks(params.bookmarks || [], pageCount);
   if (!entries.length) return null;
-  const { pageOffset, score } = alignBookmarks(
+  const { pageOffset, score, unique } = alignBookmarks(
     pages.map((page) =>
       normalizeForStructureMatch(params.text.slice(page.start, page.end)),
     ),
     pageCount,
     entries,
   );
-  return score > 0 ? pageOffset : null;
+  return score > 0 && unique ? pageOffset : null;
 }
 
 function structureFromBookmarks(

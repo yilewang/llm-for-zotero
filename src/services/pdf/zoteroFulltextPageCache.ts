@@ -10,6 +10,7 @@
  */
 import { appLogger } from "../../core/logging";
 import { isPdfContextAttachment } from "../paperContent/contextAttachmentSupport";
+import type { TextPageOffset } from "../paperContent/types";
 
 type ZoteroFulltextApi = {
   getItemCacheFile?: (item: Zotero.Item) => { path?: string } | null;
@@ -34,18 +35,28 @@ function positiveInt(value: unknown): number | null {
  * True when a full-text cache covers every page of its PDF with one form-feed
  * separated part per page. PDFWorker trims leading and trailing blank pages
  * from its text, so only an exact count proves that each part sits on the
- * page its position names.
+ * page its position names, unless the text's bookmarks proved how many
+ * leading pages it lost (`textPageOffset`) for text of this part count.
  */
 export function isPageCompleteZoteroFulltextCache(input: {
   text: string;
   indexedPages?: number | null;
   totalPages?: number | null;
+  textPageOffset?: TextPageOffset;
 }): boolean {
   const totalPages = positiveInt(input.totalPages);
   if (!totalPages || !input.text) return false;
   // Zotero indexes at most `fulltext.pdfMaxPages` pages.
   if (positiveInt(input.indexedPages) !== totalPages) return false;
-  return input.text.split("\f").length === totalPages;
+  const parts = input.text.split("\f").length;
+  if (parts === totalPages) return true;
+  const shift = input.textPageOffset;
+  return Boolean(
+    shift &&
+    shift.pageOffset > 0 &&
+    parts === shift.textParts &&
+    shift.pageOffset + parts <= totalPages,
+  );
 }
 
 function getZoteroFulltextApi(): ZoteroFulltextApi | null {
@@ -77,6 +88,7 @@ async function getModifiedTime(
  */
 export async function readPageCompleteZoteroFulltextCache(
   attachmentId: number,
+  options: { textPageOffset?: TextPageOffset } = {},
 ): Promise<{ text: string; totalPages: number } | null> {
   try {
     const itemId = positiveInt(attachmentId);
@@ -113,6 +125,7 @@ export async function readPageCompleteZoteroFulltextCache(
         text,
         indexedPages: positiveInt(pages.indexedPages),
         totalPages,
+        textPageOffset: options.textPageOffset,
       })
     ) {
       return null;

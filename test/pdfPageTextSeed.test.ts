@@ -5,6 +5,7 @@ import {
   hasCompleteSearchablePageTextForAttachment,
   seedPageTextCacheFromFullText,
   splitPdfWorkerFullTextIntoPages,
+  verifyQuoteLocationForAttachment,
   warmPageTextCacheForAttachment,
 } from "../src/services/pdf/livePdfSelectionLocator";
 import {
@@ -16,6 +17,17 @@ import {
   pdfTextCache,
   pdfTextLoadingTasks,
 } from "../src/services/paperContent/contextCache";
+import {
+  clearPdfBookmarksCache,
+  readPdfBookmarks,
+} from "../src/services/paperContent/pdfBookmarks";
+import { PdfPageService } from "../src/agent/services/pdfPageService";
+import {
+  BOOK_BOOKMARKS,
+  BOOK_LEADING_BLANK_PAGES,
+  BOOK_PAGES,
+  joinPages,
+} from "./fixtures/longdoc/pageTexts";
 
 type WorkerResult = {
   text: string;
@@ -490,5 +502,294 @@ describe("Zotero full-text cache as a page-text source", function () {
 
     assert.isNull(await readPageCompleteZoteroFulltextCache(904));
     assert.isNull(await readPageCompleteZoteroFulltextCache(905));
+  });
+});
+
+describe("page text of a PDF whose text lost blank leading pages", function () {
+  let restore = () => undefined as void;
+
+  afterEach(function () {
+    restore();
+    restore = () => undefined;
+    clearPageTextCache();
+    clearPdfBookmarksCache();
+    pdfTextCache.clear();
+    pdfTextLoadingTasks.clear();
+  });
+
+  // Two blank cover pages, then two text pages: Zotero trims the covers.
+  const TRIMMED = pdfWorkerText([PAGE_ONE, PAGE_THREE]);
+  const SHIFT = { pageOffset: 2, textParts: 2 };
+
+  it("places text part i on PDF page i + the proven offset, with the lost pages empty", function () {
+    const split = splitPdfWorkerFullTextIntoPages(
+      { text: TRIMMED, totalPages: 4, extractedPages: 4 },
+      { textPageOffset: SHIFT },
+    );
+    assert.deepEqual(
+      split?.pages.map((page) => [page.pageIndex, page.text]),
+      [
+        [0, ""],
+        [1, ""],
+        [2, PAGE_ONE],
+        [3, PAGE_THREE],
+      ],
+    );
+    assert.equal(split?.pageCount, 4);
+  });
+
+  it("lists trailing pages Zotero trimmed as empty, but not pages it never extracted", function () {
+    const trimmedEnd = splitPdfWorkerFullTextIntoPages(
+      { text: TRIMMED, totalPages: 5, extractedPages: 5 },
+      { textPageOffset: SHIFT },
+    );
+    assert.deepEqual(
+      trimmedEnd?.pages.map((page) => page.pageIndex),
+      [0, 1, 2, 3, 4],
+    );
+    assert.equal(trimmedEnd?.pages[4].text, "");
+    const limited = splitPdfWorkerFullTextIntoPages(
+      { text: TRIMMED, totalPages: 9, extractedPages: 4 },
+      { textPageOffset: SHIFT },
+    );
+    assert.deepEqual(
+      limited?.pages.map((page) => page.pageIndex),
+      [0, 1, 2, 3],
+    );
+    assert.equal(limited?.pageCount, 9);
+  });
+
+  it("ignores the offset and refuses the split when the part count differs from the text it was proven on", function () {
+    assert.isNull(
+      splitPdfWorkerFullTextIntoPages(
+        { text: TRIMMED, totalPages: 4, extractedPages: 4 },
+        { textPageOffset: { pageOffset: 2, textParts: 3 } },
+      ),
+    );
+  });
+
+  it("refuses an offset that would place text past the PDF's last page or past the extracted pages", function () {
+    assert.isNull(
+      splitPdfWorkerFullTextIntoPages(
+        { text: TRIMMED, totalPages: 3, extractedPages: 3 },
+        { textPageOffset: SHIFT },
+      ),
+    );
+    assert.isNull(
+      splitPdfWorkerFullTextIntoPages(
+        { text: TRIMMED, totalPages: 6, extractedPages: 3 },
+        { textPageOffset: SHIFT },
+      ),
+    );
+    assert.isNull(
+      splitPdfWorkerFullTextIntoPages(
+        { text: TRIMMED },
+        { textPageOffset: SHIFT },
+      ),
+      "without the PDF's page count no offset can be checked",
+    );
+  });
+
+  it("locates a quote from text page 0 on PDF page offset after a seed with the offset", async function () {
+    const zotero = installZotero({});
+    restore = zotero.restore;
+
+    const seeded = await seedPageTextCacheFromFullText(
+      1001,
+      { text: TRIMMED, totalPages: 4, extractedPages: 4 },
+      { textPageOffset: SHIFT },
+    );
+    assert.equal(seeded?.pageCount, 4);
+
+    const located = await verifyQuoteLocationForAttachment(1001, PAGE_ONE);
+    assert.equal(located.status, "resolved");
+    assert.equal(located.computedPageIndex, 2);
+  });
+
+  it("seeds the offset-aware pages from a chat's load of a bookmarked book", async function () {
+    const text = joinPages(BOOK_PAGES);
+    const totalPages = BOOK_PAGES.length + BOOK_LEADING_BLANK_PAGES;
+    const pdfFiles = { 1002: { size: 100, mtime: 1_000 } };
+    const zotero = installZotero({
+      pdfFiles,
+      worker: async () => ({ text, totalPages, extractedPages: totalPages }),
+    });
+    restore = zotero.restore;
+    // The book's bookmarks, as the reader of this file state answers them.
+    await readPdfBookmarks(
+      1002,
+      { path: `${PDF_PATH_PREFIX}1002/paper.pdf`, size: 100, mtime: 1_000 },
+      {
+        readOutline: async () => ({
+          status: "ok",
+          pageCount: totalPages,
+          entries: BOOK_BOOKMARKS,
+        }),
+      },
+    );
+    const item = (globalThis as any).Zotero.Items.get(1002);
+
+    await ensurePDFTextCached(item);
+    assert.deepEqual(pdfTextCache.get(1002)?.textPageOffset, {
+      pageOffset: BOOK_LEADING_BLANK_PAGES,
+      textParts: BOOK_PAGES.length,
+      file: { size: 100, mtime: 1_000 },
+    });
+    const warmed = await warmPageTextCacheForAttachment(1002);
+
+    assert.deepEqual(zotero.workerCalls, [1002]);
+    assert.equal(warmed?.pageCount, totalPages);
+    assert.equal(warmed?.pages[0]?.text, "");
+    assert.match(warmed?.pages[2]?.text || "", /^CONTENTS/);
+    assert.match(warmed?.pages[3]?.text || "", /^Preface/);
+  });
+
+  it("reads requested pages by the offset the paper's text store proved", async function () {
+    const zotero = installZotero({
+      worker: async () => ({ text: TRIMMED, totalPages: 4, extractedPages: 4 }),
+    });
+    restore = zotero.restore;
+    pdfTextCache.set(1003, {
+      title: "Book",
+      chunks: [PAGE_ONE, PAGE_THREE],
+      chunkMeta: [],
+      chunkStats: [],
+      docFreq: {},
+      avgChunkLength: 0,
+      fullLength: TRIMMED.length,
+      sourceType: "zotero-worker",
+      textPageOffset: SHIFT,
+    });
+    const service = new PdfPageService({} as never, {} as never);
+    service.resolveTarget = async () => ({
+      source: "library",
+      title: "Book",
+      mimeType: "application/pdf",
+      storedPath: `${PDF_PATH_PREFIX}1003/paper.pdf`,
+      contextItemId: 1003,
+      itemId: 1000,
+    });
+
+    const read = await service.readPageTexts({
+      request: {
+        conversationKey: 1,
+        mode: "agent",
+        userText: "",
+        libraryID: 1,
+      },
+      contextItemId: 1003,
+      pages: [2, 3],
+    } as never);
+
+    assert.deepEqual(
+      read.pages.map((page) => [page.pageIndex, page.text]),
+      [
+        [2, PAGE_ONE],
+        [3, PAGE_THREE],
+      ],
+    );
+  });
+
+  const storeOffset = (
+    itemId: number,
+    textPageOffset: typeof SHIFT & { file?: unknown },
+  ) =>
+    pdfTextCache.set(itemId, {
+      title: "Book",
+      chunks: [PAGE_ONE, PAGE_THREE],
+      chunkMeta: [],
+      chunkStats: [],
+      docFreq: {},
+      avgChunkLength: 0,
+      fullLength: TRIMMED.length,
+      sourceType: "zotero-worker",
+      textPageOffset,
+    } as never);
+
+  it("places pages by the stored offset when an offset-less warm is already in flight", async function () {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const zotero = installZotero({
+      worker: async () => {
+        await gate;
+        return { text: TRIMMED, totalPages: 4, extractedPages: 4 };
+      },
+    });
+    restore = zotero.restore;
+    storeOffset(1006, SHIFT);
+    // A quote check starts the warm without an offset.
+    const first = warmPageTextCacheForAttachment(1006);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // A page read joins it.
+    const second = warmPageTextCacheForAttachment(1006, {
+      textPageOffset: SHIFT,
+    });
+    release();
+
+    assert.equal((await first)?.pages[2]?.text, PAGE_ONE);
+    assert.equal((await second)?.pages[2]?.text, PAGE_ONE);
+    assert.lengthOf(zotero.workerCalls, 1);
+  });
+
+  it("applies a stored offset to a quote check without the caller passing it", async function () {
+    const zotero = installZotero({
+      worker: async () => ({ text: TRIMMED, totalPages: 4, extractedPages: 4 }),
+    });
+    restore = zotero.restore;
+    storeOffset(1007, SHIFT);
+    assert.equal(
+      (await warmPageTextCacheForAttachment(1007))?.pages[3]?.text,
+      PAGE_THREE,
+    );
+  });
+
+  it("reads a replaced file without the offset proven on the old one", async function () {
+    const pdfFiles = { 1008: { size: 100, mtime: 1_000 } };
+    const zotero = installZotero({
+      pdfFiles,
+      worker: async () => ({ text: TRIMMED, totalPages: 4, extractedPages: 4 }),
+    });
+    restore = zotero.restore;
+    storeOffset(1008, { ...SHIFT, file: { size: 100, mtime: 1_000 } });
+    // The same file keeps its offset.
+    assert.equal(
+      (await warmPageTextCacheForAttachment(1008))?.pages[2]?.text,
+      PAGE_ONE,
+    );
+    // The file is replaced: the page text is refused, not misplaced.
+    clearPageTextCache();
+    pdfFiles[1008] = { size: 120, mtime: 2_000 };
+    assert.isNull(await warmPageTextCacheForAttachment(1008));
+    assert.isNull(
+      await warmPageTextCacheForAttachment(1008, {
+        textPageOffset: {
+          ...SHIFT,
+          file: { size: 100, mtime: 1_000 },
+        },
+      }),
+    );
+  });
+
+  it("still refuses the page text without a proven offset", async function () {
+    const zotero = installZotero({
+      worker: async () => ({ text: TRIMMED, totalPages: 4, extractedPages: 4 }),
+    });
+    restore = zotero.restore;
+    assert.isNull(await warmPageTextCacheForAttachment(1004));
+  });
+
+  it("accepts a Zotero full-text cache that lost blank leading pages only with the proven offset", async function () {
+    const zotero = installZotero({
+      fulltext: { 1005: { text: TRIMMED, indexedPages: 4, totalPages: 4 } },
+    });
+    restore = zotero.restore;
+
+    assert.isNull(await readPageCompleteZoteroFulltextCache(1005));
+    const warmed = await warmPageTextCacheForAttachment(1005, {
+      textPageOffset: SHIFT,
+    });
+
+    assert.deepEqual(zotero.workerCalls, []);
+    assert.equal(warmed?.pages[2]?.text, PAGE_ONE);
   });
 });

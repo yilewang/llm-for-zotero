@@ -3,6 +3,7 @@ import {
   BEFORE_FIRST_SECTION_TITLE,
   detectDocumentStructure,
   splitPdfTextPages,
+  textPageOffset,
   type DetectedDocumentStructure,
   type PdfOutlineEntry,
 } from "../src/services/paperContent/documentStructure";
@@ -1030,6 +1031,61 @@ describe("document structure of plain PDF text", function () {
         ["Contents", "Introduction", "Methods", "Results"],
       );
       assert.isNotNull(glued);
+    });
+  });
+
+  describe("the PDF page of the text's first page", function () {
+    it("is the shift the bookmarks show past trimmed blank pages", function () {
+      assert.equal(
+        textPageOffset({
+          text: joinPages(BOOK_PAGES),
+          layout: { totalPages: BOOK_PAGES.length + BOOK_LEADING_BLANK_PAGES },
+          bookmarks: BOOK_BOOKMARKS,
+        }),
+        BOOK_LEADING_BLANK_PAGES,
+      );
+    });
+
+    it("is unknown when two shifts put equally many titles on their page", function () {
+      // Both text pages carry the title, so shift 0 and shift 1 each put
+      // it on its page: the bookmarks prove neither.
+      const text = joinPages([
+        ["Alpha", "First body."],
+        ["Alpha", "Second body."],
+      ]);
+      assert.isNull(
+        textPageOffset({
+          text,
+          layout: { totalPages: 3 },
+          bookmarks: [
+            {
+              depth: 0,
+              title: "Alpha",
+              pageIndex: 1,
+              top: null,
+              fitsPage: false,
+            },
+          ],
+        }),
+      );
+    });
+
+    it("is unknown when no title is on its page under any shift", function () {
+      assert.isNull(
+        textPageOffset({
+          text: joinPages([["First body."], ["Second body."]]),
+          layout: { totalPages: 3 },
+          bookmarks: [
+            {
+              depth: 0,
+              title: "Gamma",
+              pageIndex: 1,
+              top: null,
+              fitsPage: false,
+            },
+          ],
+        }),
+      );
     });
   });
 

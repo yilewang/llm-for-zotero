@@ -72,6 +72,7 @@ import type {
   PdfChunkMeta,
   PdfChunkKind,
   RetrievalExplanation,
+  TextPageOffset,
 } from "./types";
 import type {
   PaperContentSourceMode,
@@ -417,6 +418,13 @@ async function cachePDFText(
 ) {
   if (paperTextStore.has(item.id)) return;
 
+  // Hands the PDFWorker text this load read to the page-text cache, once;
+  // `textPageOffset` places text that lost blank leading pages.
+  let seedPageText: (textPageOffset?: TextPageOffset) => void = () => {};
+  // The PDF file the worker text was read from (null if unknown).
+  const workerFileState: {
+    current: Awaited<ReturnType<typeof readAttachmentFileState>>;
+  } = { current: null };
   try {
     const requestedTextAttachmentMode =
       options?.sourceMode === "markdown" ||
@@ -478,6 +486,7 @@ async function cachePDFText(
         const fileState = options?.preferFulltextCache
           ? null
           : await readAttachmentFileState(pdfItem);
+        workerFileState.current = fileState;
         // Read beside the text extraction; a PDF without bookmarks or one
         // that cannot be read answers null.
         if (wantStructure)
@@ -506,11 +515,20 @@ async function cachePDFText(
           // Background library indexing reads papers no chat is quoting and
           // would only evict the pages a chat needs.
           if (!options?.preferFulltextCache) {
-            void seedPageTextCacheFromFullText(pdfItem.id, result, {
-              fileState,
-            }).catch((error) => {
-              appLogger.debug("LLM: PDF page text seed failed", error);
-            });
+            let seeded = false;
+            seedPageText = (textPageOffset) => {
+              if (seeded) return;
+              seeded = true;
+              void seedPageTextCacheFromFullText(pdfItem.id, result, {
+                fileState,
+                ...(textPageOffset ? { textPageOffset } : {}),
+              }).catch((error) => {
+                appLogger.debug("LLM: PDF page text seed failed", error);
+              });
+            };
+            // A chat's load seeds once the bookmarks have shown whether the
+            // text lost blank leading pages (after structure detection).
+            if (!wantStructure) seedPageText();
           }
         }
       } catch (e) {
@@ -577,6 +595,7 @@ async function cachePDFText(
       let documentStructure: PdfDocumentStructure | undefined;
       let textPages: PdfContext["textPages"];
       let bookmarkSections: PdfContext["bookmarkSections"];
+      let textPageOffsetProof: PdfContext["textPageOffset"];
 
       // Section-aware chunking: slice from the raw markdown (offsets match raw
       // full.md), build metadata from the raw chunks, then convert HTML tables
@@ -665,7 +684,10 @@ async function cachePDFText(
         const bookmarks = structured ? await (bookmarksRead || null) : null;
         // A cancelled load stores nothing: its bookmark read may have been
         // cut short, and the next load must find the same structure.
-        if (options?.signal?.aborted) return;
+        if (options?.signal?.aborted) {
+          seedPageText();
+          return;
+        }
         const plain = chunkPlainPdfText(pdfText, sourceType, {
           layout: {
             pageChars: pdfWorkerPageChars,
@@ -673,6 +695,18 @@ async function cachePDFText(
           },
           ...(structured ? { structure: { bookmarks } } : {}),
         });
+        seedPageText(plain.textPageOffset);
+        // The proof names the file it was shown on, so a replaced PDF is
+        // not placed by it.
+        textPageOffsetProof = plain.textPageOffset
+          ? {
+              ...plain.textPageOffset,
+              file: {
+                size: workerFileState.current?.size ?? null,
+                mtime: workerFileState.current?.mtime ?? null,
+              },
+            }
+          : undefined;
         chunks = plain.chunks;
         chunkMeta = plain.chunkMeta;
         documentStructure = plain.documentStructure;
@@ -692,6 +726,7 @@ async function cachePDFText(
         ...(documentStructure ? { documentStructure } : {}),
         ...(textPages ? { textPages } : {}),
         ...(bookmarkSections ? { bookmarkSections } : {}),
+        ...(textPageOffsetProof ? { textPageOffset: textPageOffsetProof } : {}),
         sourceType,
       });
     } else {
@@ -706,6 +741,7 @@ async function cachePDFText(
       });
     }
   } catch (e) {
+    seedPageText();
     appLogger.warn("Error caching PDF:", formatErrorForLog(e), e);
     paperTextStore.write(item.id, {
       title: "",
@@ -1810,17 +1846,16 @@ function fitStructureToChunks(
 /**
  * The PDF's pages, each with its size and first line, from the text's own
  * page split. Pages the text lacks (blank pages Zotero trims) are listed
- * empty, placed by the shift the bookmarks show (`textPageOffset`). Null
- * when no shift can be shown.
+ * empty, placed by the shift the bookmarks show (`pageOffset`, from
+ * `textPageOffset`). Null when no shift can be shown.
  */
 function textPageEntries(
   text: string,
   layout: PdfPageLayout | undefined,
-  bookmarks: PdfOutlineEntry[] | null | undefined,
+  pageOffset: number | null,
 ): Array<{ tokens: number; firstLine: string }> | null {
   const pages = splitPdfTextPages(text, layout);
   if (!pages?.length) return null;
-  const pageOffset = textPageOffset({ text, layout, bookmarks });
   if (pageOffset === null) return null;
   const pageCount = layout?.totalPages ?? pages.length;
   const blank = { tokens: 0, firstLine: "" };
@@ -1848,7 +1883,8 @@ function textPageEntries(
  * the library index stores. Without `structure` (background indexing) the
  * result is `buildChunkMetadata`'s alone; with it, an unchaptered text adds
  * only its `textPages` (`textPageEntries`) and, with usable bookmarks, its
- * `bookmarkSections` (`bookmarkSectionTree`).
+ * `bookmarkSections` (`bookmarkSectionTree`). With it, a text that lost
+ * blank leading pages also carries the `textPageOffset` its bookmarks prove.
  */
 export function chunkPlainPdfText(
   text: string,
@@ -1864,6 +1900,7 @@ export function chunkPlainPdfText(
   | "documentStructure"
   | "textPages"
   | "bookmarkSections"
+  | "textPageOffset"
 > {
   const chunks = splitIntoChunks(text, CHUNK_TARGET_LENGTH);
   const chunkMeta = buildChunkMetadata(chunks, sourceType, {
@@ -1871,12 +1908,18 @@ export function chunkPlainPdfText(
     pageChars: options.layout?.pageChars,
   });
   if (!options.structure) return { chunks, chunkMeta };
+  const pageOffset = textPageOffset({
+    text,
+    layout: options.layout,
+    bookmarks: options.structure.bookmarks,
+  });
+  const textParts = splitPdfTextPages(text, options.layout)?.length ?? 0;
+  // Only a proven shift past lost pages; a text with every page needs none.
+  const shift: Pick<PdfContext, "textPageOffset"> = pageOffset
+    ? { textPageOffset: { pageOffset, textParts } }
+    : {};
   const unstructured = () => {
-    const textPages = textPageEntries(
-      text,
-      options.layout,
-      options.structure?.bookmarks,
-    );
+    const textPages = textPageEntries(text, options.layout, pageOffset);
     const tree = bookmarkSectionTree({
       text,
       layout: options.layout,
@@ -1890,6 +1933,7 @@ export function chunkPlainPdfText(
       ...(tree && sections.length
         ? { bookmarkSections: { pageCount: tree.pageCount, sections } }
         : {}),
+      ...shift,
     };
   };
   const detected = detectDocumentStructure({
@@ -1942,6 +1986,7 @@ export function chunkPlainPdfText(
       sections,
       plainChunkMeta: chunkMeta,
     },
+    ...shift,
   };
 }
 
