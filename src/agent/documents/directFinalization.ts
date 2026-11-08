@@ -1,9 +1,23 @@
 import type { TrustedReadObservation } from "../context/readObservationTypes";
+import {
+  citableOutsidePapers,
+  findOutsidePaperRecord,
+  outsidePaperCitationRefusal,
+  type OutsidePaperHolder,
+} from "../context/outsidePaperRecords";
 import { expandEvidenceRefs } from "../context/evidenceRefTokens";
 import type { ZoteroGateway } from "../services/zoteroGateway";
+import { LiteratureSearchService } from "../services/literatureSearchService";
 import type { AgentRuntimeRequest, AgentToolArtifact } from "../types";
-import type { DocumentCitationEvidence } from "./citationService";
+import type {
+  DocumentCitationCorpusItem,
+  DocumentCitationEvidence,
+} from "./citationService";
 import { finalizeDocument, persistFinalizedDocument } from "./finalizer";
+import {
+  buildOutsidePaperSnapshots,
+  type OutsidePaperMetadataLookup,
+} from "./outsidePaperCitations";
 import {
   directDocumentId,
   loadDocumentForRunByContentHash,
@@ -11,16 +25,45 @@ import {
   loadPlanDocumentOutbox,
   nextDirectDocumentSequence,
 } from "./store";
-import type {
-  DocumentCoverageItem,
-  DocumentOutcomePolicy,
-  PlanDocument,
-  PlanDocumentAsset,
-  PlanDocumentOutboxRecord,
-  SubmitPlanDocumentInput,
+import {
+  citationSourceKey,
+  isOutsideCitationSource,
+  type DocumentArtifactV2,
+  type DocumentCoverageItem,
+  type DocumentOutcomePolicy,
+  type PlanCitationCluster,
+  type PlanCitationSource,
+  type PlanDocument,
+  type PlanDocumentAsset,
+  type PlanDocumentOutboxRecord,
+  type SubmitPlanDocumentInput,
+  type ZoteroCitationSource,
 } from "./types";
 import { ToolInputRejection } from "../tools/execution/failure";
 import { normalizeNoteSourceText } from "../../services/notes/noteRendering";
+
+/**
+ * The input with each cited outside paper under the id the run records it
+ * by: a paper merged into another's record is cited by the record's id.
+ */
+function withCanonicalOutsidePaperIds(
+  input: SubmitPlanDocumentInput,
+  holder: OutsidePaperHolder,
+): SubmitPlanDocumentInput {
+  return {
+    ...input,
+    citations: input.citations.map((cluster) => ({
+      ...cluster,
+      sources: cluster.sources.map((source) => {
+        if (!isOutsideCitationSource(source)) return source;
+        const record = findOutsidePaperRecord(holder, source.paperId);
+        return record && record.paperId !== source.paperId
+          ? { ...source, paperId: record.paperId }
+          : source;
+      }),
+    })),
+  };
+}
 
 /** The already stored document, with the outbox record that published it. */
 async function storedDocumentResult(document: PlanDocument): Promise<{
@@ -31,7 +74,7 @@ async function storedDocumentResult(document: PlanDocument): Promise<{
   if (!outbox) throw new Error("The document exists without its outbox");
   return { document, outbox };
 }
-function directDocumentSpec(params: {
+export function directDocumentSpec(params: {
   request: AgentRuntimeRequest;
   policy: DocumentOutcomePolicy;
   title: string;
@@ -226,12 +269,38 @@ function withFullEvidenceRefs(
 }
 
 export class DirectDocumentFinalizer {
-  constructor(private readonly gateway: ZoteroGateway) {}
+  private readonly lookupOutsidePaperMetadata: OutsidePaperMetadataLookup;
+  private readonly outsidePaperLookupTimeoutMs?: number;
+
+  /**
+   * `lookupOutsidePaperMetadata` finds a cited outside paper's CSL fields
+   * (venue, volume, issue, pages, date, authors, type) by its DOI; by
+   * default from Crossref, never by writing to the library.
+   */
+  constructor(
+    private readonly gateway: ZoteroGateway,
+    options: {
+      lookupOutsidePaperMetadata?: OutsidePaperMetadataLookup;
+      outsidePaperLookupTimeoutMs?: number;
+    } = {},
+  ) {
+    this.lookupOutsidePaperMetadata =
+      options.lookupOutsidePaperMetadata ||
+      ((doi) =>
+        new LiteratureSearchService(gateway).lookupCitationMetadataByDoi(doi));
+    this.outsidePaperLookupTimeoutMs = options.outsidePaperLookupTimeoutMs;
+  }
 
   async finalize(params: {
     request: AgentRuntimeRequest;
     runId: string;
     input: SubmitPlanDocumentInput;
+    /**
+     * The run can show the paper selection card, so the user is asked
+     * whether to import outside papers before a document cites them. Where
+     * no card can be shown, outside papers are cited without importing.
+     */
+    outsidePaperChoiceAvailable?: boolean;
     now?: number;
   }): Promise<{
     document: PlanDocument;
@@ -253,6 +322,7 @@ export class DirectDocumentFinalizer {
         ),
       ),
       policy,
+      outsidePaperChoiceAvailable: params.outsidePaperChoiceAvailable,
       now: params.now,
     });
   }
@@ -297,11 +367,173 @@ export class DirectDocumentFinalizer {
     });
   }
 
+  /**
+   * Publish a new version of a stored document whose outside papers are now
+   * Zotero items: the same title and text, each such paper cited as its
+   * item, the papers left outside still cited outside, and one References
+   * list formatted again. The stored document's text, figures, verified
+   * quotes and Zotero citations were validated when it was published, so
+   * they are carried over as they are. The stored document is unchanged.
+   */
+  async finalizeImportedCitations(params: {
+    request: AgentRuntimeRequest;
+    runId: string;
+    document: DocumentArtifactV2;
+    /** The Zotero item each outside paper now is, by paperId. */
+    items: ReadonlyMap<string, { libraryID: number; itemKey: string }>;
+    now?: number;
+  }): Promise<{
+    document: PlanDocument;
+    outbox: PlanDocumentOutboxRecord;
+    /** Format repairs the host made instead of rejecting. */
+    repairs: string[];
+  }> {
+    const prior = params.document;
+    const draft = prior.citationDraft;
+    if (!draft)
+      throw new ToolInputRejection(
+        "The document keeps no citation draft, so a new version cannot cite the imported items.",
+      );
+    if (prior.conversationKey !== params.request.conversationKey)
+      throw new Error(
+        "The finalized material belongs to another conversation.",
+      );
+    const now = params.now ?? Date.now();
+    // Each mapped outside paper becomes its item. A cluster that already
+    // cites that item cites it once.
+    const clusters: PlanCitationCluster[] = draft.clusters.map((cluster) => {
+      const seen = new Set<string>();
+      return {
+        citationId: cluster.citationId,
+        sources: cluster.sources.flatMap((source): PlanCitationSource[] => {
+          const item = isOutsideCitationSource(source)
+            ? params.items.get(source.paperId)
+            : undefined;
+          const cited: PlanCitationSource = item
+            ? {
+                libraryID: item.libraryID,
+                itemKey: item.itemKey,
+                evidenceRefs: [],
+              }
+            : source;
+          const key = citationSourceKey(cited);
+          if (seen.has(key)) return [];
+          seen.add(key);
+          return [cited];
+        }),
+      };
+    });
+    const sources = clusters.flatMap((cluster) => cluster.sources);
+    const carriedSources = draft.clusters.flatMap((cluster) =>
+      cluster.sources.filter(
+        (source): source is ZoteroCitationSource =>
+          !isOutsideCitationSource(source),
+      ),
+    );
+    const spec = {
+      ...directDocumentSpec({
+        request: params.request,
+        policy: {
+          documentKind: prior.documentKind,
+          integrityPolicy: prior.integrityPolicy,
+        },
+        title: prior.title,
+        hasCitations: true,
+      }),
+      // The version is formatted as its document was.
+      citationStyle: {
+        styleId: prior.citationBundle.style.id,
+        styleTitle: prior.citationBundle.style.title,
+        locale: prior.citationBundle.locale,
+      },
+    };
+    const documentId = directDocumentId(
+      params.runId,
+      await nextDirectDocumentSequence(params.runId),
+    );
+    const finalized = await finalizeDocument({
+      gateway: this.gateway,
+      input: {
+        documentKind: prior.documentKind,
+        integrityPolicy: prior.integrityPolicy,
+        title: prior.title,
+        markdown: draft.markdown,
+        citations: clusters,
+        // The draft's quotes are already resolved; their verified quotes
+        // are carried over below.
+        quotes: [],
+        assets: prior.assets,
+        groundingReviewed:
+          prior.validation.groundingReviewed === "passed_with_limitations"
+            ? "passed_with_limitations"
+            : "passed",
+        groundingIssues: prior.validation.issues,
+      },
+      now,
+      context: {
+        documentId,
+        documentVersion: prior.documentVersion + 1,
+        conversationKey: params.request.conversationKey,
+        integrityPolicy: prior.integrityPolicy,
+        origin: {
+          kind: "direct",
+          runId: params.runId,
+          sourceMessageTimestamp:
+            Number(params.request.metadata?.sourceMessageTimestamp) || now,
+          routingReceipt: params.request.skillRoutingReceipt,
+          skillRoutingReceiptHash:
+            params.request.skillRoutingReceipt?.routerIdentityHash,
+        },
+        spec,
+        evidence: [],
+        corpus: sources.map((source) =>
+          isOutsideCitationSource(source)
+            ? { kind: "outside" as const, paperId: source.paperId }
+            : { libraryID: source.libraryID, itemKey: source.itemKey },
+        ),
+        outsidePapers: (prior.citationBundle.outsidePapers || []).filter(
+          (paper) => !params.items.has(paper.paperId),
+        ),
+        quoteCorpusKeys: new Set(),
+        coverageItems: prior.coverageItems,
+        coverageStatus: prior.coverageStatus,
+        revisionOf: {
+          documentId: prior.documentId,
+          documentVersion: prior.documentVersion,
+        },
+        carriedOver: {
+          verifiedQuotes: prior.verifiedQuotes,
+          groundingReviewed: prior.validation.groundingReviewed,
+          sources: carriedSources,
+        },
+        // The figures were attested when the stored document was published.
+        validateAssetProvenance: () => undefined,
+      },
+    });
+    // A retry of this call keeps the version the run already published.
+    const duplicate = await loadDocumentForRunByContentHash({
+      runId: params.runId,
+      contentHash: finalized.document.contentHash,
+      documentKind: spec.kind,
+    });
+    if (
+      duplicate &&
+      duplicate.conversationKey === params.request.conversationKey
+    )
+      return {
+        ...(await storedDocumentResult(duplicate)),
+        repairs: finalized.repairs,
+      };
+    await persistFinalizedDocument(finalized);
+    return finalized;
+  }
+
   private async publish(params: {
     request: AgentRuntimeRequest;
     runId: string;
     input: SubmitPlanDocumentInput;
     policy: DocumentOutcomePolicy;
+    outsidePaperChoiceAvailable?: boolean;
     now?: number;
   }): Promise<{
     document: PlanDocument;
@@ -310,6 +542,10 @@ export class DirectDocumentFinalizer {
     repairs: string[];
   }> {
     const { policy } = params;
+    params = {
+      ...params,
+      input: withCanonicalOutsidePaperIds(params.input, params.request),
+    };
     const prior = await loadLatestDocumentForRun(params.runId);
     if (prior && prior.conversationKey !== params.request.conversationKey)
       throw new Error(
@@ -322,13 +558,44 @@ export class DirectDocumentFinalizer {
     const title = params.input.title.trim();
     const observations = params.request.documentReadObservations || [];
     const researchGrounded = policy.integrityPolicy === "research_grounded";
+    // An outside paper is citable only when this run's literature_search or
+    // literature_read returned it, and the user chose it when they chose.
+    let citesOutsidePaper = false;
+    for (const cluster of params.input.citations) {
+      for (const source of cluster.sources) {
+        if (!isOutsideCitationSource(source)) continue;
+        citesOutsidePaper = true;
+        const refusal = outsidePaperCitationRefusal(
+          params.request,
+          source.paperId,
+        );
+        if (refusal)
+          throw new ToolInputRejection(
+            `Citation ${cluster.citationId}: ${refusal}`,
+          );
+      }
+    }
+    // Where the card can be shown, the user chooses to import outside papers
+    // or cite them without importing before a document cites one.
+    if (
+      citesOutsidePaper &&
+      params.outsidePaperChoiceAvailable &&
+      !params.request.outsidePaperSelection
+    )
+      throw new ToolInputRejection(
+        "This document cites outside papers the user has not chosen to cite. Offer the user the choice first with a literature_search review search; cite only the papers they choose to cite.",
+      );
+    const outsidePapers = citableOutsidePapers(params.request);
+    // An outside paper's abstract or text, as literature_read returned it,
+    // is evidence as a Zotero abstract or body read is.
     if (
       researchGrounded &&
       !observations.some((entry) =>
         entry.capabilities.some((capability) =>
           ["abstract", "body", "figure", "quote"].includes(capability),
         ),
-      )
+      ) &&
+      !outsidePapers.some((paper) => paper.depth !== "metadata")
     ) {
       throw new ToolInputRejection(
         "A literature-review document requires host-verified abstract or body evidence",
@@ -346,11 +613,39 @@ export class DirectDocumentFinalizer {
       hasCitations: params.input.citations.length > 0,
     });
     const evidence = evidenceFromObservations(observations);
-    const corpus = researchGrounded
-      ? coverageFromObservations(observations)
+    // Outside papers join the corpus from the run's record; coverage lists
+    // Zotero items only.
+    const corpus: DocumentCitationCorpusItem[] = researchGrounded
+      ? [
+          ...coverageFromObservations(observations),
+          ...outsidePapers.map((paper) => ({
+            kind: "outside" as const,
+            paperId: paper.paperId,
+          })),
+        ]
       : params.input.citations.flatMap((cluster) => cluster.sources);
     const coverageItems = researchGrounded
       ? coverageFromObservations(observations)
+      : [];
+    // The cited outside papers, as the run recorded them, are formatted from
+    // a snapshot the document keeps.
+    const citedPaperIds = new Set(
+      params.input.citations.flatMap((cluster) =>
+        cluster.sources.flatMap((source) =>
+          isOutsideCitationSource(source) ? [source.paperId] : [],
+        ),
+      ),
+    );
+    const outsidePaperSnapshots = citedPaperIds.size
+      ? await buildOutsidePaperSnapshots({
+          papers: outsidePapers.filter((paper) =>
+            citedPaperIds.has(paper.paperId),
+          ),
+          lookup: this.lookupOutsidePaperMetadata,
+          timeoutMs: this.outsidePaperLookupTimeoutMs,
+          // One answer per DOI per run: a retry formats the same document.
+          cache: (params.request.outsidePaperLookupCache ??= {}),
+        })
       : [];
     const documentId = directDocumentId(
       params.runId,
@@ -377,6 +672,7 @@ export class DirectDocumentFinalizer {
         spec,
         evidence,
         corpus,
+        outsidePapers: outsidePaperSnapshots,
         quoteCorpusKeys: new Set(
           observations.map((entry) => `${entry.libraryID}:${entry.itemKey}`),
         ),

@@ -460,7 +460,7 @@ describe("task progress button", function () {
     it("sits immediately left of Export in the chat's title bar", function () {
       assert.match(
         standaloneSource,
-        /contentTitleBarSpacer\.append\(\s*iconTaskProgress,\s*iconExport,\s*iconClear,?\s*\)/,
+        /contentTitleBarSpacer\.append\(\s*iconPin,\s*iconTaskProgress,\s*iconExport,\s*iconClear,?\s*\)/,
       );
       assert.match(
         standaloneSource,

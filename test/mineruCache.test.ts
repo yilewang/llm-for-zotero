@@ -10,8 +10,9 @@ import {
   ensureManifest,
   finalizeMineruCacheFiles,
   validateMineruManifest,
-  getManifestFigureBaseLabel,
   getMineruItemDir,
+  MANIFEST_STRUCTURE_VERSION,
+  isHeadingClassifiedDifferentlySinceV3,
   MINERU_SOURCE_PROVENANCE_KIND,
   MINERU_SOURCE_PROVENANCE_VERSION,
   normalizeMineruCacheFiles,
@@ -271,7 +272,7 @@ describe("mineruCache", function () {
     assert.equal(manifest.sections[4].page, 2);
     assert.equal(manifest.sections[4].sectionId, "s4");
     assert.deepEqual(manifest.structure, {
-      version: 2,
+      version: MANIFEST_STRUCTURE_VERSION,
       headingCounts: { h1: 1, h2: 3, h3: 2 },
       sectionsBuilt: 6,
       labelledChars: md.length - md.indexOf("# Paper title"),
@@ -541,7 +542,7 @@ describe("mineruCache", function () {
     assert.isUndefined(stored?.structure);
 
     const rebuilt = await ensureManifest(77);
-    assert.equal(rebuilt?.structure?.version, 2);
+    assert.equal(rebuilt?.structure?.version, MANIFEST_STRUCTURE_VERSION);
     assert.isAbove(rebuilt!.sections.length, 2);
     assert.isUndefined(rebuilt?.noSections);
     assert.deepEqual(
@@ -551,7 +552,7 @@ describe("mineruCache", function () {
     );
 
     const persisted = await readManifest(77);
-    assert.equal(persisted?.structure?.version, 2);
+    assert.equal(persisted?.structure?.version, MANIFEST_STRUCTURE_VERSION);
     assert.deepEqual(
       persisted?.sections.map((s) => s.level),
       [1, 2, 2, 3, 2],
@@ -559,18 +560,147 @@ describe("mineruCache", function () {
     assert.equal(persisted?.sections[2].page, 1);
   });
 
-  describe("manifest figure grouping", function () {
-    it("normalizes same-number figure panels to a shared base label", function () {
-      assert.equal(getManifestFigureBaseLabel("Fig. 1a"), "Figure 1");
-      assert.equal(getManifestFigureBaseLabel("Figure 1B"), "Figure 1");
-      assert.equal(getManifestFigureBaseLabel("Figure 1"), "Figure 1");
-      assert.equal(getManifestFigureBaseLabel("Table 2c"), "Table 2");
+  describe("short headings", function () {
+    const CJK_MD = [
+      "# 海马位置细胞的表征漂移",
+      "## 摘要",
+      "本文研究表征漂移。",
+      "## 引言",
+      "位置细胞缓慢漂移。",
+      "## 方法",
+      "我们记录了四十个细胞。",
+      "## 结果",
+      "解码准确率高于随机水平。",
+      "## 讨论",
+      "漂移与解码可以共存。",
+      "## 结论",
+      "漂移不妨碍解码。",
+      "## 결과",
+      "결과는 안정적이었다.",
+      "## 結果",
+      "結果は安定していた。",
+    ].join("\n\n");
+
+    it("keeps two-character Chinese, Japanese and Korean headings as sections", function () {
+      const manifest = buildManifest(CJK_MD, [
+        { type: "text", text_level: 2, text: "结果", page_idx: 3 },
+      ]);
+      assert.deepEqual(
+        manifest.sections.map((section) => section.heading),
+        [
+          "海马位置细胞的表征漂移",
+          "摘要",
+          "引言",
+          "方法",
+          "结果",
+          "讨论",
+          "结论",
+          "결과",
+          "結果",
+        ],
+      );
+      // The content list's two-character heading gives its section a page.
       assert.equal(
-        getManifestFigureBaseLabel("Supplementary Fig. S7b"),
-        "Supplementary Figure S7",
+        manifest.sections.find((section) => section.heading === "结果")?.page,
+        3,
       );
     });
 
+    it("still drops short noise: Latin fragments, numbers, punctuation and a lone CJK character", function () {
+      const md = [
+        "# Drift",
+        "## a",
+        "Stray text.",
+        "## 1.",
+        "More text.",
+        "## 图",
+        "A figure fragment.",
+        "## 、。",
+        "Punctuation.",
+        "## Results",
+        "Decoding held.",
+      ].join("\n\n");
+      assert.deepEqual(
+        buildManifest(md, []).sections.map((section) => section.heading),
+        ["Drift", "Results"],
+      );
+    });
+
+    it("drops CJK figure and table labels as headings while keeping 结果", function () {
+      const md = [
+        "# 漂移",
+        "## 图1",
+        "A figure label.",
+        "## 表 2",
+        "A table label.",
+        "## 图 3",
+        "Another figure label.",
+        "## 圖4a",
+        "A figure label.",
+        "## 结果",
+        "解码准确率高于随机水平。",
+      ].join("\n\n");
+      assert.deepEqual(
+        buildManifest(md, []).sections.map((section) => section.heading),
+        ["漂移", "结果"],
+      );
+    });
+
+    it("names the headings that structure version 3 classifies differently from version 2", function () {
+      // Kept now, dropped before (short CJK), or dropped now, kept before
+      // (three-character figure and table labels).
+      for (const changed of [
+        "结果",
+        "方法",
+        "결과",
+        "結果",
+        " 结果 ",
+        "图12",
+        "表 3",
+        "图 1",
+        "圖4a",
+      ])
+        assert.isTrue(isHeadingClassifiedDifferentlySinceV3(changed), changed);
+      for (const same of [
+        "图1",
+        "图",
+        "a",
+        "1.",
+        "Results",
+        "Figure 12",
+        "一、引言",
+        "三、结果与讨论",
+      ])
+        assert.isFalse(isHeadingClassifiedDifferentlySinceV3(same), same);
+    });
+
+    it("rebuilds a manifest of the previous structure version, which dropped the short headings", async function () {
+      const memory = setupMemoryIO();
+      await writeMineruCacheFiles(78, CJK_MD, []);
+      const stale = {
+        ...buildManifest(CJK_MD, []),
+        sections: [],
+        structure: {
+          version: MANIFEST_STRUCTURE_VERSION - 1,
+          headingCounts: { h1: 1, h2: 0, h3: 0 },
+          sectionsBuilt: 1,
+          labelledChars: 10,
+        },
+      };
+      memory.files.set(
+        `${getMineruItemDir(78)}/manifest.json`,
+        bytes(JSON.stringify(stale)),
+      );
+      const rebuilt = await ensureManifest(78);
+      assert.equal(rebuilt?.structure?.version, MANIFEST_STRUCTURE_VERSION);
+      assert.include(
+        rebuilt!.sections.map((section) => section.heading),
+        "结果",
+      );
+    });
+  });
+
+  describe("manifest figure grouping", function () {
     it("stores base labels for compound figure entries in the manifest", function () {
       const md = [
         "# Abstract",

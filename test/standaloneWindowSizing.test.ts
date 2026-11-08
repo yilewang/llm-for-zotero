@@ -5,13 +5,72 @@ import {
   computeStandaloneSidebarWidthLayout,
   computeStandaloneManualVerticalResize,
   computeStandaloneContextFitHeight,
+  computeStandaloneWindowWidthChange,
+  computeStandaloneSidePanelSlideFrame,
+  createCubicBezierEasing,
+  STANDALONE_PANEL_SLIDE_EASING,
+  installStandaloneColumnResizeBehavior,
   installStandaloneSidebarResizeBehavior,
   installStandaloneVerticalResizeBehavior,
+  STANDALONE_SIDE_PANEL_DEFAULT_WIDTH_PX,
+  STANDALONE_SIDE_PANEL_MIN_WIDTH_PX,
   resizeStandaloneWindowToFitElement,
   scheduleStandaloneWindowFitForElement,
 } from "../src/modules/contextPanel/standaloneWindowSizing";
 
 describe("standalone window sizing", function () {
+  it("eases like the History pane's cubic-bezier(0.16, 1, 0.3, 1)", function () {
+    assert.deepEqual([...STANDALONE_PANEL_SLIDE_EASING], [0.16, 1, 0.3, 1]);
+    const ease = createCubicBezierEasing(...STANDALONE_PANEL_SLIDE_EASING);
+    assert.equal(ease(0), 0);
+    assert.equal(ease(1), 1);
+    assert.equal(ease(-1), 0);
+    assert.equal(ease(2), 1);
+    // A fast start that settles: past 0.8 at a third of the time.
+    assert.isAbove(ease(1 / 3), 0.8);
+    let last = 0;
+    for (let index = 1; index <= 20; index++) {
+      const value = ease(index / 20);
+      assert.isAtLeast(value, last, "never goes back");
+      last = value;
+    }
+    const linear = createCubicBezierEasing(0, 0, 1, 1);
+    assert.closeTo(linear(0.37), 0.37, 1e-4);
+  });
+
+  it("slides the window and the main column together", function () {
+    const ease = (value: number) => value;
+    const params = {
+      fromOuterWidth: 1000,
+      toOuterWidth: 1425,
+      fromMainWidth: 600,
+      toMainWidth: 600,
+      ease,
+    };
+    assert.deepEqual(
+      computeStandaloneSidePanelSlideFrame({ ...params, progress: 0 }),
+      { outerWidth: 1000, mainWidth: 600, done: false },
+    );
+    assert.deepEqual(
+      computeStandaloneSidePanelSlideFrame({ ...params, progress: 0.5 }),
+      { outerWidth: 1213, mainWidth: 600, done: false },
+    );
+    assert.deepEqual(
+      computeStandaloneSidePanelSlideFrame({ ...params, progress: 1.4 }),
+      { outerWidth: 1425, mainWidth: 600, done: true },
+    );
+    // No room on the right: the main column gives the panel its width.
+    assert.deepEqual(
+      computeStandaloneSidePanelSlideFrame({
+        ...params,
+        toOuterWidth: 1000,
+        toMainWidth: 175,
+        progress: 0.5,
+      }),
+      { outerWidth: 1000, mainWidth: 387.5, done: false },
+    );
+  });
+
   it("clamps the History pane while preserving room for the main chat", function () {
     assert.equal(
       computeStandaloneSidebarPanelWidth({
@@ -192,6 +251,127 @@ describe("standalone window sizing", function () {
     assert.isUndefined(windowListeners.get("mousemove"));
   });
 
+  it("resizes a right-hand column with the drag and arrow keys mirrored", function () {
+    const separatorListeners = new Map<string, EventListener>();
+    const windowListeners = new Map<string, EventListener>();
+    const cssProperties = new Map<string, string>();
+    const attributes = new Map<string, string>();
+    const classes = new Set<string>();
+    let reserved = 0;
+    const container = {
+      style: {
+        setProperty: (name: string, value: string) =>
+          cssProperties.set(name, value),
+      },
+      clientWidth: 1200,
+      classList: {
+        add: (name: string) => classes.add(name),
+        remove: (name: string) => classes.delete(name),
+      },
+    } as unknown as HTMLElement;
+    const panel = {
+      getBoundingClientRect: () => ({ width: 420 }),
+    } as unknown as HTMLElement;
+    const separator = {
+      setAttribute: (name: string, value: string) => {
+        attributes.set(name, value);
+      },
+      addEventListener: (type: string, listener: EventListener) => {
+        separatorListeners.set(type, listener);
+      },
+      removeEventListener: (type: string) => {
+        separatorListeners.delete(type);
+      },
+    } as unknown as HTMLElement;
+    const win = {
+      addEventListener: (type: string, listener: EventListener) => {
+        windowListeners.set(type, listener);
+      },
+      removeEventListener: (type: string) => {
+        windowListeners.delete(type);
+      },
+    } as unknown as Window;
+    const committed: number[] = [];
+    const behavior = installStandaloneColumnResizeBehavior(
+      win,
+      container,
+      panel,
+      separator,
+      {
+        side: "right",
+        widthVariable: "--llm-standalone-side-panel-width",
+        resizingClass: "llm-standalone-side-panel-resizing",
+        defaultWidth: STANDALONE_SIDE_PANEL_DEFAULT_WIDTH_PX,
+        minWidth: STANDALONE_SIDE_PANEL_MIN_WIDTH_PX,
+        maxWidth: 1000,
+        getReservedWidth: () => reserved,
+        onWidthCommit: (width) => committed.push(width),
+      },
+    );
+    const width = () => cssProperties.get("--llm-standalone-side-panel-width");
+    assert.equal(width(), "420px", "starts at the default width");
+    assert.isUndefined(
+      cssProperties.get("--llm-standalone-sidebar-panel-width"),
+      "the left sidebar's variable is untouched",
+    );
+
+    // Dragging the divider to the left widens a right-hand column.
+    separatorListeners.get("mousedown")?.({
+      button: 0,
+      screenX: 700,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as MouseEvent);
+    assert.isTrue(classes.has("llm-standalone-side-panel-resizing"));
+    windowListeners.get("mousemove")?.({
+      screenX: 640,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as MouseEvent);
+    assert.equal(width(), "480px");
+    windowListeners.get("mouseup")?.({} as Event);
+    assert.isFalse(classes.has("llm-standalone-side-panel-resizing"));
+    assert.deepEqual(committed, [480]);
+    assert.equal(behavior.getPreferredWidth(), 480);
+
+    const key = (name: string) =>
+      separatorListeners.get("keydown")?.({
+        key: name,
+        shiftKey: false,
+        preventDefault: () => {},
+        stopPropagation: () => {},
+      } as unknown as KeyboardEvent);
+    key("ArrowLeft");
+    assert.equal(width(), "492px", "ArrowLeft grows a right-hand column");
+    key("ArrowRight");
+    assert.equal(width(), "480px", "ArrowRight shrinks it");
+
+    // Another column's width counts against the room left for the content.
+    reserved = 225;
+    behavior.relayout();
+    assert.equal(width(), "480px");
+    (container as unknown as { clientWidth: number }).clientWidth = 900;
+    behavior.relayout();
+    assert.equal(width(), "320px", "clamped to its minimum, never below");
+    // A negative reservation is room the window is about to gain.
+    reserved = -200;
+    behavior.relayout();
+    assert.equal(width(), "480px", "room the window is about to gain counts");
+    reserved = 0;
+    windowListeners.get("resize")?.({} as Event);
+    assert.equal(width(), "480px", "the preferred width comes back");
+
+    separatorListeners.get("dblclick")?.({
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as MouseEvent);
+    assert.equal(width(), "420px", "double-click restores the default");
+
+    behavior.dispose();
+    assert.isUndefined(separatorListeners.get("mousedown"));
+    assert.isUndefined(windowListeners.get("resize"));
+  });
+
   it("coalesces drag movement and commits the unclamped preferred width", function () {
     const separatorListeners = new Map<string, EventListener>();
     const windowListeners = new Map<string, EventListener>();
@@ -302,28 +482,9 @@ describe("standalone window sizing", function () {
     cleanup();
   });
 
-  it("grows the window and chat panel together when its handle moves down", function () {
-    assert.deepEqual(
-      computeStandaloneManualVerticalResize({
-        kind: "chat",
-        startScreenY: 700,
-        currentScreenY: 820,
-        startWindowHeight: 900,
-        startElementHeight: 540,
-        minWindowHeight: 500,
-        minElementHeight: 200,
-      }),
-      {
-        windowHeight: 1020,
-        elementHeight: 660,
-      },
-    );
-  });
-
   it("grows the window and typing box together without consuming chat height", function () {
     assert.deepEqual(
       computeStandaloneManualVerticalResize({
-        kind: "input",
         startScreenY: 760,
         currentScreenY: 850,
         startWindowHeight: 900,
@@ -342,7 +503,6 @@ describe("standalone window sizing", function () {
   it("stops typing-box and window growth at the composer maximum", function () {
     assert.deepEqual(
       computeStandaloneManualVerticalResize({
-        kind: "input",
         startScreenY: 760,
         currentScreenY: 980,
         startWindowHeight: 900,
@@ -356,6 +516,81 @@ describe("standalone window sizing", function () {
         elementHeight: 220,
       },
     );
+  });
+
+  it("stops composer and window growth at the screen's usable height", function () {
+    assert.deepEqual(
+      computeStandaloneManualVerticalResize({
+        startScreenY: 760,
+        currentScreenY: 900,
+        startWindowHeight: 900,
+        startElementHeight: 40,
+        minWindowHeight: 500,
+        minElementHeight: 39,
+        maxElementHeight: 220,
+        maxWindowHeight: 960,
+      }),
+      {
+        windowHeight: 960,
+        elementHeight: 100,
+      },
+    );
+  });
+
+  it("moves the window up when the composer drag reaches the screen bottom", function () {
+    const rootListeners = new Map<string, EventListener>();
+    const windowListeners = new Map<string, EventListener>();
+    const input = {
+      dataset: {} as DOMStringMap,
+      style: { height: "40px" },
+      getBoundingClientRect: () => ({ height: 40 }),
+    } as unknown as HTMLTextAreaElement;
+    const handle = {
+      dataset: { resizeTarget: "input" },
+      parentElement: { querySelector: () => input },
+      closest: () => handle,
+    };
+    const root = {
+      contains: () => true,
+      classList: { add: () => {}, remove: () => {} },
+      addEventListener: (type: string, listener: EventListener) => {
+        rootListeners.set(type, listener);
+      },
+      removeEventListener: () => {},
+    } as unknown as HTMLElement;
+    const calls: string[] = [];
+    const win = {
+      outerHeight: 900,
+      outerWidth: 820,
+      screenX: 100,
+      screenY: 400,
+      screen: { availTop: 40, availHeight: 1300 },
+      getComputedStyle: () => ({ minHeight: "39px", maxHeight: "220px" }),
+      moveTo: (x: number, y: number) => calls.push(`move ${x},${y}`),
+      resizeTo: (w: number, h: number) => calls.push(`resize ${w}x${h}`),
+      addEventListener: (type: string, listener: EventListener) => {
+        windowListeners.set(type, listener);
+      },
+      removeEventListener: () => {},
+    } as unknown as Window;
+    const cleanup = installStandaloneVerticalResizeBehavior(win, root);
+    rootListeners.get("mousedown")?.({
+      button: 0,
+      target: handle,
+      screenY: 1250,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as MouseEvent);
+    windowListeners.get("mousemove")?.({
+      screenY: 1330,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    } as unknown as MouseEvent);
+
+    // The window bottom would reach 400 + 980 = 1380, 40px past 1340.
+    assert.deepEqual(calls, ["move 100,360", "resize 820x980"]);
+    assert.equal(input.style.height, "120px");
+    cleanup();
   });
 
   it("marks a composer drag as a manual textarea height", function () {
@@ -434,17 +669,17 @@ describe("standalone window sizing", function () {
   it("honors both window and element minimums while dragging upward", function () {
     assert.deepEqual(
       computeStandaloneManualVerticalResize({
-        kind: "chat",
         startScreenY: 700,
         currentScreenY: 300,
         startWindowHeight: 620,
-        startElementHeight: 320,
+        startElementHeight: 200,
         minWindowHeight: 500,
-        minElementHeight: 200,
+        minElementHeight: 60,
+        maxElementHeight: 220,
       }),
       {
         windowHeight: 500,
-        elementHeight: 200,
+        elementHeight: 80,
       },
     );
   });
@@ -544,5 +779,90 @@ describe("standalone window sizing", function () {
     animationFrameCallback?.(0);
 
     assert.deepEqual(calls, []);
+  });
+
+  it("widens the window to the right only, never moving it, as far as the screen allows", function () {
+    const screen = { availLeft: 0, availWidth: 1600 };
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 900,
+        screenX: 100,
+        delta: 425,
+        ...screen,
+      }),
+      { width: 1325, applied: 425 },
+      "room on the right: grow in place",
+    );
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 900,
+        screenX: 500,
+        delta: 425,
+        ...screen,
+      }),
+      { width: 1100, applied: 200 },
+      "little room on the right: grow to the screen edge, the rest squeezes",
+    );
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 900,
+        screenX: 800,
+        delta: 425,
+        ...screen,
+      }),
+      { width: 900, applied: 0 },
+      "already past the screen edge: no growth",
+    );
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 1325,
+        screenX: 275,
+        delta: -425,
+        ...screen,
+      }),
+      { width: 900, applied: -425 },
+      "shrinking gives the width back from the right",
+    );
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 900,
+        screenX: 2000,
+        delta: 100,
+        availLeft: 1600,
+        availWidth: 1200,
+      }),
+      { width: 900, applied: 0 },
+      "a second screen's right edge counts (2000 + 900 is past 2800)",
+    );
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 700,
+        screenX: 1700,
+        delta: 425,
+        availLeft: 1600,
+        availWidth: 1200,
+      }),
+      { width: 1100, applied: 400 },
+      "a second screen's right edge limits the growth",
+    );
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 900,
+        screenX: 100,
+        delta: 300,
+      }),
+      { width: 1200, applied: 300 },
+      "no screen size: grow as asked",
+    );
+    assert.deepEqual(
+      computeStandaloneWindowWidthChange({
+        outerWidth: 600,
+        screenX: 100,
+        delta: -400,
+        minWidth: 500,
+      }),
+      { width: 500, applied: -100 },
+      "never below the window minimum",
+    );
   });
 });

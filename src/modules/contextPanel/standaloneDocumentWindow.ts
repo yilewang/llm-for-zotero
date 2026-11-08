@@ -1,5 +1,6 @@
 import { config } from "../../../package.json";
 import { HTML_NS } from "../../utils/domHelpers";
+import { pluginStylesheetHref } from "../../utils/pluginReload";
 import { installStandaloneWindowTitlebar } from "./standaloneWindowTitlebar";
 
 const WINDOW_FEATURES =
@@ -59,7 +60,7 @@ function installAddonStylesheet(targetDoc: Document): void {
   const css = targetDoc.createElementNS(HTML_NS, "link") as HTMLLinkElement;
   css.rel = "stylesheet";
   css.type = "text/css";
-  css.href = `chrome://${config.addonRef}/content/zoteroPane.css`;
+  css.href = pluginStylesheetHref("zoteroPane.css");
   targetDoc.documentElement?.appendChild(css);
 }
 

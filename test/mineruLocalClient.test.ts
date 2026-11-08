@@ -19,6 +19,7 @@ import {
   mineruV1StructuredFixture,
 } from "./helpers/mineruV1Fixture";
 import type { MineruLocalOptions } from "../src/utils/mineruConfig";
+import { shortenLongWaits } from "./helpers/shortWaits";
 
 const base = "http://127.0.0.1:8000";
 const options: MineruLocalOptions = {
@@ -618,67 +619,72 @@ describe("MinerU local API compatibility", function () {
   // Unknown states and status HTTP 429 are transient; see mineruCloudClient.test.ts.
   for (const scenario of ["failed", "denied", "pending-done"] as const) {
     it(`reports cloud ${scenario} through the public parsing workflow`, async function () {
-      this.timeout(10000);
-      let polls = 0;
-      (globalThis as any).Zotero.HTTP = {
-        request: async (method: string) => ({
-          status: method === "GET" && scenario === "denied" ? 403 : 200,
-          responseText: JSON.stringify(
-            method === "POST"
-              ? {
-                  code: 0,
-                  data: {
-                    batch_id: "batch",
-                    file_urls: ["fixture://storage/upload"],
+      // The client waits 3 s between status polls; skip the real wait.
+      const restoreWaits = shortenLongWaits();
+      try {
+        let polls = 0;
+        (globalThis as any).Zotero.HTTP = {
+          request: async (method: string) => ({
+            status: method === "GET" && scenario === "denied" ? 403 : 200,
+            responseText: JSON.stringify(
+              method === "POST"
+                ? {
+                    code: 0,
+                    data: {
+                      batch_id: "batch",
+                      file_urls: ["fixture://storage/upload"],
+                    },
+                  }
+                : {
+                    code: 0,
+                    data: {
+                      extract_result: [
+                        {
+                          state:
+                            scenario === "pending-done"
+                              ? ++polls === 1
+                                ? "pending"
+                                : "done"
+                              : scenario,
+                          err_msg:
+                            "Bad PDF at https://signed.example/result?secret=xyz",
+                          full_zip_url: "fixture://storage/result",
+                        },
+                      ],
+                    },
                   },
-                }
-              : {
-                  code: 0,
-                  data: {
-                    extract_result: [
-                      {
-                        state:
-                          scenario === "pending-done"
-                            ? ++polls === 1
-                              ? "pending"
-                              : "done"
-                            : scenario,
-                        err_msg:
-                          "Bad PDF at https://signed.example/result?secret=xyz",
-                        full_zip_url: "fixture://storage/result",
-                      },
-                    ],
-                  },
-                },
-          ),
-        }),
-      };
-      route = (_url, init) =>
-        init.method === "PUT"
-          ? new Response(null, { status: 200 })
-          : new Response(createMineruV1Zip());
-      const messages: string[] = [];
-      const result = await parsePdfWithMineruCloud(
-        "paper.pdf",
-        "cloud-key",
-        "pipeline",
-        (stage) => messages.push(stage),
-      );
-      if (scenario === "pending-done") {
-        assert.isNotNull(result);
-        assert.isTrue(
-          messages.some((message) =>
-            message.includes("Waiting for MinerU to start"),
-          ),
+            ),
+          }),
+        };
+        route = (_url, init) =>
+          init.method === "PUT"
+            ? new Response(null, { status: 200 })
+            : new Response(createMineruV1Zip());
+        const messages: string[] = [];
+        const result = await parsePdfWithMineruCloud(
+          "paper.pdf",
+          "cloud-key",
+          "pipeline",
+          (stage) => messages.push(stage),
         );
-      } else {
-        assert.isNull(result);
-        const last = messages.at(-1)!;
-        assert.include(
-          last,
-          scenario === "failed" ? "Bad PDF at [URL]" : "HTTP 403",
-        );
-        assert.notInclude(last, "secret=xyz");
+        if (scenario === "pending-done") {
+          assert.isNotNull(result);
+          assert.isTrue(
+            messages.some((message) =>
+              message.includes("Waiting for MinerU to start"),
+            ),
+          );
+        } else {
+          assert.isNull(result);
+          const last = messages.at(-1)!;
+          assert.include(
+            last,
+            scenario === "failed" ? "Bad PDF at [URL]" : "HTTP 403",
+          );
+          assert.notInclude(last, "secret=xyz");
+        }
+      } finally {
+        restoreWaits();
       }
     });
   }

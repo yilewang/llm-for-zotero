@@ -1,7 +1,12 @@
 import { assert } from "chai";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { normalizeWebSourcePopoverRows } from "../src/modules/contextPanel/webSourceIndicators";
+import {
+  injectWebSourceAnchorTokens,
+  normalizeWebSourcePopoverRows,
+} from "../src/modules/contextPanel/webSourceIndicators";
+import { buildAssistantResponseActionTarget } from "../src/modules/contextPanel/chat";
+import type { WebSourceAnchor } from "../src/webAccess/types";
 import { createWebFaviconImage } from "../src/modules/contextPanel/webFavicon";
 import { initI18n, t } from "../src/utils/i18n";
 
@@ -62,7 +67,7 @@ describe("web source UI contract", function () {
       assert.deepEqual(
         tavilyCopy.filter(
           (english) =>
-            !["Tavily", "AnySearch"].includes(english) &&
+            !["Tavily", "AnySearch", "DeepSeek"].includes(english) &&
             t(english) === english,
         ),
         [],
@@ -81,7 +86,7 @@ describe("web source UI contract", function () {
         join(root, "src/modules/contextPanel/webSourceIndicators.ts"),
         "utf8",
       );
-      for (const label of ['t("View web sources")', 't("Open web source")']) {
+      for (const label of ['t("View sources")', 't("Open web source")']) {
         assert.include(sourceIndicators, label);
       }
     } finally {
@@ -138,11 +143,13 @@ describe("web source UI contract", function () {
         title: "Page title",
         url: "https://example.com/page",
         faviconUrl: "https://example.com/favicon.ico",
+        sourceId: "web_abc1234",
       },
     ]);
     assert.deepEqual(Object.keys(rows[0]).sort(), [
       "faviconUrl",
       "organization",
+      "sourceId",
       "title",
       "url",
     ]);
@@ -245,5 +252,89 @@ describe("web source UI contract", function () {
     assert.include(libraryIcon, 'viewBox="0 0 16 16"');
     assert.include(libraryIcon, 'fill="currentColor"');
     assert.notInclude(libraryIcon, 'width="800px"');
+  });
+
+  describe("end source chip", function () {
+    const TOKEN = "LLMWEBSOURCEANCHOR0END";
+    const endAnchor = (offset: number): WebSourceAnchor => ({
+      offset,
+      placement: "end",
+      sources: [
+        {
+          sourceId: "web_1",
+          url: "https://example.com/report",
+          hostname: "example.com",
+          organization: "Example",
+          title: "Report",
+        },
+      ],
+    });
+
+    it("puts an end anchor on its own paragraph after a closing code fence", function () {
+      const markdown = "Text\n\n```\ncode\n```";
+      const result = injectWebSourceAnchorTokens(markdown, [
+        endAnchor(markdown.length),
+      ]);
+      assert.equal(result, `${markdown}\n\n${TOKEN}`);
+      assert.isTrue(result.endsWith(`\`\`\`\n\n${TOKEN}`));
+    });
+
+    it("puts an end anchor after a table without breaking it", function () {
+      const table = "| h | k |\n|---|---|\n| a | b |";
+      const result = injectWebSourceAnchorTokens(table, [
+        endAnchor(table.length),
+      ]);
+      assert.equal(result, `${table}\n\n${TOKEN}`);
+    });
+
+    it("shows an end anchor even when the stored text is shorter than its offset", function () {
+      const markdown = "A twenty-char answer";
+      assert.lengthOf(markdown, 20);
+      const result = injectWebSourceAnchorTokens(markdown, [endAnchor(999)]);
+      assert.equal(result, `${markdown}\n\n${TOKEN}`);
+    });
+
+    it("keeps host notes after the end chip", function () {
+      assert.equal(
+        injectWebSourceAnchorTokens("Answer.\n\nNote from host.", [
+          endAnchor(7),
+        ]),
+        `Answer.\n\n${TOKEN}\n\nNote from host.`,
+      );
+    });
+
+    it("closes an open code fence before the end chip", function () {
+      const markdown = "Text\n\n```\ncode";
+      assert.equal(
+        injectWebSourceAnchorTokens(markdown, [endAnchor(markdown.length)]),
+        `${markdown}\n\`\`\`\n\n${TOKEN}`,
+      );
+    });
+
+    it("keeps a paragraph chip at the same offset before the end chip", function () {
+      const paragraph: WebSourceAnchor = { ...endAnchor(2) };
+      delete paragraph.placement;
+      assert.equal(
+        injectWebSourceAnchorTokens("A.", [paragraph, endAnchor(2)]),
+        "A.LLMWEBSOURCEANCHOR0END\n\nLLMWEBSOURCEANCHOR1END",
+      );
+    });
+
+    it("keeps placement when building the response action target", function () {
+      const target = buildAssistantResponseActionTarget({
+        item: { id: 42, libraryID: 1 } as unknown as Zotero.Item,
+        pairedUserMessage: null,
+        conversationKey: 9,
+        message: {
+          role: "assistant",
+          text: "A complete answer",
+          timestamp: 200,
+          modelName: "Codex",
+        },
+        webSourceAnchors: [endAnchor(17)],
+      });
+      assert.equal(target?.webSourceAnchors?.[0]?.placement, "end");
+      assert.equal(target?.webSourceAnchors?.[0]?.offset, 17);
+    });
   });
 });

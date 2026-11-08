@@ -40,6 +40,7 @@ function fakeBody(displayedConversationKey?: number): {
   const chatBox = { innerHTML: "paper B remains rendered" };
   const body = {
     isConnected: true,
+    ownerDocument: { defaultView: { closed: false } },
     querySelector: (selector: string) => {
       if (selector === "#llm-main") return root;
       if (selector === "#llm-chat-box") return chatBox;
@@ -134,6 +135,33 @@ describe("chat panel conversation ownership", function () {
     assert.deepEqual(refreshCounts, [1, 1, 0, 0]);
     assert.isFalse(activeContextPanels.has(bodies[3]));
     assert.isFalse(activeContextPanelRawItems.has(bodies[3]));
+  });
+
+  it("skips a connected body whose window closed and still refreshes the other panels", function () {
+    const itemA = fakeItem(101);
+    const [closedSender, liveMirror] = [fakeBody(101).body, fakeBody(101).body];
+    // A closed window's body still reports isConnected; only its document's
+    // window shows that it is gone.
+    Object.defineProperty(closedSender, "ownerDocument", {
+      value: { defaultView: null },
+    });
+    const refreshCounts = [0, 0];
+    [closedSender, liveMirror].forEach((body, index) => {
+      activeContextPanels.set(body, () => itemA);
+      activeContextPanelRawItems.set(body, itemA);
+      activeContextPanelStateSync.set(body, () => {
+        refreshCounts[index] += 1;
+      });
+    });
+
+    refreshConversationPanels(closedSender, itemA, {
+      includeChat: false,
+      includePanelState: true,
+    });
+
+    assert.deepEqual(refreshCounts, [0, 1]);
+    assert.isFalse(activeContextPanels.has(closedSender));
+    assert.isTrue(activeContextPanels.has(liveMirror));
   });
 
   it("caches a delayed A trace without repainting a body now owned by B", async function () {

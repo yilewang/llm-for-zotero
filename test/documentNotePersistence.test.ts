@@ -3,10 +3,13 @@ import { composeRetrievalCandidateInvalidation } from "./helpers/hostSurfaces";
 import { assert } from "chai";
 import { createHash } from "node:crypto";
 import { innermostToolResult } from "../src/agent/contracts/toolResultEnvelope";
+import { verifyNoteWriteTarget } from "../src/agent/contracts/actionOperationEvidence";
 import {
   exportPlanDocumentMarkdown,
   savePlanDocumentAsNote,
 } from "../src/agent/documents/actions";
+import { sha256Text } from "../src/agent/store/journalRecoveryBlobStore";
+import { canonicalNoteHtml } from "../src/utils/noteHtml";
 
 /** Exercises the actual document decoder, save action and native note persistence boundary. */
 describe("durable document note association", function () {
@@ -100,7 +103,15 @@ describe("durable document note association", function () {
       deleted = false;
       html = "";
       stored = "";
+      collections: number[] = [];
       dateAdded = "2026-09-07 00:00:00";
+      addToCollection(collectionId: number) {
+        if (!this.collections.includes(collectionId))
+          this.collections.push(collectionId);
+      }
+      getCollections() {
+        return [...this.collections];
+      }
       isNote() {
         return true;
       }
@@ -164,6 +175,12 @@ describe("durable document note association", function () {
       Utilities: { generateObjectKey: () => `NOTE${nextId}` },
       Item: Note,
       Libraries: { userLibraryID: 1 },
+      Collections: {
+        get: (id: number) =>
+          id === 7 || id === 8
+            ? { id, libraryID: 1, deleted: false, name: `Folder ${id}` }
+            : false,
+      },
       Items: {
         get: (id: number) => (id === 42 ? parent : notes.get(id)),
         getByLibraryAndKey: (_lib: number, key: string) =>
@@ -577,6 +594,247 @@ describe("durable document note association", function () {
     assert.isFalse(retried.created);
     assert.equal(notes.get(saved.itemId).getNote(), document.visibleHtml);
   });
+  it("saves a document's citation requests as Zotero citation chips, and proves them on retry", async function () {
+    globals.Zotero.URI = {
+      getItemURI: (item: { key: string }) =>
+        `http://zotero.org/users/local/abc/items/${item.key}`,
+    };
+    globals.Zotero.Utilities.Item = {
+      itemToCSLJSON: () => ({
+        title: "Paper",
+        author: [{ family: "Smith" }],
+        issued: { "date-parts": [[2020]] },
+      }),
+    };
+    document.visibleHtml =
+      "<h1>Summary</h1><p>Turnover drives drift {{cite item=42 page=7}}.</p>";
+    const saved = await savePlanDocumentAsNote(document.documentId);
+    const html = notes.get(saved.itemId).getNote();
+    assert.match(
+      html,
+      /^<div data-citation-items="[^"]+" data-schema-version="9">/,
+    );
+    assert.include(
+      html,
+      '>(<span class="citation-item">Smith, 2020, p. 7</span>)</span>.',
+    );
+    assert.notInclude(html, "{{cite");
+    const retried = await savePlanDocumentAsNote(document.documentId);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    assert.isTrue(retried.noteVerification?.matches);
+  });
+
+  /** The cited paper's metadata as Zotero reports it right now. */
+  function citedMetadata(family: string) {
+    globals.Zotero.URI = {
+      getItemURI: (item: { key: string }) =>
+        `http://zotero.org/users/local/abc/items/${item.key}`,
+    };
+    globals.Zotero.Utilities.Item = {
+      itemToCSLJSON: () => ({
+        title: "Paper",
+        author: [{ family }],
+        issued: { "date-parts": [[2020]] },
+      }),
+    };
+  }
+
+  it("recognizes a saved citation note after the cited paper's metadata changed", async function () {
+    citedMetadata("Smith");
+    document.visibleHtml =
+      "<h1>Summary</h1><p>Turnover drives drift {{cite item=42 page=7}}.</p>";
+    const target = { parentItemId: 42, libraryID: 1 };
+    const saved = await savePlanDocumentAsNote(document.documentId, target);
+    const stored = notes.get(saved.itemId).getNote();
+
+    // The user corrects the author after the note was saved. The note keeps
+    // the label it was written with; the retry must still recognize it.
+    citedMetadata("Jones");
+    const retried = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    assert.equal(notes.size, 1);
+    assert.equal(notes.get(saved.itemId).getNote(), stored);
+    // The proof is the forced read-back whose hash the save recorded.
+    assert.isTrue(retried.noteVerification?.matches);
+    assert.equal(retried.noteVerification?.expectedHtml, stored);
+
+    // The receipt accepts that proof for the same note_write proposal.
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createNoteWriteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+    });
+    assert.isTrue(input.ok);
+    if (!input.ok) return;
+    const context = directContext("summary-run");
+    await tool.planInvocation(input.value, context);
+    const [proposal] = await tool.describeAction!(input.value, context);
+    const receipt = await verifyNoteWriteTarget(
+      proposal,
+      {
+        result: {
+          noteId: retried.itemId,
+          noteVerification: retried.noteVerification,
+        },
+      },
+      gateway,
+    );
+    assert.deepEqual(receipt.targets, [`item:${saved.itemId}`]);
+  });
+
+  /** What Zotero's note editor writes back after refreshing a work's CSL data. */
+  function editorRefresh(html: string, title: string): string {
+    return html
+      .replace(/data-citation-items="([^"]*)"/, (_match, value: string) => {
+        const entries = JSON.parse(decodeURIComponent(value));
+        for (const entry of entries) entry.itemData.title = title;
+        return `data-citation-items="${encodeURIComponent(JSON.stringify(entries))}"`;
+      })
+      .replace(/(<\/(?:h1|p)>)/g, "$1\n");
+  }
+
+  it("recognizes a saved citation note after Zotero's editor refreshed the retitled work", async function () {
+    citedMetadata("Smith");
+    document.visibleHtml =
+      "<h1>Summary</h1><p>Turnover drives drift {{cite item=42 page=7}}.</p>";
+    const target = { parentItemId: 42, libraryID: 1 };
+    const saved = await savePlanDocumentAsNote(document.documentId, target);
+    const note = notes.get(saved.itemId);
+    const refreshed = editorRefresh(note.getNote(), "Paper, retitled");
+    assert.notEqual(refreshed, note.getNote());
+    note.stored = refreshed;
+    const retried = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    assert.equal(notes.size, 1);
+    assert.equal(note.getNote(), refreshed, "the retry leaves the note alone");
+    assert.isTrue(retried.noteVerification?.matches);
+  });
+
+  it("still refuses a refreshed citation note whose chip was edited", async function () {
+    citedMetadata("Smith");
+    document.visibleHtml =
+      "<h1>Summary</h1><p>Turnover drives drift {{cite item=42 page=7}}.</p>";
+    const saved = await savePlanDocumentAsNote(document.documentId);
+    const note = notes.get(saved.itemId);
+    note.stored = editorRefresh(note.getNote(), "Paper, retitled").replace(
+      "Smith, 2020, p. 7",
+      "Smith, 2020, p. 8",
+    );
+    await rejects(
+      savePlanDocumentAsNote(document.documentId),
+      /no longer matches this exact document/,
+    );
+  });
+
+  it("keeps judging a version 1 binding by the full root registry", async function () {
+    citedMetadata("Smith");
+    document.visibleHtml =
+      "<h1>Summary</h1><p>Turnover drives drift {{cite item=42 page=7}}.</p>";
+    const saved = await savePlanDocumentAsNote(document.documentId);
+    const note = notes.get(saved.itemId);
+    state = {
+      ...state,
+      savedNote: {
+        ...state.savedNote,
+        nativeContentHash: await sha256Text(canonicalNoteHtml(note.getNote())),
+        nativeContentHashVersion: 1,
+      },
+    };
+    const retried = await savePlanDocumentAsNote(document.documentId);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    note.stored = editorRefresh(note.getNote(), "Paper, retitled");
+    await rejects(
+      savePlanDocumentAsNote(document.documentId),
+      /no longer matches this exact document/,
+    );
+  });
+
+  it("recognizes a saved citation note after the cited paper was deleted", async function () {
+    citedMetadata("Smith");
+    document.visibleHtml =
+      "<h1>Summary</h1><p>Turnover drives drift {{cite item=42 page=7}}.</p>";
+    const saved = await savePlanDocumentAsNote(document.documentId);
+    const items = globals.Zotero.Items;
+    globals.Zotero.Items = {
+      ...items,
+      get: (id: number) => (id === 42 ? false : items.get(id)),
+      getByLibraryAndKey: (lib: number, key: string) =>
+        key === "PAPER42" ? false : items.getByLibraryAndKey(lib, key),
+    };
+    const retried = await savePlanDocumentAsNote(document.documentId);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    assert.isTrue(retried.noteVerification?.matches);
+  });
+
+  it("still refuses a changed citation note even though its hash cannot be rebuilt", async function () {
+    citedMetadata("Smith");
+    document.visibleHtml =
+      "<h1>Summary</h1><p>Turnover drives drift {{cite item=42 page=7}}.</p>";
+    const saved = await savePlanDocumentAsNote(document.documentId);
+    notes.get(saved.itemId).stored = "<p>Rewritten by the user</p>";
+    await rejects(
+      savePlanDocumentAsNote(document.documentId),
+      /no longer matches this exact document/,
+    );
+  });
+
+  it("proves a citation-free document on retry against its own body", async function () {
+    const saved = await savePlanDocumentAsNote(document.documentId);
+    const retried = await savePlanDocumentAsNote(document.documentId);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    assert.isTrue(retried.noteVerification?.matches);
+    assert.equal(retried.noteVerification?.expectedHtml, document.visibleHtml);
+  });
+
+  it("judges a binding older than stored hashes without making citations", async function () {
+    // Bindings without a stored hash predate citation requests: their note
+    // holds the document's HTML as written, and the cited item may be gone.
+    // The retry compares against that HTML as it did before citations
+    // existed, so a missing cited item can never turn it into a citation
+    // error.
+    document.visibleHtml = "<p>Text {{cite item=999 page=7}}.</p>";
+    const legacy = new globals.Zotero.Item("note");
+    legacy.key = "LEGACY01";
+    legacy.primaryLoaded = true;
+    legacy.setNote(document.visibleHtml);
+    await legacy.saveTx();
+    state = {
+      version: 1,
+      documentId: document.documentId,
+      savedNote: { libraryID: 1, itemKey: "LEGACY01" },
+      updatedAt: 1,
+    };
+    let failure: unknown;
+    try {
+      await savePlanDocumentAsNote(document.documentId);
+    } catch (error) {
+      failure = error;
+    }
+    assert.notMatch(String(failure), /cite|citation|Zotero paper/i);
+    assert.equal(notes.size, 1, "a retry never creates a replacement");
+    assert.equal(state.savedNote.itemKey, "LEGACY01");
+  });
+
+  it("refuses a document citation of an item that cannot be cited, reserving nothing", async function () {
+    document.visibleHtml = "<p>Text {{cite item=999 page=7}}.</p>";
+    await rejects(
+      savePlanDocumentAsNote(document.documentId),
+      /999 is not a Zotero paper or book/,
+    );
+    assert.equal(notes.size, 0);
+    assert.isUndefined(state?.pendingNote);
+  });
+
   it("does not record a document as saved when the final read-back disagrees", async function () {
     const target = { parentItemId: 42, libraryID: 1 };
     // Calibrate against a healthy save so the corruption lands on the last
@@ -624,6 +882,127 @@ describe("durable document note association", function () {
       /no longer matches this exact document/,
     );
     assert.isUndefined(state?.savedNote);
+  });
+  it("saves a finalized document as a standalone note filed in collections, and its retry finds the same note", async function () {
+    const target = {
+      standalone: true as const,
+      libraryID: 1,
+      collectionIds: [7, 8],
+    };
+    const saved = await savePlanDocumentAsNote(document.documentId, target);
+    const note = notes.get(saved.itemId);
+    assert.isTrue(saved.created);
+    assert.isUndefined(note.parentID);
+    assert.deepEqual(note.getCollections(), [7, 8]);
+    assert.equal(note.getNote(), document.visibleHtml);
+    const retried = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(retried.created);
+    assert.equal(retried.itemId, saved.itemId);
+    assert.equal(notes.size, 1);
+  });
+  it("finds the same standalone note when its association failed after the save", async function () {
+    const target = {
+      standalone: true as const,
+      libraryID: 1,
+      collectionIds: [7],
+    };
+    failAssociation = true;
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /Association storage/,
+    );
+    const reservedKey = state.pendingNote.itemKey;
+    assert.isUndefined(state.pendingNote.parentItemId);
+    failAssociation = false;
+    state = JSON.parse(JSON.stringify(state));
+    const recovered = await savePlanDocumentAsNote(document.documentId, target);
+    assert.isFalse(recovered.created);
+    assert.equal(recovered.itemKey, reservedKey);
+    assert.equal(notes.size, 1);
+    assert.equal(state.savedNote.itemKey, reservedKey);
+  });
+  it("refuses a standalone save into a collection that does not exist, reserving nothing", async function () {
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, {
+        standalone: true,
+        libraryID: 1,
+        collectionIds: [99],
+      }),
+      /Collection 99/,
+    );
+    assert.equal(notes.size, 0);
+    assert.isUndefined(state?.pendingNote);
+  });
+  it("refuses a standalone retry of a document already saved under a parent", async function () {
+    await savePlanDocumentAsNote(document.documentId, {
+      parentItemId: 42,
+      libraryID: 1,
+    });
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, {
+        standalone: true,
+        libraryID: 1,
+      }),
+      /different parent/,
+    );
+    assert.equal(notes.size, 1);
+  });
+  it("refuses a retry whose saved note left a requested collection", async function () {
+    const target = {
+      standalone: true as const,
+      libraryID: 1,
+      collectionIds: [7],
+    };
+    const saved = await savePlanDocumentAsNote(document.documentId, target);
+    notes.get(saved.itemId).collections = [];
+    await rejects(
+      savePlanDocumentAsNote(document.documentId, target),
+      /no longer matches this exact document/,
+    );
+    assert.equal(notes.size, 1);
+  });
+  it("saves a finalized document through note_write as a standalone note in a collection", async function () {
+    const gateway = {
+      getItem: (id: number) => globals.Zotero.Items.get(id),
+    } as any;
+    const tool = createNoteWriteTool(gateway);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      target: "standalone",
+      collections: [7],
+    });
+    assert.isTrue(input.ok, input.ok ? "" : input.error);
+    if (!input.ok) return;
+    const context = {
+      ...directContext("summary-run"),
+      journalFallbackApproved: true,
+    };
+    await tool.planInvocation(input.value, context);
+    const proposals = await tool.describeAction!(input.value, context);
+    assert.deepEqual(proposals[0].destinationCollectionIds, [7]);
+    const result: any = await tool.execute(input.value, context);
+    assert.equal(result.effect, "applied");
+    const saved: any = innermostToolResult(result.content);
+    const note = notes.get(saved.noteId);
+    assert.isUndefined(note.parentID);
+    assert.deepEqual(note.getCollections(), [7]);
+    const verification = await verifyNoteWriteTarget(
+      proposals[0],
+      result.content,
+      gateway,
+    );
+    assert.isNotNull(verification.targets, verification.reason);
+  });
+  it("refuses a finalized document create that names both a parent and collections", function () {
+    const tool = createNoteWriteTool({} as any);
+    const input = tool.validate({
+      mode: "create",
+      documentId: document.documentId,
+      targetItemId: 42,
+      collections: [7],
+    });
+    assert.isFalse(input.ok);
   });
   it("binds a requested parent even when the summary contains no citation cluster", async function () {
     const saved = await savePlanDocumentAsNote(document.documentId, {

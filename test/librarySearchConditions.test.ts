@@ -226,6 +226,30 @@ describe("library_search advanced conditions", function () {
     assert.equal(result.items[0].title, "Parent paper");
   });
 
+  it("resolves an annotation match to the paper, not its PDF", async function () {
+    // An annotation's parent is the PDF attachment; the paper is one level
+    // further up. A one-level walk returned the attachment, which then could
+    // not dedupe with the paper's own match or pass a collection filter.
+    items.set(4, {
+      ...makeItem(4, "Highlight", 2),
+      isAnnotation: () => true,
+      isAttachment: () => false,
+    });
+    searchIds = [4, 1];
+    const result = await gateway().searchItemsByConditions({
+      libraryID: 1,
+      conditions: [
+        { condition: "fulltextContent", operator: "contains", value: "x" },
+      ],
+      resolveToParents: true,
+    });
+    assert.equal(result.totalCount, 1);
+    assert.deepEqual(
+      result.items.map((item) => item.itemId),
+      [1],
+    );
+  });
+
   it("drops child matches when parents were not requested", async function () {
     searchIds = [2];
     const result = await gateway().searchItemsByConditions({

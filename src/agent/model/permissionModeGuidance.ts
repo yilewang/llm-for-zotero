@@ -16,7 +16,7 @@ export function buildPermissionModeGuidance(
     );
   } else {
     lines.push(
-      "Permission mode: yolo. The user delegated permission decisions completely, including ambiguous or dangerous actions and filesystem or library expansion. The host does not run an approval model or ask for permission. Decide, act, and state your assumptions and any own-initiative changes in your reply. Requested review workflows, database integrity and the paper selection card for discovered papers remain binding. Use request_user_input only when proceeding under any assumption would make the work useless.",
+      "Permission mode: yolo. The user delegated permission decisions completely, including ambiguous or dangerous actions and filesystem or library expansion. The host does not run an approval model or ask for permission. Decide, act, and state your assumptions and any own-initiative changes in your reply. Requested review workflows, database integrity and the paper selection card for papers the user asked you to find remain binding. Use request_user_input only when proceeding under any assumption would make the work useless.",
     );
   }
   if (assumptions.length)

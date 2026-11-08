@@ -89,15 +89,22 @@ export function setQuoteSourceFileStateReaderForTests(
 async function readFileStates(
   contextItemIds: Iterable<number>,
 ): Promise<Map<number, QuoteSourceFileState | null>> {
+  // Each attachment is stat'ed on its own; the reads do not depend on each
+  // other, so they run together instead of one round trip after another.
+  const uniqueIds = Array.from(new Set(contextItemIds));
+  const results = await Promise.all(
+    uniqueIds.map(async (contextItemId) => {
+      try {
+        return await fileStateReader(contextItemId);
+      } catch {
+        return null;
+      }
+    }),
+  );
   const states = new Map<number, QuoteSourceFileState | null>();
-  for (const contextItemId of contextItemIds) {
-    if (states.has(contextItemId)) continue;
-    try {
-      states.set(contextItemId, await fileStateReader(contextItemId));
-    } catch {
-      states.set(contextItemId, null);
-    }
-  }
+  uniqueIds.forEach((contextItemId, index) => {
+    states.set(contextItemId, results[index]);
+  });
   return states;
 }
 

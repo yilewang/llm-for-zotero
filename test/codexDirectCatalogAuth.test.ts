@@ -3,6 +3,7 @@ import {
   CODEX_DIRECT_MODELS_URL,
   CODEX_DIRECT_RESPONSES_URL,
   fetchWithCodexAuth,
+  resolveCodexAuthPath,
   refreshCodexAuthSession,
   resetCodexAuthRefreshStateForTests,
 } from "../src/codexAuth/auth";
@@ -50,6 +51,49 @@ function catalogResponse(model = "gpt-codex"): Response {
 }
 
 describe("Codex Direct auth and catalog", function () {
+  describe("resolveCodexAuthPath", function () {
+    const globals = globalThis as {
+      Zotero?: unknown;
+      ztoolkit?: unknown;
+      process?: { env?: Record<string, string | undefined> };
+    };
+    let originalZotero: unknown;
+    let originalZtoolkit: unknown;
+    let originalHome: string | undefined;
+    let originalCodexHome: string | undefined;
+
+    beforeEach(function () {
+      originalZotero = globals.Zotero;
+      originalZtoolkit = globals.ztoolkit;
+      globals.ztoolkit = { getGlobal: () => undefined };
+      originalHome = process.env.HOME;
+      originalCodexHome = process.env.CODEX_HOME;
+      process.env.HOME = "/home/me";
+    });
+
+    afterEach(function () {
+      globals.Zotero = originalZotero;
+      globals.ztoolkit = originalZtoolkit;
+      process.env.HOME = originalHome;
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    });
+
+    function setPref(value: string) {
+      globals.Zotero = { Prefs: { get: () => value } };
+    }
+
+    it("prefers the setting, then inherited CODEX_HOME, then ~/.codex", function () {
+      process.env.CODEX_HOME = "/inherited";
+      setPref("/my codex");
+      assert.equal(resolveCodexAuthPath(), "/my codex/auth.json");
+      setPref("");
+      assert.equal(resolveCodexAuthPath(), "/inherited/auth.json");
+      delete process.env.CODEX_HOME;
+      assert.equal(resolveCodexAuthPath(), "/home/me/.codex/auth.json");
+    });
+  });
+
   beforeEach(function () {
     resetCodexDirectCatalogForTests();
     resetCodexAuthRefreshStateForTests();
@@ -141,6 +185,84 @@ describe("Codex Direct auth and catalog", function () {
       "not available in the current catalog",
     );
   });
+
+  it("discovers GPT-6.1 Sol through the version-gated Direct catalog", async function () {
+    const snapshot = await loadCodexDirectCatalog({
+      authPath: TEST_AUTH_PATH,
+      readText: async () => AUTH_JSON,
+      fetchFn: (async (url: string | URL | Request) => {
+        const request = new URL(String(url));
+        assert.equal(request.origin, "https://chatgpt.com");
+        assert.equal(request.pathname, "/backend-api/codex/models");
+        const version = request.searchParams.get("client_version") || "";
+        const [major, minor] = version.split(".").map(Number);
+        // The live catalog marks GPT-6.1 Sol with minimum client 0.153.0.
+        return catalogResponse(
+          major > 0 || minor >= 153 ? "gpt-6.1-sol" : "gpt-6-astra",
+        );
+      }) as typeof fetch,
+    });
+
+    assert.isTrue(
+      snapshot.models.some((model) => model.model === "gpt-6.1-sol"),
+    );
+    assert.doesNotThrow(() => assertCodexDirectModelAvailable("gpt-6.1-sol"));
+  });
+
+  it("uses a newer catalog version from the same Codex auth directory", async function () {
+    let requestedUrl = "";
+    const reads: string[] = [];
+    const snapshot = await loadCodexDirectCatalog({
+      authPath: TEST_AUTH_PATH,
+      readText: async (path) => {
+        reads.push(path);
+        if (path === "/test/codex/models_cache.json")
+          return JSON.stringify({ client_version: "0.200.0" });
+        assert.equal(path, TEST_AUTH_PATH);
+        return AUTH_JSON;
+      },
+      fetchFn: (async (url: string | URL | Request) => {
+        requestedUrl = String(url);
+        return catalogResponse("gpt-6.1-sol");
+      }) as typeof fetch,
+    });
+
+    assert.include(reads, "/test/codex/models_cache.json");
+    const request = new URL(requestedUrl);
+    assert.equal(request.origin, "https://chatgpt.com");
+    assert.equal(request.searchParams.get("client_version"), "0.200.0");
+    assert.equal(snapshot.models[0].model, "gpt-6.1-sol");
+  });
+
+  for (const cached of [
+    "missing",
+    "corrupt",
+    "0.0.0",
+    "0.99.0",
+    "invalid",
+    "1.2.3&host=evil.example",
+  ]) {
+    it(`keeps the supported catalog version when the cache is ${cached}`, async function () {
+      let requestedUrl = "";
+      await loadCodexDirectCatalog({
+        authPath: TEST_AUTH_PATH,
+        readText: async (path) => {
+          if (path === TEST_AUTH_PATH) return AUTH_JSON;
+          if (cached === "missing") throw new Error("ENOENT");
+          if (cached === "corrupt") return "{";
+          return JSON.stringify({ client_version: cached });
+        },
+        fetchFn: (async (url: string | URL | Request) => {
+          requestedUrl = String(url);
+          return catalogResponse("gpt-6.1-sol");
+        }) as typeof fetch,
+      });
+      const request = new URL(requestedUrl);
+      assert.equal(request.origin, "https://chatgpt.com");
+      assert.equal(request.searchParams.get("client_version"), "0.162.1");
+      assert.equal(request.searchParams.size, 1);
+    });
+  }
 
   it("sends account auth, refreshes once on 401, and preserves auth fields", async function () {
     const writes: string[] = [];

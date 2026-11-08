@@ -31,7 +31,13 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
-import { Marked, Renderer, Tokenizer, type Tokens } from "marked";
+import { Marked, marked, Renderer, Tokenizer, type Tokens } from "marked";
+import {
+  PREVIEW_SURFACE_ATTRIBUTE,
+  applySvgPreviewTheme,
+  needsPreviewThemeSheet,
+  previewSurfaceFor,
+} from "./previewTheme";
 
 // =============================================================================
 // Types
@@ -430,11 +436,13 @@ function wrapCopyable(
   copySource: string,
   kind: "code" | "math" | "table",
   display: "block" | "inline" = "block",
+  extraClass = "",
 ): string {
-  const className =
+  const baseClass =
     display === "inline"
       ? `llm-copyable llm-copyable-${kind} llm-copyable-inline`
       : `llm-copyable llm-copyable-${kind}`;
+  const className = extraClass ? `${baseClass} ${extraClass}` : baseClass;
   const tag = display === "inline" ? "span" : "div";
   return `<${tag} class="${className}" data-llm-copy-source="${escapeAttribute(copySource)}">${html}</${tag}>`;
 }
@@ -493,6 +501,34 @@ function highlightLanguageForFence(lang: string): string | null {
 
 function isMermaidFenceLanguage(lang: string): boolean {
   return lang === "mermaid" || lang === "mmd";
+}
+
+function isHtmlFenceLanguage(lang: string): boolean {
+  return lang === "html" || lang === "htm";
+}
+
+/**
+ * Whether a fenced code block's raw source ends with its closing fence.
+ * Marked emits a code token for a fence that is still streaming (no closing
+ * line yet); its raw then ends inside the code instead of on a fence line.
+ */
+function isClosedCodeFence(raw: string): boolean {
+  const trimmed = raw.replace(/\s+$/, "");
+  const opener = trimmed.match(/^[ \t]{0,3}(`{3,}|~{3,})/);
+  if (!opener) return true;
+  const fence = opener[1];
+  const lastNewline = trimmed.lastIndexOf("\n");
+  if (lastNewline < 0) return false;
+  const closing = trimmed.slice(lastNewline + 1).trim();
+  return (
+    closing.length >= fence.length &&
+    closing.split("").every((char) => char === fence[0])
+  );
+}
+
+function renderHtmlPreview(code: string): string {
+  if (!code.trim()) return "";
+  return `<div class="llm-html-preview" ${PREVIEW_SURFACE_ATTRIBUTE}="${previewSurfaceFor(code)}" data-llm-html-source="${escapeAttribute(code)}" aria-label="HTML preview"></div>`;
 }
 
 /**
@@ -651,13 +687,18 @@ export function buildSafeSvgMarkup(
   return svg;
 }
 
+/** An already safe drawing as an image URI. */
+export function svgMarkupToDataUri(svg: string): string {
+  return `data:image/svg+xml;base64,${encodeBase64Utf8(svg)}`;
+}
+
 export function buildSafeSvgDataUri(
   code: string,
   maxChars = SVG_PREVIEW_MAX_CHARS,
 ): string | null {
   const svg = buildSafeSvgMarkup(code, maxChars);
   if (!svg) return null;
-  return `data:image/svg+xml;base64,${encodeBase64Utf8(svg)}`;
+  return svgMarkupToDataUri(svg);
 }
 
 function renderMermaidPreview(code: string): string {
@@ -750,12 +791,18 @@ function findTopLevelEqualsIndex(text: string): number {
   return -1;
 }
 
+function readLatexCommandName(text: string, slashIndex: number): string {
+  const match = /^[A-Za-z]+/.exec(text.slice(slashIndex + 1));
+  return match ? match[0] : "";
+}
+
 function splitTopLevelAdditiveTerms(text: string): string[] {
   const terms: string[] = [];
   let start = 0;
   let braceDepth = 0;
   let bracketDepth = 0;
   let parenDepth = 0;
+  let leftRightDepth = 0;
 
   const isBinaryAdditiveOperator = (index: number): boolean => {
     const ch = text[index];
@@ -771,7 +818,14 @@ function splitTopLevelAdditiveTerms(text: string): string[] {
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
     if (ch === "\\") {
-      i++;
+      // \left ... \right must stay on one line, so treat the pair as a
+      // group. The delimiter after them (e.g. \| or \{) is skipped too.
+      const command = readLatexCommandName(text, i);
+      if (command === "left") leftRightDepth += 1;
+      else if (command === "right") {
+        leftRightDepth = Math.max(0, leftRightDepth - 1);
+      }
+      i += command ? command.length : 1;
       continue;
     }
     if (ch === "{") braceDepth += 1;
@@ -785,6 +839,7 @@ function splitTopLevelAdditiveTerms(text: string): string[] {
       braceDepth === 0 &&
       bracketDepth === 0 &&
       parenDepth === 0 &&
+      leftRightDepth === 0 &&
       isBinaryAdditiveOperator(i)
     ) {
       const term = text.slice(start, i).trim();
@@ -834,7 +889,12 @@ function renderDisplayLatex(latex: string): string {
   const wrapped = buildWrappedDisplayMath(latex);
   if (wrapped) {
     const wrappedHtml = renderLatex(wrapped, true);
-    if (!wrappedHtml.includes('class="math-error"')) {
+    // KaTeX reports errors as "katex-error" (throwOnError is off), so check
+    // both labels before trusting the split version.
+    if (
+      !wrappedHtml.includes('class="math-error"') &&
+      !wrappedHtml.includes('class="katex-error"')
+    ) {
       return wrappedHtml;
     }
   }
@@ -1806,7 +1866,7 @@ function renderBlock(block: TextBlock): string {
 /** Render fenced code block */
 function renderCodeBlock(code: string, raw: string): string {
   // Extract language from raw if present
-  const langMatch = raw.match(/^```[ \t]*([^\s`]*)/);
+  const langMatch = raw.match(/^[ \t]{0,3}(?:`{3,}|~{3,})[ \t]*([^\s`~]*)/);
   const lang = normalizeFenceLanguage(langMatch?.[1]);
   const label = lang || "text";
   if (zoteroNoteMode) {
@@ -1816,25 +1876,51 @@ function renderCodeBlock(code: string, raw: string): string {
   const codeHtml = renderCodeHtml(code, lang);
 
   const safeSvgMarkup = lang === "svg" ? buildSafeSvgMarkup(code) : null;
+  // A themed drawing starts in the light theme; the chat swaps it to the
+  // current theme once it is mounted (syncPreviewThemes).
+  const svgSurface = safeSvgMarkup ? previewSurfaceFor(safeSvgMarkup) : null;
   const svgPreviewUri = safeSvgMarkup
-    ? buildSafeSvgDataUri(safeSvgMarkup)
+    ? svgMarkupToDataUri(
+        needsPreviewThemeSheet(safeSvgMarkup)
+          ? applySvgPreviewTheme(safeSvgMarkup, "light")
+          : safeSvgMarkup,
+      )
     : null;
+  const svgThemeAttribute =
+    svgSurface === "themed" ? ` data-llm-preview-theme="light"` : "";
   const svgPreview =
     safeSvgMarkup && svgPreviewUri
-      ? `<div class="llm-svg-preview" data-llm-svg-source="${escapeAttribute(safeSvgMarkup)}" aria-label="SVG preview"><img src="${escapeAttribute(svgPreviewUri)}" alt="SVG preview" /></div>`
+      ? `<div class="llm-svg-preview" ${PREVIEW_SURFACE_ATTRIBUTE}="${svgSurface}"${svgThemeAttribute} data-llm-svg-source="${escapeAttribute(safeSvgMarkup)}" aria-label="SVG preview"><img src="${escapeAttribute(svgPreviewUri)}" alt="SVG preview" /></div>`
       : "";
   const mermaidPreview = isMermaidFenceLanguage(lang)
     ? renderMermaidPreview(code)
     : "";
+  const htmlPreview =
+    isHtmlFenceLanguage(lang) && isClosedCodeFence(raw)
+      ? renderHtmlPreview(code)
+      : "";
+  // Plain code (no visual preview) is the only kind the flat answer style
+  // restyles; previews keep the framed shell.
+  const isPlain = !svgPreview && !mermaidPreview && !htmlPreview;
+  const plainClass = isPlain
+    ? "llm-codeblock-shell llm-codeblock-plain"
+    : "llm-codeblock-shell";
   const html = [
-    `<div class="llm-codeblock-shell" data-code-lang="${escapeAttribute(label)}">`,
+    `<div class="${plainClass}" data-code-lang="${escapeAttribute(label)}">`,
     `<div class="llm-codeblock-header"><span class="llm-codeblock-lang">${escapeHtml(label)}</span></div>`,
     svgPreview,
     mermaidPreview,
+    htmlPreview,
     `<div class="llm-codeblock-body">${codeHtml}</div>`,
     `</div>`,
   ].join("");
-  return wrapCopyable(html, raw.trim(), "code");
+  return wrapCopyable(
+    html,
+    raw.trim(),
+    "code",
+    "block",
+    isPlain ? "llm-copyable-plain-code" : "",
+  );
 }
 
 /** Render display math block */
@@ -2292,6 +2378,13 @@ function createMarkedRenderer(
                 .join("<br/>");
         return token.loose ? `<p>${inlineHtml}</p>` : inlineHtml;
       }
+      // A bare rule as an item's text is a fill-in blank ("- [ ] ____"),
+      // not a divider: a rule inside an item is lost with the item's
+      // checkbox when Zotero opens the note.
+      if (child.type === "hr") {
+        const blank = escapeHtml(String(child.raw || "").trim());
+        return token.loose ? `<p>${blank}</p>` : blank;
+      }
       return this.parser.parse([child], Boolean(token.loose));
     };
     let body = token.tokens.map(renderChildToken).join("");
@@ -2426,6 +2519,61 @@ function createMarkedMarkdownRenderer(target: MarkdownRenderTarget): Marked {
   });
 }
 
+const displayMathBlockTokenizer = createMathExtensions()[0].tokenizer;
+
+/**
+ * The leading blocks of a reply that is still streaming which later text can
+ * no longer change, as their raw source; joined, they are a prefix of `text`.
+ * Blocks come from Marked's plain lexer, whose tokens cover the source exactly,
+ * but a display equation is never cut: the plain lexer reads a line inside it
+ * such as `+ c` as a list, so the blocks an equation spans are joined into one.
+ * The last two tokens stay open (a blank line can still extend a list or
+ * table), and so does everything from a display-math opener whose closing
+ * delimiter has not arrived yet.
+ */
+export function splitSettledMarkdownBlocks(text: string): string[] {
+  const tokens = marked.lexer(text);
+  const codeRanges: Array<[number, number]> = [];
+  let offset = 0;
+  for (const token of tokens) {
+    if (token.type === "code") {
+      codeRanges.push([offset, offset + token.raw.length]);
+    }
+    offset += token.raw.length;
+  }
+  const mathRanges: Array<[number, number]> = [];
+  let openMathStart = text.length;
+  const opener = /(?:^|\n)[ \t]*(?=\$\$|\\\[)/g;
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(text)) !== null) {
+    const start = match.index + match[0].length;
+    opener.lastIndex = start + 1;
+    if (codeRanges.some(([from, to]) => start >= from && start < to)) continue;
+    const math = displayMathBlockTokenizer(text.slice(start));
+    if (!math) {
+      openMathStart = start;
+      break;
+    }
+    mathRanges.push([start, start + math.raw.length]);
+    // The equation's raw text ends with its newline, the next opener's `\n`.
+    opener.lastIndex = Math.max(start + math.raw.length - 1, start + 1);
+  }
+
+  const settled: string[] = [];
+  let pending = "";
+  offset = 0;
+  for (const token of tokens.slice(0, -2)) {
+    const end = offset + token.raw.length;
+    if (end > openMathStart) break;
+    pending += token.raw;
+    offset = end;
+    if (mathRanges.some(([from, to]) => end > from && end < to)) continue;
+    settled.push(pending);
+    pending = "";
+  }
+  return settled;
+}
+
 export function renderMarkdownWithLegacyParser(
   text: string,
   options?: { resolveImage?: (src: string) => string | null },
@@ -2516,6 +2664,84 @@ export function renderMarkdown(
   } finally {
     activeImageResolver = prevResolver;
   }
+}
+
+/**
+ * Rendered HTML for whole chat messages, keyed by render target and text.
+ * Switching conversations rebuilds every message bubble, and parsing plus
+ * KaTeX is most of that cost although the text has not changed. The output is
+ * a pure function of (target, text) as long as no image resolver is active and
+ * the Marked parser is in use: the renderer keeps no counters, ids, or dates,
+ * and its raw-HTML tag stack lives in a renderer created per call. Calls that
+ * break one of those conditions skip the cache.
+ */
+export const RENDERED_MARKDOWN_CACHE_MAX_ENTRIES = 2000;
+const RENDERED_MARKDOWN_CACHE_MAX_CHARS = 8 * 1024 * 1024;
+const renderedMarkdownCache = new Map<string, string>();
+let renderedMarkdownCacheChars = 0;
+let renderedMarkdownCacheHits = 0;
+let renderedMarkdownCacheMisses = 0;
+
+/**
+ * renderMarkdown with a bounded LRU cache of its output. Use it for settled
+ * text only; a streaming tail changes every frame and would only churn the
+ * cache, so callers render that with renderMarkdown directly.
+ */
+export function renderMarkdownMemoized(text: string): string {
+  if (!text || !text.trim()) return "";
+  if (markedMarkdownDisabled || activeImageResolver) {
+    return renderMarkdown(text);
+  }
+  const target = getCurrentMarkdownRenderTarget();
+  const cacheKey = `${target}\u0000${text}`;
+  const cached = renderedMarkdownCache.get(cacheKey);
+  if (cached !== undefined) {
+    renderedMarkdownCache.delete(cacheKey);
+    renderedMarkdownCache.set(cacheKey, cached);
+    renderedMarkdownCacheHits += 1;
+    return cached;
+  }
+  renderedMarkdownCacheMisses += 1;
+  const html = renderMarkdown(text);
+  // A failure inside renderMarkdown switches to the legacy parser; that
+  // output is not cached so the cache only ever holds Marked output.
+  if (markedMarkdownDisabled) return html;
+  const entryChars = cacheKey.length + html.length;
+  if (entryChars > RENDERED_MARKDOWN_CACHE_MAX_CHARS / 4) return html;
+  renderedMarkdownCache.set(cacheKey, html);
+  renderedMarkdownCacheChars += entryChars;
+  while (
+    renderedMarkdownCache.size > RENDERED_MARKDOWN_CACHE_MAX_ENTRIES ||
+    renderedMarkdownCacheChars > RENDERED_MARKDOWN_CACHE_MAX_CHARS
+  ) {
+    const oldestKey = renderedMarkdownCache.keys().next().value as
+      | string
+      | undefined;
+    if (oldestKey === undefined) break;
+    const oldest = renderedMarkdownCache.get(oldestKey) || "";
+    renderedMarkdownCache.delete(oldestKey);
+    renderedMarkdownCacheChars -= oldestKey.length + oldest.length;
+  }
+  return html;
+}
+
+export function __getRenderedMarkdownCacheStatsForTest(): {
+  size: number;
+  hits: number;
+  misses: number;
+} {
+  return {
+    size: renderedMarkdownCache.size,
+    hits: renderedMarkdownCacheHits,
+    misses: renderedMarkdownCacheMisses,
+  };
+}
+
+export function __resetRenderedMarkdownCacheForTest(): void {
+  renderedMarkdownCache.clear();
+  renderedMarkdownCacheChars = 0;
+  renderedMarkdownCacheHits = 0;
+  renderedMarkdownCacheMisses = 0;
 }
 
 /**

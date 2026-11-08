@@ -1,3 +1,4 @@
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import type { PaperContextRef, TagContextRef } from "../../shared/types";
 import {
   installConversationKeyLedgerAgentTriggers,
@@ -585,6 +586,14 @@ function sourceKindFromPaperBackend(value: unknown): AgentCoverageSourceKind {
   return "zotero_fulltext";
 }
 
+/** Where a whole-sections read took its text: MinerU, PDF text or the Zotero abstract field. */
+function wholeSectionsSourceKind(backend: unknown): AgentCoverageSourceKind {
+  const normalized = normalizeText(backend, 80);
+  if (normalized === "mineru") return "mineru";
+  if (normalized === "pdf") return "zotero_fulltext";
+  return "zotero_metadata";
+}
+
 function sourceKindFromFilePath(filePath: string): AgentCoverageSourceKind {
   return /mineru/i.test(filePath) ? "mineru" : "library_read";
 }
@@ -626,6 +635,9 @@ function buildPaperReadCoverageEntries(
   }
 
   if (mode === "targeted" && Array.isArray(content.papers)) {
+    // Whole named sections are section reads of the paper's own text, not
+    // ranked passages from an embedding search.
+    const wholeSections = content.read === "whole_sections";
     for (const paperRecord of content.papers) {
       const record = normalizeRecord(paperRecord);
       const paper = paperContextFromRecord(record);
@@ -637,12 +649,13 @@ function buildPaperReadCoverageEntries(
       const entry = createCoverageEntry({
         resourceKey: paperResourceKey(paper),
         resourceLabel: getPaperLabel(paper),
-        sourceKind:
-          sourceKindFromPaperBackend(record.sourceKind) === "mineru"
+        sourceKind: wholeSections
+          ? wholeSectionsSourceKind(record.backend)
+          : sourceKindFromPaperBackend(record.sourceKind) === "mineru"
             ? "mineru"
             : "embedding_retrieval",
         topic,
-        granularity: "passage",
+        granularity: wholeSections ? "section" : "passage",
         coverage: passages.length ? "targeted" : "partial",
         confidence: passages.length ? "high" : "medium",
         contentHash,
@@ -1154,6 +1167,9 @@ export async function commitAgentCoverageActivities(params: {
   const conversationKey = normalizePositiveInt(params.conversationKey);
   if (!conversationKey || !params.activities.length) return;
   if (isConversationKeyRetiredInMemory(conversationKey)) return;
+  // A temporary side chat records no coverage, not even paper-wide (durable)
+  // coverage that other conversations would read.
+  if (isEphemeralConversationKey(conversationKey)) return;
   const touchedScopes = new Set<string>();
   const conversationScope = conversationScopeKey(conversationKey);
   const conversationLedger = ledgerForScope(conversationScope);

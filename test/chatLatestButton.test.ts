@@ -64,8 +64,14 @@ describe("chat latest message button", function () {
         }
       },
     };
+    const styleValues = new Map<string, string>();
     const chatBox = Object.assign(new EventTarget(), {
       ownerDocument: { defaultView: win },
+      style: {
+        getPropertyValue: (name: string) => styleValues.get(name) ?? "",
+        setProperty: (name: string, value: string) =>
+          styleValues.set(name, value),
+      },
       scrollTop: 600,
       scrollHeight: 800,
       clientHeight: 200,
@@ -147,6 +153,23 @@ describe("chat latest message button", function () {
     assert.isTrue(view.button.hidden);
     assert.isEmpty([...view.frames]);
     assert.isEmpty([...view.timers]);
+  });
+
+  it("fades only the edges that have more chat past them", function () {
+    const view = fixture();
+    const fade = () => [
+      view.chatBox.style.getPropertyValue("--llm-edge-fade-top"),
+      view.chatBox.style.getPropertyValue("--llm-edge-fade-bottom"),
+    ];
+    assert.deepEqual(fade(), ["10px", "0px"]);
+    view.chatBox.scrollTop = 0;
+    view.chatBox.dispatchEvent(new Event("scroll"));
+    view.flush();
+    assert.deepEqual(fade(), ["0px", "10px"]);
+    view.chatBox.scrollTop = 4;
+    view.chatBox.dispatchEvent(new Event("scroll"));
+    view.flush();
+    assert.deepEqual(fade(), ["4px", "10px"]);
   });
 
   it("uses the current conversation's activity when a panel switches conversations", function () {

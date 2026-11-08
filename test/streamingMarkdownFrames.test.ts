@@ -1,7 +1,9 @@
 import { assert } from "chai";
 import {
   disposeStreamingMarkdown,
+  markStreamingEntrances,
   renderStreamingMarkdownInto,
+  STREAMING_FADE_IN_MS,
 } from "../src/modules/contextPanel/streamingMarkdown";
 import { FakeElement } from "./helpers/fakeDom";
 
@@ -151,6 +153,22 @@ describe("streaming Markdown frame consistency", function () {
     assert.equal(view.timers.size, 0);
   });
 
+  it("keeps a streamed display equation whole when a line inside it looks like a list", function () {
+    const view = fixture();
+    const reply = "Expand:\n\n$$\na = b\n+ c\n- d\n$$\n\nSo $a$ grows.\n\nEnd.";
+    for (let end = 1; end <= reply.length; end += 1) {
+      view.render(reply.slice(0, end));
+      view.flush();
+    }
+    assert.notInclude(
+      view.html,
+      "<li>",
+      "no line of the equation became a list",
+    );
+    assert.include(view.html, "katex-display");
+    assert.equal((view.html.match(/class="katex"/g) || []).length, 2);
+  });
+
   it("renders an explicit empty restart in its scheduled frame", function () {
     const view = fixture();
     view.render("Visible passage");
@@ -160,5 +178,57 @@ describe("streaming Markdown frame consistency", function () {
     view.flush();
     assert.notInclude(view.html, "Visible passage");
     assert.equal(view.frames.size, 0);
+  });
+});
+
+describe("streaming Markdown fade-in", function () {
+  const FADE = "llm-streaming-fade-in";
+  const blocks = (count: number) =>
+    Array.from({ length: count }, () => new FakeElement("p"));
+  const mark = (elements: FakeElement[], appeared: number[], now: number) =>
+    markStreamingEntrances(
+      elements as unknown as HTMLElement[],
+      appeared,
+      0,
+      now,
+    );
+
+  it("fades a new block from the start", function () {
+    const appeared: number[] = [];
+    const [first] = blocks(1);
+    mark([first], appeared, 1000);
+    assert.isTrue(first.classList.contains(FADE));
+    assert.equal(first.style.animationDelay, "0ms");
+  });
+
+  it("resumes a rebuilt block's fade instead of restarting it", function () {
+    const appeared: number[] = [];
+    mark(blocks(1), appeared, 1000);
+    const [rebuilt, added] = blocks(2);
+    mark([rebuilt, added], appeared, 1250);
+    assert.equal(rebuilt.style.animationDelay, "-250ms");
+    assert.equal(added.style.animationDelay, "0ms");
+  });
+
+  it("leaves a block alone once the reader has seen it fade in", function () {
+    const appeared: number[] = [];
+    mark(blocks(1), appeared, 1000);
+    const [seen] = blocks(1);
+    mark([seen], appeared, 1000 + STREAMING_FADE_IN_MS);
+    assert.isFalse(seen.classList.contains(FADE));
+  });
+
+  it("drops the fade class when its own animation ends", function () {
+    const [block] = blocks(1);
+    const child = new FakeElement("span");
+    mark([block], [], 1000);
+    block.dispatchFakeEvent("animationend", { target: child } as never);
+    assert.isTrue(
+      block.classList.contains(FADE),
+      "a child's animation bubbles",
+    );
+    block.dispatchFakeEvent("animationend");
+    assert.isFalse(block.classList.contains(FADE));
+    assert.equal(block.style.animationDelay, "");
   });
 });

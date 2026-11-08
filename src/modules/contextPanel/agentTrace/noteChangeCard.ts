@@ -19,6 +19,7 @@ export function renderNoteChangeDetail(
   doc: Document,
   result: AgentNoteChangeResultCard,
   status: HTMLElement,
+  options: { readOnly?: boolean } = {},
 ): HTMLElement {
   const detail = doc.createElement("div");
   const description = doc.createElement("p");
@@ -37,7 +38,10 @@ export function renderNoteChangeDetail(
   undo.type = "button";
   undo.textContent = "Undo";
   undo.disabled = result.state !== "applied";
-  actions.append(open, undo);
+  // A read-only past chat shows the change but cannot undo it: undoing
+  // writes the note and the stored chat's journal.
+  if (options.readOnly) actions.append(open);
+  else actions.append(open, undo);
   detail.append(description, diff, actions);
   const failed = (error: unknown) => {
     status.textContent = error instanceof Error ? error.message : String(error);
@@ -141,6 +145,7 @@ export function noteChangeCardHeader(result: AgentNoteChangeResultCard): {
 export function renderNoteChangeCard(
   doc: Document,
   result: AgentNoteChangeResultCard,
+  options: { readOnly?: boolean } = {},
 ): HTMLElement {
   const card = doc.createElement("section");
   card.className =
@@ -150,7 +155,7 @@ export function renderNoteChangeCard(
   const layout = createDocumentCardLayout(doc, noteChangeCardHeader(result));
   card.append(
     layout.header,
-    renderNoteChangeDetail(doc, result, layout.status),
+    renderNoteChangeDetail(doc, result, layout.status, options),
   );
   return card;
 }

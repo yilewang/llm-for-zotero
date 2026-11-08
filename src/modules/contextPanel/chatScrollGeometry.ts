@@ -26,6 +26,21 @@ export function getElementRect(element: Element): DOMRect | null {
   return rect;
 }
 
+/**
+ * How far something laid over the chat covers its top: the standalone
+ * window's title row runs over the chat's upper edge.
+ */
+export function getChatCoveredTop(chatBox: Element): number {
+  const title = closestElement(
+    chatBox,
+    ".llm-standalone-content-wrapper",
+  )?.querySelector?.(":scope > .llm-standalone-content-title");
+  const chat = getElementRect(chatBox);
+  const covering = title ? getElementRect(title) : null;
+  if (!chat || !covering) return 0;
+  return Math.max(0, covering.bottom - chat.top);
+}
+
 function isRectVisibleInViewport(rect: DOMRect, viewport: DOMRect): boolean {
   return rect.bottom > viewport.top && rect.top < viewport.bottom;
 }
@@ -155,6 +170,29 @@ function answerBlocks(wrapper: Element): Element[] {
     );
 }
 
+/**
+ * The answer block (paragraph, list item, table, …) that holds `element`, as
+ * an anchor's identity: it stays put when content above it in the same
+ * message changes height.
+ */
+export function findAnswerBlockForElement(
+  element: Element,
+): { block: Element; blockOrdinal: number; blockText: string } | null {
+  const wrapper = closestElement(element, ".llm-message-wrapper");
+  if (!wrapper) return null;
+  const blocks = answerBlocks(wrapper);
+  // The innermost one: a list item comes before the paragraphs inside it.
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (blocks[index].contains(element))
+      return {
+        block: blocks[index],
+        blockOrdinal: index,
+        blockText: blockText(blocks[index]),
+      };
+  }
+  return null;
+}
+
 function blockText(element: Element): string {
   return (element.textContent || "").trim().slice(0, 160);
 }
@@ -280,9 +318,32 @@ function findVisibleFlowElements(
 export function findBestVisibleChatAnchor(
   chatBox: HTMLDivElement,
 ): ChatScrollAnchor | undefined {
-  const viewport = getElementRect(chatBox);
-  if (!viewport) return undefined;
+  const box = getElementRect(chatBox);
+  if (!box) return undefined;
+  // What the reader sees starts below what covers the chat's top; anchors
+  // still measure from the chat's own top, as they are restored.
+  const covered = Math.min(getChatCoveredTop(chatBox), box.height);
+  if (covered <= 0) return findBestVisibleChatAnchorIn(chatBox, box);
+  const view = {
+    left: box.left,
+    right: box.right,
+    width: box.width,
+    top: box.top + covered,
+    bottom: box.bottom,
+    height: box.height - covered,
+    x: box.left,
+    y: box.top + covered,
+  } as DOMRect;
+  const anchor = findBestVisibleChatAnchorIn(chatBox, view);
+  return anchor
+    ? { ...anchor, viewportOffsetTop: anchor.viewportOffsetTop + covered }
+    : undefined;
+}
 
+function findBestVisibleChatAnchorIn(
+  chatBox: HTMLDivElement,
+  viewport: DOMRect,
+): ChatScrollAnchor | undefined {
   const wrappers = queryElements(chatBox, ".llm-message-wrapper");
   const visibleWrappers = findVisibleFlowElements(wrappers, viewport);
   // Quote cards live inside message wrappers; content without wrappers keeps

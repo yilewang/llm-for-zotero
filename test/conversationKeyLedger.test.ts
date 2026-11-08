@@ -23,6 +23,13 @@ import {
   updateConversationKeyLedgerConversationIDInTransaction,
   ConversationRetiredError,
 } from "../src/shared/conversationKeyLedger";
+import {
+  EPHEMERAL_GLOBAL_CONVERSATION_KEY_BASE,
+  EPHEMERAL_PAPER_CONVERSATION_KEY_BASE,
+  UPSTREAM_GLOBAL_ALLOCATED_CONVERSATION_KEY_BASE,
+  UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
+  UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
+} from "../src/shared/conversationKeySpace";
 
 const globalScope = globalThis as typeof globalThis & {
   Zotero?: Record<string, unknown>;
@@ -1056,6 +1063,60 @@ describe("permanent conversation key ledger", function () {
           endExclusive: 1100,
         });
         assert.fail("expected the exhausted range to throw");
+      } catch (error) {
+        assert.match(String(error), /exhausted/i);
+      }
+    });
+
+    it("never issues a key in the reserved ephemeral band", async function () {
+      await initConversationKeyLedgerStore();
+      const zotero = globalScope.Zotero as any;
+      // The last real global key below the band is issued.
+      await zotero.DB.executeTransaction(() =>
+        ensureConversationKeyLedgerEntryInTransaction({
+          conversationKey: EPHEMERAL_GLOBAL_CONVERSATION_KEY_BASE - 1,
+          instanceID: "instance-below-band",
+          conversationID: "conversation-below-band",
+          system: "upstream",
+          kind: "global",
+          profileSignature: "profile-test",
+          libraryID: 1,
+          issuedAt: 1,
+        }),
+      );
+      try {
+        await nextUnissuedConversationKeyInRange({
+          start: UPSTREAM_GLOBAL_ALLOCATED_CONVERSATION_KEY_BASE,
+          endExclusive: UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
+        });
+        assert.fail("expected the capped range to be exhausted");
+      } catch (error) {
+        assert.match(String(error), /exhausted/i);
+      }
+      try {
+        await zotero.DB.executeTransaction(() =>
+          allocateConversationKeyInTransaction({
+            range: {
+              system: "upstream",
+              kind: "global",
+              start: UPSTREAM_GLOBAL_ALLOCATED_CONVERSATION_KEY_BASE,
+              endExclusive: UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
+            },
+            libraryID: 1,
+          }),
+        );
+        assert.fail("expected the capped allocator to be exhausted");
+      } catch (error) {
+        assert.match(String(error), /exhausted/i);
+      }
+      // A caller floor inside the band is refused the same way.
+      try {
+        await nextUnissuedConversationKeyInRange({
+          start: 1,
+          endExclusive: UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
+          atLeast: EPHEMERAL_PAPER_CONVERSATION_KEY_BASE,
+        });
+        assert.fail("expected a floor in the band to be refused");
       } catch (error) {
         assert.match(String(error), /exhausted/i);
       }

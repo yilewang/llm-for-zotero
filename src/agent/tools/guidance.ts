@@ -20,3 +20,34 @@ export function userTextSignal(
 export function neverSelected(): boolean {
   return false;
 }
+
+/**
+ * A tool's guidance as a list: a tool may carry one guidance or several, each
+ * matched and rendered alone (for example one item per skill it serves).
+ */
+export function toolGuidanceItems(
+  guidance: AgentToolGuidance | ReadonlyArray<AgentToolGuidance> | undefined,
+): ReadonlyArray<AgentToolGuidance> {
+  if (!guidance) return [];
+  return Array.isArray(guidance)
+    ? (guidance as ReadonlyArray<AgentToolGuidance>)
+    : [guidance as AgentToolGuidance];
+}
+
+/**
+ * Matches while `skillId` is active this turn: matched by the host or forced
+ * by the user (`$skill`), as note_write's write-note guidance does.
+ */
+export function skillGuidance(
+  skillId: string,
+  instruction: string,
+): AgentToolGuidance {
+  return {
+    matches: (request, context) =>
+      Boolean(
+        context?.matchedSkillIds.includes(skillId) ||
+        request.forcedSkillIds?.includes(skillId),
+      ),
+    instruction,
+  };
+}

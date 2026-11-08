@@ -8,6 +8,7 @@ import {
   withScrollGuard,
 } from "./chatScrollSnapshots";
 import { sanitizeText } from "../../utils/textSanitization";
+import { flushPendingChatRender } from "./progressiveChatRender";
 import type { Message } from "./types";
 
 export const SIDEBAR_TURN_NAVIGATOR_MIN_WIDTH_PX = 400;
@@ -550,23 +551,28 @@ export function createConversationTurnNavigator(params: {
 
   const applyEligibility = () => {
     const previousVisible = visible;
-    withScrollGuard(chatBox, conversationKey, () => {
-      chatShell.classList.remove("llm-turn-navigator-visible");
-      nav.hidden = true;
-      void chatBox.offsetWidth;
-      const shellWidth =
-        chatShell.getBoundingClientRect().width || chatShell.clientWidth || 0;
-      const eligible = isConversationTurnNavigatorEligible({
-        shellWidth,
-        scrollHeight: chatBox.scrollHeight,
-        clientHeight: chatBox.clientHeight,
-        turnCount: entries.length,
-        minimumWidthPx,
-      });
-      visible = eligible;
-      nav.hidden = !eligible;
-      chatShell.classList.toggle("llm-turn-navigator-visible", eligible);
+    // Decided from the layout as it is, with no hide-and-measure pass: that
+    // pass reflowed the chat (and could clamp the scroll position) on every
+    // run, and a run on every frame fought the reader's scrolling. Measuring
+    // the current state gives hysteresis: the bar's gutter can only keep a
+    // shown bar shown, and a hidden bar shows only when the chat overflows
+    // without it, so the result cannot alternate.
+    const shellWidth =
+      chatShell.getBoundingClientRect().width || chatShell.clientWidth || 0;
+    const eligible = isConversationTurnNavigatorEligible({
+      shellWidth,
+      scrollHeight: chatBox.scrollHeight,
+      clientHeight: chatBox.clientHeight,
+      turnCount: entries.length,
+      minimumWidthPx,
     });
+    if (eligible !== previousVisible || nav.hidden === eligible) {
+      withScrollGuard(chatBox, conversationKey, () => {
+        visible = eligible;
+        nav.hidden = !eligible;
+        chatShell.classList.toggle("llm-turn-navigator-visible", eligible);
+      });
+    }
     if (!visible) hidePreview();
     if (visible !== previousVisible) {
       dirty.geometry = true;
@@ -669,6 +675,10 @@ export function createConversationTurnNavigator(params: {
 
   const activateMarker = (index: number) => {
     const entry = entries[index];
+    // Older turns of a long conversation may still be waiting to be drawn.
+    // Draw them all first: one landing above the target later would move
+    // it under the scroll, and drawing re-syncs this navigator.
+    if (entry) flushPendingChatRender(chatBox);
     const wrapper = entry ? wrapperByTurnKey.get(entry.key) : null;
     if (!entry || !wrapper || !conversationKey) return;
     const paddingTop = Number.parseFloat(

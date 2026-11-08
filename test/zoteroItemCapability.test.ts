@@ -517,6 +517,112 @@ describe("item capability", function () {
 
       assert.equal(resolved?.id, 2);
     });
+
+    it("still reads a PDF attachment's parent for metadata reads", function () {
+      // Read callers (page text, literature search, library_read) want the
+      // paper a PDF belongs to; only writes take the named object.
+      installZotero();
+      const parent = makeItem({ id: 5, title: "Parent paper" });
+      const attachment = makeItem({ id: 6, title: "PDF" });
+      attachment.parentID = parent.id;
+      attachment.isRegularItem = () => false;
+      attachment.isAttachment = () => true;
+
+      const resolved = capability().resolveMetadataItem({ itemId: 6 });
+
+      assert.equal(resolved?.id, 5);
+    });
+  });
+
+  describe("resolving a metadata write target", function () {
+    function childAttachment() {
+      const parent = makeItem({ id: 5, title: "Parent paper" });
+      const attachment = makeItem({ id: 6, title: "PDF" });
+      attachment.parentID = parent.id;
+      attachment.isRegularItem = () => false;
+      attachment.isAttachment = () => true;
+      return { parent, attachment };
+    }
+
+    it("takes a named child attachment itself, never its parent", function () {
+      installZotero();
+      childAttachment();
+      makeItem({ id: 2, title: "Active" });
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        itemId: 6,
+        request: { activeItemId: 2 } as never,
+      });
+
+      assert.deepEqual(
+        "item" in resolved ? resolved.item.id : resolved.refusal,
+        6,
+      );
+    });
+
+    it("refuses a named standalone note, naming note_write, and never falls back to the active item", function () {
+      installZotero();
+      const note = makeItem({ id: 7, title: "" });
+      note.isRegularItem = () => false;
+      note.isNote = () => true;
+      makeItem({ id: 2, title: "Active" });
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        itemId: 7,
+        request: { activeItemId: 2 } as never,
+      });
+
+      assert.isTrue("refusal" in resolved, JSON.stringify(resolved));
+      if (!("refusal" in resolved)) return;
+      assert.include(resolved.refusal, "note_write");
+      assert.include(resolved.refusal, "7");
+    });
+
+    it("refuses a named id that does not exist instead of writing the active item", function () {
+      installZotero();
+      makeItem({ id: 2, title: "Active" });
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        itemId: 404,
+        request: { activeItemId: 2 } as never,
+      });
+
+      assert.isTrue("refusal" in resolved, JSON.stringify(resolved));
+      if (!("refusal" in resolved)) return;
+      assert.include(resolved.refusal, "404");
+    });
+
+    it("keeps today's paper context, then active item, path when no id is named", function () {
+      installZotero();
+      childAttachment();
+      makeItem({ id: 2, title: "Active" });
+
+      const byActive = capability().resolveMetadataWriteTarget({
+        request: { activeItemId: 2 } as never,
+      });
+      const byPaper = capability().resolveMetadataWriteTarget({
+        paperContext: { itemId: 5, contextItemId: 6, title: "Parent" },
+        request: { activeItemId: 2 } as never,
+      });
+      // An open PDF stands for its paper, as it always has.
+      const byOpenPdf = capability().resolveMetadataWriteTarget({
+        request: { activeItemId: 6 } as never,
+      });
+
+      assert.equal("item" in byActive ? byActive.item.id : 0, 2);
+      assert.equal("item" in byPaper ? byPaper.item.id : 0, 5);
+      assert.equal("item" in byOpenPdf ? byOpenPdf.item.id : 0, 5);
+    });
+
+    it("refuses when no id is named and nothing is open", function () {
+      installZotero();
+
+      const resolved = capability().resolveMetadataWriteTarget({
+        request: {} as never,
+      });
+
+      assert.isTrue("refusal" in resolved);
+    });
   });
 
   describe("reading editable metadata", function () {
@@ -631,6 +737,32 @@ describe("item capability", function () {
       );
     });
 
+    it("asks the same question before the write, so a card is never offered for a refused patch", async function () {
+      installZotero();
+      const chapter = makeItem({ id: 5, itemTypeID: 2 });
+      const article = makeItem({ id: 6, itemTypeID: 1 });
+      const patch = { accessDate: "2024-01-01", title: "T" } as never;
+
+      const refusal = capability().metadataPatchRefusal(
+        chapter as unknown as Zotero.Item,
+        patch,
+      );
+
+      assert.include(
+        refusal || "",
+        "Unsupported metadata fields for bookSection: accessDate",
+      );
+      assert.notInclude(refusal || "", "title.");
+      assert.isNull(
+        capability().metadataPatchRefusal(
+          article as unknown as Zotero.Item,
+          patch,
+        ),
+      );
+      assert.equal(chapter.saves, 0, "asking writes nothing");
+      assert.isEmpty(chapter.setFieldCalls);
+    });
+
     it("refuses a value Zotero itself would not take", async function () {
       installZotero();
       const item = makeItem({ id: 5 });
@@ -669,6 +801,53 @@ describe("item capability", function () {
 
       assert.include(message, "Creators are not supported for bookSection");
       assert.equal(chapter.saves, 0);
+    });
+
+    it("refuses creators before any field is set, so a mixed patch leaves no unsaved change", async function () {
+      installZotero();
+      const chapter = makeItem({ id: 5, itemTypeID: 2 });
+      const patch = {
+        title: "New title",
+        creators: [{ firstName: "A", lastName: "B", creatorType: "author" }],
+      } as never;
+
+      assert.equal(
+        capability().metadataPatchRefusal(
+          chapter as unknown as Zotero.Item,
+          patch,
+        ),
+        "Creators are not supported for bookSection.",
+      );
+      let message = "";
+      try {
+        await capability().updateArticleMetadata({
+          item: chapter as unknown as Zotero.Item,
+          metadata: patch,
+        });
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+
+      assert.include(message, "Creators are not supported for bookSection");
+      assert.isEmpty(chapter.setFieldCalls, "no field was set on the item");
+      assert.equal(chapter.fields.title, "Paper 5");
+      assert.equal(chapter.saves, 0);
+    });
+
+    it("joins a field refusal and a creators refusal in one message", function () {
+      installZotero();
+      const chapter = makeItem({ id: 5, itemTypeID: 2 });
+      const refusal = capability().metadataPatchRefusal(
+        chapter as unknown as Zotero.Item,
+        {
+          accessDate: "2024-01-01",
+          creators: [{ firstName: "A", lastName: "B", creatorType: "author" }],
+        } as never,
+      );
+      assert.match(
+        refusal || "",
+        /Unsupported metadata fields for bookSection: accessDate.*Creators are not supported for bookSection/,
+      );
     });
 
     it("writes to the child attachment the caller named, never its parent", async function () {
@@ -832,6 +1011,41 @@ describe("item capability", function () {
     });
   });
 
+  describe("text search", function () {
+    it("turns an annotation match into its paper, not the PDF between them", async function () {
+      const paper = makeItem({ id: 10, title: "Grid cells" });
+      const pdf = makeItem({ id: 20, title: "PDF" });
+      pdf.parentID = paper.id;
+      pdf.isRegularItem = () => false;
+      pdf.isAttachment = () => true;
+      const annotation = makeItem({ id: 30, title: "Highlight" });
+      annotation.parentID = pdf.id;
+      annotation.isRegularItem = () => false;
+      annotation.isAnnotation = () => true;
+      class FakeSearch {
+        addCondition() {}
+        async search() {
+          return [30];
+        }
+      }
+      installZotero({ Search: FakeSearch });
+
+      // The scope names the paper, so the annotation is kept or dropped by
+      // the paper's id, not the PDF's.
+      const found = await capability().searchAllLibraryItems({
+        libraryID: 1,
+        query: "grid",
+        allowedItemIds: [10],
+      });
+
+      assert.deepEqual(
+        found.items.map((item) => item.itemId),
+        [10],
+      );
+      assert.equal(found.totalCount, 1);
+    });
+  });
+
   describe("finding related papers and duplicates", function () {
     /** Papers with a PDF attachment, which is what a paper target requires. */
     function makePaper(seed: {
@@ -908,27 +1122,159 @@ describe("item capability", function () {
       );
     });
 
-    it("groups duplicates by DOI first and then by normalised title", async function () {
-      makePaper({ id: 1, title: "A study of things", doi: "10.1/abc" });
-      makePaper({ id: 2, title: "Something else entirely", doi: "10.1/ABC" });
-      makePaper({ id: 3, title: "A different long title here" });
-      makePaper({ id: 4, title: "A different long title here!" });
-      installZotero();
+    /**
+     * Zotero's own duplicate engine, faked at its public surface: the search
+     * whose results are every duplicate id (backed by a temp table the
+     * caller must drop) and the set lookup by item id.
+     */
+    function installDuplicates(sets: number[][], trashed: number[] = []) {
+      const dropped: string[] = [];
+      const dropOptions: Array<{ noCache?: boolean } | undefined> = [];
+      const constructedFor: number[] = [];
+      class FakeDuplicates {
+        constructor(readonly libraryID: number) {
+          constructedFor.push(libraryID);
+        }
+        async getSearchObject() {
+          return {
+            libraryID: this.libraryID,
+            conditions: {
+              0: {
+                condition: "tempTable",
+                operator: "is",
+                value: "tmpDuplicates_fake",
+              },
+            },
+            // A real search excludes trashed items.
+            search: async () =>
+              sets.flat().filter((id) => !trashed.includes(id)),
+          };
+        }
+        getSetItemsByItemID(itemID: number) {
+          return sets.find((set) => set.includes(itemID)) || [itemID];
+        }
+      }
+      installZotero({
+        Duplicates: FakeDuplicates,
+        DB: {
+          queryAsync: async (
+            sql: string,
+            _params?: unknown,
+            options?: { noCache?: boolean },
+          ) => {
+            dropped.push(sql);
+            dropOptions.push(options);
+          },
+        },
+      });
+      return { dropped, dropOptions, constructedFor };
+    }
+
+    it("groups a metadata-only item with its PDF twin", async function () {
+      // The audit case: the old scan walked PDF-backed papers only, so the
+      // DOI-only record never met its twin.
+      makeItem({
+        id: 1,
+        title: "Grid cells",
+        fields: { title: "Grid cells", DOI: "10.1/ABC" },
+      });
+      makePaper({ id: 2, title: "Grid cells", doi: "10.1/abc" });
+      const { dropped, dropOptions, constructedFor } = installDuplicates([
+        [1, 2],
+      ]);
 
       const found = await capability().detectDuplicatesInLibrary({
         libraryID: 1,
       });
 
-      assert.equal(found.totalGroups, 2);
+      assert.deepEqual(constructedFor, [1]);
+      assert.equal(found.totalGroups, 1);
       assert.equal(found.groups[0].matchReason, "Same DOI: 10.1/abc");
       assert.deepEqual(
         found.groups[0].papers.map((paper) => paper.itemId),
         [1, 2],
       );
-      assert.equal(found.groups[1].matchReason, "Same title");
       assert.deepEqual(
-        found.groups[1].papers.map((paper) => paper.itemId),
+        found.groups[0].papers.map((paper) => paper.attachments.length),
+        [0, 1],
+      );
+      assert.equal(found.groups[0].papers[0].itemType, "journalArticle");
+      // The temp table Zotero creates for the search is dropped afterwards.
+      assert.deepEqual(dropped, ["DROP TABLE IF EXISTS tmpDuplicates_fake"]);
+      // Dropped outside Zotero's statement cache, as Zotero's own drop is.
+      assert.deepEqual(dropOptions, [{ noCache: true }]);
+    });
+
+    it("names a title match when the group shares no DOI", async function () {
+      makeItem({ id: 3, title: "A different long title here" });
+      makeItem({ id: 4, title: "A different long title here!" });
+      installDuplicates([[4, 3]]);
+
+      const found = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+      });
+
+      assert.equal(found.groups[0].matchReason, "Same title");
+      assert.deepEqual(
+        found.groups[0].papers.map((paper) => paper.itemId),
         [3, 4],
+      );
+    });
+
+    it("reports the true group total and pages the rest with offset", async function () {
+      const sets: number[][] = [];
+      for (let index = 0; index < 7; index += 1) {
+        const a = 10 + index * 2;
+        makeItem({ id: a, title: `Twin ${index}` });
+        makeItem({ id: a + 1, title: `Twin ${index}` });
+        sets.push([a + 1, a]);
+      }
+      installDuplicates(sets);
+
+      const first = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+        limit: 3,
+      });
+      const last = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+        limit: 3,
+        offset: 6,
+      });
+
+      assert.equal(first.totalGroups, 7, "the total ignores the page limit");
+      assert.lengthOf(first.groups, 3);
+      assert.deepEqual(
+        first.groups.map((group) => group.papers[0].itemId),
+        [10, 12, 14],
+      );
+      assert.equal(last.totalGroups, 7);
+      assert.deepEqual(
+        last.groups.map((group) => group.papers.map((paper) => paper.itemId)),
+        [[22, 23]],
+      );
+    });
+
+    it("drops a group left with one live member", async function () {
+      makeItem({ id: 1, title: "Kept" });
+      makeItem({ id: 2, title: "Kept" });
+      makeItem({ id: 3, title: "Trashed twin" });
+      makeItem({ id: 4, title: "Trashed twin", deleted: true });
+      installDuplicates(
+        [
+          [1, 2],
+          [3, 4],
+        ],
+        [4],
+      );
+
+      const found = await capability().detectDuplicatesInLibrary({
+        libraryID: 1,
+      });
+
+      assert.equal(found.totalGroups, 1);
+      assert.deepEqual(
+        found.groups[0].papers.map((paper) => paper.itemId),
+        [1, 2],
       );
     });
   });

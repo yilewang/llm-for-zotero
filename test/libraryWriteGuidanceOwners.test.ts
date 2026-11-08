@@ -1,6 +1,8 @@
 import { assert } from "chai";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
+import { toolGuidanceItems } from "../src/agent/tools/guidance";
 import { resolveAgentRuntimeRequest } from "../src/agent/context/resolvedAgentRequest";
+import { computeUserTextSignals } from "../src/agent/runtime";
 import { createApplyTagsTool } from "../src/agent/tools/write/applyTags";
 import { createUpdateMetadataTool } from "../src/agent/tools/write/updateMetadata";
 import { createMergeItemsTool } from "../src/agent/tools/write/mergeItems";
@@ -65,5 +67,28 @@ describe("library write guidance owners", function () {
       .listToolsForRequest(request)
       .find((tool) => tool.name === "library_import")!;
     assert.include(modelTool.description, identifiers);
+  });
+
+  it("sends a document's outside papers to kind:'document_citations' on an import turn", function () {
+    const tools = registry();
+    const userText = "Import the papers this review cites.";
+    const request = {
+      ...resolveAgentRuntimeRequest({
+        conversationKey: 1,
+        mode: "agent",
+        userText,
+        libraryID: 1,
+      }),
+      userTextSignals: computeUserTextSignals(userText),
+    };
+    const guidance = toolGuidanceItems(
+      tools
+        .listToolDefinitionsForRequest(request)
+        .find((tool) => tool.spec.name === "library_import")!.guidance,
+    ).filter((item) => item.matches(request));
+    assert.include(
+      guidance.map((item) => item.instruction).join("\n"),
+      "To import the outside papers a document of this chat cites, call kind:'document_citations' with that document's documentId, not their DOIs; it also publishes a new version of the document that cites the imported items.",
+    );
   });
 });

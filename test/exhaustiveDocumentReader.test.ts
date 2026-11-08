@@ -1,7 +1,10 @@
 import { assert } from "chai";
 import {
+  FULL_READ_MAX_BATCH_TOKENS,
   createLlmBatchAnalyzer,
+  defaultBatchDigestTokens,
   readDocumentsExhaustively,
+  resolveFullReadBatchTokenBudget,
   type ExhaustiveBatchInput,
 } from "../src/shared/exhaustiveDocumentReader";
 import type { PaperContextRef } from "../src/modules/contextPanel/types";
@@ -396,6 +399,179 @@ describe("exhaustiveDocumentReader", function () {
 
     assert.equal(result.status, "complete");
     assert.deepEqual(budgets, [700, 1400]);
+  });
+
+  it("sizes a batch at half the reader window, between 1,024 and 32,000 tokens", function () {
+    assert.equal(FULL_READ_MAX_BATCH_TOKENS, 32_000);
+    assert.equal(resolveFullReadBatchTokenBudget(1_000_000), 32_000);
+    assert.equal(resolveFullReadBatchTokenBudget(64_000), 32_000);
+    assert.equal(resolveFullReadBatchTokenBudget(40_000), 20_000);
+    assert.equal(resolveFullReadBatchTokenBudget(8_000), 4_000);
+    assert.equal(resolveFullReadBatchTokenBudget(1_000), 1_024);
+  });
+
+  it("gives a digest a quarter of its batch's input tokens, never under 700", async function () {
+    const small = [{ text: "Short chunk." }];
+    assert.equal(defaultBatchDigestTokens(small), 700);
+    const big = [
+      { text: "word ".repeat(8000) },
+      { text: "word ".repeat(8000) },
+    ];
+    const inputTokens =
+      estimateTextTokens(big[0].text) + estimateTextTokens(big[1].text);
+    const expected = Math.ceil(inputTokens * 0.25);
+    assert.isAbove(expected, 700);
+    assert.equal(defaultBatchDigestTokens(big), expected);
+
+    // The reader hands that budget to every first attempt.
+    const seen: Array<number | undefined> = [];
+    await readDocumentsExhaustively({
+      papers: [buildPaper()],
+      question: "Read everything.",
+      batchTokenBudget: 4000,
+      finalTokenBudget: 4000,
+      analyzeBatch: async (batch) => {
+        seen.push(batch.maxTokens);
+        return { digest: "Covered", relevantChunkIds: [] };
+      },
+    });
+    assert.deepEqual(seen, [
+      defaultBatchDigestTokens(
+        buildPaper().pdfContext.chunks.map((text) => ({ text })),
+      ),
+    ]);
+  });
+
+  it("clamps a digest budget to the reader model's output limit", async function () {
+    const sent: number[] = [];
+    const analyze = createLlmBatchAnalyzer(
+      {
+        model: "deepseek-flash",
+        apiBase: "https://api.deepseek.com/v1",
+        profileOverride: { limits: { outputTokens: 1000 } },
+      } as never,
+      (async (params: { outputTokenLimit?: { tokens?: number } }) => {
+        sent.push(params.outputTokenLimit?.tokens ?? 0);
+        return {
+          text: '{"digest":"Covered","relevantChunkIds":[]}',
+          completion: { status: "complete" },
+        };
+      }) as never,
+    );
+    await analyze({
+      question: "Summarize",
+      chunks: [{ chunkIndex: 0, text: "Body" }],
+      maxTokens: 5000,
+    } as never);
+    await analyze({
+      question: "Summarize",
+      chunks: [{ chunkIndex: 0, text: "Body" }],
+      maxTokens: 600,
+    } as never);
+    assert.deepEqual(sent, [1000, 600]);
+  });
+
+  it("splits a batch whose digest stays cut off, and merges the halves", async function () {
+    const calls: Array<{ ids: number[]; maxTokens?: number }> = [];
+    const result = await readDocumentsExhaustively({
+      papers: [buildPaper()],
+      question: "Read everything.",
+      batchTokenBudget: 4000,
+      finalTokenBudget: 4000,
+      retryCount: 1,
+      analyzeBatch: async (batch) => {
+        const ids = batch.chunks.map((chunk) => chunk.chunkIndex);
+        calls.push({ ids, maxTokens: batch.maxTokens });
+        if (ids.length > 2) {
+          throw new Error("Exhaustive document batch stopped (output_limit)");
+        }
+        return {
+          digest: `Digest ${ids.join("+")}`,
+          relevantChunkIds: [ids[0]],
+        };
+      },
+    });
+
+    assert.equal(result.status, "complete");
+    assert.equal(result.papers[0].processedChunks, 9);
+    assert.lengthOf(result.papers[0].digests, 1);
+    assert.equal(result.papers[0].digests[0].batchIndex, 0);
+    assert.deepEqual(
+      result.papers[0].digests[0].chunkIndexes,
+      [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    );
+    // Halves read in order, split again where they still overflow.
+    assert.equal(
+      result.papers[0].digests[0].digest,
+      "Digest 0+1 Digest 2 Digest 3+4 Digest 5+6 Digest 7+8",
+    );
+    assert.deepEqual(
+      result.papers[0].exactEvidence.map((chunk) => chunk.chunkIndex).sort(),
+      [0, 2, 3, 5, 7],
+    );
+    // The full batch is tried at its default budget, then at twice that.
+    assert.deepEqual(calls[0].ids, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.deepEqual(calls[1].ids, calls[0].ids);
+    assert.equal(calls[1].maxTokens, (calls[0].maxTokens as number) * 2);
+  });
+
+  it("ends partial when a single chunk keeps overflowing its digest", async function () {
+    const result = await readDocumentsExhaustively({
+      papers: [buildPaper()],
+      question: "Read everything.",
+      batchTokenBudget: 24,
+      finalTokenBudget: 4000,
+      retryCount: 1,
+      analyzeBatch: async (batch) => {
+        const ids = batch.chunks.map((chunk) => chunk.chunkIndex);
+        if (ids.includes(3)) {
+          throw new Error("Exhaustive document batch stopped (output_limit)");
+        }
+        return { digest: `Digest ${ids.join("+")}`, relevantChunkIds: [] };
+      },
+    });
+
+    assert.equal(result.status, "partial");
+    assert.equal(result.papers[0].status, "partial");
+    // Chunk 3 keeps overflowing alone, so only chunk 3 is lost; the rest of
+    // its batch (4 and 5) and the other two batches are read.
+    assert.equal(result.papers[0].processedChunks, 8);
+    assert.deepEqual(result.papers[0].missingChunkRanges, ["3"]);
+    const split = result.papers[0].digests.find(
+      (digest) => digest.batchIndex === 1,
+    );
+    assert.deepEqual(split?.chunkIndexes, [4, 5]);
+    assert.equal(split?.digest, "Digest 4 Digest 5");
+    assert.isTrue(
+      result.papers[0].warnings.some((warning) =>
+        /batch 2\/3 missed chunks 3: .*output_limit/.test(warning),
+      ),
+    );
+  });
+
+  it("fails a batch only when no part of it was read", async function () {
+    const result = await readDocumentsExhaustively({
+      papers: [buildPaper()],
+      question: "Read everything.",
+      batchTokenBudget: 24,
+      finalTokenBudget: 4000,
+      retryCount: 1,
+      analyzeBatch: async (batch) => {
+        const ids = batch.chunks.map((chunk) => chunk.chunkIndex);
+        if (ids.some((id) => id >= 3 && id <= 5)) {
+          throw new Error("Exhaustive document batch stopped (output_limit)");
+        }
+        return { digest: `Digest ${ids.join("+")}`, relevantChunkIds: [] };
+      },
+    });
+
+    assert.equal(result.papers[0].processedChunks, 6);
+    assert.deepEqual(result.papers[0].missingChunkRanges, ["3-5"]);
+    assert.isTrue(
+      result.papers[0].warnings.some((warning) =>
+        /batch 2\/3 failed: .*output_limit/.test(warning),
+      ),
+    );
   });
 
   it("reports unreadable papers independently in a multi-paper receipt", async function () {

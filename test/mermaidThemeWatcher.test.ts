@@ -23,7 +23,7 @@ import { FakeElement } from "./helpers/fakeDom";
 const MERMAID_SOURCE = "graph TD; A-->B;";
 const MERMAID_SVG = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
 /** Pinned to `MERMAID_RENDER_VERSION` in renderedMarkdown.ts. */
-const MERMAID_RENDER_VERSION = "3";
+const MERMAID_RENDER_VERSION = "4";
 
 /**
  * A fake element that knows whether it is still in the document.

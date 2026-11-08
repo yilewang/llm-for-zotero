@@ -2,6 +2,7 @@ export const MODEL_MENU_OPEN_CLASS = "llm-model-menu-open";
 export const REASONING_MENU_OPEN_CLASS = "llm-reasoning-menu-open";
 export const RETRY_MODEL_MENU_OPEN_CLASS = "llm-model-menu-open";
 export const SLASH_MENU_OPEN_CLASS = "llm-slash-menu-open";
+export const MENU_OPTION_SELECTED_CLASS = "llm-menu-option-selected";
 
 export function setFloatingMenuOpen(
   menu: HTMLDivElement | null,
@@ -29,6 +30,8 @@ export function positionFloatingMenu(
   options: {
     horizontalAlignment?: "start" | "center";
     verticalPlacement?: "adaptive" | "above";
+    /** Caps the menu height; it scrolls past this. */
+    maxHeightPx?: number;
   } = {},
 ): void {
   const win = owner.ownerDocument?.defaultView;
@@ -58,17 +61,24 @@ export function positionFloatingMenu(
     : win.innerHeight - viewportMargin;
   const availableWidth = Math.max(120, boundaryRight - boundaryLeft);
   const availableHeight = Math.max(120, boundaryBottom - boundaryTop);
+  const anchorRect = anchor.getBoundingClientRect();
+  // An "above" menu fits in the space over its anchor, so it never covers it.
+  const spaceAbove = anchorRect.top - gap - boundaryTop;
+  let maxHeight =
+    options.verticalPlacement === "above" && spaceAbove >= 120
+      ? Math.min(availableHeight, spaceAbove)
+      : availableHeight;
+  if (options.maxHeightPx) maxHeight = Math.min(maxHeight, options.maxHeightPx);
 
   menu.style.position = "fixed";
   menu.style.display = "grid";
   menu.style.visibility = "hidden";
   menu.style.maxWidth = `${availableWidth}px`;
-  menu.style.maxHeight = `${availableHeight}px`;
+  menu.style.maxHeight = `${maxHeight}px`;
   menu.style.boxSizing = "border-box";
   menu.style.overflowY = "auto";
   menu.style.overflowX = "hidden";
 
-  const anchorRect = anchor.getBoundingClientRect();
   const menuRect = menu.getBoundingClientRect();
 
   let left =
@@ -101,4 +111,18 @@ export function positionFloatingMenu(
   menu.style.left = `${Math.round(left)}px`;
   menu.style.top = `${Math.round(Math.max(boundaryTop, top))}px`;
   menu.style.visibility = "visible";
+}
+
+/** The composer's model and effort menus open like the runtime menu. */
+export function positionComposerMenu(
+  owner: Element,
+  menu: HTMLDivElement,
+  anchor: HTMLButtonElement,
+): void {
+  positionFloatingMenu(owner, menu, anchor, {
+    horizontalAlignment: "center",
+    verticalPlacement: "above",
+    maxHeightPx: 480,
+  });
+  if (menu.scrollHeight <= menu.clientHeight) menu.style.overflowY = "hidden";
 }

@@ -23,7 +23,11 @@ describe("Claude bridge MCP scope token", function () {
   beforeEach(function () {
     globalScope.Zotero = {
       Profile: { dir: "/tmp/lfz-claude-bridge-scope-profile" },
-      Prefs: { get: () => "" },
+      // A bridge the test answers through fetch, not one the plugin starts.
+      Prefs: {
+        get: (key: string) =>
+          key.endsWith(".claudeCodeBridgeMode") ? "custom" : "",
+      },
       DB: { queryAsync: async () => [] },
     };
     globalThis.fetch = async () =>

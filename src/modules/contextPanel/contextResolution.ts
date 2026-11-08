@@ -433,7 +433,15 @@ function resolveContextSourceItemBase(
     };
   }
 
-  const activeItem = getActiveContextAttachmentFromTabs();
+  const activeTabItem = getActiveContextAttachmentFromTabs();
+  // A regular panel item (a torn-off window's paper) only accepts a reader
+  // that shows its own attachment, never another paper's.
+  const activeItem =
+    activeTabItem &&
+    (activeTabItem.id === panelItem.id ||
+      (panelParentItem && activeTabItem.parentID === panelParentItem.id))
+      ? activeTabItem
+      : null;
   if (activeItem) {
     const label = getContextItemLabel(activeItem);
     return {
@@ -555,7 +563,15 @@ async function resolveContextSourceItemAsyncBase(
     };
   }
 
-  const activeItem = getActiveContextAttachmentFromTabs();
+  const activeTabItem = getActiveContextAttachmentFromTabs();
+  // A regular panel item (a torn-off window's paper) only accepts a reader
+  // that shows its own attachment, never another paper's.
+  const activeItem =
+    activeTabItem &&
+    (activeTabItem.id === panelItem.id ||
+      (panelParentItem && activeTabItem.parentID === panelParentItem.id))
+      ? activeTabItem
+      : null;
   if (activeItem) {
     const label = getContextItemLabel(activeItem);
     return {
@@ -1603,6 +1619,11 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     const contextLabel = (() => {
       if (selectedSource === "note-edit") {
         return "Editing";
+      }
+      if (selectedSource === "sidechat") {
+        return selectedContexts.length > 1 && index > 0
+          ? `${t("Side chat")} (${index + 1})`
+          : t("Side chat");
       }
       if (selectedSource === "model") {
         return selectedContexts.length > 1 && index > 0

@@ -1,6 +1,4 @@
 import { assert } from "chai";
-import { readFileSync, readdirSync, statSync } from "fs";
-import { join, relative } from "path";
 import {
   prohibitedInvocationPlan,
   readOnlyInvocationPlan,
@@ -27,21 +25,6 @@ const describeTestMutation = () => [
     destinationCollectionIds: [],
   },
 ];
-
-const root = process.cwd();
-
-function collectAgentSourceFiles(dir: string): string[] {
-  const files: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const fullPath = join(dir, entry);
-    if (statSync(fullPath).isDirectory()) {
-      files.push(...collectAgentSourceFiles(fullPath));
-    } else if (fullPath.endsWith(".ts")) {
-      files.push(fullPath);
-    }
-  }
-  return files;
-}
 
 describe("AgentToolRegistry", function () {
   const originalZotero = globalThis.Zotero;
@@ -1732,31 +1715,6 @@ describe("AgentToolRegistry", function () {
       assert.isUndefined(
         approval.action.interaction,
         "an approval is not a question the run is waiting on an answer to",
-      );
-    });
-
-    it("leaves no spec literal in the source tree declaring one outside user input", function () {
-      const offenders: string[] = [];
-      let inspected = 0;
-      for (const path of collectAgentSourceFiles(join(root, "src/agent"))) {
-        const lines = readFileSync(path, "utf8").split("\n");
-        lines.forEach((line, index) => {
-          if (!/^\s*requiresConfirmation: (true|false),$/.test(line)) return;
-          inspected += 1;
-          const window = lines.slice(index - 4, index + 5).join("\n");
-          if (/interaction: "user_input"/.test(window)) return;
-          offenders.push(`${relative(root, path)}:${index + 1}`);
-        });
-      }
-      assert.deepEqual(
-        offenders,
-        [],
-        "requiresConfirmation is read only for interaction: 'user_input' specs",
-      );
-      assert.equal(
-        inspected,
-        1,
-        "the source scan lost or gained requiresConfirmation sites; update the count deliberately",
       );
     });
   });

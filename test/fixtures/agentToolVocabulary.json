@@ -11,14 +11,22 @@
     "library_search",
     "library_settings",
     "library_update",
+    "literature_read",
     "literature_review",
     "literature_search",
     "load_skill",
     "note_write",
     "note_write_batch",
+    "paper_digest",
     "paper_read",
+    "past_chat_attach",
+    "past_chat_read",
+    "past_chat_search",
     "read_attachment",
+    "reader_open",
+    "record_paper_decisions",
     "request_user_input",
+    "review_coverage",
     "run_command",
     "submit_document",
     "task_update",
@@ -26,5 +34,5 @@
     "zotero_script"
   ],
   "internal": [],
-  "specBytes": 25725
+  "specBytes": 36793
 }

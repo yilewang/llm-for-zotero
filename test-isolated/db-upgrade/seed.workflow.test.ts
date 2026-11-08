@@ -60,14 +60,20 @@ describe("DB upgrade seed (older build)", function () {
   const api = () => workflowApi();
   const prefsFor = (system: LiveSystem, extra: Record<string, unknown> = {}) =>
     liveRuntimePrefs(system, state.credentials!, {
-      enableAgentMode: true,
+      // The built-in runtime is Agent whenever this is on, so plain chat
+      // seeds run with it off; only the Agent turn below turns it on.
+      enableAgentMode: false,
       originalAgentPermissionMode: "auto",
       claudeCodePermissionMode: "default",
       ...extra,
     });
 
-  async function openPanel(system: LiveSystem, kind: LiveKind) {
-    setPrefs(prefsFor(system));
+  async function openPanel(
+    system: LiveSystem,
+    kind: LiveKind,
+    extraPrefs: Record<string, unknown> = {},
+  ) {
+    setPrefs(prefsFor(system, extraPrefs));
     const panel = await api().renderPanelForItem(state.paperItemId);
     let diag = await api().getDiagnostics(panel.panelId);
     assert.equal(diag.conversationSystem, system, "panel system");
@@ -214,11 +220,10 @@ describe("DB upgrade seed (older build)", function () {
 
   it("upstream library: an Agent turn creates a note", async function () {
     await guarded("upstream agent", async () => {
-      const panel = await openPanel("upstream", "library");
-      let diag = await api().getDiagnostics(panel.panelId);
-      if (diag.runtimeMode !== "agent") {
-        diag = await api().clickPanelRuntimeModeToggle(panel.panelId);
-      }
+      const panel = await openPanel("upstream", "library", {
+        enableAgentMode: true,
+      });
+      const diag = await api().getDiagnostics(panel.panelId);
       assert.equal(diag.runtimeMode, "agent", "Agent mode is on");
       const marker = `SEEDNOTE-${tag}`;
       const approved: ApprovedCard[] = [];
@@ -253,8 +258,8 @@ describe("DB upgrade seed (older build)", function () {
       assert.isOk(recorded.agentRun, "the Agent answer has a run");
       assert.isAbove(recorded.agentRun!.events, 0, "the run has a trace");
       conversations.push(recorded);
-      // Later upstream chats in this profile are plain chat again.
-      await api().clickPanelRuntimeModeToggle(panel.panelId);
+      // Later upstream chats in this profile are plain chat again: openPanel
+      // turns the Agent feature back off.
     });
   });
 

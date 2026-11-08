@@ -7,17 +7,21 @@ import type {
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { DirectDocumentFinalizer } from "../../documents/directFinalization";
 import type { MaterialRef } from "../../documents/materialRef";
-import type {
-  DocumentAssetProvenance,
-  PlanCitationCluster,
-  PlanCitationSource,
-  PlanDocumentAsset,
-  SubmitPlanDocumentInput,
+import {
+  isOutsideCitationSource,
+  type DocumentAssetProvenance,
+  type PlanCitationCluster,
+  type PlanCitationSource,
+  type PlanDocumentAsset,
+  type SubmitPlanDocumentInput,
+  type ZoteroCitationSource,
 } from "../../documents/types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import type { TaskPaperDocumentCitation } from "../../context/taskPaperLedger";
 import { neverSelected } from "../guidance";
+import { canShowLiteratureReview } from "../read/reviewLiterature";
 import { fail, ok, validateObject } from "../shared";
+import { exclusionPaperDecisions } from "./recordPaperDecisions";
 
 /** A citation or quote token. */
 const TOKEN = /\[\[(cite|quote):([^\]]+)\]\]/g;
@@ -144,7 +148,8 @@ type QuoteSource = Pick<
  * host's repairs, including a citation a downgraded quote added or reused.
  * `markdown` is the submitted draft, which places each token: a downgraded
  * quote counts where its token sat, under the cluster that now cites it. A
- * paper only a verified quote cites counts too, under the quote's id.
+ * paper only a verified quote cites counts too, under the quote's id. An
+ * outside paper is left out: Task progress lists Zotero papers.
  */
 export function documentCitedSources(params: {
   markdown: string;
@@ -160,6 +165,7 @@ export function documentCitedSources(params: {
   const cites = (cluster: PlanCitationCluster, quote: QuoteSource) =>
     cluster.sources.some(
       (source) =>
+        !isOutsideCitationSource(source) &&
         source.libraryID === quote.libraryID &&
         source.itemKey === quote.itemKey,
     );
@@ -222,6 +228,7 @@ export function documentCitedSources(params: {
     if (!used.has(cluster.citationId)) continue;
     const sections = labels.get(cluster.citationId) || [];
     for (const source of cluster.sources) {
+      if (isOutsideCitationSource(source)) continue;
       cited.add(`${source.libraryID}:${source.itemKey}`);
       out.push(entryFor(cluster.citationId, source, sections));
     }
@@ -260,7 +267,7 @@ function fieldOf(item: ZoteroItemLike, field: string): string | undefined {
  * ask. An attachment keeps its own id; its title, creator and year are its
  * parent paper's.
  */
-function zoteroCitedSourceItem(
+export function zoteroCitedSourceItem(
   libraryID: number,
   itemKey: string,
 ): CitedSourceItem | undefined {
@@ -336,12 +343,38 @@ function parseSource(value: unknown, label: string): PlanCitationSource {
   if (!validateObject<Record<string, unknown>>(value)) {
     throw new Error(`${label} must be an object`);
   }
+  const zotero = value.libraryID !== undefined || value.itemKey !== undefined;
+  if (value.paperId !== undefined) {
+    if (zotero) {
+      throw new Error(
+        `${label} names either a Zotero item (libraryID and itemKey) or an outside paper (paperId), not both`,
+      );
+    }
+    if (
+      value.locator !== undefined ||
+      (Array.isArray(value.evidenceRefs) && value.evidenceRefs.length)
+    ) {
+      throw new Error(
+        `${label} is an outside paper: it takes no evidenceRefs or locator`,
+      );
+    }
+    return {
+      kind: "outside",
+      paperId: requiredString(value.paperId, `${label}.paperId`),
+      evidenceRefs: [],
+    };
+  }
+  if (!zotero) {
+    throw new Error(
+      `${label} needs libraryID and itemKey (a Zotero item) or paperId (an outside paper)`,
+    );
+  }
   const evidenceRefs = Array.isArray(value.evidenceRefs)
     ? value.evidenceRefs.map((entry, index) =>
         requiredString(entry, `${label}.evidenceRefs[${index}]`),
       )
     : [];
-  let locator: PlanCitationSource["locator"];
+  let locator: ZoteroCitationSource["locator"];
   if (value.locator !== undefined) {
     if (!validateObject<Record<string, unknown>>(value.locator)) {
       throw new Error(`${label}.locator must be an object`);
@@ -641,7 +674,7 @@ export function createSubmitDocumentTool(
           taskId: {
             type: "string",
             description:
-              "The task_update part this document fulfils (its taskId), when parts were declared. Name it so the host ticks the right part.",
+              "The id of the declared part this document fulfils, when parts were declared. Name it so the host ticks the right part.",
           },
           excluded: {
             type: "array",
@@ -690,10 +723,14 @@ export function createSubmitDocumentTool(
                   items: {
                     type: "object",
                     additionalProperties: false,
-                    required: ["libraryID", "itemKey"],
                     properties: {
                       libraryID: { type: "number" },
                       itemKey: { type: "string" },
+                      paperId: {
+                        type: "string",
+                        description:
+                          "An outside paper's paperId from literature_search or literature_read in this run",
+                      },
                       evidenceRefs: {
                         type: "array",
                         items: { type: "string" },
@@ -845,11 +882,12 @@ export function createSubmitDocumentTool(
      */
     presentation: { hiddenInTrace: true },
     guidance: {
-      // No turn requires a document now; the instruction reaches MCP clients
-      // through the tool description.
+      // The model description in registry.ts says when a document is
+      // required (a literature review); this guidance is selected for no turn,
+      // and the instruction reaches MCP clients through that description.
       matches: neverSelected,
       instruction:
-        "Use submit_document to publish authored content as a durable document. Finish the requested work and call submit_document once; to save the document, pass its returned documentId to the save tool instead of reconstructing its content. Write complete Markdown with natural headings. Put [[cite:C1]] tokens at supported claims; citations are required for a literature review and optional for other authored documents. Identify each citation source by libraryID and itemKey; the host binds its durable research evidence, so omit evidenceRefs unless a strict quote or page locator requires a specific record. Record grounding concerns in groundingIssues. The host replaces any draft References section with a Zotero CSL bibliography. Never place internal citation tokens outside this terminal submission. When task_update declared parts, pass the taskId of the part this document fulfils.",
+        "Use submit_document to publish authored content as a durable document. Finish the requested work and call submit_document once; to save the document, pass its returned documentId to the save tool instead of reconstructing its content. Write complete Markdown with natural headings. Put [[cite:C1]] tokens at supported claims; citations are required for a literature review and optional for other authored documents. Identify each citation source by libraryID and itemKey, or an outside paper by paperId; the host binds its durable research evidence, so omit evidenceRefs unless a strict quote or page locator requires a specific record. Record grounding concerns in groundingIssues. The host replaces any draft References section with a Zotero CSL bibliography. Never place internal citation tokens outside this terminal submission. When parts were declared, pass the taskId of the part this document fulfils.",
     },
     validate: validateSubmitPlanDocument,
     planInvocation: () =>
@@ -869,8 +907,16 @@ export function createSubmitDocumentTool(
             throw new Error("Direct document run identity is unavailable");
           })(),
         input,
+        outsidePaperChoiceAvailable: canShowLiteratureReview(context),
       });
       const materialRef = materialRefFromDocument(document);
+      // Each paper left out is the agent's exclude decision, recorded as
+      // record_paper_decisions records one (taskPaperLedgerRecorder.ts).
+      const paperDecisions = exclusionPaperDecisions(
+        excluded || [],
+        context.request.libraryID,
+        gateway,
+      );
       return {
         // The model reads the reference from the payload; the host reads it
         // from the typed result and announces it as a run event.
@@ -897,6 +943,7 @@ export function createSubmitDocumentTool(
           verifiedQuotes: document.verifiedQuotes,
           itemOf: zoteroCitedSourceItem,
         }),
+        ...(paperDecisions.length ? { paperDecisions } : {}),
       };
     },
     resolveTerminalResult: (_input, result: AgentToolResult) => {

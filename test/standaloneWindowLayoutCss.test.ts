@@ -163,10 +163,18 @@ describe("standalone window layout CSS", function () {
     const tabGroupRule = extractCssRule(css, ".llm-standalone-tab-group");
 
     assert.include(tabRowRule, "display: grid");
+    // Prettier wraps the long template; compare it without the wrap spaces.
+    // The trailing track keeps its content's width for the side panel toggle.
     assert.include(
-      tabRowRule,
-      "grid-template-columns: minmax(max-content, 1fr) max-content minmax(0, 1fr)",
+      tabRowRule.replace(/\s+/g, " ").replace(/\( /g, "(").replace(/ \)/g, ")"),
+      "grid-template-columns: minmax(max-content, 1fr) max-content minmax(max-content, 1fr)",
     );
+    const trailingRule = extractCssRule(
+      css,
+      ".llm-standalone-tab-row-trailing",
+    );
+    assert.include(trailingRule, "grid-column: 3");
+    assert.include(trailingRule, "justify-self: end");
     assert.include(leadingRule, "grid-column: 1");
     assert.include(leadingRule, "justify-self: start");
     assert.notInclude(leadingRule, "position: absolute");

@@ -127,6 +127,61 @@ describe("document finalization persistence", function () {
       ),
     );
   });
+  it("leaves the outbox entry pending when the announcement fails", async function () {
+    const { document } = await new DirectDocumentFinalizer(
+      {} as ZoteroGateway,
+    ).finalize({
+      request: { conversationKey: 42 } as AgentRuntimeRequest,
+      runId: "announce-run",
+      input: {
+        title: "Review",
+        markdown: "# Review\n\nThe papers agree.",
+        citations: [],
+        quotes: [],
+        assets: [],
+        groundingReviewed: "passed" as const,
+        groundingIssues: [],
+        documentKind: "guide",
+        integrityPolicy: "authored",
+      },
+      now: 4,
+    });
+    const params = {
+      conversationKey: 42,
+      documentId: document.documentId,
+      visibleMarkdown: document.visibleMarkdown,
+      messageTimestamp: 5,
+    };
+    let thrown: unknown;
+    try {
+      await deliverPendingPlanDocumentMessage({
+        ...params,
+        beforeDelivered: async () => {
+          throw new Error("trace write failed");
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    assert.match(String(thrown), /trace write failed/);
+    assert.equal(
+      (await loadPlanDocumentOutbox(document.documentId))?.status,
+      "pending",
+    );
+    let announced = 0;
+    const delivered = await deliverPendingPlanDocumentMessage({
+      ...params,
+      beforeDelivered: async () => {
+        announced += 1;
+      },
+    });
+    assert.equal(delivered?.documentId, document.documentId);
+    assert.equal(announced, 1);
+    assert.equal(
+      (await loadPlanDocumentOutbox(document.documentId))?.status,
+      "delivered",
+    );
+  });
   it("preserves direct document identity, hash, retry and publication", async function () {
     const input = {
       title: "Guide",

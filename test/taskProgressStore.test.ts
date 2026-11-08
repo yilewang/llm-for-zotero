@@ -3,6 +3,7 @@ import {
   TASK_PROGRESS_MAX_CONVERSATIONS,
   TASK_PROGRESS_MAX_QUESTIONS,
   applyTaskDocumentCitations,
+  applyTaskOutsideEvent,
   applyTaskPaperUpdate,
   beginTaskRun,
   clearAllTaskProgress,
@@ -22,6 +23,7 @@ import {
   markTaskAnswering,
   setTaskScope,
   subscribeTaskProgress,
+  syncTaskAnswerCitations,
   taskTurnIndexFor,
   displayedTaskRunState,
   markTaskWaiting,
@@ -30,6 +32,7 @@ import {
   taskQuestionChecklist,
   taskQuestionState,
   taskReadInDepth,
+  isInDepthRead,
 } from "../src/modules/contextPanel/taskProgress/store";
 import {
   digestLedgerDelta,
@@ -97,6 +100,24 @@ describe("task progress store", function () {
     );
     assert.isTrue(taskReadInDepth(getTaskProgress(7)));
     assert.isFalse(taskReadInDepth(null));
+  });
+
+  it("counts a scoped digest as in depth only when it covered body text", function () {
+    const digest = (depth?: "abstract" | "notes" | "section" | "full") => ({
+      key: "1:1",
+      callId: "digest",
+      toolName: "task_update",
+      granularity: "digest" as const,
+      snippet: "The digest's answer.",
+      ...(depth ? { depth } : {}),
+    });
+    // A digest of the whole text (no scope recorded) reads in depth.
+    assert.isTrue(isInDepthRead(digest()));
+    assert.isTrue(isInDepthRead(digest("full")));
+    assert.isTrue(isInDepthRead(digest("section")));
+    // A summary of the abstract or the notes does not.
+    assert.isFalse(isInDepthRead(digest("abstract")));
+    assert.isFalse(isInDepthRead(digest("notes")));
   });
 
   it("applies ledger deltas once, however often they replay", function () {
@@ -921,6 +942,196 @@ describe("task progress store", function () {
       assert.equal(record.runState, "working");
       assert.equal(record.questions[0].checklist?.runId, "r1");
     });
+  });
+
+  describe("answer citations", function () {
+    const cites = (key: number, turn: number) =>
+      getTaskProgress(key)!
+        .questions.find((question) => question.turn === turn)
+        ?.answerCitations?.map((entry) => [entry.id, entry.number]);
+
+    it("replaces a question's cited passages whole, each time its answer shows anew", function () {
+      beginTaskRun(7, { runId: "run-a", turnIndex: 1 });
+      const quoteCitations = [quoteCitation("Q_a", 1), quoteCitation("Q_b", 1)];
+      let notified = 0;
+      const stop = subscribeTaskProgress(() => notified++);
+      syncTaskAnswerCitations(
+        7,
+        { runId: "run-a" },
+        { text: "One [[cite:Q_a]]. Two [[cite:Q_b]].", quoteCitations },
+      );
+      assert.deepEqual(cites(7, 1), [
+        ["Q_a", 1],
+        ["Q_b", 2],
+      ]);
+      // Validation drops a passage: the list is replaced, not merged.
+      syncTaskAnswerCitations(
+        7,
+        { runId: "run-a" },
+        {
+          text: "One [[cite:Q_a]]. Two [[cite:Q_b]].",
+          quoteCitations,
+          quoteDisplayOverride: {
+            markdown: "Two [[cite:Q_b]].",
+            quoteCitations,
+          },
+        },
+      );
+      assert.deepEqual(cites(7, 1), [["Q_b", 1]]);
+      const seen = notified;
+      syncTaskAnswerCitations(
+        7,
+        { runId: "run-a" },
+        {
+          text: "One [[cite:Q_a]]. Two [[cite:Q_b]].",
+          quoteCitations,
+          quoteDisplayOverride: {
+            markdown: "Two [[cite:Q_b]].",
+            quoteCitations,
+          },
+        },
+      );
+      assert.equal(notified, seen, "the same list again changes nothing");
+      syncTaskAnswerCitations(7, { runId: "run-a" }, null);
+      assert.deepEqual(cites(7, 1), []);
+      stop();
+    });
+
+    it("reads a web-attributed answer from its own text, as the chat renders it", function () {
+      beginTaskRun(7, { runId: "run-a", turnIndex: 1 });
+      const quoteCitations = [quoteCitation("Q_a", 1), quoteCitation("Q_b", 1)];
+      const answer = {
+        text: "Old [[cite:Q_a]].",
+        quoteCitations,
+        quoteDisplayOverride: {
+          markdown: "New [[cite:Q_b]]. Old [[cite:Q_a]].",
+          quoteCitations,
+        },
+      };
+      // Synced before the run's final event: the shown text.
+      syncTaskAnswerCitations(7, { runId: "run-a" }, answer);
+      assert.deepEqual(cites(7, 1), [
+        ["Q_b", 1],
+        ["Q_a", 2],
+      ]);
+      // The final event has web markers: read again from the answer's text.
+      applyTaskOutsideEvent(7, "run-a", {
+        type: "final",
+        text: answer.text,
+        webSourceAnchors: [
+          {
+            offset: answer.text.length,
+            sources: [
+              {
+                sourceId: "web_1",
+                url: "https://example.org/a",
+                hostname: "example.org",
+                title: "A page",
+              },
+            ],
+          },
+        ],
+      } as never);
+      assert.deepEqual(cites(7, 1), [["Q_a", 1]]);
+      // Later syncs keep to it; a caller that knows says so itself.
+      syncTaskAnswerCitations(7, { runId: "run-a" }, answer);
+      assert.deepEqual(cites(7, 1), [["Q_a", 1]]);
+      syncTaskAnswerCitations(7, { runId: "run-a" }, answer, {
+        hasWebSources: false,
+      });
+      assert.deepEqual(cites(7, 1), [
+        ["Q_b", 1],
+        ["Q_a", 2],
+      ]);
+    });
+
+    it("lists the answer a cancelled retry brings back, by its question's number", function () {
+      beginTaskRun(7, { runId: "run-a", turnIndex: 1 });
+      const quoteCitations = [quoteCitation("Q_a", 1)];
+      const answer = { text: "Old [[cite:Q_a]].", quoteCitations };
+      syncTaskAnswerCitations(7, { runId: "run-a" }, answer);
+      // The retry starts the question afresh, without the old list.
+      beginTaskRun(7, { runId: "run-b", turnIndex: 1 });
+      assert.isUndefined(cites(7, 1));
+      // Cancelled: the old answer is back, and so is its list.
+      syncTaskAnswerCitations(7, { turn: 1 }, answer);
+      assert.deepEqual(cites(7, 1), [["Q_a", 1]]);
+    });
+
+    it("never lets an earlier run of a question asked again take its list", function () {
+      beginTaskRun(7, { runId: "run-a", turnIndex: 1 });
+      beginTaskRun(7, { runId: "run-b", turnIndex: 1 });
+      const quoteCitations = [quoteCitation("Q_a", 1), quoteCitation("Q_b", 1)];
+      syncTaskAnswerCitations(
+        7,
+        { runId: "run-b" },
+        { text: "New [[cite:Q_b]].", quoteCitations },
+      );
+      syncTaskAnswerCitations(
+        7,
+        { runId: "run-a", turn: 1 },
+        { text: "Old [[cite:Q_a]].", quoteCitations },
+      );
+      assert.deepEqual(cites(7, 1), [["Q_b", 1]]);
+      // A run the record never saw finds its question by number.
+      syncTaskAnswerCitations(
+        7,
+        { runId: "journal-run", turn: 1 },
+        { text: "Late [[cite:Q_a]].", quoteCitations },
+      );
+      assert.deepEqual(cites(7, 1), [["Q_a", 1]]);
+      // Nothing for a conversation or question the store does not hold.
+      syncTaskAnswerCitations(99, { runId: "run-a" }, { text: "" });
+      assert.isNull(getTaskProgress(99));
+    });
+
+    it("takes each question's list from its stored answer on hydrate, unless this session asked it again", function () {
+      const listed = [
+        {
+          id: "Q_a",
+          number: 1,
+          sentences: ["One."],
+          quote: "Quoted",
+          kind: "cite" as const,
+        },
+      ];
+      const history = {
+        runs: [
+          { runId: "r1", turn: 1, deltas: [], answerCitations: listed },
+          { runId: "r2", turn: 2, deltas: [], answerCitations: listed },
+        ],
+        questions: [
+          { turn: 1, text: "One?", settled: "completed" },
+          { turn: 2, text: "Two?", settled: "completed" },
+        ],
+        latestTurn: 2,
+        settled: "completed",
+        planSeen: false,
+        checklist: null,
+      } as const;
+      beginTaskRun(8, { runId: "again", turnIndex: 2 });
+      assert.isTrue(hydrateTaskProgress(8, history as never));
+      assert.deepEqual(cites(8, 1), [["Q_a", 1]]);
+      assert.isUndefined(cites(8, 2), "asked again here: its own run lists it");
+      assert.isFalse(
+        hydrateTaskProgress(8, history as never),
+        "the same history again changes nothing",
+      );
+    });
+  });
+
+  it("remembers the opened folds for a fresh view of the conversation", function () {
+    beginTaskRun(5, { runId: "run-fold" });
+    rememberTaskProgressView(5, { openFolds: ["q1:fold:library"] });
+    rememberTaskProgressView(5, { open: true });
+    const memo = getTaskProgressViewMemo(5)!;
+    assert.deepEqual(memo.openFolds, ["q1:fold:library"]);
+    memo.openFolds.push("q1:fold:other");
+    assert.deepEqual(
+      getTaskProgressViewMemo(5)!.openFolds,
+      ["q1:fold:library"],
+      "a copy",
+    );
   });
 
   it("keeps a conversation's card state only as long as its record", function () {

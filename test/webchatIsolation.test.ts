@@ -491,7 +491,7 @@ describe("webchat isolation", function () {
     );
     const setterStart = source.indexOf("const setDraftInputForConversation =");
     const persistStart = source.indexOf(
-      "const persistDraftInputForCurrentConversation = () => {",
+      "const persistDraftInputForCurrentConversation = (",
       setterStart,
     );
     const restoreStart = source.indexOf(

@@ -5,6 +5,7 @@ import {
   declareOutcomes,
 } from "../src/agent/loop/outcomes";
 import { createEmptyExecutionCheckpoint } from "../src/agent/execution/checkpoint";
+import { OPEN_PARTS_REASK_LIMIT } from "../src/agent/loop/turnBoundary";
 import type {
   AgentRuntimeRequest,
   ExecutionCheckpoint,
@@ -159,21 +160,40 @@ describe("AgentFinalAnswerController", function () {
       assert.equal(decision.kind, scenario.expected);
     });
   }
-  it("returns a clean assistant copy for a web-attribution correction", async function () {
+  it("accepts an unmarked web answer with an end source chip", async function () {
     const controller = new AgentFinalAnswerController(makeRequest());
 
     const decision = await controller.evaluate({
       candidateText: "An unsupported current claim.",
       canCorrect: true,
       toolExecutionRecords: [
-        { name: "web_search", ok: true, content: { results: [] } },
+        {
+          name: "web_search",
+          ok: true,
+          content: {
+            results: [
+              {
+                sourceId: "web_1",
+                url: "https://example.com/current",
+                hostname: "example.com",
+                organization: "Example",
+                title: "Current facts",
+              },
+            ],
+          },
+        },
       ],
     });
 
-    assert.equal(decision.kind, "correct");
-    if (decision.kind !== "correct") return;
-    assert.equal(decision.assistantContent, "An unsupported current claim.");
-    assert.include(decision.correction, "Correct the web attribution");
+    assert.equal(decision.kind, "accept");
+    if (decision.kind !== "accept") return;
+    assert.equal(decision.webAttribution.status, "valid");
+    assert.equal(
+      decision.webAttribution.cleanText,
+      "An unsupported current claim.",
+    );
+    assert.lengthOf(decision.webAttribution.anchors, 1);
+    assert.equal(decision.webAttribution.anchors[0].placement, "end");
   });
 });
 
@@ -229,7 +249,7 @@ describe("AgentFinalAnswerController declared outcomes", function () {
     if (decision.kind !== "correct") return;
     assert.equal(
       decision.correction,
-      `Before answering, finish the parts of this request you declared that are still open: “${SAVE}”; “Tag it”. Do them now with the tools. If one cannot be done, list it under task_update's skipped or blocked with the reason, then answer.`,
+      `Before answering, finish the parts of this request you declared that are still open: “${SAVE}”; “Tag it”. Do them now with the tools. If one cannot be done, list it under task_update's blocked with the reason; if the user's own words rule it out (such as asking for a chat answer, or for only the abstracts), list it under skipped with that reason. Then answer.`,
     );
   });
 
@@ -273,6 +293,66 @@ describe("AgentFinalAnswerController declared outcomes", function () {
     if (again.kind !== "correct") return;
     assert.include(again.correction, `“${SAVE}”`);
     assert.notInclude(again.correction, "“Tag it”");
+  });
+
+  function withArtifact(description: string): ExecutionCheckpoint {
+    return declareOutcomes(
+      createEmptyExecutionCheckpoint(execution, 1),
+      [
+        { taskId: "review", description, effect: "artifact" },
+        { taskId: "explain", description: "Explain it", effect: "answer" },
+      ],
+      2,
+    );
+  }
+
+  it("keeps an open artifact part in the correction, naming submit_document", async function () {
+    const controller = new AgentFinalAnswerController(
+      makeRequest({
+        executionContext: execution,
+        executionCheckpoint: withArtifact("Write the literature review"),
+      }),
+    );
+    const decision = await decide(controller);
+    assert.equal(decision.kind, "correct");
+    if (decision.kind !== "correct") return;
+    assert.equal(
+      decision.correction,
+      "Before answering, finish the parts of this request you declared that are still open: “Write the literature review” (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it). Do them now with the tools. If one cannot be done, list it under task_update's blocked with the reason; if the user's own words rule it out (such as asking for a chat answer, or for only the abstracts), list it under skipped with that reason. Then answer.",
+    );
+  });
+
+  it("names both submit_document and note_write for an open artifact part", async function () {
+    const controller = new AgentFinalAnswerController(
+      makeRequest({
+        executionContext: execution,
+        executionCheckpoint: withArtifact("Write the summary as a note"),
+      }),
+    );
+    const decision = await decide(controller);
+    assert.equal(decision.kind, "correct");
+    if (decision.kind !== "correct") return;
+    assert.include(
+      decision.correction,
+      "“Write the summary as a note” (deliver it with submit_document, or with note_write when the user asked for a saved note; an answer in chat does not complete it)",
+    );
+  });
+
+  it("re-asks for an open artifact part up to the limit without new evidence, then accepts the answer and leaves the part open", async function () {
+    const request = makeRequest({
+      executionContext: execution,
+      executionCheckpoint: withArtifact("Write the literature review"),
+    });
+    const controller = new AgentFinalAnswerController(request);
+    for (let ask = 1; ask <= OPEN_PARTS_REASK_LIMIT; ask += 1)
+      assert.equal((await decide(controller)).kind, "correct", `ask ${ask}`);
+    assert.equal((await decide(controller)).kind, "accept");
+    assert.equal(
+      applyOutcomeEvidence(request.executionCheckpoint!, { kind: "answer" }, 3)
+        .checkpoint.tasks[0].status,
+      "pending",
+      "the accepted answer does not deliver the artifact part",
+    );
   });
 
   it("never corrects for an answer part, or when it cannot correct", async function () {

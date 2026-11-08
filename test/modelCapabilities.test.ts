@@ -11,6 +11,7 @@ import {
   refreshModelCatalog,
   resetModelCapabilityStateForTests,
   setModelCapabilityRegistryForTests,
+  subscribeModelCapabilities,
   type ModelCapabilityRegistry,
 } from "../src/modelCapabilities";
 import {
@@ -250,7 +251,10 @@ describe("model capability service", function () {
       protocol: "anthropic_messages",
     });
     assert.equal(haiku55.sampling.temperature, "unsupported");
-    assert.equal(haiku55.limits.contextWindowTokens, 1_000_000);
+    // 200k, not the API's 1M: tool views are sized from this limit, and a
+    // 1M limit pushed library-wide views past Haiku's 100k-token price tier.
+    assert.equal(haiku55.limits.contextWindowTokens, 200_000);
+    assert.equal(haiku55.limits.inputTokens, 200_000);
     assert.equal(haiku55.limits.outputTokens, 128_000);
     // Sampling data must not displace the hand-maintained reasoning profile.
     assert.equal(haiku55.provenance.reasoning, "legacy");
@@ -281,6 +285,7 @@ describe("model capability service", function () {
     for (const model of [
       "claude-haiku-5-5@20261001",
       "claude-haiku-5-5-20261001",
+      "anthropic/claude-haiku-5-5",
     ]) {
       const dated = getModelCapabilities({
         provider: "anthropic",
@@ -289,7 +294,7 @@ describe("model capability service", function () {
         protocol: "anthropic_messages",
       });
       assert.equal(dated.sampling.temperature, "unsupported", model);
-      assert.equal(dated.limits.contextWindowTokens, 1_000_000, model);
+      assert.equal(dated.limits.contextWindowTokens, 200_000, model);
     }
   });
 
@@ -399,6 +404,82 @@ describe("model capability service", function () {
       capabilities.reasoning.options.map((option) => option.id),
       ["ultra"],
     );
+  });
+
+  describe("failed refreshes", function () {
+    const identity = {
+      provider: "kimi",
+      model: "kimi-v4",
+      apiBase: "https://api.moonshot.ai/v1",
+      protocol: "openai_chat_compat",
+      apiKey: "secret-for-test",
+    } as const;
+
+    it("waits 10 s before retrying a failed catalog fetch unless forced", async function () {
+      let clock = 1_000_000;
+      let fetches = 0;
+      configureModelCapabilityRuntime({
+        now: () => clock,
+        fetch: (async () => {
+          fetches += 1;
+          throw new Error("offline");
+        }) as typeof fetch,
+      });
+      await refreshModelCatalog(identity);
+      await refreshModelCatalog(identity);
+      clock += 5_000;
+      await refreshModelCatalog(identity);
+      assert.equal(fetches, 1);
+      await refreshModelCatalog(identity, { force: true });
+      assert.equal(fetches, 2);
+      clock += 11_000;
+      await refreshModelCatalog(identity);
+      assert.equal(fetches, 3);
+    });
+
+    it("does not notify again when a repeated failure changes nothing", async function () {
+      let clock = 1_000_000;
+      configureModelCapabilityRuntime({
+        now: () => clock,
+        fetch: (async () => {
+          throw new Error("offline");
+        }) as typeof fetch,
+      });
+      let notifications = 0;
+      const unsubscribe = subscribeModelCapabilities(() => {
+        notifications += 1;
+      });
+      try {
+        await refreshModelCatalog(identity);
+        assert.equal(notifications, 1);
+        clock += 61_000;
+        await refreshModelCatalog(identity);
+        await refreshModelCatalog(identity, { force: true });
+        assert.equal(notifications, 1);
+      } finally {
+        unsubscribe();
+      }
+    });
+
+    it("waits 60 s before retrying a failed registry fetch unless forced", async function () {
+      let clock = 1_000_000;
+      let fetches = 0;
+      configureModelCapabilityRuntime({
+        now: () => clock,
+        fetch: (async () => {
+          fetches += 1;
+          throw new Error("offline");
+        }) as typeof fetch,
+      });
+      assert.isFalse(await refreshModelCapabilityRegistry());
+      assert.isFalse(await refreshModelCapabilityRegistry());
+      assert.equal(fetches, 1);
+      clock += 61_000;
+      await refreshModelCapabilityRegistry();
+      assert.equal(fetches, 2);
+      await refreshModelCapabilityRegistry({ force: true });
+      assert.equal(fetches, 3);
+    });
   });
 
   it("accepts a newer validated remote registry revision", async function () {

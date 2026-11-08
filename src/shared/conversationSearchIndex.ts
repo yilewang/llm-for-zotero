@@ -15,6 +15,7 @@ import {
   UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
   UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
   isConversationKeyForKind,
+  isEphemeralConversationKey,
 } from "./conversationKeySpace";
 import {
   buildConversationID,
@@ -647,6 +648,13 @@ export async function refreshConversationSearchIndexForConversation(params: {
 }): Promise<boolean> {
   const system = normalizeSystem(params.system);
   if (!system) return false;
+  // A temporary side chat's key (reserved band) is never indexed.
+  if (
+    params.conversationKey !== undefined &&
+    isEphemeralConversationKey(params.conversationKey)
+  ) {
+    return false;
+  }
   const filter = buildCatalogConversationFilter(params);
   if (!filter.filterSql) return false;
   const initialized = await initConversationSearchIndexStore();
@@ -962,6 +970,17 @@ export async function searchConversationIndexWithStatus(params: {
   query: string;
   limit?: number;
   refresh?: boolean;
+  /**
+   * Rows whose title or text contains every word (AND), not any word (OR).
+   * The "paper chat" / "library chat" label is not matched in this mode.
+   * The agent's past_chat_search collects its full matches this way, so a
+   * common word cannot push an older full match past the limit.
+   */
+  matchAllWords?: boolean;
+  /** Only paper chats of this Zotero item. */
+  paperItemID?: number;
+  /** Only rows whose last activity is at or after this time (ms). */
+  minLastActivityAt?: number;
 }): Promise<ConversationSearchIndexResult> {
   const system = normalizeSystem(params.system);
   const libraryID = normalizePositiveInt(params.libraryID);
@@ -1006,13 +1025,36 @@ export async function searchConversationIndexWithStatus(params: {
   const queryParams: unknown[] = [system, libraryID];
   for (const token of tokens) {
     const pattern = `%${escapeLikeToken(token)}%`;
+    if (params.matchAllWords) {
+      tokenClauses.push(
+        "(LOWER(COALESCE(si.title, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(si.body_text, '')) LIKE ? ESCAPE '\\')",
+      );
+      queryParams.push(pattern, pattern);
+      continue;
+    }
     tokenClauses.push(
       "(LOWER(COALESCE(si.title, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(si.body_text, '')) LIKE ? ESCAPE '\\' OR LOWER(CASE WHEN si.kind = 'global' THEN 'library chat' ELSE 'paper chat' END) LIKE ? ESCAPE '\\')",
     );
     queryParams.push(pattern, pattern, pattern);
   }
   const limit = normalizeOptionalLimit(params.limit);
-  const tokenFilterSql = tokenClauses.join("\n        OR ");
+  const tokenFilterSql = tokenClauses.join(
+    params.matchAllWords ? "\n        AND " : "\n        OR ",
+  );
+  const extraFilters: string[] = [];
+  const paperItemID = normalizePositiveInt(params.paperItemID);
+  if (paperItemID) {
+    extraFilters.push("si.kind = 'paper' AND si.paper_item_id = ?");
+    queryParams.push(paperItemID);
+  }
+  const minLastActivityAt = Number(params.minLastActivityAt);
+  if (Number.isFinite(minLastActivityAt) && minLastActivityAt > 0) {
+    extraFilters.push("si.last_activity_at >= ?");
+    queryParams.push(Math.floor(minLastActivityAt));
+  }
+  const extraFilterSql = extraFilters
+    .map((clause) => `\n       AND ${clause}`)
+    .join("");
   const liveCatalogFilter = await getLiveCatalogSearchFilter({
     db,
     system,
@@ -1036,7 +1078,7 @@ export async function searchConversationIndexWithStatus(params: {
      WHERE si.system = ?
        AND si.library_id = ?
        AND si.user_turn_count > 0
-       AND (${tokenFilterSql})
+       AND (${tokenFilterSql})${extraFilterSql}
        AND ${liveCatalogFilter.sql}
      ORDER BY si.last_activity_at DESC, si.legacy_conversation_key DESC
      ${limit ? "LIMIT ?" : ""}`,

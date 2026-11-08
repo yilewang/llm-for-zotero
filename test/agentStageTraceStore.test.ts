@@ -582,7 +582,7 @@ describe("tool result preview cost", function () {
     })),
   });
 
-  it("previews 3,000 rows of five-entry arrays and a 1,000-item listing in linear time", function () {
+  it("previews 3,000 rows of five-entry arrays and a 1,000-item listing in linear time @speed", function () {
     const big = timed(rows(3_000));
     const small = timed(rows(1_000));
     const items = timed(listing(1_000));

@@ -54,6 +54,10 @@ import { renderShortcuts } from "./shortcuts";
 import { refreshChat } from "./chat";
 import { prewarmQuoteSourcePageText } from "./quoteValidation/scheduling";
 import {
+  installPaperWarmOnIntent,
+  type PaperWarmTarget,
+} from "./paperWarmOnIntent";
+import {
   beginChatRenderCycle,
   beginOwnedChatRenderCycle,
   claimAsyncChatRender,
@@ -142,8 +146,12 @@ import {
   renderPanelOwnershipBlocked,
 } from "./panelHostOwnership";
 import { getPanelHandle } from "./panelHandle";
+import { pluginStylesheetHref } from "../../utils/pluginReload";
 
-export { openStandaloneChat } from "./standaloneWindow";
+export {
+  openStandaloneChat,
+  getStandaloneActivePaperItemID,
+} from "./standaloneWindow";
 import {
   isStandaloneWindowActive,
   notifyStandaloneItemChanged,
@@ -153,16 +161,29 @@ import {
 // Public API
 // =============================================================================
 
+const LLM_STYLE_LINK_IDS = [
+  `${config.addonRef}-styles`,
+  `${config.addonRef}-katex-styles`,
+];
+
+export function unregisterLLMStyles(doc: Document): void {
+  for (const id of LLM_STYLE_LINK_IDS) {
+    doc.querySelectorAll(`[id="${id}"]`).forEach((el: Element) => el.remove());
+  }
+}
+
 export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   const doc = win.document;
-  if (doc.getElementById(`${config.addonRef}-styles`)) return;
+  // After an in-place update the previous version's links are still here and
+  // point at its CSS. Replace them rather than keep them.
+  unregisterLLMStyles(doc);
 
   // Main styles
   const link = doc.createElement("link") as HTMLLinkElement;
   link.id = `${config.addonRef}-styles`;
   link.rel = "stylesheet";
   link.type = "text/css";
-  link.href = `chrome://${config.addonRef}/content/zoteroPane.css`;
+  link.href = pluginStylesheetHref("zoteroPane.css");
   doc.documentElement?.appendChild(link);
 
   // KaTeX styles for math rendering
@@ -170,7 +191,7 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   katexLink.id = `${config.addonRef}-katex-styles`;
   katexLink.rel = "stylesheet";
   katexLink.type = "text/css";
-  katexLink.href = `chrome://${config.addonRef}/content/vendor/katex/katex.min.css`;
+  katexLink.href = pluginStylesheetHref("vendor/katex/katex.min.css");
   doc.documentElement?.appendChild(katexLink);
 }
 
@@ -261,9 +282,47 @@ function isPanelConversationLoaded(
   );
 }
 
+let registeredReaderPaneID: string | false = false;
+
+/**
+ * Zotero keeps an item pane section element while a section with its paneID
+ * is registered at the pane's next render, and the element keeps the hooks
+ * of the plugin scope that created it. An update unregisters and registers
+ * the same paneID back to back, so without this every item pane keeps the
+ * old version's section, hooks, and chat panel. A render while the paneID is
+ * unregistered removes them.
+ */
+function removeUnregisteredItemPaneSections(): void {
+  for (const win of Zotero.getMainWindows()) {
+    win.document
+      .querySelectorAll("item-details")
+      .forEach((details: Element) => {
+        try {
+          (
+            details as Element & { renderCustomSections?: () => void }
+          ).renderCustomSections?.();
+        } catch (err) {
+          appLogger.debug("LLM: item pane section cleanup skipped", err);
+        }
+      });
+  }
+}
+
+export function unregisterReaderContextPanel(): void {
+  if (registeredReaderPaneID) {
+    Zotero.ItemPaneManager.unregisterSection(registeredReaderPaneID);
+  }
+  registeredReaderPaneID = false;
+  setReaderContextPanelRegistered(false);
+  removeUnregisteredItemPaneSections();
+}
+
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
+  // Zotero unregistered the previous version's section after its shutdown;
+  // drop its elements before this version registers the same paneID.
+  removeUnregisteredItemPaneSections();
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;
@@ -408,7 +467,7 @@ export function registerReaderContextPanel() {
   // Zotero draws the head icon in a 16px box and the rail icon at its own
   // size in a 28px button, so each slot gets the icon drawn for its size,
   // as Zotero's own itempane/16 and itempane/20 icons are.
-  Zotero.ItemPaneManager.registerSection({
+  registeredReaderPaneID = Zotero.ItemPaneManager.registerSection({
     paneID: PANE_ID,
     pluginID: config.addonID,
     header: {
@@ -613,6 +672,11 @@ export function registerReaderContextPanel() {
     },
     onAsyncRender: async ({ body, item, setEnabled }) => {
       setEnabled(true);
+      installPaperWarmOnIntent(
+        body,
+        resolveIntentPaperWarmTarget(body),
+        warmPanelPaper,
+      );
 
       const resolvedInitialState = resolveInitialPanelItemState(item);
       const resolvedItem = resolvedInitialState.item;
@@ -715,26 +779,46 @@ export function registerReaderContextPanel() {
         refreshChat(body, resolvedItem);
       }
       markCompletedPanelLifecycleSignature(body, lifecycleSignature);
-      // Defer content extraction so the panel becomes interactive sooner.
-      const activeContextItem = getActiveContextAttachmentFromTabs();
-      if (activeContextItem) {
-        const conversationKey = resolvedItem
-          ? getConversationKey(resolvedItem)
-          : 0;
-        // Context extraction seeds PDF page text when it reads the PDF; the
-        // prewarm then fills it from Zotero's full-text cache or PDFWorker
-        // when that read came from MinerU or an earlier cache, and re-checks
-        // this conversation's quote cards if it added the page text.
-        void ensurePDFTextCached(activeContextItem).finally(() => {
-          void prewarmQuoteSourcePageText({
-            conversationKey,
-            contextItemIds: [activeContextItem.id],
-          });
-        });
-      } else if (item && (item as any).isNote?.()) {
-        void ensureNoteTextCached(item);
+      // The PDF's own text is read when the user starts using this chat
+      // (installPaperWarmOnIntent above), never while the PDF opens (#524).
+      // A note is small and read straight from Zotero, so it stays eager.
+      if (!getActiveContextAttachmentFromTabs() && (item as any)?.isNote?.()) {
+        void ensureNoteTextCached(item!);
       }
     },
+  });
+}
+
+/**
+ * The paper a panel's chat would read: the PDF open in the selected reader
+ * tab, which is the panel the user is typing in.
+ */
+function resolveIntentPaperWarmTarget(
+  body: Element,
+): () => PaperWarmTarget | null {
+  return () => {
+    const contextItem = getActiveContextAttachmentFromTabs();
+    if (!contextItem) return null;
+    const panelItem = activeContextPanels.get(body)?.() || null;
+    return {
+      contextItemId: contextItem.id,
+      conversationKey: panelItem ? getConversationKey(panelItem) : 0,
+    };
+  };
+}
+
+function warmPanelPaper(target: PaperWarmTarget): void {
+  const contextItem = Zotero.Items.get(target.contextItemId);
+  if (!contextItem) return;
+  // Context extraction seeds PDF page text when it reads the PDF; the
+  // prewarm then fills it from Zotero's full-text cache or PDFWorker when
+  // that read came from MinerU or an earlier cache, and re-checks this
+  // conversation's quote cards if it added the page text.
+  void ensurePDFTextCached(contextItem).finally(() => {
+    void prewarmQuoteSourcePageText({
+      conversationKey: target.conversationKey,
+      contextItemIds: [target.contextItemId],
+    });
   });
 }
 

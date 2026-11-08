@@ -36,6 +36,7 @@ import {
 } from "../../../codexAppServer/nativeActivityStages";
 import { withConversationWriteLock } from "../../../shared/conversationWriteFence";
 import { normalizeGeneratedChatImages } from "../../../shared/generatedImages";
+import type { ReasoningEvent } from "../../../shared/llm";
 import type { GeneratedChatImage, QuoteCitation } from "../../../shared/types";
 import { sanitizeText } from "../../../utils/textSanitization";
 import { agentRunTraceCache } from "../agentState";
@@ -628,6 +629,57 @@ export function createCodexNativeActivityTraceController(
     return true;
   };
 
+  /** The reasoning item the trace's last Thinking row belongs to. */
+  let reasoningItemKey = "";
+  let reasoningRound = 0;
+
+  /**
+   * Show Codex's thinking as a Thinking row among the steps.
+   *
+   * Codex sends a summary of its reasoning; in an agent run the panel's
+   * reasoning panel is hidden, so this is the only place the reader sees
+   * it, in the order it arrived among the steps, as in the other modes.
+   * The summary streams in pieces: pieces of one reasoning item that arrive
+   * with nothing between them grow one row, so the stored trace holds one
+   * event per thought rather than one per piece.
+   */
+  const appendReasoning = (event: ReasoningEvent): void => {
+    if (!boundMessage) return;
+    const summary = sanitizeText(event.summary || "");
+    const details = sanitizeText(event.details || "");
+    if (!summary.trim() && !details.trim()) return;
+    flushAllProgressCoalescers("event");
+    const itemKey =
+      sanitizeText(event.stepId || event.stepLabel || "").trim() || "default";
+    const last = events[events.length - 1];
+    if (last?.payload.type === "reasoning" && itemKey === reasoningItemKey) {
+      events[events.length - 1] = {
+        ...last,
+        payload: {
+          ...last.payload,
+          ...(summary
+            ? { summary: `${last.payload.summary || ""}${summary}` }
+            : {}),
+          ...(details
+            ? { details: `${last.payload.details || ""}${details}` }
+            : {}),
+        },
+      };
+    } else {
+      reasoningItemKey = itemKey;
+      reasoningRound += 1;
+      events.push(
+        createEvent({
+          type: "reasoning",
+          round: reasoningRound,
+          ...(summary ? { summary } : {}),
+          ...(details ? { details } : {}),
+        }),
+      );
+    }
+    sync();
+  };
+
   const noteMcpToolActivity = (
     event: CodexNativeMcpToolActivityEvent,
   ): void => {
@@ -802,6 +854,7 @@ export function createCodexNativeActivityTraceController(
     },
     appendAgentMessageDelta,
     appendHostEvent,
+    appendReasoning,
     /**
      * Keep Codex's own checklist as the run's one plan event. It is
      * persisted with the run for Task progress (live and reopened) and never

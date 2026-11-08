@@ -1,9 +1,20 @@
 import { t } from "../../utils/i18n";
+import { copyFlatContentScope } from "./contentChrome";
 import { createSourcePopover } from "./sourcePopover";
-import { createContextIcon } from "./contextIcons";
-import { PARAGRAPH_CITATION_TOKEN_PATTERN } from "./quoteRenderPlan";
+import {
+  createCitationNumberer,
+  getAssistantRenderDisplay,
+  PARAGRAPH_CITATION_TOKEN_PATTERN,
+  paragraphCitationNumbers,
+  paragraphCitationPlaceholderIds,
+} from "./quoteRenderPlan";
+import { leadingSentenceClose } from "../../services/quotes/answerSentence";
 import { appLogger } from "../../core/logging";
 import { setStatus } from "./textUtils";
+import {
+  appendQuoteCardBodyContent,
+  renderQuoteCardMarkdownInto,
+} from "./quoteCardMarkdown";
 import { sanitizeText } from "../../utils/textSanitization";
 import { quoteComparisonKey } from "../../services/quotes/quoteKey";
 import {
@@ -27,6 +38,7 @@ import {
 } from "../../services/quotes/quoteCitations";
 import {
   buildQuoteRenderPlan,
+  getBoundQuoteRenderOccurrences,
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
   type QuoteRenderOccurrence,
@@ -81,6 +93,7 @@ import {
   getSinglePdfAttachment,
   navigateReaderToPage,
   navigateToQuote,
+  openPaperForAbstractQuote,
   openReaderForItem,
   jumpedPage,
 } from "./quoteNavigator";
@@ -96,6 +109,7 @@ import {
   renderRenderedMathPreviewInto,
 } from "./renderedMarkdown";
 import type { Message, PaperContextRef, QuoteCitation } from "./types";
+import type { WebSourceAnchor } from "../../webAccess/types";
 import {
   buildTaskPaperPassageSearchTexts,
   taskPaperPassageTargetPageLabel,
@@ -320,6 +334,9 @@ export const INLINE_CITATION_SKIP_SELECTOR = [
   ".llm-quote-citation-anchor",
   ".llm-quote-card",
   ".llm-paper-source-indicator",
+  // KaTeX's hidden MathML copy repeats the formula's text; a citation found
+  // there would be decorated a second time where no reader can see it.
+  ".katex-mathml",
 ].join(", ");
 
 const INLINE_CITATION_PATTERN =
@@ -948,6 +965,7 @@ function replaceElementWithRenderedMarkdown(
     return;
   }
   const container = ownerDoc.createElement("div");
+  copyFlatContentScope(element, container);
   renderRenderedMarkdownInto(container, safeText, ownerDoc);
   const fragment = ownerDoc.createDocumentFragment();
   if (!container.firstChild) {
@@ -1375,6 +1393,10 @@ function sortCandidatesForActiveReader(
     );
   });
 }
+
+const HAS_PARAGRAPH_CITATION_TOKEN = new RegExp(
+  PARAGRAPH_CITATION_TOKEN_PATTERN.source,
+);
 
 const scheduledCitationCacheWarmReaders = new WeakSet<object>();
 const startedCitationCacheWarmReaders = new WeakSet<object>();
@@ -2502,6 +2524,23 @@ async function resolveAndNavigateAssistantCitation(params: {
       extractedCitation,
     });
     if (nonPdfCandidate) {
+      // A paper with no PDF: its abstract quote is from its Zotero record.
+      const opened =
+        quoteCitation?.sourceChunkKind === "abstract"
+          ? await openPaperForAbstractQuote(quoteCitation)
+          : "failed";
+      if (opened !== "failed") {
+        timingOutcome = `abstract-${opened}`;
+        if (status)
+          setStatus(
+            status,
+            opened === "opened"
+              ? "This quote is from the paper's abstract: opened the paper at its first page."
+              : "This quote is from the paper's abstract: selected the paper in the library.",
+            "ready",
+          );
+        return;
+      }
       if (status)
         setStatus(
           status,
@@ -2598,6 +2637,28 @@ async function resolveAndNavigateAssistantCitation(params: {
         markCitationNavigationTiming(timing, stage, details),
     });
     timingOutcome = outcome.kind === "jumped" ? outcome.tier : outcome.kind;
+    // An abstract quote may come from the Zotero record, which has no page:
+    // when no PDF page holds it, the click opens the paper instead.
+    if (
+      quoteCitation?.sourceChunkKind === "abstract" &&
+      (outcome.kind === "not-found" ||
+        outcome.kind === "unverifiable" ||
+        outcome.kind === "no-candidates")
+    ) {
+      const opened = await openPaperForAbstractQuote(quoteCitation);
+      if (opened !== "failed") {
+        timingOutcome = `abstract-${opened}`;
+        if (status)
+          setStatus(
+            status,
+            opened === "opened"
+              ? "This quote is from the paper's abstract: opened the paper at its first page."
+              : "This quote is from the paper's abstract: selected the paper in the library.",
+            "ready",
+          );
+        return;
+      }
+    }
     if (outcome.kind === "jumped") {
       updateCitationButtonPage(
         params.button,
@@ -2726,6 +2787,37 @@ function resolveTaskPaperPassagePdf(
     if (itemId <= 0) continue;
     const pdf = getFirstPdfAttachment(Zotero.Items.get(itemId) || null);
     if (pdf) return pdf;
+  }
+  return null;
+}
+
+/**
+ * The first quote chip under `root` that cites the library paper, in the
+ * answer of `runId` when one is given, for Task progress's "Show in answer".
+ */
+export function findCitationChipForItem(
+  root: ParentNode,
+  itemId: number,
+  runId?: string,
+): HTMLElement | null {
+  const buttons = Array.from(
+    root.querySelectorAll("button.llm-citation-icon"),
+  ) as HTMLButtonElement[];
+  for (const button of buttons) {
+    if (runId && citationButtonAgentRunIdCache.get(button) !== runId) continue;
+    const candidates = citationButtonCandidateCache.get(button) || [];
+    const cites = candidates.some(
+      (candidate) =>
+        candidate.paperContext?.itemId === itemId ||
+        candidate.displayPaperContext?.itemId === itemId,
+    );
+    if (cites) {
+      return (
+        (button.closest(
+          ".llm-citation-row, .llm-citation-inline-wrap",
+        ) as HTMLElement | null) || button
+      );
+    }
   }
   return null;
 }
@@ -3400,20 +3492,6 @@ function hasActiveQuoteCardTextSelection(wrapper: HTMLElement): boolean {
   return false;
 }
 
-function renderQuoteCardMarkdownInto(
-  target: HTMLElement,
-  quoteText: string,
-  ownerDoc: Document,
-): void {
-  const safeText = sanitizeText(quoteText || "").trim();
-  if (!safeText) return;
-  const container = ownerDoc.createElement("div");
-  renderRenderedMarkdownInto(container, safeText, ownerDoc);
-  if (!appendQuoteCardBodyContent(target, container)) {
-    target.textContent = safeText;
-  }
-}
-
 export function buildQuoteCardPreviewText(quoteText: string): string {
   // A collapsed verified card is still a quotation. Keep inline Markdown-like
   // delimiters literal because they may be source text, not presentation markup.
@@ -3426,43 +3504,9 @@ function renderQuoteCardBodyMarkdown(
   body: HTMLElement,
   quoteText: string,
   ownerDoc: Document,
+  scopeSource?: Element,
 ): void {
-  renderQuoteCardMarkdownInto(body, quoteText, ownerDoc);
-}
-
-// Markdown that sanitizes down to nothing still leaves nodes behind: the
-// renderer swaps a disallowed element for an empty text node rather than
-// dropping it. Node presence therefore proves nothing about what the reader
-// will see, so ask for text or for an element that paints on its own. A lone
-// <br> is deliberately absent — it occupies no visible space, and the caller's
-// raw-text fallback shows more than an empty card would.
-const QUOTE_CARD_SELF_RENDERING_SELECTOR = "img, svg, hr, input";
-
-function hasRenderableQuoteCardContent(source: ParentNode): boolean {
-  if ((source.textContent || "").trim()) return true;
-  return Boolean(source.querySelector?.(QUOTE_CARD_SELF_RENDERING_SELECTOR));
-}
-
-function appendQuoteCardBodyContent(
-  body: HTMLElement,
-  quoteContent: ParentNode | null | undefined,
-): boolean {
-  if (!quoteContent?.firstChild) return false;
-  const firstElement =
-    "firstElementChild" in quoteContent ? quoteContent.firstElementChild : null;
-  const hasSingleParagraph =
-    quoteContent.childNodes.length === 1 &&
-    firstElement?.tagName.toLowerCase() === "p";
-  const moveSource =
-    hasSingleParagraph && firstElement ? firstElement : quoteContent;
-  // Decide before mutating. Rolling back after the move would strand the
-  // caller's nodes and leave `quoteContent` unusable for the fallback render.
-  if (!hasRenderableQuoteCardContent(moveSource)) return false;
-  body.classList.add("llm-rendered-markdown");
-  while (moveSource.firstChild) {
-    body.appendChild(moveSource.firstChild);
-  }
-  return true;
+  renderQuoteCardMarkdownInto(body, quoteText, ownerDoc, scopeSource);
 }
 
 export const appendQuoteCardBodyContentForTests = appendQuoteCardBodyContent;
@@ -3593,7 +3637,12 @@ function createQuoteCardElement(params: {
     if (bodyRendered) return;
     bodyRendered = true;
     if (!appendQuoteCardBodyContent(body, params.quoteContent)) {
-      renderQuoteCardBodyMarkdown(body, params.quoteText, params.ownerDoc);
+      renderQuoteCardBodyMarkdown(
+        body,
+        params.quoteText,
+        params.ownerDoc,
+        body.isConnected ? body : (renderScopeSource ?? undefined),
+      );
     }
   };
 
@@ -3718,43 +3767,46 @@ function createFallbackQuoteCardElement(params: {
   });
 }
 
-function createParagraphCitationFooter(params: {
+/**
+ * One citation run's mark, drawn where the run was: the answer-wide numbers
+ * of its passages, opening the passages themselves.
+ */
+function createParagraphCitationMark(params: {
   ownerDoc: Document;
   body: Element;
   panelItem: Zotero.Item;
   candidates: AssistantCitationPaperCandidate[];
   citations: QuoteCitation[];
+  numberOf: (id: string) => number;
 }): HTMLElement {
-  const icon = createContextIcon(
-    params.ownerDoc,
-    "text",
-    "llm-paper-source-icon",
-  );
+  const numbered = params.citations
+    .map((citation) => ({
+      citation,
+      number: params.numberOf(citation.id),
+    }))
+    .sort((left, right) => left.number - right.number);
+  const face = numbered.map((entry) => String(entry.number)).join(", ");
   const count = params.ownerDoc.createElement("span");
   count.className = "llm-paper-source-count";
-  count.textContent = t(
-    params.citations.length === 1 ? "{number} Quote" : "{number} Quotes",
-  ).replace("{number}", String(params.citations.length));
-  const content = params.ownerDoc.createDocumentFragment();
-  content.append(icon, count);
-  const footer = createSourcePopover(params.ownerDoc, {
+  count.textContent = face;
+  const mark = createSourcePopover(params.ownerDoc, {
     activation: "click",
-    label: `${count.textContent}: ${t("Supporting passages")}`,
-    icon: content,
+    label: t("Supporting passages {numbers}").replace("{numbers}", face),
+    icon: count,
     populate: (popover) => {
       popover.classList.add("llm-paper-source-popover");
       const title = params.ownerDoc.createElement("div");
       title.className = "llm-paper-source-title";
       title.textContent = t("Supporting passages");
       popover.appendChild(title);
-      for (const [index, citation] of params.citations.entries()) {
+      for (const { citation, number } of numbered) {
         const row = params.ownerDoc.createElement("div");
         row.className = "llm-paper-source-passage";
         const heading = params.ownerDoc.createElement("span");
         heading.className = "llm-paper-source-heading";
         heading.textContent = t("Quote {number}").replace(
           "{number}",
-          String(index + 1),
+          String(number),
         );
         const sectionLabel = sanitizeText(
           citation.sourceSectionLabel || "",
@@ -3776,8 +3828,14 @@ function createParagraphCitationFooter(params: {
       }
     },
   });
-  footer.classList.add("llm-paper-source-indicator");
-  return footer;
+  mark.classList.add("llm-paper-source-indicator", "llm-paper-cite-mark");
+  mark.dataset.citationIds = numbered
+    .map((entry) => entry.citation.id)
+    .join(" ");
+  mark.dataset.citationNumbers = numbered
+    .map((entry) => String(entry.number))
+    .join(" ");
+  return mark;
 }
 
 function createQuoteCitationAnchorElement(params: {
@@ -3962,10 +4020,12 @@ function buildQuoteBodyBatchMarkdown(
 function renderImmediateQuoteBodiesBatch(
   occurrences: QuoteRenderOccurrence[],
   ownerDoc: Document,
+  scopeSource?: Element,
 ): Map<string, DocumentFragment> {
   const immediate = occurrences.filter(needsImmediateQuoteRender);
   if (!immediate.length) return new Map();
   const batchContainer = ownerDoc.createElement("div");
+  if (scopeSource) copyFlatContentScope(scopeSource, batchContainer);
   try {
     renderRenderedMarkdownInto(
       batchContainer,
@@ -4055,14 +4115,47 @@ function liftQuoteCardsOutOfParagraph(paragraph: HTMLElement): void {
   parent.replaceChild(replacement, paragraph);
 }
 
+/**
+ * The answer element the quote cards are being built for. Cards that render
+ * their text right away (outside a document) copy its flat scope.
+ */
+let renderScopeSource: Element | null = null;
+
+function withRenderScope(scopeSource: Element, run: () => void): void {
+  const previous = renderScopeSource;
+  renderScopeSource = scopeSource;
+  try {
+    run();
+  } finally {
+    renderScopeSource = previous;
+  }
+}
+
 export function renderQuoteCitationPlaceholders(params: {
   body: Element;
   panelItem: Zotero.Item;
   bubble: HTMLDivElement;
   assistantMessage: Message;
   pairedUserMessage?: Message | null;
+  webSourceAnchors?: readonly WebSourceAnchor[];
 }): void {
-  const display = getMessageQuoteDisplay(params.assistantMessage);
+  withRenderScope(params.body, () =>
+    renderQuoteCitationPlaceholdersNow(params),
+  );
+}
+
+function renderQuoteCitationPlaceholdersNow(params: {
+  body: Element;
+  panelItem: Zotero.Item;
+  bubble: HTMLDivElement;
+  assistantMessage: Message;
+  pairedUserMessage?: Message | null;
+  webSourceAnchors?: readonly WebSourceAnchor[];
+}): void {
+  // The same text and records the answer's tokens were built from.
+  const display = getAssistantRenderDisplay(params.assistantMessage, {
+    hasWebSources: Boolean(params.webSourceAnchors?.length),
+  });
   const plan = buildQuoteRenderPlan(display);
   if (plan.diagnostics.length) {
     appLogger.debug("LLM quote render diagnostics", {
@@ -4076,7 +4169,7 @@ export function renderQuoteCitationPlaceholders(params: {
       })),
     });
   }
-  const hasParagraphCitation = /LLMPAPERCITE\d+END/.test(
+  const hasParagraphCitation = HAS_PARAGRAPH_CITATION_TOKEN.test(
     params.bubble.textContent || "",
   );
   QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
@@ -4098,6 +4191,14 @@ export function renderQuoteCitationPlaceholders(params: {
   const citationsById = new Map(
     quoteCitations.map((citation) => [citation.id, citation]),
   );
+  // Trace text is planned from the message's records even when the answer's
+  // display override has none (agentTrace/render.ts).
+  const traceCitationsById = new Map(
+    normalizeQuoteCitations(
+      params.assistantMessage.quoteDisplayOverride?.quoteCitations ||
+        params.assistantMessage.quoteCitations,
+    ).map((citation) => [citation.id, citation]),
+  );
   const ownerDoc = params.bubble.ownerDocument;
   if (!ownerDoc) return;
   const candidates = collectAssistantCitationCandidates(
@@ -4107,11 +4208,8 @@ export function renderQuoteCitationPlaceholders(params: {
   const scopeCollectionIds = collectCitationScopeCollectionIds(
     params.pairedUserMessage,
   );
-  const immediateQuoteBodies = renderImmediateQuoteBodiesBatch(
-    plan.occurrences,
-    ownerDoc,
-  );
   const targets: Text[] = [];
+  const shouldSkipInlineCitationNode = createInlineCitationSkipCheck();
   const walk = (node: Node): void => {
     if (node.nodeType === 3) {
       const textNode = node as Text;
@@ -4123,7 +4221,7 @@ export function renderQuoteCitationPlaceholders(params: {
       QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
       if (
         hasOccurrence ||
-        /LLMPAPERCITE\d+END/.test(text) ||
+        HAS_PARAGRAPH_CITATION_TOKEN.test(text) ||
         textContainsQuoteCitationPlaceholder(text)
       ) {
         targets.push(textNode);
@@ -4136,9 +4234,55 @@ export function renderQuoteCitationPlaceholders(params: {
   };
   walk(params.bubble);
 
-  const paragraphSources = new Map<HTMLElement, QuoteCitation[]>();
+  // A token resolves against the plan it was made from: a rendered element
+  // may carry its own (a trace segment), else the answer's plan applies.
+  const boundMaps = new Map<
+    QuoteRenderOccurrence[],
+    Map<string, QuoteRenderOccurrence>
+  >();
+  const occurrencesFor = (
+    textNode: Text,
+  ): Map<string, QuoteRenderOccurrence> => {
+    const bound = getBoundQuoteRenderOccurrences(textNode);
+    if (!bound) return occurrencesById;
+    let map = boundMaps.get(bound);
+    if (!map) {
+      map = new Map(
+        bound.map((occurrence) => [occurrence.occurrenceId, occurrence]),
+      );
+      boundMaps.set(bound, map);
+    }
+    return map;
+  };
+  const batchOccurrences = new Map(occurrencesById);
+  for (const textNode of targets) {
+    for (const [id, occurrence] of occurrencesFor(textNode)) {
+      if (!batchOccurrences.has(id)) batchOccurrences.set(id, occurrence);
+    }
+  }
+  const immediateQuoteBodies = renderImmediateQuoteBodiesBatch(
+    Array.from(batchOccurrences.values()),
+    ownerDoc,
+    params.body,
+  );
+
+  // Marks a pass drew earlier (trace text added later) keep their numbers.
+  const shownMarks = Array.from(
+    params.bubble.querySelectorAll<HTMLElement>(".llm-paper-cite-mark"),
+  ) as HTMLElement[];
+  const shownNumbers = shownMarks.flatMap((mark) => {
+    const numbers = (mark.dataset.citationNumbers || "").split(" ");
+    return (mark.dataset.citationIds || "")
+      .split(" ")
+      .map((id, index) => [id, Number(numbers[index])] as const);
+  });
+  const citationNumber = createCitationNumberer(
+    paragraphCitationNumbers(plan),
+    shownNumbers,
+  );
   for (const textNode of targets) {
     const text = textNode.nodeValue || "";
+    const nodeOccurrences = occurrencesFor(textNode);
     QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
     const occurrenceMatches = Array.from(
       text.matchAll(QUOTE_RENDER_OCCURRENCE_PATTERN),
@@ -4180,27 +4324,45 @@ export function renderQuoteCitationPlaceholders(params: {
     ].sort((left, right) => left.index - right.index);
     for (const match of allMatches) {
       const start = match.index || 0;
-      const end = start + match.token.length;
-      if (start > cursor) {
-        fragment.appendChild(
-          ownerDoc.createTextNode(text.slice(cursor, start)),
-        );
+      let end = start + match.token.length;
+      let leading = text.slice(cursor, start);
+      // A placeholder names its own ids, so trace text resolves to its own.
+      const citations =
+        match.kind === "paragraph"
+          ? paragraphCitationPlaceholderIds(match.id).flatMap((id) => {
+              const citation =
+                citationsById.get(id) || traceCitationsById.get(id);
+              return citation ? [citation] : [];
+            })
+          : [];
+      if (match.kind === "paragraph") {
+        // A mark sits against its words: "0.46." and its mark, not "0.46 .".
+        leading = leading.replace(/\s+$/, "");
+        // The sentence's own closing punctuation comes before its mark.
+        const closing = citations.length
+          ? leadingSentenceClose(text.slice(end))
+          : "";
+        leading += closing;
+        end += closing.length;
+      }
+      if (leading) {
+        fragment.appendChild(ownerDoc.createTextNode(leading));
       }
       if (match.kind === "paragraph") {
-        const citations = plan.paragraphCitations[Number(match.id)] || [];
-        const container =
-          textNode.parentElement?.closest<HTMLElement>("p, li, td, th") ||
-          textNode.parentElement;
-        if (container && citations.length) {
-          const held = paragraphSources.get(container) || [];
-          const ids = new Set(held.map((citation) => citation.id));
-          paragraphSources.set(container, [
-            ...held,
-            ...citations.filter((citation) => !ids.has(citation.id)),
-          ]);
+        if (citations.length) {
+          fragment.appendChild(
+            createParagraphCitationMark({
+              ownerDoc,
+              body: params.body,
+              panelItem: params.panelItem,
+              candidates,
+              citations,
+              numberOf: citationNumber,
+            }),
+          );
         }
       } else if (match.kind === "occurrence") {
-        const occurrence = occurrencesById.get(match.id);
+        const occurrence = nodeOccurrences.get(match.id);
         if (occurrence) {
           fragment.appendChild(
             createQuoteRenderOccurrenceElement({
@@ -4253,27 +4415,31 @@ export function renderQuoteCitationPlaceholders(params: {
       }
     }
   }
-  for (const [container, citations] of paragraphSources) {
-    container.appendChild(
-      createParagraphCitationFooter({
-        ownerDoc,
-        body: params.body,
-        panelItem: params.panelItem,
-        candidates,
-        citations,
-      }),
-    );
-  }
 }
 
-function shouldSkipInlineCitationNode(element: Element | null): boolean {
-  if (!element) return true;
-  if (element.closest(INLINE_CITATION_SKIP_SELECTOR)) {
-    return true;
-  }
-  const tag = element.tagName.toLowerCase();
-  if (tag === "script" || tag === "style") return true;
-  return false;
+/**
+ * A skip check for one walk over an unchanging tree: an element is skipped
+ * when it or an ancestor matches the skip selector (as `closest` would say),
+ * but each element is matched once instead of once per text node below it.
+ */
+function createInlineCitationSkipCheck(): (element: Element | null) => boolean {
+  const skippedByAncestry = new Map<Element, boolean>();
+  const isSkippedByAncestry = (element: Element): boolean => {
+    const known = skippedByAncestry.get(element);
+    if (known !== undefined) return known;
+    const parent = element.parentElement;
+    const skipped =
+      element.matches(INLINE_CITATION_SKIP_SELECTOR) ||
+      (parent ? isSkippedByAncestry(parent) : false);
+    skippedByAncestry.set(element, skipped);
+    return skipped;
+  };
+  return (element) => {
+    if (!element) return true;
+    if (isSkippedByAncestry(element)) return true;
+    const tag = element.tagName.toLowerCase();
+    return tag === "script" || tag === "style";
+  };
 }
 
 function decorateInlineCitationNodes(params: {
@@ -4284,6 +4450,7 @@ function decorateInlineCitationNodes(params: {
   candidates: AssistantCitationPaperCandidate[];
 }): void {
   const targets: Text[] = [];
+  const shouldSkipInlineCitationNode = createInlineCitationSkipCheck();
   const walk = (node: Node): void => {
     if (node.nodeType === 3) {
       const textNode = node as Text;
@@ -4465,6 +4632,16 @@ export function decorateAssistantCitationLinks(params: {
   assistantMessage: Message;
   pairedUserMessage?: Message | null;
 }): void {
+  withRenderScope(params.body, () => decorateAssistantCitationLinksNow(params));
+}
+
+function decorateAssistantCitationLinksNow(params: {
+  body: Element;
+  panelItem: Zotero.Item;
+  bubble: HTMLDivElement;
+  assistantMessage: Message;
+  pairedUserMessage?: Message | null;
+}): void {
   const display = getMessageQuoteDisplay(params.assistantMessage);
   if (
     !sanitizeText(params.bubble.textContent || display.markdown || "").trim()
@@ -4495,16 +4672,20 @@ export function decorateAssistantCitationLinks(params: {
   ) as Element[];
   const rawBlockquoteTexts =
     extractMarkdownBlockquoteTextsForCitationDecoration(display.markdown);
-  appLogger.debug(
-    "LLM citation decoration: blockquotes found =",
-    blockquotes.length,
-    "candidates =",
-    candidates.length,
-    "bubble HTML length =",
-    String(params.bubble.innerHTML || "").length,
-    "bubble child count =",
-    params.bubble.childElementCount,
-  );
+  // Serializing the bubble is expensive; build the argument only when the
+  // debug level is on.
+  if (appLogger.isEnabled("debug")) {
+    appLogger.debug(
+      "LLM citation decoration: blockquotes found =",
+      blockquotes.length,
+      "candidates =",
+      candidates.length,
+      "bubble HTML length =",
+      String(params.bubble.innerHTML || "").length,
+      "bubble child count =",
+      params.bubble.childElementCount,
+    );
+  }
   for (const [blockquoteIndex, blockquote] of blockquotes.entries()) {
     if (
       blockquote.closest(

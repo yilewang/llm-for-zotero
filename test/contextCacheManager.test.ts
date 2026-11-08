@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   clearContextCacheTelemetry,
+  anthropicPromptTokens,
   extractContextCacheUsage,
   getContextCacheTelemetry,
   listContextCacheTelemetry,
@@ -200,6 +201,23 @@ describe("context cache manager", function () {
         cacheProvider: "anthropic",
       },
     );
+    // Anthropic's input_tokens leaves the cached tokens out: the prompt is
+    // input + read + write.
+    assert.deepInclude(
+      extractContextCacheUsage({
+        input_tokens: 100,
+        cache_read_input_tokens: 9000,
+        cache_creation_input_tokens: 500,
+        output_tokens: 50,
+      }),
+      {
+        cacheReadTokens: 9000,
+        cacheWriteTokens: 500,
+        cacheMissTokens: 600,
+        cacheHitRatio: 0.9375,
+        cacheProvider: "anthropic",
+      },
+    );
     assert.deepInclude(
       extractContextCacheUsage({
         promptTokenCount: 2000,
@@ -221,6 +239,26 @@ describe("context cache manager", function () {
         cacheMissTokens: 1400,
         cacheProvider: "kimi",
       },
+    );
+  });
+
+  it("counts Anthropic prompt tokens once when a relay sends prompt_tokens", function () {
+    assert.equal(
+      anthropicPromptTokens({
+        prompt_tokens: 9600,
+        input_tokens: 100,
+        cache_read_input_tokens: 9000,
+        cache_creation_input_tokens: 500,
+      }),
+      9600,
+    );
+    assert.equal(
+      anthropicPromptTokens({
+        input_tokens: 100,
+        cache_read_input_tokens: 9000,
+        cache_creation_input_tokens: 500,
+      }),
+      9600,
     );
   });
 

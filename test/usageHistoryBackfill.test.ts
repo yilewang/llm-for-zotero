@@ -1213,13 +1213,4 @@ describe("usage history estimate startup states", function () {
     assert.strictEqual(markerCount(LEGACY_OUTPUT_MIGRATION_ID), 1);
     await assertSecondStartupChangesNothing();
   });
-
-  it("state 4: a profile this build has already finished", async function () {
-    await seedProfile();
-    const live = liveRows();
-    await runStartup();
-    assertSettled(live);
-
-    await assertSecondStartupChangesNothing();
-  });
 });

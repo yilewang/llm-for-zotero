@@ -249,6 +249,7 @@ function buildNoteFigureRenderOptions(deps: MenuActionControllerDeps) {
             source,
             renderDoc,
             anchor || body || undefined,
+            "light",
           ),
       }
     : undefined;
@@ -269,6 +270,8 @@ function findRenderedMermaidSvgForSource(
     if ((preview.dataset.llmMermaidSource || "").trim() !== normalizedSource) {
       continue;
     }
+    // Notes are read on a light page; a dark chat's diagram has light text.
+    if (preview.dataset.llmMermaidTheme === "dark") continue;
     const renderedSvg = (preview.dataset.llmRenderedSvg || "").trim();
     if (renderedSvg) return renderedSvg;
   }

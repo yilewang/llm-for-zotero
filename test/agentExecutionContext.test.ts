@@ -37,7 +37,7 @@ describe("Agent execution context", function () {
         },
       } as never,
       "run-attempt-2",
-      { notesDirectory: null },
+      { notesDirectory: null, agentFilesRoot: null },
     );
 
     assert.equal(context.executionId, "run-attempt-2");
@@ -60,5 +60,33 @@ describe("Agent execution context", function () {
       "/cache/paper",
     ]);
     assert.deepEqual(context.configuredAccess.fileAccess?.writeDirectories, []);
+  });
+
+  it("lets the agent read and write its own saved-files folder", function () {
+    const context = createAgentExecutionContext(
+      {
+        conversationKey: 7,
+        libraryID: 1,
+        userText: "make me a page",
+        history: [],
+        attachments: [],
+        turnPaperScope: {
+          libraryID: 1,
+          papers: [],
+          collections: [],
+          tags: [],
+        },
+      } as never,
+      "run-1",
+      { notesDirectory: null, agentFilesRoot: "/zotero/llm-for-zotero-files" },
+    );
+
+    assert.deepEqual(context.configuredAccess.fileAccess?.writeDirectories, [
+      "/zotero/llm-for-zotero-files",
+    ]);
+    assert.include(
+      context.configuredAccess.fileAccess?.readDirectories || [],
+      "/zotero/llm-for-zotero-files",
+    );
   });
 });

@@ -1,3 +1,4 @@
+import { t } from "../../../../utils/i18n";
 import { scheduleChatContentScroll } from "../../chatScrollSnapshots";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
@@ -58,6 +59,7 @@ import {
   renderSkillsInSlashMenu as renderSkillsSlashSection,
   type ActionCommandSlashMenuContext,
 } from "./actionCommandSlashMenu";
+import { syncSideChatSlashItem } from "../../sideChatSlashItem";
 
 type StatusLevel = "ready" | "warning" | "error";
 type ActionPickerItem = {
@@ -237,6 +239,8 @@ export function createActionCommandController(
         (element as HTMLElement).style.display = visible ? "" : "none";
       },
     );
+    // The side chat item shows only while a provider is registered.
+    if (visible) syncSideChatSlashItem(body, slashMenu);
   };
 
   const getVisibleSlashItems = (): HTMLButtonElement[] => {
@@ -359,7 +363,7 @@ export function createActionCommandController(
           textContent: action.name,
         }),
         createElement(ownerDoc, "div", "llm-action-picker-description", {
-          textContent: action.description,
+          textContent: t(action.description),
         }),
       );
       option.addEventListener("mousedown", (event: Event) => {

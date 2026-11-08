@@ -165,7 +165,7 @@ describe("quoteCitations", function () {
     );
   });
 
-  it("verifies fifty quote cards across a ten-paper source scope cooperatively", async function () {
+  it("verifies fifty quote cards across a ten-paper source scope cooperatively @speed", async function () {
     this.timeout(10_000);
     const sourceTexts = Array.from({ length: 10 }, (_paper, paperIndex) => {
       const quotes = Array.from(
@@ -463,7 +463,7 @@ describe("quoteCitations", function () {
     assert.notInclude(prompt, "citationLabel");
   });
 
-  it("distinguishes paragraph support from reading recommendations", function () {
+  it("distinguishes sentence support from reading recommendations", function () {
     const citation = buildQuoteCitation({
       quoteText:
         "Representational drift changed the neural response pattern across repeated sessions.",
@@ -477,7 +477,12 @@ describe("quoteCitations", function () {
     const prompt = buildQuoteAnchorPromptBlock([citation!]).join("\n");
 
     assert.include(prompt, "Verified quote anchors");
-    assert.include(prompt, "At the end of an explanatory paragraph");
+    assert.include(
+      prompt,
+      "At the end of each sentence that a passage supports, just before its final punctuation",
+    );
+    assert.include(prompt, `Sentence support: [[cite:${citation!.id}]]`);
+    assert.notMatch(prompt, /paragraph/i);
     assert.include(prompt, "recommend a passage the reader should read");
     assert.notInclude(prompt, "Quote anchors for direct evidence:");
   });
@@ -5205,6 +5210,40 @@ describe("quote ids with '.' or ':'", function () {
         (citation) => citation.id,
       ),
       ["Q1.a", "Q1a"],
+    );
+  });
+});
+
+describe("normalizeQuoteCitations reuse", function () {
+  const quoteText =
+    "Population codes rotate while the decoder stays aligned with behaviour across weeks.";
+  const make = (id: string) =>
+    buildQuoteCitation({ id, quoteText, citationLabel: "(Kim, 2026)" })!;
+
+  it("gives each caller its own copies of a reused result", function () {
+    const stored = [make("Q1"), make("Q2")];
+    const first = normalizeQuoteCitations(stored);
+    first[0].quoteText = "changed by a caller";
+    first.pop();
+    const second = normalizeQuoteCitations(stored);
+    assert.deepEqual(
+      second.map((citation) => [citation.id, citation.quoteText]),
+      [
+        ["Q1", quoteText],
+        ["Q2", quoteText],
+      ],
+    );
+  });
+
+  it("reads an entry again after it changes in place", function () {
+    const stored = [make("Q1")];
+    assert.isUndefined(normalizeQuoteCitations(stored)[0].pageHintIndex);
+    (stored[0] as { pageHintIndex?: number }).pageHintIndex = 3;
+    assert.equal(normalizeQuoteCitations(stored)[0].pageHintIndex, 3);
+    stored.push(make("Q2"));
+    assert.deepEqual(
+      normalizeQuoteCitations(stored).map((citation) => citation.id),
+      ["Q1", "Q2"],
     );
   });
 });

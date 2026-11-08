@@ -1,4 +1,5 @@
 import type { RuntimeModelEntry } from "../utils/modelProviders";
+import { claudeBridgeFetch } from "./bridgeProcess";
 
 const CLAUDE_RUNTIME_GROUP_ID = "claude-runtime";
 const CLAUDE_RUNTIME_ENTRY_PREFIX = "claude_runtime";
@@ -182,7 +183,7 @@ export async function fetchClaudeModelCatalog({
   context,
   forceRefresh = false,
   timeoutMs = CLAUDE_MODEL_CATALOG_REQUEST_TIMEOUT_MS,
-  fetchImpl = fetch,
+  fetchImpl = claudeBridgeFetch as typeof fetch,
 }: FetchClaudeModelCatalogParams): Promise<ClaudeModelCatalog> {
   const baseUrl = normalizeBridgeUrl(bridgeUrl);
   if (!baseUrl) {

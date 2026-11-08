@@ -40,7 +40,43 @@ export type EditableArticleMetadataSnapshot = {
   creators: EditableArticleCreator[];
 };
 
+/**
+ * An item's type with its exact stored fields and creators: what a type
+ * change can lose, and what its undo puts back.
+ */
+export type ItemTypeRecord = {
+  itemType: string;
+  /** Every non-empty field, by the field name the type itself uses. */
+  fields: Record<string, string>;
+  /** Creators exactly as `getCreatorsJSON` returns them. */
+  creators: EditableArticleCreator[];
+};
+
+/** What changing an item's type does, worked out before anything is written. */
+export type ItemTypeChangePlan = {
+  fromType: string;
+  toType: string;
+  /** Fields that lose their value, by name. */
+  droppedFields: string[];
+  /** The record Zotero will hold after the change, creator types remapped. */
+  after: ItemTypeRecord;
+};
+
 export type BatchTagAssignment = {
   itemId: number;
   tags: string[];
 };
+
+/**
+ * One spelling of a web address, so `https://example.org` and
+ * `https://example.org/` name the same page. An address `URL` cannot parse
+ * is compared as written.
+ */
+export function normalizeWebAddress(value: string | undefined): string {
+  const text = (value || "").trim();
+  try {
+    return new URL(text).href;
+  } catch {
+    return text;
+  }
+}

@@ -5,8 +5,10 @@ import type {
 import type { NativeNoteVerification } from "../../../services/notePersistence";
 import type {
   BatchTagAssignment,
+  EditableArticleCreator,
   EditableArticleMetadataPatch,
   EditableArticleMetadataSnapshot,
+  ItemTypeRecord,
 } from "./valueTypes";
 
 type LibraryMutationEffect = "applied" | "partial" | "none";
@@ -19,6 +21,25 @@ export type UpdateMetadataOperation = {
   itemId?: number;
   paperContext?: PaperContextRef;
   metadata: EditableArticleMetadataPatch;
+};
+
+/**
+ * Changes a regular item's type. Zotero drops the fields the new type lacks,
+ * so planning names them and the undo restores the exact prior record.
+ */
+export type ChangeItemTypeOperation = {
+  id?: string;
+  type: "change_item_type";
+  itemId: number;
+  itemType: string;
+  /** Set at planning: the fields the approved change drops. */
+  droppedFields?: string[];
+  /** Set at planning: the creators after Zotero remaps their types. */
+  expectedCreators?: EditableArticleCreator[];
+  /** Set at planning: the fields that keep a value, as Zotero moves them. */
+  expectedFields?: Record<string, string>;
+  /** Undo only: the exact fields and creators to put back with the type. */
+  restore?: Omit<ItemTypeRecord, "itemType">;
 };
 
 export type ApplyTagsOperation = {
@@ -136,8 +157,13 @@ export type SetItemTagsOperation = {
 export type SaveNotesBatchOperation = {
   id?: string;
   type: "save_notes_batch";
+  /** 'append' adds each body to an existing note instead of creating one. */
+  mode?: "create" | "append";
   notes: Array<{
+    /** The item the note is written onto; for an append, the note itself. */
     targetItemId: number;
+    /** For an append: the note the body is appended to. */
+    targetNoteId?: number;
     content: string;
     collections?: number[];
   }>;
@@ -279,6 +305,46 @@ export type RelinkAttachmentOperation = {
   newPath: string;
 };
 
+/** Attaches a local file to a regular item, as a stored copy or a link. */
+export type AttachFileOperation = {
+  id?: string;
+  type: "attach_file";
+  parentItemId: number;
+  filePath: string;
+  /** Link to the file where it is instead of copying it into Zotero. */
+  link?: boolean;
+};
+
+/**
+ * Saves a web page to a regular item twice: a link to the URL and a stored
+ * snapshot of the page, the two attachments the user asked for.
+ */
+export type AttachUrlOperation = {
+  id?: string;
+  type: "attach_url";
+  parentItemId: number;
+  url: string;
+};
+
+/**
+ * Runs Zotero's own Find Available PDF for one item. Finding nothing is an
+ * answer, not a failure: the item keeps the attachments it had.
+ */
+export type FindPdfOperation = {
+  id?: string;
+  type: "find_pdf";
+  itemId: number;
+};
+
+/** Edits an annotation's comment or color; the undo puts the old ones back. */
+export type UpdateAnnotationOperation = {
+  id?: string;
+  type: "update_annotation";
+  annotationId: number;
+  comment?: string;
+  color?: string;
+};
+
 export type ImportLocalFilesOperation = {
   id?: string;
   type: "import_local_files";
@@ -300,6 +366,7 @@ export type ImportIdentifiersOperation = {
 
 export type LibraryMutationOperation =
   | UpdateMetadataOperation
+  | ChangeItemTypeOperation
   | ApplyTagsOperation
   | RemoveTagsOperation
   | MoveToCollectionOperation
@@ -324,7 +391,11 @@ export type LibraryMutationOperation =
   | DeleteAttachmentOperation
   | RenameAttachmentOperation
   | RelinkAttachmentOperation
-  | ImportLocalFilesOperation;
+  | ImportLocalFilesOperation
+  | AttachFileOperation
+  | AttachUrlOperation
+  | FindPdfOperation
+  | UpdateAnnotationOperation;
 
 export type LibraryMutationInverse = {
   description: string;
@@ -351,6 +422,8 @@ export type LibraryMutationExecutionResult = {
  */
 export type NativeNoteWriteEvidence = {
   noteId: number;
+  /** An append to an existing note; absent for a created note. */
+  mode?: "append";
   /** The parent the note was created on; absent for a standalone note. */
   parentItemId?: number;
   /** Collections a standalone note was filed into, when it names any. */
@@ -388,12 +461,18 @@ export type MutationItemState = {
   dateModified?: string;
   fields?: Record<string, string>;
   creators?: EditableArticleMetadataSnapshot["creators"];
+  /** The item type name, captured for a type change. */
+  itemType?: string;
   tags?: string[];
   collectionIds?: number[];
   parentItemId?: number | null;
   deleted?: boolean;
   attachmentPath?: string;
   attachmentTitle?: string;
+  /** Zotero's link mode, captured for an attachment an attach created. */
+  attachmentLinkMode?: number;
+  /** The attachment's URL field, captured with its link mode. */
+  attachmentUrl?: string;
   childAttachmentIds?: number[];
   childNoteIds?: number[];
   noteHtml?: string;

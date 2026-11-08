@@ -24,6 +24,23 @@ describe("quoteRenderPlan", function () {
   const followingProse =
     "The problem is that chronic population imaging contradicts this premise.";
 
+  it("numbers occurrences under an id scope without changing unscoped ids", function () {
+    const markdown = `${duplicateAnchor}\n\n${followingProse}`;
+    const input = { markdown, quoteCitations: [duplicateCitation] };
+    const plain = buildQuoteRenderPlan(input);
+    const scoped = buildQuoteRenderPlan({
+      ...input,
+      occurrenceIdScope: "ab12cd34",
+    });
+    assert.equal(plain.occurrences[0].occurrenceId, "QO_0");
+    assert.include(plain.displayMarkdown, "[[quote-occurrence:QO_0]]");
+    assert.equal(scoped.occurrences[0].occurrenceId, "QO_ab12cd34.0");
+    assert.include(
+      scoped.displayMarkdown,
+      "[[quote-occurrence:QO_ab12cd34.0]]",
+    );
+  });
+
   it("renders a model-typed quote token whose id contains '.' or ':' as a card", function () {
     for (const id of ["x.y", "p:1", "Q1.a:2"]) {
       const citation = buildQuoteCitation({

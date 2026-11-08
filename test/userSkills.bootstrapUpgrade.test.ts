@@ -151,7 +151,11 @@ function installMockSkillEnvironment(
     debug: () => undefined,
   };
   globalScope.IOUtils = {
-    exists: async (path: string) => dirs.has(path) || path in files,
+    // As with IOUtils, a folder exists when a file lies under it.
+    exists: async (path: string) =>
+      dirs.has(path) ||
+      path in files ||
+      Object.keys(files).some((file) => file.startsWith(`${path}/`)),
     makeDirectory: async (path: string) => {
       dirs.add(path);
     },
@@ -345,11 +349,18 @@ describe("user skill bootstrap upgrades", function () {
     installMockSkillEnvironment(baseDir, {}, new Map<string, string>());
     const shipped = BUILTIN_SKILL_FILES["write-note.md"];
     // Simulate a user on an older shipped managed block who appended a
-    // customization section after MANAGED-END (the supported flow).
-    const oldManagedOnDisk = spliceManagedBlock(
-      shipped,
-      "\nOLD MANAGED CONTENT — previous shipped version.\n",
-    );
+    // customization section after MANAGED-END (the supported flow). The
+    // block must be one that shipped: a tracked block no release holds is
+    // the user's own text.
+    const oldBlock = extractManagedBlock(
+      readFileSync(
+        new URL("./fixtures/skillUpgrades/write-note-v18.md", import.meta.url),
+        "utf8",
+      ),
+    ).block as string;
+    assert.isString(oldBlock);
+    assert.notEqual(oldBlock, extractManagedBlock(shipped).block);
+    const oldManagedOnDisk = spliceManagedBlock(shipped, oldBlock);
     assert.isString(oldManagedOnDisk);
     const customization =
       "\n\n## Your customizations\n\nPath pattern: `{papertitle}/{papertitle}.md`\n";
@@ -373,7 +384,7 @@ describe("user skill bootstrap upgrades", function () {
     await initUserSkills();
 
     const canonicalWriteNote = files[writeNotePath];
-    assert.notInclude(canonicalWriteNote, "OLD MANAGED CONTENT");
+    assert.notInclude(canonicalWriteNote, oldBlock);
     assert.equal(
       extractManagedBlock(canonicalWriteNote).block,
       extractManagedBlock(shipped).block,
@@ -387,10 +398,8 @@ describe("user skill bootstrap upgrades", function () {
       parseSkill(canonicalWriteNote).version,
       parseSkill(shipped).version,
     );
-    assert.include(
-      canonicalWriteNote,
-      '`context_read` with `source: "conversation"`',
-    );
+    // The context_read source step lives in context_read's guidance (#541).
+    assert.notInclude(canonicalWriteNote, "`context_read`");
     assert.include(canonicalWriteNote, "narrowly scoped note");
     assert.include(canonicalWriteNote, "`sourceMessageId`");
     assert.include(canonicalWriteNote, "returned `documentId`");
@@ -400,10 +409,23 @@ describe("user skill bootstrap upgrades", function () {
     ["compare-papers", 7],
     ["compare-papers", 9],
     ["compare-papers", 10],
+    ["compare-papers", 11],
+    ["compare-papers", 12],
     ["evidence-based-qa", 8],
     ["evidence-based-qa", 12],
     ["literature-review", 11],
     ["literature-review", 12],
+    ["literature-review", 13],
+    ["literature-review", 14],
+    ["literature-review", 15],
+    ["literature-review", 16],
+    ["literature-review", 17],
+    ["literature-review", 18],
+    ["library-analysis", 5],
+    ["reorganize-library", 1],
+    ["reorganize-library", 2],
+    ["write-note", 18],
+    ["import-cited-reference", 6],
   ] as const) {
     for (const mode of ["tracked", "untracked-native", "customized"] as const) {
       it(`preserves upgrade ownership for ${name} (${mode})`, async function () {
@@ -418,8 +440,11 @@ describe("user skill bootstrap upgrades", function () {
         const files: Record<string, string> = {};
         const prefs = new Map<string, string>();
         installMockSkillEnvironment(baseDir, files, prefs);
-        const filePath = getCanonicalSkillFilePath(name);
-        const native = raw.replace("---\n", `---\nname: ${name}\n`);
+        // The canonical path follows the skill id, which can differ from the
+        // shipped filename (import-cited-reference.md ships import-to-library).
+        const skillId = parseSkill(BUILTIN_SKILL_FILES[`${name}.md`]).id;
+        const filePath = getCanonicalSkillFilePath(skillId);
+        const native = raw.replace("---\n", `---\nname: ${skillId}\n`);
         files[filePath] =
           mode === "customized"
             ? native + "\nKeep my private research workflow.\n"
@@ -437,11 +462,19 @@ describe("user skill bootstrap upgrades", function () {
         }
         const before = parseSkill(files[filePath]).instruction;
         await initUserSkills();
+        const shippedSkill = BUILTIN_SKILL_FILES[`${name}.md`];
+        if (mode === "customized" && extractManagedBlock(raw).block) {
+          // A managed skill refreshes its block and keeps what follows it.
+          assert.equal(
+            extractManagedBlock(files[filePath]).block,
+            extractManagedBlock(shippedSkill).block,
+          );
+          assert.include(files[filePath], "Keep my private research workflow.");
+          return;
+        }
         assert.equal(
           parseSkill(files[filePath]).instruction,
-          mode === "customized"
-            ? before
-            : parseSkill(BUILTIN_SKILL_FILES[`${name}.md`]).instruction,
+          mode === "customized" ? before : parseSkill(shippedSkill).instruction,
         );
       });
     }
@@ -473,7 +506,10 @@ describe("user skill bootstrap upgrades", function () {
       parseSkill(upgraded).version,
       parseSkill(BUILTIN_SKILL_FILES["write-note.md"]).version,
     );
-    assert.include(upgraded, '`context_read` with `source: "conversation"`');
+    assert.equal(
+      parseSkill(upgraded).instruction,
+      parseSkill(BUILTIN_SKILL_FILES["write-note.md"]).instruction,
+    );
     assert.notInclude(upgraded, "conversation_read");
   });
 
@@ -605,18 +641,32 @@ describe("user skill bootstrap upgrades", function () {
     "evidence-based-qa-v9",
     "evidence-based-qa-v10",
     "evidence-based-qa-v12",
+    "compare-papers-v6",
     "compare-papers-v7",
     "compare-papers-v9",
     "compare-papers-v10",
+    "compare-papers-v11",
+    "compare-papers-v12",
     "write-note-v16",
+    "write-note-v18",
     "analyze-figures-v9",
     "analyze-figures-v10",
     "import-cited-reference-v3",
     "import-cited-reference-v4",
+    "import-cited-reference-v6",
     "literature-review-v10",
     "literature-review-v11",
     "literature-review-v12",
+    "literature-review-v13",
+    "literature-review-v14",
+    "literature-review-v15",
+    "literature-review-v16",
+    "literature-review-v17",
+    "literature-review-v18",
     "library-analysis-v4",
+    "library-analysis-v5",
+    "reorganize-library-v1",
+    "reorganize-library-v2",
     // The simplified texts main shipped at the same version numbers
     // (ad2c0fec) before the tool consolidation merged.
     "simplified/analyze-figures-v10",

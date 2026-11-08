@@ -1,8 +1,13 @@
 import type { PaperContextRef } from "../../shared/types";
 import type { AgentToolContext } from "../types";
 import type { EditableArticleMetadataPatch } from "./zoteroGateway";
+import type {
+  OutsidePaperCslEnrichment,
+  OutsidePaperCslType,
+} from "../documents/types";
 import type { ZoteroGateway } from "./zoteroGateway";
 import { appLogger } from "../../core/logging";
+import { decodeEntities } from "./literatureReadParser";
 
 type SearchMode =
   | "recommendations"
@@ -36,6 +41,12 @@ type OnlinePaperResult = {
   citationCount?: number;
   openAccessUrl?: string;
   sourceUrl?: string;
+  /** Identifiers literature_read accepts. */
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
+  /** Europe PMC's open-access flag: full text is readable. */
+  openAccess?: true;
 };
 
 type ExternalMetadataResult = {
@@ -107,7 +118,7 @@ interface XmlDomParser {
 }
 
 const OA_SELECT =
-  "id,doi,display_name,authorships,publication_year,abstract_inverted_index,cited_by_count,open_access";
+  "id,doi,display_name,authorships,publication_year,abstract_inverted_index,cited_by_count,open_access,ids";
 const OA_MAILTO = "mailto=llm-for-zotero@github.com";
 const OA_BASE = "https://api.openalex.org";
 const USER_AGENT =
@@ -124,6 +135,56 @@ function stripHtmlTags(value: string): string {
     .trim();
 }
 
+const PROVIDER_BY_HOST: Record<string, string> = {
+  "api.openalex.org": "OpenAlex",
+  "api.crossref.org": "CrossRef",
+  "api.semanticscholar.org": "Semantic Scholar",
+};
+
+function providerOf(url: string): string {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return PROVIDER_BY_HOST[host] || host;
+  } catch {
+    return "provider";
+  }
+}
+
+/**
+ * A literature provider's failed HTTP request. A rate limit is its own
+ * kind, so no caller can mistake it for an empty result.
+ */
+export class LiteratureProviderHttpError extends Error {
+  constructor(
+    readonly kind: "rate_limit" | "http",
+    readonly status: number,
+    /** The provider's name (OpenAlex, CrossRef, Semantic Scholar) or host. */
+    readonly provider: string,
+  ) {
+    super(
+      kind === "rate_limit"
+        ? `${provider} rate limit (HTTP ${status})`
+        : `HTTP ${status}`,
+    );
+    this.name = "LiteratureProviderHttpError";
+  }
+}
+
+/** Whether a literature_search failure is an OpenAlex rate limit. */
+export function isOpenAlexRateLimit(error: unknown): boolean {
+  return (
+    error instanceof LiteratureProviderHttpError &&
+    error.kind === "rate_limit" &&
+    error.provider === "OpenAlex"
+  );
+}
+
+function isRateLimit(error: unknown): boolean {
+  return (
+    error instanceof LiteratureProviderHttpError && error.kind === "rate_limit"
+  );
+}
+
 async function fetchJson(
   url: string,
   headers?: Record<string, string>,
@@ -138,7 +199,18 @@ async function fetchJson(
     },
   });
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    if (response.status === 429) {
+      throw new LiteratureProviderHttpError(
+        "rate_limit",
+        response.status,
+        providerOf(url),
+      );
+    }
+    throw new LiteratureProviderHttpError(
+      "http",
+      response.status,
+      providerOf(url),
+    );
   }
   return response.json();
 }
@@ -252,6 +324,9 @@ function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
     | undefined;
   const openAccessUrl = normalizeString(openAccess?.oa_url) || undefined;
   const openAlexId = normalizeString(work.id) || undefined;
+  const pmid = normalizeString(
+    (work.ids as Record<string, unknown> | undefined)?.pmid,
+  ).replace(/^.*\//, "");
 
   return {
     title,
@@ -262,6 +337,7 @@ function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
     citationCount,
     openAccessUrl,
     sourceUrl: openAlexId,
+    ...(/^\d+$/.test(pmid) ? { pmid } : {}),
   };
 }
 
@@ -280,6 +356,8 @@ async function resolveOpenAlexWork(
     )) as Record<string, unknown>;
     return raw ?? null;
   } catch (err) {
+    // A rate limit is not "the paper is not on OpenAlex".
+    if (isRateLimit(err)) throw err;
     appLogger.warn("LLM: OpenAlex DOI fetch failed", err);
     return null;
   }
@@ -444,6 +522,9 @@ async function fetchArxivSearch(
       }
     }
     const doi = entry.querySelector("doi")?.textContent?.trim() || undefined;
+    const arxivId = sourceUrl
+      ?.match(/arxiv\.org\/abs\/(.+?)(?:v\d+)?$/i)?.[1]
+      ?.trim();
     results.push({
       title,
       authors,
@@ -452,6 +533,7 @@ async function fetchArxivSearch(
       doi,
       sourceUrl,
       openAccessUrl: pdfLink || sourceUrl,
+      ...(arxivId ? { arxivId } : {}),
     });
   }
 
@@ -534,6 +616,8 @@ async function fetchEuropePmcSearch(
         )?.fullTextUrl ?? [];
       const openAccessUrl =
         urlList[0]?.url || (doi ? `https://doi.org/${doi}` : undefined);
+      const pmid = typeof item.pmid === "string" ? item.pmid.trim() : "";
+      const pmcid = typeof item.pmcid === "string" ? item.pmcid.trim() : "";
       return {
         title,
         authors,
@@ -543,6 +627,9 @@ async function fetchEuropePmcSearch(
         citationCount,
         sourceUrl,
         openAccessUrl,
+        ...(pmid ? { pmid } : {}),
+        ...(pmcid ? { pmcid } : {}),
+        ...(item.isOpenAccess === "Y" ? { openAccess: true as const } : {}),
       };
     })
     .filter((paper): paper is OnlinePaperResult => Boolean(paper));
@@ -655,6 +742,98 @@ async function lookupCrossRefByDoi(
     };
   } catch (err) {
     appLogger.warn("LLM: CrossRef metadata fetch failed", err);
+    return null;
+  }
+}
+
+/** Crossref work types with a clean CSL equivalent; others keep the default. */
+const CROSSREF_CSL_TYPES: Record<string, OutsidePaperCslType> = {
+  "journal-article": "article-journal",
+  "posted-content": "article",
+  "proceedings-article": "paper-conference",
+  "book-chapter": "chapter",
+  book: "book",
+};
+
+/**
+ * A Crossref string as plain text: entities ("&amp;", "&lt;i&gt;") decoded
+ * first, then tags stripped, so an escaped tag does not survive as text.
+ */
+function crossRefText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value;
+  const normalized =
+    typeof text === "string" || typeof text === "number"
+      ? stripHtmlTags(decodeEntities(String(text))).trim()
+      : "";
+  return normalized || undefined;
+}
+
+/**
+ * A DOI's citation fields from Crossref, as CSL: venue, volume, issue,
+ * pages, date, authors and type (when it maps cleanly). Null when Crossref
+ * does not know the DOI or the request fails. Separate from
+ * lookupCrossRefByDoi, whose metadata patch literature_search returns.
+ */
+async function lookupCrossRefCitationByDoi(
+  doi: string,
+): Promise<OutsidePaperCslEnrichment | null> {
+  try {
+    const data = (await fetchJson(
+      `https://api.crossref.org/works/${encodeURIComponent(doi)}`,
+    )) as { message?: Record<string, unknown> };
+    const message = data?.message;
+    if (!message) return null;
+    const containerTitle = crossRefText(message["container-title"]);
+    const volume = crossRefText(message.volume);
+    const issue = crossRefText(message.issue);
+    const page = crossRefText(message.page);
+    const date = (message.issued ||
+      message["published-print"] ||
+      message["published-online"] ||
+      message.published) as { "date-parts"?: unknown } | undefined;
+    const dateParts = Array.isArray(date?.["date-parts"])
+      ? (date["date-parts"] as unknown[])[0]
+      : undefined;
+    const issuedParts = Array.isArray(dateParts)
+      ? dateParts.filter(
+          (part): part is number =>
+            typeof part === "number" && Number.isFinite(part),
+        )
+      : [];
+    const author = (Array.isArray(message.author) ? message.author : [])
+      .map((entry) => {
+        const name = (entry || {}) as Record<string, unknown>;
+        const family = crossRefText(name.family);
+        const given = crossRefText(name.given);
+        const suffix = crossRefText(name.suffix);
+        const literal = crossRefText(name.name);
+        if (family)
+          return {
+            family,
+            ...(given ? { given } : {}),
+            ...(suffix ? { suffix } : {}),
+          };
+        return literal ? { literal } : null;
+      })
+      .filter((name): name is NonNullable<typeof name> => Boolean(name));
+    const type =
+      typeof message.type === "string"
+        ? CROSSREF_CSL_TYPES[message.type]
+        : undefined;
+    const enrichment: OutsidePaperCslEnrichment = {
+      ...(type ? { type } : {}),
+      ...(author.length ? { author } : {}),
+      ...(issuedParts.length
+        ? { issued: { "date-parts": [issuedParts] } }
+        : {}),
+      ...(containerTitle ? { "container-title": containerTitle } : {}),
+      ...(volume ? { volume } : {}),
+      ...(issue ? { issue } : {}),
+      ...(page ? { page } : {}),
+    };
+    return Object.keys(enrichment).length ? enrichment : null;
+  } catch (err) {
+    appLogger.warn("LLM: CrossRef citation metadata fetch failed", err);
     return null;
   }
 }
@@ -858,6 +1037,17 @@ export class LiteratureSearchService {
       title = snapshot.title.trim();
     }
     return { doi, title, arxivId };
+  }
+
+  /**
+   * What a citation of the paper with this DOI can add to a search row, as
+   * CSL fields: see lookupCrossRefCitationByDoi. Crossref only, so a
+   * citation lookup never writes to the library.
+   */
+  async lookupCitationMetadataByDoi(
+    doi: string,
+  ): Promise<OutsidePaperCslEnrichment | null> {
+    return lookupCrossRefCitationByDoi(doi);
   }
 
   async execute(
@@ -1130,12 +1320,12 @@ export class LiteratureSearchService {
           query: query || `author:${author}`,
         };
       } catch (error) {
-        return {
-          results: [],
-          source: "OpenAlex",
-          query: query || `author:${author}`,
-          message: `OpenAlex search failed: ${error instanceof Error ? error.message : String(error)}`,
-        };
+        // A failed search is an error, not "no results": a rate limit
+        // keeps its type for the tool's latch.
+        if (isRateLimit(error)) throw error;
+        throw new Error(
+          `OpenAlex search failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 

@@ -5,6 +5,7 @@ export type SlashActionChatMode = "paper" | "library";
 export type SlashBaseMenuItem =
   | "upload"
   | "reference"
+  | "pastConversation"
   | "pdfPage"
   | "pdfMultiplePages";
 
@@ -18,8 +19,14 @@ export function getBaseSlashMenuItems(
   mode: SlashActionChatMode,
 ): SlashBaseMenuItem[] {
   return mode === "library"
-    ? ["upload", "reference"]
-    : ["upload", "reference", "pdfPage", "pdfMultiplePages"];
+    ? ["upload", "reference", "pastConversation"]
+    : [
+        "upload",
+        "reference",
+        "pastConversation",
+        "pdfPage",
+        "pdfMultiplePages",
+      ];
 }
 
 export function shouldRenderDynamicSlashMenu(params: {

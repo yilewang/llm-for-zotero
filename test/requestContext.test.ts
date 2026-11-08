@@ -53,6 +53,13 @@ const visibleAttachments = [{ id: "a1", category: "image" }] as any[];
 const modelAttachments = [{ id: "m1", category: "text" }] as any[];
 const localDocuments = [{ kind: "pdf", path: "/tmp/c.pdf" }] as any[];
 const images = ["data:image/png;base64,AAA"];
+const pastChat = {
+  system: "upstream" as const,
+  conversationKey: 41,
+  conversationID: "conv-41",
+  title: "Earlier chat",
+  libraryID: 1,
+};
 const effectiveRequestConfig = {
   model: "gpt-5",
   apiBase: "",
@@ -71,6 +78,7 @@ function sendSite(overrides: Record<string, unknown> = {}) {
       timestamp: 1234,
       citationPaperContexts: [citationPaper],
       pinnedPaperContexts: [pinnedPaper],
+      attachedConversations: [pastChat],
     },
     item,
     shownQuestion: "Shown question",
@@ -113,6 +121,7 @@ function retrySite(overrides: Record<string, unknown> = {}) {
         citationPaperContexts: [citationPaper],
         forcedSkillIds: ["skill-stored"],
         pinnedPaperContexts: [pinnedPaper],
+        attachedConversations: [pastChat],
       },
     },
     item,
@@ -156,6 +165,7 @@ describe("request context: Codex send site (golden)", function () {
       citationPaperContexts: [citationPaper],
       selectedCollectionContexts: collections,
       selectedTagContexts: [],
+      attachedConversations: [pastChat],
       attachments: modelAttachments,
       localDocuments,
       screenshots: images,
@@ -269,6 +279,7 @@ describe("request context: Codex retry site (golden)", function () {
       citationPaperContexts: [citationPaper],
       selectedCollectionContexts: [],
       selectedTagContexts: tags,
+      attachedConversations: [pastChat],
       attachments: visibleAttachments,
       localDocuments: undefined,
       screenshots: images,

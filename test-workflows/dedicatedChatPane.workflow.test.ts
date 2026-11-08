@@ -133,6 +133,23 @@ describe("workflow: dedicated native chat pane", function () {
     const gap = firstRow.getBoundingClientRect().top - panelTop;
     assert.isAtLeast(gap, 0, `first row starts inside the panel (${layout})`);
     assert.isAtMost(gap, 12, `first row leads the header (${layout})`);
+    // The trailing actions keep the leading icons' step, with no overlap.
+    const lefts = (selector: string) =>
+      (Array.from(section.querySelectorAll(selector)) as HTMLElement[])
+        .map((node) => node.getBoundingClientRect())
+        .filter((rect) => rect.width > 0)
+        .map((rect) => rect.left);
+    const leading = lefts(".llm-history-bar > button");
+    const trailing = lefts(".llm-header-actions > .llm-btn-icon");
+    assert.isAtLeast(trailing.length, 2, `trailing actions show (${layout})`);
+    const step = leading[1] - leading[0];
+    for (let index = 1; index < trailing.length; index++)
+      assert.closeTo(
+        trailing[index] - trailing[index - 1],
+        step,
+        0.5,
+        `trailing action ${index} keeps the leading step (${layout})`,
+      );
   }
 
   /**

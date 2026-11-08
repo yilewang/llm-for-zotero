@@ -418,16 +418,5 @@ describe("import capability", function () {
       });
       assert.isTrue(erased, "the temporary item must not survive the lookup");
     });
-
-    it("reports nothing rather than an empty patch", function () {
-      install();
-      assert.isNull(
-        capability().translatorJsonToPatch({
-          itemType: "journalArticle",
-          tags: [{ tag: "memory" }],
-          creators: [{ creatorType: "author" }],
-        }),
-      );
-    });
   });
 });

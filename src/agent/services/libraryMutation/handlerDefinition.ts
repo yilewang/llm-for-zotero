@@ -78,6 +78,19 @@ export type LibraryMutationHandler<Type extends LibraryMutationOperationType> =
       after: MutationStateView,
     ) => MutationTargetJudgment;
     /**
+     * Why a call that changed nothing changed nothing, when that outcome is
+     * an answer rather than work already done (a search that found nothing),
+     * and the states captured before and after the call prove that nothing
+     * changed. Undefined for every other outcome. Its receipt is `observed`:
+     * verified, with the reason, and its targets not counted as done.
+     */
+    noChangeOutcome: (
+      operation: LibraryMutationOperationOf<Type>,
+      result: unknown,
+      before: MutationStateView,
+      after: MutationStateView,
+    ) => string | undefined;
+    /**
      * The part of the operation a call the user stopped between its items
      * had reached, read from the call's result payload; undefined for a call
      * that ran to its end. Only an operation that stops between items has
@@ -139,6 +152,7 @@ type HandlerOptions<Type extends LibraryMutationOperationType> = Pick<
       | "deferredInverse"
       | "planInverse"
       | "judgeTargets"
+      | "noChangeOutcome"
       | "reached"
       | "execute"
       | "replay"
@@ -173,6 +187,7 @@ export function defineHandler<Type extends LibraryMutationOperationType>(
     planInverse: options.planInverse || (() => ({})),
     postconditionSatisfied: options.postconditionSatisfied,
     ...(options.judgeTargets ? { judgeTargets: options.judgeTargets } : {}),
+    noChangeOutcome: options.noChangeOutcome || (() => undefined),
     reached: options.reached || (() => undefined),
     execute:
       options.execute ||

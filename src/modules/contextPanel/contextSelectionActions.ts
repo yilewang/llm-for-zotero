@@ -285,6 +285,7 @@ export function hasUserAddedContextForItem(params: {
     composeContextStore.otherRefs.list(itemId).length > 0 ||
     composeContextStore.collections.list(itemId).length > 0 ||
     composeContextStore.tags.list(itemId).length > 0 ||
+    composeContextStore.attachedConversations.list(itemId).length > 0 ||
     composeContextStore.images.list(itemId).length > 0 ||
     composeContextStore.files.list(itemId).length > 0 ||
     (textContextKey
@@ -313,6 +314,7 @@ export function clearUserAddedContextForItem(params: {
   composeContextStore.otherRefs.delete(itemId);
   composeContextStore.collections.delete(itemId);
   composeContextStore.tags.delete(itemId);
+  composeContextStore.attachedConversations.delete(itemId);
   composeContextStore.images.delete(itemId);
   composeContextStore.imagePreviewExpanded.delete(itemId);
   composeContextStore.imagePreviewActiveIndex.delete(itemId);

@@ -10,6 +10,7 @@ import {
   unregisterContextPanel,
   activeContextPanelRawItems,
   activeGlobalConversationByLibrary,
+  clearSelectedReasoningForSurface,
   selectedRuntimeModeCache,
 } from "./state";
 import {
@@ -33,22 +34,54 @@ import {
   getClaudeCodeModeEnabled,
   getLastUsedUpstreamGlobalConversationKey,
   getStandaloneSidebarWidthPref,
+  getStandalonePinnedPapersPref,
+  getStandaloneSidebarCollapsedGroupsPref,
+  getStandaloneSidebarGroupOrderPref,
+  getStandaloneSidebarSectionOptionsPref,
+  getStandaloneSidebarPinnedCollapsedPref,
   getLockedGlobalConversationKey,
   setLockedGlobalConversationKey,
   setStandaloneSidebarWidthPref,
+  setStandalonePinnedPapersPref,
+  setStandaloneSidebarCollapsedGroupsPref,
+  setStandaloneSidebarGroupOrderPref,
+  setStandaloneSidebarSectionOptionsPref,
+  setStandaloneSidebarPinnedCollapsedPref,
 } from "./prefHelpers";
 import {
   clearStandaloneSelection,
+  clearTornSelection,
+  isTornSurface,
   recall,
   recallMode,
   remember,
   rememberMode,
+  type WindowSurface,
 } from "./conversationSelection";
 import {
+  clearTornSurfaceChoices,
   startStandaloneSurfaceChoicesFromSidebar,
+  startTornSurfaceChoices,
   demoteConversationSystemOnEverySurface,
   surfaceChoices,
 } from "./surfaceChoices";
+import {
+  allocateTornSurface,
+  findTornWindowForConversation,
+  registerTornChatWindow,
+  setTornWindowConversation,
+  type TornChatIdentity,
+} from "./tornChatWindows";
+import {
+  TEAR_OFF_MIME,
+  classifyTearOffDragEnd,
+  decodeTornChatIdentity,
+  encodeTornChatIdentity,
+  isUsableDragPoint,
+  tearOffDropPoint,
+  type ScreenPoint,
+  type ScreenRect,
+} from "./tearOffDrag";
 import { mountPanelShell } from "./panelMount";
 import {
   createHistoryActivityIndicator,
@@ -74,6 +107,7 @@ import {
   bindStandalonePanelHost,
   clearPanelHostBinding,
 } from "./panelHostOwnership";
+import { getPanelHandle } from "./panelHandle";
 import type { ConversationSystem } from "../../shared/types";
 import type { ChatRuntimeMode } from "./types";
 import {
@@ -86,14 +120,22 @@ import {
 } from "../../utils/attachmentRefStore";
 import {
   chatHistory,
+  isAnyRequestPending,
   isRequestPending,
   loadedConversationKeys,
+  subscribeRequestActivity,
   webChatIsolatedConversationKeys,
+  webChatSessionConversationKeys,
 } from "./state";
 import { loadAllConversationHistory } from "./historyLoader";
 import {
+  isUnifiedHistoryRowListed,
+  listUnifiedHistoryEntries,
+  resolveUnifiedHistorySystems,
+} from "./unifiedHistorySource";
+import {
   formatGlobalHistoryTimestamp,
-  groupHistoryEntriesByDay,
+  getHistoryRowRuntimeLabel,
   isOrphanHistoryEntry,
   maybeSelectPaperHistoryTarget,
   normalizeConversationTitleSeed,
@@ -114,6 +156,7 @@ import { createHistorySearchPopupController } from "./setupHandlers/controllers/
 import { primeHistoryNavigationMode } from "./historyNavigationModeSync";
 import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import { resolveFreshConversationDraft } from "./freshConversationDraft";
+import { decidePanelIdentityAdoption } from "./standaloneConversationSwitch";
 import { collapseDuplicateReusableConversationDrafts } from "./standaloneConversationResolution";
 import {
   createRuntimeSystemControls,
@@ -147,10 +190,11 @@ import {
   type ConversationRenameIdentity,
 } from "./conversationRenameEligibility";
 import {
-  installStandaloneSidebarResizeBehavior,
+  installStandaloneColumnResizeBehavior,
   installStandaloneVerticalResizeBehavior,
   scheduleStandaloneWindowFitForElement,
   STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
+  STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
 } from "./standaloneWindowSizing";
 import {
   createClaudeGlobalPortalItem,
@@ -193,12 +237,46 @@ import { setStatus } from "./textUtils";
 import { getRegisteredConversationScope } from "../../shared/conversationRegistry";
 import {
   createStandaloneSidebarView,
+  setStandaloneFollowerChromeHost,
   setStandaloneSidebarCollapsedChromeHost,
   setStandaloneSidebarFlyoutOpen,
   setStandaloneSidebarState,
 } from "./standaloneSidebarView";
 import { installStandaloneSidebarFlyout } from "./standaloneSidebarFlyout";
+import {
+  formatStandaloneSidebarShortDate,
+  getStandaloneSidebarEntryTime,
+  getStandaloneSidebarGroupLabel,
+  getStandaloneSidebarSectionOptions,
+  groupStandaloneSidebarEntries,
+  moveStandaloneSidebarGroup,
+  sortStandaloneSidebarEntries,
+  type StandaloneSidebarGroupKey,
+  type StandaloneSidebarSortOrder,
+} from "./standaloneSidebarSort";
+import { installStandaloneSidebarGroupDrag } from "./standaloneSidebarGroupDrag";
 import { releaseInlineEdit } from "./inlineEditState";
+import { pluginStylesheetHref } from "../../utils/pluginReload";
+import { createPluginUpdateController } from "../pluginUpdate";
+import { getPluginUpdateDeps } from "../pluginUpdateAdapters";
+import { createStandaloneUpdateControl } from "./standaloneUpdateControl";
+import { registerSidePanelItemHost } from "./sidePanelItems";
+import { resolveSidePanelWorkspacePaperID } from "./standaloneSidePanelState";
+import {
+  resolvePinnedPaperDot,
+  togglePinnedPaper,
+  updateReadyPinnedPapers,
+} from "./standalonePinnedPapers";
+import {
+  createZoteroNavigationHost,
+  navigateToLibraryObject,
+} from "./agentTrace/actionCardNavigation";
+import { formatPaperCreatorYearLabel } from "./setupHandlers/controllers/composeContextController";
+import { resolvePaperContextRefFromItem } from "../../services/paperContent/paperAttribution";
+import {
+  createStandaloneSidePanel,
+  type StandaloneSidePanelController,
+} from "./standaloneSidePanel";
 
 type StandaloneSessionState = {
   pending: boolean;
@@ -217,36 +295,303 @@ const STANDALONE_SIDEBAR_AUTO_COLLAPSE_THRESHOLD_PX =
 const STANDALONE_SIDEBAR_AUTO_EXPAND_THRESHOLD_PX = 600;
 const STANDALONE_WINDOW_FEATURES =
   "chrome,extrachrome,menubar,resizable,scrollbars,status,centerscreen,dialog=no,dependent=no";
+// A torn-off window (a follower) holds one chat and has no conversation
+// list, so it opens narrow, and keeps a minimum of its own below the
+// standalone window's.
+const TORN_WINDOW_WIDTH_PX = 420;
+const TORN_WINDOW_HEIGHT_PX = 760;
+const TORN_WINDOW_MIN_WIDTH_PX = 360;
+// Where the pointer holds the tear-off drag image, from its top-left corner.
+const TEAR_OFF_DRAG_IMAGE_GRAB_PX = 14;
+const TORN_WINDOW_MIN_HEIGHT_PX = 480;
 
-// The standalone window remembers its library chat in its own selection slot
-// only. The sidebar panels keep theirs, and the persisted pointers stay the
-// sidebar's (see conversationSelection.ts).
+function buildTornWindowFeatures(placement?: {
+  screenX: number;
+  screenY: number;
+}): string {
+  const features = STANDALONE_WINDOW_FEATURES.split(",").filter(
+    (feature) => feature !== "centerscreen",
+  );
+  features.push(
+    `width=${TORN_WINDOW_WIDTH_PX}`,
+    `height=${TORN_WINDOW_HEIGHT_PX}`,
+  );
+  if (
+    placement &&
+    Number.isFinite(placement.screenX) &&
+    Number.isFinite(placement.screenY)
+  ) {
+    features.push(
+      `screenX=${Math.round(placement.screenX)}`,
+      `screenY=${Math.round(placement.screenY)}`,
+    );
+  }
+  return features.join(",");
+}
+
+function isFiniteRect(rect: ScreenRect): boolean {
+  return (
+    Number.isFinite(rect.left) &&
+    Number.isFinite(rect.top) &&
+    Number.isFinite(rect.width) &&
+    Number.isFinite(rect.height) &&
+    rect.width > 0 &&
+    rect.height > 0
+  );
+}
+
+/**
+ * The available area of the screen at (x, y); the source window's screen
+ * when the screen manager is missing or fails.
+ */
+function readDropScreen(x: number, y: number, sourceWin: Window): ScreenRect {
+  try {
+    const screen = (globalThis as any).Services?.screenManager?.screenForRect?.(
+      x,
+      y,
+      1,
+      1,
+    );
+    if (screen) {
+      const left = { value: 0 };
+      const top = { value: 0 };
+      const width = { value: 0 };
+      const height = { value: 0 };
+      screen.GetAvailRectDisplayPix(left, top, width, height);
+      const rect = {
+        left: Number(left.value),
+        top: Number(top.value),
+        width: Number(width.value),
+        height: Number(height.value),
+      };
+      if (isFiniteRect(rect)) return rect;
+    }
+  } catch {
+    // Fall back to the source window's screen.
+  }
+  try {
+    const screen = sourceWin.screen as Screen & {
+      availLeft?: number;
+      availTop?: number;
+    };
+    const rect = {
+      left: Number(screen.availLeft || 0),
+      top: Number(screen.availTop || 0),
+      width: Number(screen.availWidth),
+      height: Number(screen.availHeight),
+    };
+    if (isFiniteRect(rect)) return rect;
+  } catch {
+    // Use the window's own size below.
+  }
+  return {
+    left: 0,
+    top: 0,
+    width: TORN_WINDOW_WIDTH_PX,
+    height: TORN_WINDOW_HEIGHT_PX,
+  };
+}
+
+/**
+ * The paper's short name: "Creator, Year", as the composer's paper chip
+ * shows it, or its title when it has no creator.
+ */
+function resolvePaperShortLabel(paper: Zotero.Item): string {
+  const ref = resolvePaperContextRefFromItem(paper);
+  const label = ref ? formatPaperCreatorYearLabel(ref) : "";
+  if (label && label !== "Paper") return label;
+  try {
+    return String(paper.getField("title") || "").trim() || t("Paper");
+  } catch {
+    return t("Paper");
+  }
+}
+
+/**
+ * A follower window's title for the chat it holds: the chat's own title from
+ * its catalog entry, in a paper chat and a library chat alike ("Paper chat"
+ * or "Library chat" while it has none).
+ */
+export async function getFollowerTitle(
+  identity: TornChatIdentity,
+): Promise<string> {
+  const fallback =
+    identity.kind === "paper" ? t("Paper chat") : t("Library chat");
+  try {
+    const entry = await conversationRepository.getCatalogEntry({
+      system: identity.system,
+      conversationKey: identity.conversationKey,
+      kind: identity.kind === "paper" ? "paper" : "global",
+    });
+    return normalizeHistoryTitle(entry?.title || "") || fallback;
+  } catch (err) {
+    appLogger.warn("LLM: follower title lookup failed", err);
+    return fallback;
+  }
+}
+
+const UNLINKED_CARD_ID = "llmforzotero-unlinked-card";
+const UNLINKED_CARD_SHOW_DELAY_MS = 250;
+const UNLINKED_CARD_HIDE_GRACE_MS = 150;
+
+/**
+ * A follower's unlinked icon explains itself in a small hover card: it opens
+ * after a short hover or on keyboard focus, sits under the icon inside the
+ * window, and closes on leave (with a grace so the pointer can reach the
+ * card), blur, Escape or when the window loses focus. One card per window.
+ */
+function bindUnlinkedHoverCard(
+  doc: Document,
+  root: HTMLElement,
+  icon: HTMLElement,
+): void {
+  const win = doc.defaultView;
+  if (!win) return;
+  const card = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+  card.id = UNLINKED_CARD_ID;
+  card.className = "llm-unlinked-card";
+  card.setAttribute("role", "tooltip");
+  card.hidden = true;
+  const heading = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+  heading.className = "llm-unlinked-card-title";
+  heading.textContent = t("Not linked to the PDF reader");
+  const body = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+  body.className = "llm-unlinked-card-body";
+  body.textContent = t(
+    "This chat keeps its own context. Switching PDF tabs in Zotero does not change it.",
+  );
+  card.append(heading, body);
+  root.append(card);
+
+  let showTimer: number | undefined;
+  let hideTimer: number | undefined;
+  const clearTimers = () => {
+    if (showTimer !== undefined) win.clearTimeout(showTimer);
+    if (hideTimer !== undefined) win.clearTimeout(hideTimer);
+    showTimer = hideTimer = undefined;
+  };
+  const hide = () => {
+    clearTimers();
+    card.hidden = true;
+  };
+  const show = () => {
+    clearTimers();
+    card.hidden = false;
+    const margin = 8;
+    const iconRect = icon.getBoundingClientRect();
+    const width = card.offsetWidth;
+    const left = Math.max(
+      margin,
+      Math.min(iconRect.left, win.innerWidth - width - margin),
+    );
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(iconRect.bottom + 6)}px`;
+  };
+  const scheduleShow = (delay: number) => {
+    if (hideTimer !== undefined) win.clearTimeout(hideTimer);
+    hideTimer = undefined;
+    if (!card.hidden || showTimer !== undefined) return;
+    showTimer = win.setTimeout(show, delay);
+  };
+  const scheduleHide = () => {
+    if (showTimer !== undefined) win.clearTimeout(showTimer);
+    showTimer = undefined;
+    if (card.hidden || hideTimer !== undefined) return;
+    hideTimer = win.setTimeout(hide, UNLINKED_CARD_HIDE_GRACE_MS);
+  };
+  const keepOpen = () => {
+    if (hideTimer !== undefined) win.clearTimeout(hideTimer);
+    hideTimer = undefined;
+  };
+
+  icon.addEventListener("mouseenter", () =>
+    scheduleShow(UNLINKED_CARD_SHOW_DELAY_MS),
+  );
+  icon.addEventListener("mouseleave", scheduleHide);
+  card.addEventListener("mouseenter", keepOpen);
+  card.addEventListener("mouseleave", scheduleHide);
+  icon.addEventListener("focus", show);
+  icon.addEventListener("blur", hide);
+  doc.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.key === "Escape" && !card.hidden) hide();
+  });
+  win.addEventListener("blur", hide);
+}
+
+/**
+ * A follower's kind line: "Paper chat · <short label>" with the paper's full
+ * title as its tooltip, or "Library chat · <library name>".
+ */
+export function getFollowerKindLine(
+  identity: Pick<TornChatIdentity, "kind" | "libraryID" | "paperItemID">,
+): { kind: "paper" | "library"; text: string; tooltip: string } {
+  if (identity.kind === "paper") {
+    const paper = Zotero.Items.get(
+      Math.floor(Number(identity.paperItemID || 0)),
+    ) as Zotero.Item | false;
+    if (paper) {
+      let fullTitle = "";
+      try {
+        fullTitle = String(paper.getField("title") || "");
+      } catch {
+        fullTitle = "";
+      }
+      return {
+        kind: "paper",
+        text: `${t("Paper chat")} \u00B7 ${resolvePaperShortLabel(paper)}`,
+        tooltip: fullTitle,
+      };
+    }
+    return { kind: "paper", text: t("Paper chat"), tooltip: "" };
+  }
+  let libraryName = "";
+  try {
+    libraryName = String(Zotero.Libraries.getName(identity.libraryID) || "");
+  } catch {
+    libraryName = "";
+  }
+  return {
+    kind: "library",
+    text: libraryName
+      ? `${t("Library chat")} \u00B7 ${libraryName}`
+      : t("Library chat"),
+    tooltip: "",
+  };
+}
+
+// A chat window remembers its library chat in its own selection slot only
+// (the standalone window's, or a torn-off window's). The sidebar panels keep
+// theirs, and the persisted pointers stay the sidebar's (see
+// conversationSelection.ts).
 function rememberStandaloneGlobalConversation(
   system: ConversationSystem,
   libraryID: number,
   conversationKey: number,
+  surface: WindowSurface,
 ): void {
-  remember(
-    { system, libraryID, kind: "global", surface: "standalone" },
-    conversationKey,
-  );
+  remember({ system, libraryID, kind: "global", surface }, conversationKey);
 }
 
-// The standalone window remembers its paper chat in its own selection slot
-// only; the sidebar's remembered chat for the paper is left alone.
+// A chat window remembers its paper chat in its own selection slot only; the
+// sidebar's remembered chat for the paper is left alone.
 function rememberStandalonePaperConversation(
   system: ConversationSystem,
   libraryID: number,
   paperItemID: number,
   conversationKey: number,
+  surface: WindowSurface,
 ): void {
   remember(
-    { system, libraryID, kind: "paper", paperItemID, surface: "standalone" },
+    { system, libraryID, kind: "paper", paperItemID, surface },
     conversationKey,
   );
 }
 
-function clampStandaloneWindowSize(win: Window): void {
+function clampStandaloneWindowSize(
+  win: Window,
+  minWidth: number,
+  minHeight: number,
+): void {
   try {
     const currentWidth = Math.ceil(
       Number(win.outerWidth || win.innerWidth || 0),
@@ -257,8 +602,8 @@ function clampStandaloneWindowSize(win: Window): void {
     if (!Number.isFinite(currentWidth) || !Number.isFinite(currentHeight)) {
       return;
     }
-    const nextWidth = Math.max(currentWidth, STANDALONE_MIN_WIDTH_PX);
-    const nextHeight = Math.max(currentHeight, STANDALONE_MIN_HEIGHT_PX);
+    const nextWidth = Math.max(currentWidth, minWidth);
+    const nextHeight = Math.max(currentHeight, minHeight);
     if (nextWidth !== currentWidth || nextHeight !== currentHeight) {
       win.resizeTo(nextWidth, nextHeight);
     }
@@ -303,6 +648,21 @@ export function isStandaloneWindowActive(): boolean {
 let standaloneItemChangeHandler: ((item: Zotero.Item | null) => void) | null =
   null;
 
+// Reads the open window's paper chat; set by initWindow, cleared on close.
+let standaloneActivePaperIDReader: (() => number | null) | null = null;
+
+/**
+ * The paper the open standalone window is chatting about, or null for the
+ * library chat or when no window is open.
+ */
+export function getStandaloneActivePaperItemID(): number | null {
+  try {
+    return standaloneActivePaperIDReader?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Called by index.ts onItemChange when the user switches paper tabs. */
 export function notifyStandaloneItemChanged(item: Zotero.Item | null): void {
   standaloneItemChangeHandler?.(item);
@@ -331,6 +691,7 @@ type SidebarConv = {
   conversationSystem?: ConversationSystem;
   libraryID?: number;
   lastActivityAt: number;
+  createdAt?: number;
   title?: string;
   userTurnCount?: number;
   sessionVersion?: number;
@@ -338,6 +699,8 @@ type SidebarConv = {
   providerSessionId?: string;
   scopedConversationKey?: string;
   mode?: "open" | "paper";
+  /** A WebChat session row (hidden from history; never torn off). */
+  webchatSession?: boolean;
 };
 
 type StandaloneCreateConversationOptions = {
@@ -424,7 +787,8 @@ export function openStandaloneChat(options?: {
       conversationSystem: sourceConversationSystem,
     },
   );
-  let currentConversationSystem: ConversationSystem =
+  // The window's runtime when it opens; the window keeps its own from here.
+  const currentConversationSystem: ConversationSystem =
     explicitConversationSystem ||
     resolvePreferredConversationSystem({
       item: resolvedSourceState.item,
@@ -546,18 +910,329 @@ export function openStandaloneChat(options?: {
   // throughout the entire openDialog + load cycle.
   setStandalonePending(true);
 
-  const newWin = mainWin.openDialog(
-    `chrome://${config.addonRef}/content/standaloneChat.xhtml`,
-    "llmforzotero-standalone-chat",
-    STANDALONE_WINDOW_FEATURES,
-  ) as Window | null;
+  const newWin = openChatWindowInstance({
+    mainWin,
+    dialogName: "llmforzotero-standalone-chat",
+    features: STANDALONE_WINDOW_FEATURES,
+    windowSurface: "standalone",
+    conversationSystem: currentConversationSystem,
+    mode: initialMode,
+    mountedItem: initialMountedItem,
+    paperItem: initialPaperItem,
+    basePaperItem: initialBasePaperItem,
+    rawContextItem: sourceItemForResolution || sourceItem || initialMountedItem,
+    runtimeMode: initialRuntimeMode,
+    libraryID,
+  });
   if (!newWin) {
     setStandalonePending(false);
     return;
   }
 
   setStandaloneSessionWindow(newWin);
-  // Keep standalonePending = true until initWindow runs — see below
+  // Keep standalonePending = true until the window's initWindow runs (see
+  // openChatWindowInstance).
+}
+
+// Shows a follower's chat in the open standalone window; set by its
+// initWindow, cleared on close. Resolves true once the window shows it.
+let standaloneConversationOpener:
+  | ((identity: TornChatIdentity) => Promise<boolean>)
+  | null = null;
+
+// The chat a standalone window still opening shows once its initWindow has
+// run; a later request replaces it (the earlier one resolves false).
+let pendingLeaderConversation: {
+  identity: TornChatIdentity;
+  settle: (shown: boolean) => void;
+} | null = null;
+
+function takePendingLeaderConversation(): typeof pendingLeaderConversation {
+  const pending = pendingLeaderConversation;
+  pendingLeaderConversation = null;
+  return pending;
+}
+
+// How long a request waits for the standalone window to load.
+const PENDING_LEADER_TIMEOUT_MS = 30_000;
+const PENDING_LEADER_POLL_MS = 250;
+
+/**
+ * Settles `pending` false if the standalone window it waits for closes
+ * before it loads (its initWindow and cleanupWindow then never run), or
+ * does not load in time. Such a window also leaves the pending flag set:
+ * clear it, since no window is opening any more.
+ */
+function watchPendingLeaderConversation(
+  pending: NonNullable<typeof pendingLeaderConversation>,
+): void {
+  const deadline = Date.now() + PENDING_LEADER_TIMEOUT_MS;
+  const check = () => {
+    if (pendingLeaderConversation !== pending) return;
+    const opening = getStandaloneSessionWindow();
+    if (opening && Date.now() < deadline) {
+      void Zotero.Promise.delay(PENDING_LEADER_POLL_MS).then(check);
+      return;
+    }
+    if (!opening) setStandalonePending(false);
+    takePendingLeaderConversation()?.settle(false);
+  };
+  void Zotero.Promise.delay(PENDING_LEADER_POLL_MS).then(check);
+}
+
+/**
+ * "Open in main window": shows a follower's chat in the standalone window,
+ * opening it first when it is closed, and brings it forward. Resolves true
+ * once the standalone window shows the chat; false when it cannot (the
+ * chat's paper is gone, or the window did not open).
+ */
+export function openConversationInLeader(
+  identity: TornChatIdentity,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    takePendingLeaderConversation()?.settle(false);
+    const leader = getStandaloneSessionWindow();
+    const opener = standaloneConversationOpener;
+    if (leader && !standaloneSessionState.pending) {
+      // No opener: the window failed to set itself up.
+      if (!opener) {
+        resolve(false);
+        return;
+      }
+      bringChatWindowForward(leader);
+      opener(identity).then(resolve, () => resolve(false));
+      return;
+    }
+    // The window opens on the chat's paper (or the library chat itself) and
+    // in its runtime; the opener then shows the exact chat.
+    let initialItem: Zotero.Item;
+    if (identity.kind === "paper") {
+      const paper = Zotero.Items.get(
+        Math.floor(Number(identity.paperItemID || 0)),
+      ) as Zotero.Item | false;
+      if (!paper || (paper as any).deleted) {
+        resolve(false);
+        return;
+      }
+      initialItem = paper;
+    } else {
+      const libraryID = Math.floor(Number(identity.libraryID || 0)) || 1;
+      initialItem = (
+        identity.system === "claude_code"
+          ? createClaudeGlobalPortalItem(libraryID, identity.conversationKey)
+          : identity.system === "codex"
+            ? createCodexGlobalPortalItem(libraryID, identity.conversationKey)
+            : createGlobalPortalItem(libraryID, identity.conversationKey)
+      ) as Zotero.Item;
+    }
+    const pending = { identity, settle: resolve };
+    pendingLeaderConversation = pending;
+    // A window still opening shows the chat once its initWindow has run.
+    if (!leader) {
+      openStandaloneChat({
+        initialItem,
+        initialConversationSystem: identity.system,
+      });
+    }
+    if (!getStandaloneSessionWindow()) {
+      takePendingLeaderConversation()?.settle(false);
+      return;
+    }
+    watchPendingLeaderConversation(pending);
+  });
+}
+
+/**
+ * Open a follower window on one chat. It is another instance of the
+ * standalone window document, in its compact follower layout: it holds that
+ * chat (History, or its side panel's Open as main chat, loads another), does
+ * not follow the PDF reader or Zotero's selection, and is not the singleton
+ * the standalone window (the leader) is. Its surface "torn:<id>" starts from
+ * the leader's model and runtime choices and keeps its own from then on.
+ * A remembered-chat read it has no slot for falls back to the leader's
+ * slots, then the sidebar's (conversationSelection.ts), so a follower
+ * resolves a chat it was not given as the leader would. A chat has at most
+ * one follower: when one already shows the chat, it comes forward and is
+ * returned, and nothing opens. Returns null when the chat cannot be shown
+ * (its paper is gone, or its runtime is off) or the window does not open.
+ */
+export function openTornChatWindow(
+  identity: TornChatIdentity,
+  placement?: { screenX: number; screenY: number },
+): Window | null {
+  const mainWin = Zotero.getMainWindow();
+  if (!mainWin) return null;
+  const conversationKey = Math.floor(Number(identity.conversationKey || 0));
+  if (!Number.isFinite(conversationKey) || conversationKey <= 0) return null;
+  // One window per chat: the window that already shows it comes forward.
+  const holder = findTornWindowForConversation(conversationKey);
+  if (holder) {
+    bringChatWindowForward(holder);
+    return holder;
+  }
+  const system = identity.system;
+  if (
+    (system === "codex" && !isCodexAppServerModeEnabled()) ||
+    (system === "claude_code" && !getClaudeCodeModeEnabled())
+  ) {
+    return null;
+  }
+  let paperItem: Zotero.Item | null = null;
+  if (identity.kind === "paper") {
+    const candidate = Zotero.Items.get(
+      Math.floor(Number(identity.paperItemID || 0)),
+    ) as Zotero.Item | false;
+    if (!candidate || (candidate as any).deleted) return null;
+    paperItem = candidate;
+  }
+  const libraryID =
+    Math.floor(
+      Number(
+        paperItem?.libraryID ||
+          identity.libraryID ||
+          resolveActiveLibraryID() ||
+          1,
+      ),
+    ) || 1;
+  const mountedItem = (
+    paperItem
+      ? system === "claude_code"
+        ? createClaudePaperPortalItem(paperItem, conversationKey)
+        : system === "codex"
+          ? createCodexPaperPortalItem(paperItem, conversationKey)
+          : createPaperPortalItem(paperItem, conversationKey, 1)
+      : system === "claude_code"
+        ? createClaudeGlobalPortalItem(libraryID, conversationKey)
+        : system === "codex"
+          ? createCodexGlobalPortalItem(libraryID, conversationKey)
+          : createGlobalPortalItem(libraryID, conversationKey)
+  ) as Zotero.Item;
+
+  // The window starts from the standalone window's choices and keeps its
+  // own from here on; its selection slots start on the chat it shows.
+  const surface = allocateTornSurface();
+  startTornSurfaceChoices(surface);
+  surfaceChoices.conversationSystem.set(system, surface);
+  if (paperItem) {
+    rememberStandalonePaperConversation(
+      system,
+      libraryID,
+      Number(paperItem.id),
+      conversationKey,
+      surface,
+    );
+  } else {
+    rememberStandaloneGlobalConversation(
+      system,
+      libraryID,
+      conversationKey,
+      surface,
+    );
+  }
+  rememberMode(system, libraryID, paperItem ? "paper" : "global", {
+    surface,
+  });
+
+  const newWin = openChatWindowInstance({
+    mainWin,
+    dialogName: `llmforzotero-torn-chat-${surface.slice("torn:".length)}`,
+    features: buildTornWindowFeatures(placement),
+    windowSurface: surface,
+    conversationSystem: system,
+    mode: paperItem ? "paper" : "open",
+    mountedItem,
+    paperItem: paperItem ? mountedItem : null,
+    basePaperItem: paperItem,
+    rawContextItem: paperItem || mountedItem,
+    runtimeMode: null,
+    libraryID,
+  });
+  if (!newWin) {
+    clearTornSelection(surface);
+    clearTornSurfaceChoices(surface);
+    return null;
+  }
+  // Recorded before the window loads, so a second open meanwhile finds it.
+  setTornWindowConversation(newWin, conversationKey);
+  return newWin;
+}
+
+function bringChatWindowForward(win: Window): void {
+  try {
+    win.focus();
+  } catch {
+    // The window is going away.
+  }
+}
+
+type ChatWindowInstanceParams = {
+  mainWin: NonNullable<ReturnType<typeof Zotero.getMainWindow>>;
+  dialogName: string;
+  features: string;
+  /** "standalone" for the standalone window; "torn:<id>" for a torn one. */
+  windowSurface: WindowSurface;
+  conversationSystem: ConversationSystem;
+  mode: "open" | "paper";
+  mountedItem: Zotero.Item;
+  paperItem: Zotero.Item | null;
+  basePaperItem: Zotero.Item | null;
+  rawContextItem: Zotero.Item | null;
+  runtimeMode: "agent" | "chat" | null;
+  libraryID: number;
+};
+
+/**
+ * Opens one chat window (the standalone window, or a torn-off window) and
+ * builds its shell once it loads. The standalone window's singleton
+ * bookkeeping (pending flag, session slot) stays with its caller and
+ * initWindow/cleanupWindow below; a torn-off window skips all of it, does
+ * not follow the PDF reader, and is listed in tornChatWindows.ts instead.
+ */
+function openChatWindowInstance(
+  params: ChatWindowInstanceParams,
+): Window | null {
+  const {
+    mainWin,
+    windowSurface,
+    mode: initialMode,
+    mountedItem: initialMountedItem,
+    paperItem: initialPaperItem,
+    basePaperItem: initialBasePaperItem,
+    runtimeMode: initialRuntimeMode,
+    libraryID,
+  } = params;
+  const tornSurface = isTornSurface(windowSurface) ? windowSurface : null;
+  // The standalone window (the leader) follows the PDF reader; a torn-off
+  // window (a follower) keeps its own chat and is not the standalone
+  // singleton.
+  const linkedToReader = tornSurface === null;
+  const minWindowWidth = linkedToReader
+    ? STANDALONE_MIN_WIDTH_PX
+    : TORN_WINDOW_MIN_WIDTH_PX;
+  const minWindowHeight = linkedToReader
+    ? STANDALONE_MIN_HEIGHT_PX
+    : TORN_WINDOW_MIN_HEIGHT_PX;
+  let currentConversationSystem: ConversationSystem = params.conversationSystem;
+  const isClaudeConversationSystem = () =>
+    currentConversationSystem === "claude_code";
+  const isCodexConversationSystem = () => currentConversationSystem === "codex";
+  const isAntigravityConversationSystem = () =>
+    currentConversationSystem === "antigravity";
+  const isRuntimeConversationSystem = () =>
+    isClaudeConversationSystem() ||
+    isCodexConversationSystem() ||
+    isAntigravityConversationSystem();
+
+  const newWin = mainWin.openDialog(
+    `chrome://${config.addonRef}/content/standaloneChat.xhtml`,
+    params.dialogName,
+    params.features,
+  ) as Window | null;
+  if (!newWin) return null;
+  const disposeTornRegistration = tornSurface
+    ? registerTornChatWindow(newWin, tornSurface)
+    : null;
+
   let cancelled = false;
 
   // Mutable state for the standalone window
@@ -566,8 +1241,7 @@ export function openStandaloneChat(options?: {
   let activeItem: Zotero.Item = initialMountedItem;
   let currentPaperItem: Zotero.Item | null = initialPaperItem;
   let currentBasePaperItem: Zotero.Item | null = initialBasePaperItem;
-  let currentRawContextItem: Zotero.Item | null =
-    sourceItemForResolution || sourceItem || initialMountedItem;
+  let currentRawContextItem: Zotero.Item | null = params.rawContextItem;
   let isInWebChatMode = false;
   let currentChatHooks: SetupHandlersHooks | null = null;
   let standaloneSidebarRenderQueued = false;
@@ -577,6 +1251,7 @@ export function openStandaloneChat(options?: {
   let standaloneAttachmentGcTimer: number | null = null;
   let unsubscribeStandalonePendingDeletions: (() => void) | null = null;
   let disposeHistoryActivity: (() => void) | null = null;
+  let disposePluginUpdate: (() => void) | null = null;
   let themeObserver: {
     observe(target: Node, options: MutationObserverInit): void;
     disconnect(): void;
@@ -584,22 +1259,44 @@ export function openStandaloneChat(options?: {
   let darkMQ: MediaQueryList | null = null;
   let onSchemeChange: (() => void) | null = null;
   let cleanupStandalonePrefObserver: (() => void) | null = null;
+  let cleanupStandaloneTabFollow: (() => void) | null = null;
+  let cleanupTornPaperWatch: (() => void) | null = null;
+  // The module-level reader link this window set (the standalone window
+  // only), so closing a window clears only its own.
+  let ownItemChangeHandler: ((item: Zotero.Item | null) => void) | null = null;
+  let ownActivePaperIDReader: (() => number | null) | null = null;
+  let ownConversationOpener:
+    | ((identity: TornChatIdentity) => Promise<boolean>)
+    | null = null;
   let cleanupStandaloneVerticalResize: (() => void) | null = null;
   let cleanupStandaloneSidebarResize: (() => void) | null = null;
   let cleanupStandaloneSidebarFlyout: (() => void) | null = null;
   let unbindStandaloneTaskProgressToggle: (() => void) | null = null;
   let enforceStandaloneMinimumSize: (() => void) | null = null;
+  let disposeStandaloneSidePanel: (() => void) | null = null;
+  let disposePinnedPaperActivity: (() => void) | null = null;
 
   const initWindow = () => {
-    // Now the window is loaded — safe to clear the pending flag.
-    // isStandaloneWindowActive() will still return true because
-    // addon.data.standaloneWindow is set and not closed.
-    setStandalonePending(false);
+    // A torn-off window is not the standalone singleton: it never touches
+    // the pending flag or the session slot.
+    if (linkedToReader) {
+      // Now the window is loaded — safe to clear the pending flag.
+      // isStandaloneWindowActive() will still return true because
+      // addon.data.standaloneWindow is set and not closed.
+      setStandalonePending(false);
+    }
     // Reset cancelled — the about:blank → XHTML transition in XUL may
     // fire an early unload that sets cancelled=true before load fires.
     cancelled = false;
-    // Re-store the window reference for the same reason.
-    setStandaloneSessionWindow(newWin);
+    if (linkedToReader) {
+      // Re-store the window reference for the same reason.
+      setStandaloneSessionWindow(newWin);
+    } else {
+      newWin.document?.documentElement?.setAttribute(
+        "windowtype",
+        "llmforzotero:chat",
+      );
+    }
     // Register the real unload handler now that the document is loaded.
     newWin.addEventListener("unload", cleanupWindow, { once: true });
     appLogger.debug("LLM: standalone initWindow start");
@@ -623,19 +1320,21 @@ export function openStandaloneChat(options?: {
 
     try {
       const doc = newWin.document;
-      doc.documentElement?.setAttribute(
-        "minwidth",
-        `${STANDALONE_MIN_WIDTH_PX}`,
-      );
-      doc.documentElement?.setAttribute(
-        "minheight",
-        `${STANDALONE_MIN_HEIGHT_PX}`,
-      );
+      // The →| ("Move to side panel") buttons exist only where this host is
+      // registered. Register it now, before any message renders, whether or
+      // not the side panel has been opened or even created yet; the call
+      // goes to the panel once it exists (it opens the panel if needed).
+      registerSidePanelItemHost(doc, {
+        open: (request) => standaloneSidePanel?.openItem(request),
+      });
+      doc.documentElement?.setAttribute("minwidth", `${minWindowWidth}`);
+      doc.documentElement?.setAttribute("minheight", `${minWindowHeight}`);
       if (doc.documentElement) {
-        doc.documentElement.style.minWidth = `${STANDALONE_MIN_WIDTH_PX}px`;
-        doc.documentElement.style.minHeight = `${STANDALONE_MIN_HEIGHT_PX}px`;
+        doc.documentElement.style.minWidth = `${minWindowWidth}px`;
+        doc.documentElement.style.minHeight = `${minWindowHeight}px`;
       }
-      enforceStandaloneMinimumSize = () => clampStandaloneWindowSize(newWin);
+      enforceStandaloneMinimumSize = () =>
+        clampStandaloneWindowSize(newWin, minWindowWidth, minWindowHeight);
       newWin.addEventListener("resize", enforceStandaloneMinimumSize);
       newWin.setTimeout(enforceStandaloneMinimumSize, 0);
 
@@ -779,13 +1478,13 @@ export function openStandaloneChat(options?: {
       const mainCSS = doc.createElementNS(HTML_NS, "link") as HTMLLinkElement;
       mainCSS.rel = "stylesheet";
       mainCSS.type = "text/css";
-      mainCSS.href = `chrome://${config.addonRef}/content/zoteroPane.css`;
+      mainCSS.href = pluginStylesheetHref("zoteroPane.css");
       doc.documentElement?.appendChild(mainCSS);
 
       const katexCSS = doc.createElementNS(HTML_NS, "link") as HTMLLinkElement;
       katexCSS.rel = "stylesheet";
       katexCSS.type = "text/css";
-      katexCSS.href = `chrome://${config.addonRef}/content/vendor/katex/katex.min.css`;
+      katexCSS.href = pluginStylesheetHref("vendor/katex/katex.min.css");
       doc.documentElement?.appendChild(katexCSS);
 
       const rerenderStandaloneShellAfterStylesReady = () => {
@@ -816,6 +1515,9 @@ export function openStandaloneChat(options?: {
       if (!root) return;
 
       root.dataset.standalone = "true";
+      // The leader has the chat list and follows the PDF reader; a follower
+      // holds one chat in two compact header rows.
+      root.dataset.windowRole = linkedToReader ? "leader" : "follower";
 
       // -----------------------------------------------------------------------
       // Build the shell layout:
@@ -871,24 +1573,77 @@ export function openStandaloneChat(options?: {
 
       // The leading slot is the tab row's single grid cell on the left. It
       // holds the runtime controls; the window buttons and sidebar toggle
-      // join them whenever the sidebar is collapsed.
+      // join them whenever the sidebar is collapsed. A follower's top row
+      // holds its window buttons, unlinked icon and title here instead.
       const tabRowLeading = doc.createElementNS(
         HTML_NS,
         "div",
       ) as HTMLDivElement;
       tabRowLeading.className = "llm-standalone-tab-row-leading";
-      tabRowLeading.append(standaloneRuntimeSystemControls.group);
+      if (linkedToReader) {
+        tabRowLeading.append(standaloneRuntimeSystemControls.group);
+      }
+
+      // The trailing slot holds the side panel toggle (right edge).
+      const tabRowTrailing = doc.createElementNS(
+        HTML_NS,
+        "div",
+      ) as HTMLDivElement;
+      tabRowTrailing.className = "llm-standalone-tab-row-trailing";
 
       const tabRow = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
       tabRow.className = "llm-standalone-tab-row";
-      tabRow.append(tabRowLeading, tabGroup);
+      if (linkedToReader) {
+        tabRow.append(tabRowLeading, tabGroup, tabRowTrailing);
+      } else {
+        // A follower's actions sit in the row under this one.
+        tabRow.append(tabRowLeading);
+      }
 
       // -- Lower area: sidebar + content side by side --
       const lowerArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
       lowerArea.className = "llm-standalone-lower";
 
       const sidebarView = createStandaloneSidebarView(doc, t);
+      // Pinned papers (oldest first), and the papers whose answer finished
+      // while another paper was on screen. The list and its actions are set
+      // up below, once the paper switch code exists.
+      let pinnedPaperIDs = getStandalonePinnedPapersPref();
+      let readyPinnedPaperIDs = new Set<number>();
+      // The main chat each paper last showed in this window.
+      const shownPaperConversationKeys = new Map<number, number>();
+      let renderPinnedPapers: () => void = () => {};
       disposeHistoryActivity = observeHistoryActivity(sidebarView.list);
+      // The plugin-update control lives in the standalone window only; torn
+      // windows close on an update.
+      if (linkedToReader) {
+        const lastSeenKey = `${config.prefsPrefix}.lastSeenVersion`;
+        const updateController = createPluginUpdateController({
+          getDeps: getPluginUpdateDeps,
+          readLastSeen: () => {
+            const value = Zotero.Prefs.get(lastSeenKey, true);
+            return typeof value === "string" ? value : "";
+          },
+          writeLastSeen: (value) => Zotero.Prefs.set(lastSeenKey, value, true),
+          isReplyInFlight: isAnyRequestPending,
+          setInterval: (fn, ms) => newWin.setInterval(fn, ms),
+          clearInterval: (handle) => newWin.clearInterval(handle as number),
+        });
+        const updateControl = createStandaloneUpdateControl({
+          doc,
+          win: newWin,
+          slot: sidebarView.updateSlot,
+          anchorRow: sidebarView.footerRow,
+          controller: updateController,
+          translate: t,
+          openUrl: (url) => Zotero.launchURL(url),
+        });
+        updateController.start();
+        disposePluginUpdate = () => {
+          updateControl.dispose();
+          updateController.dispose();
+        };
+      }
       const sidebar = sidebarView.root;
       const sidebarPanel = sidebarView.panel;
       const iconSidebarToggle = sidebarView.toggleButton;
@@ -903,17 +1658,24 @@ export function openStandaloneChat(options?: {
       const sidebarList = sidebarView.list;
       const sidebarResizeHandle = sidebarView.resizeHandle;
 
-      // A collapsed sidebar renders nothing at all, so the window controls and
-      // the collapse toggle move into the tab row for as long as it is hidden,
-      // and hovering the toggle floats the sidebar back over the content.
-      setStandaloneSidebarCollapsedChromeHost(sidebarView, tabRowLeading);
-      cleanupStandaloneSidebarFlyout = installStandaloneSidebarFlyout({
-        win: newWin,
-        toggle: iconSidebarToggle,
-        panel: sidebarPanel,
-        isCollapsed: () => sidebar.dataset.sidebarState === "collapsed",
-        setOpen: (open) => setStandaloneSidebarFlyoutOpen(sidebarView, open),
-      });
+      if (linkedToReader) {
+        // A collapsed sidebar renders nothing at all, so the window controls
+        // and the collapse toggle move into the tab row for as long as it is
+        // hidden, and hovering the toggle floats the sidebar back over the
+        // content.
+        setStandaloneSidebarCollapsedChromeHost(sidebarView, tabRowLeading);
+        cleanupStandaloneSidebarFlyout = installStandaloneSidebarFlyout({
+          win: newWin,
+          toggle: iconSidebarToggle,
+          panel: sidebarPanel,
+          isCollapsed: () => sidebar.dataset.sidebarState === "collapsed",
+          setOpen: (open) => setStandaloneSidebarFlyoutOpen(sidebarView, open),
+        });
+      } else {
+        // A follower has no sidebar: its window controls live in its top
+        // row for good, without the sidebar toggle.
+        setStandaloneFollowerChromeHost(sidebarView, tabRowLeading);
+      }
 
       // Export popup — floating menu from the content-title Export action
       const exportPopup = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
@@ -939,6 +1701,12 @@ export function openStandaloneChat(options?: {
       exportPopup.append(exportPopupCopyBtn, exportPopupNoteBtn);
 
       let standaloneSidebarEntriesByKey = new Map<number, SidebarConv>();
+      // Counts history row opens, so only the newest click mounts its chat.
+      let standaloneHistoryOpenSeq = 0;
+      // Set once the runtime switch code exists (see adoptStandaloneRuntime).
+      let adoptStandaloneRuntime: (
+        system: ConversationSystem,
+      ) => Promise<boolean> = async () => false;
 
       // -- Content area --
       const contentWrapper = doc.createElementNS(
@@ -959,6 +1727,25 @@ export function openStandaloneChat(options?: {
       ) as HTMLSpanElement;
       contentTitleText.className = "llm-standalone-content-title-text";
 
+      // A follower does not follow the PDF reader; a small unlinked icon
+      // before its title says so, in a paper chat and a library chat alike.
+      let unlinkedIcon: HTMLSpanElement | null = null;
+      if (!linkedToReader) {
+        unlinkedIcon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+        unlinkedIcon.className = "llm-standalone-unlinked-icon";
+        // A hover card (built below) explains the icon; a title would add a
+        // native tooltip on top of it.
+        unlinkedIcon.tabIndex = 0;
+        unlinkedIcon.setAttribute(
+          "aria-label",
+          t("Not linked to the PDF reader"),
+        );
+        unlinkedIcon.setAttribute("aria-describedby", UNLINKED_CARD_ID);
+        root.dataset.readerLink = "unlinked";
+      }
+
+      if (unlinkedIcon) bindUnlinkedHoverCard(doc, root, unlinkedIcon);
+
       const contentTitleBarSpacer = doc.createElementNS(
         HTML_NS,
         "div",
@@ -968,6 +1755,16 @@ export function openStandaloneChat(options?: {
       // Shows or hides the Task progress row for the conversation on screen;
       // bound to the chat panel below, once the content area exists.
       const iconTaskProgress = createTaskProgressToggleButton(doc);
+
+      // Pins the paper on screen: it is listed under "Pinned papers" and
+      // keeps its side panel tabs while another paper is shown.
+      const iconPin = doc.createElementNS(
+        HTML_NS,
+        "button",
+      ) as HTMLButtonElement;
+      iconPin.className = "llm-standalone-title-action llm-standalone-icon-pin";
+      iconPin.type = "button";
+      iconPin.hidden = true;
 
       const iconExport = doc.createElementNS(
         HTML_NS,
@@ -988,19 +1785,105 @@ export function openStandaloneChat(options?: {
       iconClear.type = "button";
       iconClear.title = t("Delete conversation");
       iconClear.setAttribute("aria-label", t("Delete conversation"));
-      contentTitleBarSpacer.append(iconTaskProgress, iconExport, iconClear);
-      contentTitleBar.append(contentTitleText, contentTitleBarSpacer);
+      // A follower's own header buttons. Open in main window goes after the
+      // side panel toggle (below, once the side panel exists).
+      let iconFollowerHistory: HTMLButtonElement | null = null;
+      let iconFollowerOpenMain: HTMLButtonElement | null = null;
+      let iconFollowerMore: HTMLButtonElement | null = null;
+      // The follower's kind line under its title: an icon, then "Paper chat
+      // · Klaus et al., 2017" or "Library chat · My Library".
+      let followerKindIcon: HTMLSpanElement | null = null;
+      let followerKindText: HTMLSpanElement | null = null;
+      let followerKindLine: HTMLDivElement | null = null;
+      // The second row under the divider: the kind line at the left, the four
+      // actions at the right.
+      let followerKindRow: HTMLDivElement | null = null;
+      let followerActions: HTMLDivElement | null = null;
+      if (linkedToReader) {
+        contentTitleBarSpacer.append(
+          iconPin,
+          iconTaskProgress,
+          iconExport,
+          iconClear,
+        );
+        contentTitleBar.append(contentTitleText, contentTitleBarSpacer);
+      } else {
+        const createFollowerAction = (className: string, label: string) => {
+          const button = doc.createElementNS(
+            HTML_NS,
+            "button",
+          ) as HTMLButtonElement;
+          button.className = `llm-standalone-title-action ${className}`;
+          button.type = "button";
+          button.title = label;
+          button.setAttribute("aria-label", label);
+          return button;
+        };
+        iconFollowerHistory = createFollowerAction(
+          "llm-follower-history",
+          t("History"),
+        );
+        iconFollowerHistory.setAttribute("aria-haspopup", "dialog");
+        iconFollowerOpenMain = createFollowerAction(
+          "llm-follower-open-main",
+          t("Open in main window"),
+        );
+        iconFollowerMore = createFollowerAction(
+          "llm-follower-more",
+          t("More actions"),
+        );
+        iconFollowerMore.setAttribute("aria-haspopup", "menu");
+        iconFollowerMore.setAttribute("aria-expanded", "false");
+        // One row. Left: the window buttons, the unlinked icon and the chat's
+        // title. Right: History, then the side panel toggle and Open in main
+        // window (added below, once the side panel exists), then More. Task
+        // progress, Export and Delete live in the More menu and keep no
+        // button in the page: the menu runs the buttons' own handlers. The
+        // kind line sits under the row, at the top left of the chat.
+        contentTitleText.classList.add("llm-follower-title");
+        const titleLine = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        titleLine.className = "llm-follower-title-line";
+        if (unlinkedIcon) titleLine.append(unlinkedIcon);
+        titleLine.append(contentTitleText);
+        followerKindLine = doc.createElementNS(
+          HTML_NS,
+          "div",
+        ) as HTMLDivElement;
+        followerKindLine.className = "llm-follower-kind-line";
+        // The icon and text are filled in by syncFollowerTitle, inside a
+        // button for a paper chat and a plain span for a library chat.
+        followerKindRow = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        followerKindRow.className = "llm-follower-kind-row";
+        followerActions = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        followerActions.className = "llm-follower-actions";
+        followerActions.append(iconFollowerHistory);
+        followerKindRow.append(followerKindLine, followerActions);
+        tabRowLeading.append(titleLine);
+      }
 
       const contentArea = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
       contentArea.className = "llm-standalone-content";
       contentArea.dataset.standalone = "true";
+      // A torn window declares its surface before its panel binds, so
+      // anything that reads the body first already sees its own surface.
+      if (tornSurface) contentArea.dataset.selectionSurface = tornSurface;
       unbindStandaloneTaskProgressToggle = bindTaskProgressToggle(
         contentArea,
         iconTaskProgress,
       );
 
-      contentWrapper.append(tabRow, contentTitleBar, contentArea);
-      lowerArea.append(sidebar, contentWrapper);
+      // A follower has no second header row; its kind line goes under the
+      // top row instead.
+      if (linkedToReader) {
+        contentWrapper.append(tabRow, contentTitleBar, contentArea);
+      } else if (followerKindRow) {
+        contentWrapper.append(tabRow, followerKindRow, contentArea);
+      } else {
+        contentWrapper.append(tabRow, contentArea);
+      }
+      // A follower has no chat list: its sidebar is never shown.
+      if (linkedToReader) lowerArea.append(sidebar);
+      lowerArea.append(contentWrapper);
 
       // -- Skills overlay (popup for managing agent skills) --
       const skillOverlay = doc.createElementNS(
@@ -1086,15 +1969,93 @@ export function openStandaloneChat(options?: {
 
       skillCtxMenu.append(skillCtxShowInFs, skillCtxRestore, skillCtxDelete);
 
+      // Chat row context menu (right-click), styled like the skills menu.
+      const convCtxMenu = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+      convCtxMenu.className =
+        "llm-standalone-skill-ctx-menu llm-standalone-conv-ctx-menu";
+      convCtxMenu.setAttribute("role", "menu");
+      convCtxMenu.style.display = "none";
+
+      const convCtxOpenInWindow = doc.createElementNS(
+        HTML_NS,
+        "button",
+      ) as HTMLButtonElement;
+      convCtxOpenInWindow.className = "llm-standalone-skill-ctx-item";
+      convCtxOpenInWindow.type = "button";
+      convCtxOpenInWindow.setAttribute("role", "menuitem");
+      convCtxOpenInWindow.dataset.action = "open-in-new-window";
+      convCtxOpenInWindow.textContent = t("Open in New Window");
+      convCtxMenu.append(convCtxOpenInWindow);
+
+      // A follower's More menu, built like the chat row menu: Task progress,
+      // Export, a line, then Delete conversation.
+      let followerMoreMenu: HTMLDivElement | null = null;
+      let followerMoreTaskItem: HTMLButtonElement | null = null;
+      let followerMoreExportItem: HTMLButtonElement | null = null;
+      let followerMoreDeleteItem: HTMLButtonElement | null = null;
+      if (!linkedToReader) {
+        const createMoreItem = (
+          action: string,
+          label: string,
+          role = "menuitem",
+        ) => {
+          const item = doc.createElementNS(
+            HTML_NS,
+            "button",
+          ) as HTMLButtonElement;
+          item.className = "llm-standalone-skill-ctx-item";
+          item.type = "button";
+          item.setAttribute("role", role);
+          item.dataset.action = action;
+          item.textContent = label;
+          return item;
+        };
+        followerMoreMenu = doc.createElementNS(
+          HTML_NS,
+          "div",
+        ) as HTMLDivElement;
+        followerMoreMenu.className =
+          "llm-standalone-skill-ctx-menu llm-follower-more-menu";
+        followerMoreMenu.setAttribute("role", "menu");
+        followerMoreMenu.style.display = "none";
+        followerMoreTaskItem = createMoreItem(
+          "task-progress",
+          t("Task progress"),
+          "menuitemcheckbox",
+        );
+        followerMoreExportItem = createMoreItem("export", t("Export"));
+        const separator = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        separator.className = "llm-follower-menu-separator";
+        separator.setAttribute("role", "separator");
+        followerMoreDeleteItem = createMoreItem(
+          "delete",
+          t("Delete conversation"),
+        );
+        followerMoreDeleteItem.classList.add("llm-standalone-skill-ctx-delete");
+        followerMoreMenu.append(
+          followerMoreTaskItem,
+          followerMoreExportItem,
+          separator,
+          followerMoreDeleteItem,
+        );
+      }
+
       root.append(lowerArea, exportPopup, skillOverlay, skillCtxMenu);
+      // Its one item opens a torn-off window, which only the standalone
+      // window offers.
+      if (linkedToReader) root.append(convCtxMenu);
+      if (followerMoreMenu) root.append(followerMoreMenu);
       cleanupStandaloneVerticalResize = installStandaloneVerticalResizeBehavior(
         newWin,
         contentArea,
         {
-          minWindowHeight: STANDALONE_MIN_HEIGHT_PX,
+          minWindowHeight,
         },
       );
-      cleanupStandaloneSidebarResize = installStandaloneSidebarResizeBehavior(
+      // Set once the side panel exists (below); the History pane leaves it
+      // its width.
+      let standaloneSidePanel: StandaloneSidePanelController | null = null;
+      const standaloneSidebarResize = installStandaloneColumnResizeBehavior(
         newWin,
         lowerArea,
         sidebarPanel,
@@ -1102,14 +2063,21 @@ export function openStandaloneChat(options?: {
         {
           initialWidth: getStandaloneSidebarWidthPref(),
           onWidthCommit: setStandaloneSidebarWidthPref,
+          // The panel's width, less what the window is about to gain for it.
+          getReservedWidth: () =>
+            (standaloneSidePanel?.getOccupiedWidth() || 0) -
+            (standaloneSidePanel?.getPendingWindowWidthChange() || 0),
         },
       );
+      cleanupStandaloneSidebarResize = standaloneSidebarResize.dispose;
 
       // -- Sidebar state management --
       let userManualSidebarState: "expanded" | "collapsed" | null = null;
 
       const setSidebarState = (state: "expanded" | "collapsed") => {
         setStandaloneSidebarState(sidebarView, state);
+        // The side panel's room depends on the History pane's width.
+        standaloneSidePanel?.relayout();
       };
 
       const toggleSidebar = () => {
@@ -1200,6 +2168,410 @@ export function openStandaloneChat(options?: {
           : getCurrentLibraryScopeID();
       };
 
+      // -----------------------------------------------------------------------
+      // Tear-off: drag a chat row (or the chat title) out of the standalone
+      // window, or pick "Open in New Window" on a row, to open the chat in a
+      // torn-off window. Only the standalone window is a source: a torn-off
+      // window never opens another. Never for WebChat (its mode, rows and
+      // session chats) or for note chats.
+      // -----------------------------------------------------------------------
+      // The chat as one a follower can hold, or null (WebChat, note chats,
+      // a paper that is gone).
+      const chatIdentityFor = (candidate: {
+        system: ConversationSystem;
+        conversationKey: number;
+        kind: "paper" | "global";
+        libraryID: number;
+        paperItemID?: number;
+      }): TornChatIdentity | null => {
+        if (cancelled || newWin.closed || isInWebChatMode) return null;
+        // A note session lists and shows the note's own chats.
+        if (resolveActiveNoteSession(activeItem)) return null;
+        const key = Math.floor(Number(candidate.conversationKey || 0));
+        if (!Number.isFinite(key) || key <= 0) return null;
+        if (
+          webChatSessionConversationKeys.has(key) ||
+          webChatIsolatedConversationKeys.has(key)
+        ) {
+          return null;
+        }
+        if (!isConversationKeyForKind(candidate.system, candidate.kind, key)) {
+          return null;
+        }
+        const libraryID = Math.floor(Number(candidate.libraryID || 0));
+        if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
+        if (candidate.kind === "global") {
+          return {
+            system: candidate.system,
+            conversationKey: key,
+            kind: "global",
+            libraryID,
+          };
+        }
+        const paperItemID = Math.floor(Number(candidate.paperItemID || 0));
+        if (!Number.isFinite(paperItemID) || paperItemID <= 0) return null;
+        const paper = Zotero.Items.get(paperItemID) as Zotero.Item | false;
+        if (!paper || (paper as any).deleted || (paper as any).isNote?.()) {
+          return null;
+        }
+        return {
+          system: candidate.system,
+          conversationKey: key,
+          kind: "paper",
+          libraryID,
+          paperItemID,
+        };
+      };
+      const tearOffIdentityFor = (
+        candidate: Parameters<typeof chatIdentityFor>[0],
+      ): TornChatIdentity | null =>
+        linkedToReader ? chatIdentityFor(candidate) : null;
+
+      const tearOffIdentityForEntry = (
+        conv: SidebarConv,
+      ): TornChatIdentity | null => {
+        if (conv.webchatSession === true) return null;
+        const listedKind =
+          conv.kind ||
+          (conv.mode === "open"
+            ? "global"
+            : conv.mode === "paper"
+              ? "paper"
+              : null);
+        const kind: "paper" | "global" =
+          listedKind || (standaloneMode === "open" ? "global" : "paper");
+        return tearOffIdentityFor({
+          system: conv.conversationSystem || currentConversationSystem,
+          conversationKey: conv.conversationKey,
+          kind,
+          libraryID: Number(conv.libraryID || 0) || getCurrentLibraryScopeID(),
+          paperItemID:
+            kind === "paper"
+              ? Number(conv.paperItemID || 0) ||
+                Number(currentBasePaperItem?.id || 0)
+              : undefined,
+        });
+      };
+
+      // The chat on screen, while a paper or library chat is mounted.
+      const shownChatIdentity = (): TornChatIdentity | null => {
+        if (standaloneMode === "paper") {
+          if (!currentBasePaperItem) return null;
+          return chatIdentityFor({
+            system: currentConversationSystem,
+            conversationKey: activeConversationKey,
+            kind: "paper",
+            libraryID: getLibraryIDForPaperItem(currentBasePaperItem),
+            paperItemID: Number(currentBasePaperItem.id || 0),
+          });
+        }
+        return chatIdentityFor({
+          system: currentConversationSystem,
+          conversationKey: activeConversationKey,
+          kind: "global",
+          libraryID: getCurrentLibraryScopeID(),
+        });
+      };
+      const tearOffIdentityForTitle = (): TornChatIdentity | null =>
+        linkedToReader ? shownChatIdentity() : null;
+
+      // The tear-off drag under way. Its source region is the node that
+      // gets the drag's `drag` and `dragend` events (dataTransfer.addElement),
+      // one the list's renders never replace: the chat list for a row, the
+      // title row for the title.
+      let activeTearOffDrag: {
+        identity: TornChatIdentity;
+        getIdentity: () => TornChatIdentity | null;
+        region: HTMLElement;
+        droppedOnSource: boolean;
+        lastDragPoint: ScreenPoint | null;
+      } | null = null;
+
+      // The picture under the pointer during a tear-off drag: a small window
+      // with the unlinked icon and the title its follower opens with. Kept
+      // rendered off-screen, since a drag image must be laid out.
+      let tearOffDragImage: HTMLDivElement | null = null;
+      let tearOffDragImageTitle: HTMLSpanElement | null = null;
+      const renderTearOffDragImage = (title: string): HTMLDivElement => {
+        if (!tearOffDragImage || !tearOffDragImage.isConnected) {
+          tearOffDragImage = doc.createElementNS(
+            HTML_NS,
+            "div",
+          ) as HTMLDivElement;
+          tearOffDragImage.className = "llm-tear-off-drag-image";
+          tearOffDragImage.setAttribute("aria-hidden", "true");
+          const bar = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+          bar.className = "llm-tear-off-drag-image-bar";
+          const icon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+          icon.className = "llm-standalone-unlinked-icon";
+          tearOffDragImageTitle = doc.createElementNS(
+            HTML_NS,
+            "span",
+          ) as HTMLSpanElement;
+          tearOffDragImageTitle.className = "llm-tear-off-drag-image-title";
+          bar.append(icon, tearOffDragImageTitle);
+          tearOffDragImage.append(bar);
+          root.append(tearOffDragImage);
+        }
+        tearOffDragImageTitle!.textContent = title;
+        return tearOffDragImage;
+      };
+
+      // The follower's title, known while dragstart runs (the drag image is
+      // taken right after it): the chat's listed title, else the label the
+      // drag started on.
+      const tearOffDragTitle = (
+        identity: TornChatIdentity,
+        source: HTMLElement,
+      ): string => {
+        const listed = standaloneSidebarEntriesByKey.get(
+          identity.conversationKey,
+        );
+        if (identity.kind === "paper") {
+          return normalizeHistoryTitle(listed?.title || "") || t("Paper chat");
+        }
+        const label =
+          source.querySelector(".llm-standalone-conv-title") || source;
+        return (
+          normalizeHistoryTitle(listed?.title || "") ||
+          normalizeHistoryTitle(label.textContent || "") ||
+          t("Library chat")
+        );
+      };
+
+      /**
+       * A finished tear-off drag: opens the torn-off window where the drag
+       * ended, unless it was cancelled, dropped back on its own source
+       * region, or no point says where it ended.
+       */
+      const finishTearOffDrag = (
+        event: DragEvent,
+        identity: TornChatIdentity,
+        drag: { droppedOnSource: boolean; lastDragPoint: ScreenPoint | null },
+        source: "row" | "title",
+      ): Window | null => {
+        const transfer = event.dataTransfer;
+        let userCancelled = false;
+        try {
+          userCancelled = Boolean((transfer as any)?.mozUserCancelled);
+        } catch {
+          userCancelled = false;
+        }
+        const screenX = Number(event.screenX);
+        const screenY = Number(event.screenY);
+        const point = tearOffDropPoint(screenX, screenY, drag.lastDragPoint);
+        const dropScreen = readDropScreen(
+          point?.screenX ?? 0,
+          point?.screenY ?? 0,
+          newWin,
+        );
+        const decision = classifyTearOffDragEnd({
+          userCancelled,
+          droppedOnSource: drag.droppedOnSource,
+          screenX,
+          screenY,
+          lastDragPoint: drag.lastDragPoint,
+          dropScreen,
+          windowSize: {
+            width: TORN_WINDOW_WIDTH_PX,
+            height: TORN_WINDOW_HEIGHT_PX,
+          },
+          grabOffset: {
+            x: TEAR_OFF_DRAG_IMAGE_GRAB_PX,
+            y: TEAR_OFF_DRAG_IMAGE_GRAB_PX,
+          },
+        });
+        // Kept for live checks of real desktop drags (no chat text).
+        appLogger.debug("LLM: tear-off dragend", {
+          source,
+          userCancelled,
+          droppedOnSource: drag.droppedOnSource,
+          screenX,
+          screenY,
+          lastDragPoint: drag.lastDragPoint,
+          dropEffect: String(transfer?.dropEffect || ""),
+          dropScreen,
+          decision,
+        });
+        if (decision.kind !== "open") return null;
+        return openTornChatWindow(identity, {
+          screenX: decision.screenX,
+          screenY: decision.screenY,
+        });
+      };
+
+      // Makes `region` a tear-off source region: it takes back its own
+      // drag (so a release there opens nothing), records where the drag
+      // goes, and finishes it. Installed once per region.
+      const installTearOffRegion = (region: HTMLElement) => {
+        const isOwnDrag = (event: DragEvent): boolean =>
+          Boolean(
+            activeTearOffDrag &&
+            activeTearOffDrag.region === region &&
+            Array.from(event.dataTransfer?.types || []).includes(TEAR_OFF_MIME),
+          );
+        const accept = (event: DragEvent) => {
+          if (!isOwnDrag(event)) return;
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        };
+        region.addEventListener("dragenter", accept);
+        region.addEventListener("dragover", accept);
+        region.addEventListener("drop", (event: DragEvent) => {
+          if (!isOwnDrag(event)) return;
+          event.preventDefault();
+          activeTearOffDrag!.droppedOnSource = true;
+        });
+        region.addEventListener("drag", (event: DragEvent) => {
+          const drag = activeTearOffDrag;
+          if (!drag || drag.region !== region) return;
+          const screenX = Number(event.screenX);
+          const screenY = Number(event.screenY);
+          if (isUsableDragPoint(screenX, screenY)) {
+            drag.lastDragPoint = { screenX, screenY };
+          }
+        });
+        region.addEventListener("dragend", (event: DragEvent) => {
+          const drag = activeTearOffDrag;
+          if (!drag || drag.region !== region) return;
+          activeTearOffDrag = null;
+          let carried: TornChatIdentity | null = null;
+          try {
+            carried = decodeTornChatIdentity(
+              event.dataTransfer?.getData(TEAR_OFF_MIME) || "",
+            );
+          } catch {
+            carried = null;
+          }
+          // The chat must still be one that may be torn off.
+          if (!drag.getIdentity()) return;
+          finishTearOffDrag(
+            event,
+            carried || drag.identity,
+            drag,
+            region === sidebarList ? "row" : "title",
+          );
+        });
+      };
+
+      // Makes `source` a tear-off drag source for the chat `getIdentity`
+      // names at the moment the drag starts; `region` is its source region.
+      const installTearOffDragSource = (
+        source: HTMLElement,
+        getIdentity: () => TornChatIdentity | null,
+        region: HTMLElement,
+      ) => {
+        source.addEventListener("dragstart", (event: DragEvent) => {
+          activeTearOffDrag = null;
+          const identity = getIdentity();
+          const transfer = event.dataTransfer;
+          if (!identity || !transfer) {
+            event.preventDefault();
+            return;
+          }
+          // Only the plugin's own type: no text or URL a desktop or another
+          // app could turn into a file.
+          transfer.clearData();
+          transfer.setData(TEAR_OFF_MIME, encodeTornChatIdentity(identity));
+          transfer.effectAllowed = "move";
+          try {
+            // A release outside every window is the gesture, not a failure:
+            // no image sliding back.
+            (transfer as any).mozShowFailAnimation = false;
+          } catch {
+            /* chrome-only; the drag works without it */
+          }
+          try {
+            // `drag` and `dragend` go to the region, which outlives the row.
+            (transfer as any).addElement?.(region);
+          } catch {
+            /* they bubble up from the source instead */
+          }
+          try {
+            transfer.setDragImage(
+              renderTearOffDragImage(tearOffDragTitle(identity, source)),
+              TEAR_OFF_DRAG_IMAGE_GRAB_PX,
+              TEAR_OFF_DRAG_IMAGE_GRAB_PX,
+            );
+          } catch {
+            /* the default image */
+          }
+          activeTearOffDrag = {
+            identity,
+            getIdentity,
+            region,
+            droppedOnSource: false,
+            lastDragPoint: null,
+          };
+        });
+      };
+
+      // A torn-off window's title is never draggable, so on macOS it stays
+      // part of the top row that moves the window.
+      const syncTitleTearOff = () => {
+        if (tearOffIdentityForTitle()) {
+          contentTitleText.setAttribute("draggable", "true");
+        } else {
+          contentTitleText.removeAttribute("draggable");
+        }
+      };
+      if (linkedToReader) {
+        installTearOffRegion(sidebarList);
+        installTearOffRegion(contentTitleBar);
+        installTearOffDragSource(
+          contentTitleText,
+          tearOffIdentityForTitle,
+          contentTitleBar,
+        );
+      }
+
+      let convCtxEntry: SidebarConv | null = null;
+      const hideConvCtxMenu = () => {
+        convCtxMenu.style.display = "none";
+        convCtxEntry = null;
+      };
+      sidebarList.addEventListener("contextmenu", (e: Event) => {
+        const row = (e.target as Element | null)?.closest?.(
+          ".llm-standalone-conv-item",
+        ) as HTMLElement | null;
+        if (!row || !sidebarList.contains(row)) return;
+        hideConvCtxMenu();
+        const entry = standaloneSidebarEntriesByKey.get(
+          Number(row.dataset.conversationKey || 0),
+        );
+        if (!entry || !tearOffIdentityForEntry(entry)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const me = e as MouseEvent;
+        convCtxEntry = entry;
+        convCtxMenu.style.display = "flex";
+        const menuW = convCtxMenu.offsetWidth || 160;
+        const menuH = convCtxMenu.offsetHeight || 40;
+        let x = me.clientX + 4;
+        let y = me.clientY + 4;
+        if (x + menuW > (doc.documentElement?.clientWidth ?? 9999))
+          x = me.clientX - menuW;
+        if (y + menuH > (doc.documentElement?.clientHeight ?? 9999))
+          y = me.clientY - menuH;
+        convCtxMenu.style.left = `${Math.max(0, x)}px`;
+        convCtxMenu.style.top = `${Math.max(0, y)}px`;
+      });
+      convCtxOpenInWindow.addEventListener("click", () => {
+        const entry = convCtxEntry;
+        hideConvCtxMenu();
+        const identity = entry ? tearOffIdentityForEntry(entry) : null;
+        if (identity) openTornChatWindow(identity);
+      });
+      doc.addEventListener("mousedown", (e: Event) => {
+        if (convCtxMenu.style.display === "none") return;
+        if (!convCtxMenu.contains(e.target as Node)) hideConvCtxMenu();
+      });
+      doc.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key === "Escape" && convCtxMenu.style.display !== "none") {
+          hideConvCtxMenu();
+        }
+      });
+
       const ensureConversationCatalogEntry = async (params: {
         conversationKey?: number;
         libraryID: number;
@@ -1245,6 +2617,7 @@ export function openStandaloneChat(options?: {
         kind: entry.kind,
         libraryID: entry.libraryID,
         lastActivityAt: entry.lastActivityAt || entry.createdAt || 0,
+        createdAt: entry.createdAt || undefined,
         title: entry.title,
         userTurnCount: entry.userTurnCount,
         sessionVersion: entry.sessionVersion,
@@ -1253,6 +2626,7 @@ export function openStandaloneChat(options?: {
         scopedConversationKey: entry.scopedConversationKey,
         conversationSystem: entry.system,
         mode: entry.kind === "paper" ? "paper" : "open",
+        ...(entry.webchatSession === true ? { webchatSession: true } : {}),
       });
 
       // -----------------------------------------------------------------------
@@ -1291,6 +2665,8 @@ export function openStandaloneChat(options?: {
         // Keep original paper title — webchat mode is already indicated by tabs/mode chip
         updateContentTitle();
         webHistoryRefreshBtn.style.display = isWebChat ? "inline-flex" : "none";
+
+        renderPinnedPapers();
 
         // Sidebar: populate with webchat history, or restore local history
         if (isWebChat) {
@@ -1531,8 +2907,112 @@ export function openStandaloneChat(options?: {
       // -----------------------------------------------------------------------
       // Mount chat UI into contentArea
       // -----------------------------------------------------------------------
+      // A follower's title is the chat's own, read from its catalog entry
+      // (the newest read wins; the last title read for each chat shows
+      // meanwhile), and its kind line names the paper or the library.
+      let followerTitleSeq = 0;
+      let followerKindPaperID = 0;
+      // Shows the chat's own paper in the main window's library tab, not the
+      // paper the reader has open.
+      const showFollowerPaperInLibrary = async () => {
+        const itemID = followerKindPaperID;
+        if (itemID <= 0 || cancelled || newWin.closed) return;
+        try {
+          const mainTabs = (Zotero.getMainWindow() as any)?.Zotero_Tabs;
+          if (mainTabs && mainTabs.selectedID !== "zotero-pane") {
+            mainTabs.select("zotero-pane");
+          }
+          await navigateToLibraryObject(
+            { kind: "item", itemId: itemID, label: "" },
+            createZoteroNavigationHost(),
+          );
+          if (mainTabs && mainTabs.selectedID !== "zotero-pane") {
+            mainTabs.select("zotero-pane");
+          }
+        } catch (err) {
+          appLogger.warn("LLM: follower show in library failed", err);
+        }
+      };
+      followerKindLine?.addEventListener("click", (event: Event) => {
+        const target = event.target as Element | null;
+        if (!target?.closest?.(".llm-follower-kind-link")) return;
+        void showFollowerPaperInLibrary();
+      });
+      const followerChatTitles = new Map<number, string>();
+      const syncFollowerTitle = () => {
+        const seq = ++followerTitleSeq;
+        const conversationKey = activeConversationKey;
+        const paper =
+          standaloneMode === "paper" && currentBasePaperItem
+            ? currentBasePaperItem
+            : null;
+        const identity: TornChatIdentity = paper
+          ? {
+              system: currentConversationSystem,
+              conversationKey,
+              kind: "paper",
+              libraryID: getLibraryIDForPaperItem(paper),
+              paperItemID: Number(paper.id || 0),
+            }
+          : {
+              system: currentConversationSystem,
+              conversationKey,
+              kind: "global",
+              libraryID: getCurrentLibraryScopeID(),
+            };
+        const kindLine = getFollowerKindLine(identity);
+        if (followerKindLine) {
+          // A paper chat's line is a button that shows the paper in the
+          // library; a library chat's is plain text. Rebuilt on every sync so
+          // an in-place switch changes both the target and the role.
+          const isPaper = kindLine.kind === "paper";
+          followerKindPaperID = paper ? Number(paper.id || 0) : 0;
+          const main = doc.createElementNS(
+            HTML_NS,
+            isPaper ? "button" : "span",
+          ) as HTMLButtonElement | HTMLSpanElement;
+          main.className = "llm-follower-kind-main";
+          const icon = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+          icon.className = "llm-follower-kind-icon";
+          icon.dataset.kind = kindLine.kind;
+          const text = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+          text.className = "llm-follower-kind-text";
+          text.textContent = kindLine.text;
+          if (isPaper) {
+            const label = t("Show in library");
+            (main as HTMLButtonElement).type = "button";
+            main.classList.add("llm-follower-kind-link");
+            main.title = kindLine.tooltip
+              ? `${label}: ${kindLine.tooltip}`
+              : label;
+            main.setAttribute("aria-label", label);
+          }
+          main.append(icon, text);
+          followerKindIcon = icon;
+          followerKindText = text;
+          followerKindLine.replaceChildren(main);
+          followerKindLine.dataset.kind = kindLine.kind;
+        }
+        const shown =
+          followerChatTitles.get(conversationKey) ||
+          (paper ? t("Paper chat") : t("Library chat"));
+        contentTitleText.textContent = shown;
+        contentTitleText.title = shown;
+        void getFollowerTitle(identity).then((title) => {
+          if (cancelled || newWin.closed || seq !== followerTitleSeq) return;
+          followerChatTitles.set(conversationKey, title);
+          contentTitleText.textContent = title;
+          contentTitleText.title = title;
+        });
+      };
+
       const updateContentTitle = () => {
-        if (standaloneMode === "paper" && currentBasePaperItem) {
+        if (!linkedToReader) {
+          // Every switch in a torn-off window passes here (mount, in-place
+          // switch, the panel's own switch), so the registry follows it.
+          setTornWindowConversation(newWin, activeConversationKey);
+          syncFollowerTitle();
+        } else if (standaloneMode === "paper" && currentBasePaperItem) {
           try {
             const title =
               (currentBasePaperItem as any).getField?.("title") || "";
@@ -1543,26 +3023,45 @@ export function openStandaloneChat(options?: {
         } else {
           contentTitleText.textContent = "Library chat";
         }
+        syncTitleTearOff();
+        syncPinButton();
       };
 
+      const syncPinButton = () => {
+        const paperID =
+          standaloneMode === "paper"
+            ? Number(currentBasePaperItem?.id || 0)
+            : 0;
+        iconPin.hidden = paperID <= 0;
+        const pinned = paperID > 0 && pinnedPaperIDs.includes(paperID);
+        iconPin.setAttribute("aria-pressed", pinned ? "true" : "false");
+        const label = pinned ? t("Unpin this paper") : t("Pin this paper");
+        iconPin.title = label;
+        iconPin.setAttribute("aria-label", label);
+      };
+
+      // The window's own runtime (never the sidebar's saved one) decides the
+      // portal item, unless a history row names its own runtime.
       const buildStandalonePortalItem = (params: {
         mode: "open" | "paper";
         conversationKey: number;
         paperItem?: Zotero.Item | null;
         sessionVersion?: number;
+        system?: ConversationSystem;
       }): Zotero.Item | null => {
+        const system = params.system || currentConversationSystem;
         if (params.mode === "open") {
-          return isClaudeConversationSystem()
+          return system === "claude_code"
             ? (createClaudeGlobalPortalItem(
                 getCurrentLibraryScopeID(),
                 params.conversationKey,
               ) as Zotero.Item)
-            : isCodexConversationSystem()
+            : system === "codex"
               ? (createCodexGlobalPortalItem(
                   getCurrentLibraryScopeID(),
                   params.conversationKey,
                 ) as Zotero.Item)
-              : isAntigravityConversationSystem()
+              : system === "antigravity"
                 ? (createAntigravityGlobalPortalItem(
                     getCurrentLibraryScopeID(),
                     params.conversationKey,
@@ -1573,17 +3072,17 @@ export function openStandaloneChat(options?: {
                   );
         }
         if (!params.paperItem) return null;
-        return isClaudeConversationSystem()
+        return system === "claude_code"
           ? (createClaudePaperPortalItem(
               params.paperItem,
               params.conversationKey,
             ) as Zotero.Item)
-          : isCodexConversationSystem()
+          : system === "codex"
             ? (createCodexPaperPortalItem(
                 params.paperItem,
                 params.conversationKey,
               ) as Zotero.Item)
-            : isAntigravityConversationSystem()
+            : system === "antigravity"
               ? (createAntigravityPaperPortalItem(
                   params.paperItem,
                   params.conversationKey,
@@ -1601,13 +3100,21 @@ export function openStandaloneChat(options?: {
         newWin.setTimeout(() => {
           standaloneSidebarRenderQueued = false;
           void renderSidebar();
+          // A library chat's title can change with its history (its first
+          // question names it).
+          if (!linkedToReader) syncFollowerTitle();
         }, 0);
       };
+
+      // Timing for the debug log of each conversation switch.
+      const standaloneNowMs = (): number =>
+        newWin.performance?.now?.() ?? Date.now();
 
       const mountChatPanel = (
         nextItem: Zotero.Item,
         rawContextItem?: Zotero.Item | null,
       ) => {
+        const mountStartedAt = standaloneNowMs();
         const mountGeneration = ++standaloneMountGeneration;
         const isCurrentMount = () =>
           !cancelled &&
@@ -1616,7 +3123,7 @@ export function openStandaloneChat(options?: {
         const resolvedState = resolveInitialPanelItemState(nextItem, {
           conversationSystem: currentConversationSystem,
           conversationMode: standaloneMode === "open" ? "global" : "paper",
-          surface: "standalone",
+          surface: windowSurface,
         });
         const mountedItem = resolvedState.item || nextItem;
         const rawItemForPanel =
@@ -1656,12 +3163,19 @@ export function openStandaloneChat(options?: {
                 paperLibraryID,
                 paperItemID,
                 activeConversationKey,
+                windowSurface,
               );
+              shownPaperConversationKeys.set(
+                paperItemID,
+                activeConversationKey,
+              );
+              readyPinnedPaperIDs.delete(paperItemID);
             }
           }
 
           clearContent();
           updateContentTitle();
+          renderPinnedPapers();
 
           let standaloneInputFitRequestId = 0;
           const cancelPendingStandaloneInputFit = () => {
@@ -1691,6 +3205,48 @@ export function openStandaloneChat(options?: {
               if (cancelled) return;
               scheduleStandaloneSidebarRender();
             },
+            onConversationIdentityChanged: (panelItem, panelKey) => {
+              if (cancelled || newWin.closed) return;
+              if (
+                decidePanelIdentityAdoption(activeConversationKey, panelKey) ===
+                "ignore"
+              ) {
+                return;
+              }
+              // The panel switched by itself (its own New chat button or a
+              // deleted chat's fallback). Follow it. This only sets window
+              // state and redraws views; it never asks the panel to switch,
+              // so it cannot loop back into this hook.
+              const leftKey = activeConversationKey;
+              activeConversationKey = panelKey;
+              activeItem = panelItem;
+              if (standaloneMode === "paper" && currentBasePaperItem) {
+                const paperItemID = Number(currentBasePaperItem.id || 0);
+                if (paperItemID > 0) {
+                  rememberStandalonePaperConversation(
+                    currentConversationSystem,
+                    getCurrentPaperLibraryID(),
+                    paperItemID,
+                    panelKey,
+                    windowSurface,
+                  );
+                }
+              }
+              updateContentTitle();
+              syncPaperTabLabel();
+              const leftEntry = standaloneSidebarEntriesByKey.get(leftKey);
+              if (
+                !markStandaloneSidebarActiveRow(panelKey) ||
+                (leftEntry && !(Number(leftEntry.userTurnCount) > 0))
+              ) {
+                scheduleStandaloneSidebarRender();
+              }
+              try {
+                standaloneSidePanel?.onMainMounted();
+              } catch (err) {
+                appLogger.warn("LLM: standalone side panel follow failed", err);
+              }
+            },
             onDefaultContextRendered: scheduleStandaloneInputFit,
             onContextPreviewRendered:
               scheduleStandaloneInputFitAfterContextPreviewRender,
@@ -1702,6 +3258,12 @@ export function openStandaloneChat(options?: {
               if (cancelled || newWin.closed) return;
               return await createStandaloneOpenConversationForContext();
             },
+            // The runtime badge menu: the window owns its runtime, and the
+            // sidebar's stays as it is.
+            requestConversationSystem: (system) => {
+              if (cancelled || newWin.closed) return;
+              void switchConversationSystem(system, { forceFresh: true });
+            },
           };
           const llmMain = mountPanelShell({
             body: contentArea,
@@ -1711,7 +3273,7 @@ export function openStandaloneChat(options?: {
               // not derive its label from a mounted global portal item.
               syncPaperTabLabel();
               if (panelRoot) panelRoot.dataset.standalone = "true";
-              bindStandalonePanelHost(contentArea, mountedItem);
+              bindStandalonePanelHost(contentArea, mountedItem, windowSurface);
             },
             // Live: the standalone window re-points activeItem in place.
             getMountedItem: () => activeItem,
@@ -1731,6 +3293,13 @@ export function openStandaloneChat(options?: {
         } catch (err) {
           appLogger.warn("LLM: standalone mountChatPanel sync failed", err);
         }
+        // The side panel follows the main chat (mode, paper, conversation).
+        try {
+          standaloneSidePanel?.onMainMounted();
+        } catch (err) {
+          appLogger.warn("LLM: standalone side panel follow failed", err);
+        }
+        const mountSyncMs = standaloneNowMs() - mountStartedAt;
 
         void (async () => {
           try {
@@ -1742,16 +3311,449 @@ export function openStandaloneChat(options?: {
             refreshChat(contentArea, mountedItem);
             // Refresh sidebar after conversation is confirmed loaded
             scheduleStandaloneSidebarRender();
+            appLogger.debug("LLM: standalone conversation shown", {
+              path: "remount",
+              conversationKey: activeConversationKey,
+              syncMs: Math.round(mountSyncMs * 10) / 10,
+              totalMs:
+                Math.round((standaloneNowMs() - mountStartedAt) * 10) / 10,
+            });
           } catch (err) {
             appLogger.warn("LLM: standalone mount async failed", err);
           }
         })();
       };
 
+      /**
+       * Marks `conversationKey`'s row in the History list as the active one,
+       * without reading the list again. Returns false when the list has no
+       * row for it (the list content changed: render it again).
+       */
+      const markStandaloneSidebarActiveRow = (
+        conversationKey: number,
+      ): boolean => {
+        let found = false;
+        for (const row of Array.from(
+          sidebarList.querySelectorAll(".llm-standalone-conv-item"),
+        ) as HTMLElement[]) {
+          const isActive =
+            Number(row.dataset.conversationKey || 0) === conversationKey;
+          row.classList.toggle("active", isActive);
+          if (isActive) found = true;
+        }
+        return found;
+      };
+
+      /**
+       * Shows `nextItem`'s conversation in the mounted panel. When the panel
+       * can move there in place (same runtime, mode, library and paper; see
+       * standaloneConversationSwitch.ts), it keeps its DOM, listeners and
+       * controllers and swaps only the conversation, which it draws once.
+       * Otherwise, or when the in-place switch is refused, this is the full
+       * remount (mountChatPanel).
+       *
+       * In place, the window's History list is not read again: the switch
+       * marks the active row, and renders the list again only when the row
+       * is missing or the chat being left was an empty draft (the list
+       * collapses duplicate drafts around the active chat). Chat-list
+       * changes still reach the list through the panel's history hook.
+       *
+       * The window's state moves at once, as with a mount. The promise
+       * settles once the panel shows the conversation (in place, or rebuilt
+       * after a refused switch), or a newer switch took over; it never
+       * rejects. Callers that act on the panel's conversation next (adding
+       * context to it) wait for it.
+       */
+      const showStandaloneConversation = (
+        nextItem: Zotero.Item,
+        rawContextItem?: Zotero.Item | null,
+      ): Promise<void> => {
+        const startedAt = standaloneNowMs();
+        const resolvedState = resolveInitialPanelItemState(nextItem, {
+          conversationSystem: currentConversationSystem,
+          conversationMode: standaloneMode === "open" ? "global" : "paper",
+          surface: windowSurface,
+        });
+        const targetItem = resolvedState.item || nextItem;
+        const handle = getPanelHandle(contentArea);
+        const decision = handle?.resolveConversationSwitch(targetItem) || {
+          inPlace: false as const,
+          reason: "no-panel" as const,
+        };
+        if (!handle || !decision.inPlace) {
+          appLogger.debug("LLM: standalone conversation switch remounts", {
+            reason: decision.inPlace ? "no-panel" : decision.reason,
+          });
+          mountChatPanel(nextItem, rawContextItem);
+          return Promise.resolve();
+        }
+        try {
+          return switchStandaloneConversationInPlace(
+            handle,
+            targetItem,
+            rawContextItem,
+            startedAt,
+          );
+        } catch (err) {
+          // A throw before the switch started leaves the window half-moved;
+          // a rebuild puts it back in one consistent state.
+          appLogger.warn("LLM: standalone in-place switch failed", err);
+          mountChatPanel(nextItem, rawContextItem);
+          return Promise.resolve();
+        }
+      };
+      const switchStandaloneConversationInPlace = (
+        handle: NonNullable<ReturnType<typeof getPanelHandle>>,
+        targetItem: Zotero.Item,
+        rawContextItem: Zotero.Item | null | undefined,
+        startedAt: number,
+      ): Promise<void> => {
+        const switchGeneration = ++standaloneMountGeneration;
+        const isCurrentSwitch = () =>
+          !cancelled &&
+          !newWin.closed &&
+          switchGeneration === standaloneMountGeneration;
+        // Callers may already have moved activeConversationKey; the chat
+        // being left is the one the panel shows.
+        const shownItem = activeContextPanels.get(contentArea)?.() || null;
+        const previousKey = shownItem ? getConversationKey(shownItem) : 0;
+        const rawItemForPanel =
+          rawContextItem ||
+          currentRawContextItem ||
+          resolveConversationBaseItem(targetItem) ||
+          targetItem;
+        // The window's own state, as mountChatPanel writes it. The runtime is
+        // unchanged: an in-place switch never changes it.
+        currentRawContextItem = rawItemForPanel;
+        activeItem = targetItem;
+        activeConversationKey = getConversationKey(targetItem);
+        if (standaloneMode === "paper" && currentBasePaperItem) {
+          const paperItemID = Number(currentBasePaperItem.id || 0);
+          if (paperItemID > 0) {
+            rememberStandalonePaperConversation(
+              currentConversationSystem,
+              getCurrentPaperLibraryID(),
+              paperItemID,
+              activeConversationKey,
+              windowSurface,
+            );
+          }
+        }
+        updateContentTitle();
+        syncPaperTabLabel();
+        // As a mount does, bind the host to the item shown. The new binding
+        // also retires the panel leases taken for the chat being left, so a
+        // request still running there keeps saving but no longer draws here.
+        bindStandalonePanelHost(contentArea, targetItem, windowSurface);
+        activeContextPanelRawItems.set(contentArea, rawItemForPanel);
+        const leftEntry = standaloneSidebarEntriesByKey.get(previousKey);
+        if (
+          !markStandaloneSidebarActiveRow(activeConversationKey) ||
+          (leftEntry && !(Number(leftEntry.userTurnCount) > 0))
+        ) {
+          scheduleStandaloneSidebarRender();
+        }
+        const remountInstead = (reason: string, err?: unknown) => {
+          if (!isCurrentSwitch()) return;
+          (err ? appLogger.warn : appLogger.debug)(
+            "LLM: standalone in-place switch refused",
+            { reason, error: err },
+          );
+          mountChatPanel(targetItem, rawItemForPanel);
+        };
+        return handle.switchConversationInPlace(targetItem).then(
+          (switched) => {
+            if (!isCurrentSwitch()) return;
+            const panelItem = activeContextPanels.get(contentArea)?.() || null;
+            if (
+              !switched ||
+              !panelItem ||
+              getConversationKey(panelItem) !== activeConversationKey
+            ) {
+              remountInstead(switched ? "other-conversation" : "refused");
+              return;
+            }
+            activeItem = panelItem;
+            try {
+              standaloneSidePanel?.onMainMounted();
+            } catch (err) {
+              appLogger.warn("LLM: standalone side panel follow failed", err);
+            }
+            appLogger.debug("LLM: standalone conversation shown", {
+              path: "in-place",
+              conversationKey: activeConversationKey,
+              totalMs: Math.round((standaloneNowMs() - startedAt) * 10) / 10,
+            });
+          },
+          (err) => remountInstead("error", err),
+        );
+      };
+
       // -----------------------------------------------------------------------
       // Sidebar rendering — supports both open chat and paper chat
       // -----------------------------------------------------------------------
+      // The runtimes whose chats the window's lists show: the built-in one and
+      // the ones on in Preferences; a note session shows only its own.
+      const getStandaloneHistorySystems = (): ConversationSystem[] =>
+        resolveUnifiedHistorySystems({
+          activeSystem: currentConversationSystem,
+          codexEnabled: isCodexAppServerModeEnabled(),
+          claudeEnabled: getClaudeCodeModeEnabled(),
+          antigravityEnabled: isAntigravityModeEnabled(),
+          singleSystem: Boolean(resolveActiveNoteSession(activeItem)),
+        });
+
+      // Agent / Codex / Claude sections: their order, which are folded, each
+      // one's own sort and dates, and the list last drawn (so a change
+      // redraws without a reload).
+      let sidebarGroupOrder = getStandaloneSidebarGroupOrderPref();
+      const sidebarCollapsedGroups = new Set(
+        getStandaloneSidebarCollapsedGroupsPref(),
+      );
+      const sidebarSectionOptions = getStandaloneSidebarSectionOptionsPref();
+      let lastSidebarConversations: SidebarConv[] | null = null;
+      // The section whose sort button opened the shared sort menu.
+      let sidebarSortMenuKey: StandaloneSidebarGroupKey | null = null;
+      const sidebarSortButtonFor = (key: StandaloneSidebarGroupKey | null) =>
+        key
+          ? (sidebarList.querySelector(
+              `.llm-standalone-conv-group[data-group-key="${key}"] .llm-standalone-conv-group-sort`,
+            ) as HTMLButtonElement | null)
+          : null;
+      const syncSidebarSortControls = (key: StandaloneSidebarGroupKey) => {
+        const options = getStandaloneSidebarSectionOptions(
+          sidebarSectionOptions,
+          key,
+        );
+        for (const [order, item] of sidebarView.historySortItems) {
+          item.setAttribute("aria-checked", String(order === options.sort));
+        }
+        sidebarView.historyShowDatesItem.setAttribute(
+          "aria-checked",
+          String(options.showDates),
+        );
+      };
+      const setSidebarSortMenuOpen = (
+        open: boolean,
+        key: StandaloneSidebarGroupKey | null = sidebarSortMenuKey,
+      ) => {
+        const menu = sidebarView.historySortMenu;
+        sidebarSortButtonFor(sidebarSortMenuKey)?.setAttribute(
+          "aria-expanded",
+          "false",
+        );
+        if (!open || !key) {
+          menu.hidden = true;
+          sidebarSortMenuKey = null;
+          return;
+        }
+        const button = sidebarSortButtonFor(key);
+        if (!button) return;
+        sidebarSortMenuKey = key;
+        syncSidebarSortControls(key);
+        menu.hidden = false;
+        button.setAttribute("aria-expanded", "true");
+        const panelRect = sidebarPanel.getBoundingClientRect();
+        const buttonRect = button.getBoundingClientRect();
+        menu.style.top = `${Math.round(buttonRect.bottom - panelRect.top + 4)}px`;
+        menu.style.right = `${Math.max(
+          4,
+          Math.round(panelRect.right - buttonRect.right),
+        )}px`;
+        sidebarView.historySortItems
+          .get(
+            getStandaloneSidebarSectionOptions(sidebarSectionOptions, key).sort,
+          )
+          ?.focus();
+      };
+      const redrawSidebarSections = (focusKey?: StandaloneSidebarGroupKey) => {
+        if (isInWebChatMode) return;
+        if (!lastSidebarConversations) {
+          scheduleStandaloneSidebarRender();
+          return;
+        }
+        renderSidebarItems(lastSidebarConversations);
+        if (focusKey) {
+          (
+            sidebarList.querySelector(
+              `.llm-standalone-conv-group[data-group-key="${focusKey}"]`,
+            ) as HTMLElement | null
+          )?.focus();
+        }
+      };
+      sidebarView.historySortMenu.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const key = sidebarSortMenuKey;
+        const item = (event.target as Element | null)?.closest?.(
+          ".llm-standalone-history-sort-item",
+        ) as HTMLButtonElement | null;
+        if (!item || !key) return;
+        const options = {
+          ...getStandaloneSidebarSectionOptions(sidebarSectionOptions, key),
+        };
+        if (item.dataset.sortOrder) {
+          options.sort = item.dataset.sortOrder as StandaloneSidebarSortOrder;
+        } else if (item.dataset.sortToggle === "dates") {
+          options.showDates = !options.showDates;
+        }
+        sidebarSectionOptions.set(key, options);
+        setStandaloneSidebarSectionOptionsPref(sidebarSectionOptions);
+        if (item.dataset.sortOrder) {
+          redrawSidebarSections();
+          sidebarSortButtonFor(key)?.focus();
+        } else {
+          // Keep the menu open on its toggle, over the redrawn list.
+          redrawSidebarSections();
+          setSidebarSortMenuOpen(true, key);
+          sidebarView.historyShowDatesItem.focus();
+        }
+      });
+      sidebarView.historySortMenu.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          const key = sidebarSortMenuKey;
+          setSidebarSortMenuOpen(false);
+          sidebarSortButtonFor(key)?.focus();
+          return;
+        }
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+        event.preventDefault();
+        const items = Array.from(
+          sidebarView.historySortMenu.querySelectorAll(
+            ".llm-standalone-history-sort-item",
+          ),
+        ) as HTMLButtonElement[];
+        const index = items.indexOf(doc.activeElement as HTMLButtonElement);
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        items[(index + step + items.length) % items.length]?.focus();
+      });
+      doc.addEventListener("mousedown", (event) => {
+        const target = event.target as Element | null;
+        if (
+          target &&
+          (sidebarView.historySortMenu.contains(target) ||
+            target.closest?.(".llm-standalone-conv-group-sort"))
+        ) {
+          return;
+        }
+        setSidebarSortMenuOpen(false);
+      });
+
+      // Section labels: click (or Enter) folds the section, the sort button
+      // at the end sets its order, and dragging a label (or Alt+Up/Down)
+      // moves the section.
+      const toggleSidebarGroup = (key: StandaloneSidebarGroupKey) => {
+        if (sidebarCollapsedGroups.has(key)) sidebarCollapsedGroups.delete(key);
+        else sidebarCollapsedGroups.add(key);
+        setStandaloneSidebarCollapsedGroupsPref(
+          Array.from(sidebarCollapsedGroups),
+        );
+        redrawSidebarSections(key);
+      };
+      // A section's "+": a new chat in the window's own mode works like the
+      // new chat button; another mode switches the window to it, fresh.
+      const startSidebarSectionChat = (key: StandaloneSidebarGroupKey) => {
+        if (cancelled || newWin.closed) return;
+        if (key === currentConversationSystem) {
+          iconNewChat.click();
+          return;
+        }
+        void switchConversationSystem(key, { forceFresh: true });
+      };
+      const createSidebarGroupHeader = (
+        key: StandaloneSidebarGroupKey,
+        count: number,
+      ): HTMLDivElement => {
+        const label = t(getStandaloneSidebarGroupLabel(key));
+        const header = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+        header.className = "llm-standalone-conv-group";
+        header.dataset.groupKey = key;
+        header.tabIndex = 0;
+        header.setAttribute("role", "button");
+        const collapsed = sidebarCollapsedGroups.has(key);
+        header.setAttribute("aria-expanded", String(!collapsed));
+        if (collapsed) header.dataset.collapsed = "true";
+        header.title = t(
+          collapsed
+            ? "Click to expand, drag to reorder"
+            : "Click to collapse, drag to reorder",
+        );
+        header.addEventListener("click", () => toggleSidebarGroup(key));
+        header.addEventListener("keydown", (event) => {
+          if (event.target !== header) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          toggleSidebarGroup(key);
+        });
+        const name = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+        name.className = "llm-standalone-conv-group-name";
+        name.textContent = label;
+        const chevron = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+        chevron.className = "llm-standalone-conv-group-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        const countSpan = doc.createElementNS(
+          HTML_NS,
+          "span",
+        ) as HTMLSpanElement;
+        countSpan.className = "llm-standalone-conv-group-count";
+        countSpan.textContent = String(count);
+        const sortButton = doc.createElementNS(
+          HTML_NS,
+          "button",
+        ) as HTMLButtonElement;
+        sortButton.className = "llm-standalone-conv-group-sort";
+        sortButton.type = "button";
+        sortButton.title = t("Sort");
+        sortButton.setAttribute("aria-label", `${t("Sort")}: ${label}`);
+        sortButton.setAttribute("aria-haspopup", "menu");
+        sortButton.setAttribute("aria-expanded", "false");
+        sortButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          setSidebarSortMenuOpen(sidebarSortMenuKey !== key, key);
+        });
+        // "+" starts a new chat in this section's mode.
+        const newButton = doc.createElementNS(
+          HTML_NS,
+          "button",
+        ) as HTMLButtonElement;
+        newButton.className = "llm-standalone-conv-group-new";
+        newButton.type = "button";
+        newButton.title = `${t("New chat")}: ${label}`;
+        newButton.setAttribute("aria-label", `${t("New chat")}: ${label}`);
+        newButton.addEventListener("click", (event) => {
+          event.stopPropagation();
+          startSidebarSectionChat(key);
+        });
+        header.setAttribute(
+          "aria-label",
+          `${label} (${count}). ${t("Alt+Up or Alt+Down to reorder")}`,
+        );
+        header.append(name, countSpan, chevron, sortButton, newButton);
+        return header;
+      };
+      installStandaloneSidebarGroupDrag({
+        list: sidebarList,
+        onMove: (key, toIndex) => {
+          const visible = Array.from(
+            sidebarList.querySelectorAll(".llm-standalone-conv-group"),
+          ).map(
+            (el) => (el as HTMLElement).dataset.groupKey,
+          ) as StandaloneSidebarGroupKey[];
+          sidebarGroupOrder = moveStandaloneSidebarGroup(
+            sidebarGroupOrder,
+            key as StandaloneSidebarGroupKey,
+            toIndex,
+            visible,
+          );
+          setStandaloneSidebarGroupOrderPref(sidebarGroupOrder);
+          redrawSidebarSections(key as StandaloneSidebarGroupKey);
+        },
+      });
+
       const renderSidebarItems = (conversations: SidebarConv[]) => {
+        setSidebarSortMenuOpen(false);
+        lastSidebarConversations = conversations;
         clearSidebarList();
         const visibleConversations =
           collapseDuplicateReusableConversationDrafts({
@@ -1778,19 +3780,35 @@ export function openStandaloneChat(options?: {
           return;
         }
 
-        const groups = groupHistoryEntriesByDay(visibleConversations, {
-          translate: t,
-        });
-        for (const group of groups) {
-          const dayLabel = doc.createElementNS(
+        const now = Date.now();
+        const sections = groupStandaloneSidebarEntries(
+          visibleConversations,
+          sidebarGroupOrder,
+          currentConversationSystem,
+        );
+        for (const section of sections) {
+          if (section.key) {
+            sidebarList.appendChild(
+              createSidebarGroupHeader(section.key, section.items.length),
+            );
+            if (sidebarCollapsedGroups.has(section.key)) continue;
+          }
+          // The section's rows sit in one box, so its guide line can show
+          // while the mouse is over the section.
+          const sectionRowsBox = doc.createElementNS(
             HTML_NS,
             "div",
           ) as HTMLDivElement;
-          dayLabel.className = "llm-standalone-day-label";
-          dayLabel.textContent = group.label;
-          sidebarList.appendChild(dayLabel);
-
-          for (const conv of group.items) {
+          sectionRowsBox.className = "llm-standalone-conv-section-rows";
+          sidebarList.appendChild(sectionRowsBox);
+          const sectionOptions = getStandaloneSidebarSectionOptions(
+            sidebarSectionOptions,
+            section.key,
+          );
+          for (const conv of sortStandaloneSidebarEntries(
+            section.items,
+            sectionOptions.sort,
+          )) {
             const btn = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
             btn.className = "llm-standalone-conv-item";
             if (conv.conversationKey === activeConversationKey) {
@@ -1799,6 +3817,8 @@ export function openStandaloneChat(options?: {
             btn.setAttribute("role", "button");
             btn.tabIndex = 0;
             btn.dataset.conversationKey = String(conv.conversationKey);
+            btn.dataset.conversationSystem =
+              conv.conversationSystem || currentConversationSystem;
             if (conv.sessionVersion !== undefined) {
               btn.dataset.sessionVersion = String(conv.sessionVersion);
             }
@@ -1833,12 +3853,67 @@ export function openStandaloneChat(options?: {
                 t("Working"),
               ),
               titleSpan,
-              renameBtn,
-              deleteBtn,
             );
+            // The section label names the runtime, so rows carry no tag.
+            if (sectionOptions.showDates) {
+              const time = getStandaloneSidebarEntryTime(
+                conv,
+                sectionOptions.sort,
+              );
+              const dateText = formatStandaloneSidebarShortDate(time, {
+                now,
+                translate: t,
+              });
+              if (dateText) {
+                const dateSpan = doc.createElementNS(
+                  HTML_NS,
+                  "span",
+                ) as HTMLSpanElement;
+                dateSpan.className = "llm-standalone-conv-date";
+                dateSpan.textContent = dateText;
+                dateSpan.title = new Date(time).toLocaleString();
+                btn.appendChild(dateSpan);
+              }
+            }
+            btn.append(renameBtn, deleteBtn);
             btn.title = conv.title || t("Untitled chat");
-            sidebarList.appendChild(btn);
+            if (tearOffIdentityForEntry(conv)) {
+              btn.setAttribute("draggable", "true");
+              installTearOffDragSource(
+                btn,
+                () => tearOffIdentityForEntry(conv),
+                sidebarList,
+              );
+            }
+            sectionRowsBox.appendChild(btn);
           }
+        }
+      };
+
+      // A follower has no chat list. It only makes sure the chat it shows
+      // has a catalog entry, as the list's render does, once per chat.
+      let followerSeededConversationKey = 0;
+      const seedFollowerConversation = async () => {
+        const key = activeConversationKey;
+        if (key <= 0 || key === followerSeededConversationKey) return;
+        followerSeededConversationKey = key;
+        try {
+          if (standaloneMode === "open") {
+            await ensureActiveConversationCatalogEntry({
+              conversationKey: key,
+              libraryID: getCurrentLibraryScopeID(),
+              kind: "global",
+            });
+          } else if (currentBasePaperItem) {
+            await ensureActiveConversationCatalogEntry({
+              conversationKey: key,
+              libraryID: Number(currentBasePaperItem.libraryID || libraryID),
+              kind: "paper",
+              paperItemID: Number(currentBasePaperItem.id || 0),
+            });
+          }
+        } catch (err) {
+          appLogger.warn("LLM: follower catalog seed failed", err);
         }
       };
 
@@ -1846,6 +3921,10 @@ export function openStandaloneChat(options?: {
         if (cancelled) return;
         // In webchat mode, sidebar is managed by renderWebChatSidebar() — skip local rendering
         if (isInWebChatMode) return;
+        if (!linkedToReader) {
+          await seedFollowerConversation();
+          return;
+        }
         appLogger.debug(
           "LLM: standalone renderSidebar",
           "mode=" + standaloneMode,
@@ -1864,12 +3943,12 @@ export function openStandaloneChat(options?: {
               });
             }
             const conversations = (
-              await conversationRepository.listCatalogEntries({
-                system: currentConversationSystem,
-                kind: "global",
+              await listUnifiedHistoryEntries({
                 libraryID: currentLibraryID,
+                scope: "global",
+                systems: getStandaloneHistorySystems(),
+                activeSystem: currentConversationSystem,
                 limit: 50,
-                includeEmpty: true,
               })
             ).map(toSidebarConversation);
             if (cancelled) return;
@@ -1899,13 +3978,13 @@ export function openStandaloneChat(options?: {
               paperItemID: paperID,
             });
             const conversations = (
-              await conversationRepository.listCatalogEntries({
-                system: currentConversationSystem,
-                kind: "paper",
+              await listUnifiedHistoryEntries({
                 libraryID: paperLibID,
+                scope: "paper",
                 paperItemID: paperID,
+                systems: getStandaloneHistorySystems(),
+                activeSystem: currentConversationSystem,
                 limit: 50,
-                includeEmpty: true,
               })
             ).map(toSidebarConversation);
             if (cancelled) return;
@@ -1984,6 +4063,7 @@ export function openStandaloneChat(options?: {
           (id) => Zotero.Items.get(id) as Zotero.Item | null,
         );
         return {
+          system: entry.conversationSystem || currentConversationSystem,
           kind: isPaper ? "paper" : "global",
           sourceState,
           section: isPaper ? "paper" : "open",
@@ -2009,73 +4089,99 @@ export function openStandaloneChat(options?: {
         };
       };
 
+      // Every chat of the listed runtimes in this library: the Search history
+      // popup and the side panel's History tab read it. Empty chats of other
+      // runtimes are left out.
       const loadAllStandaloneSearchEntries = async (): Promise<
         ConversationHistoryEntry[]
       > => {
         const libraryID = getCurrentLibraryScopeID();
         const limit = 100;
-        let entries: SidebarConv[];
-        if (isClaudeConversationSystem()) {
-          entries = (
-            await loadAllClaudeConversationHistory({ libraryID, limit })
-          ).map((entry) => ({
-            conversationKey: entry.conversationKey,
-            conversationID: entry.conversationID,
-            libraryID,
-            lastActivityAt: entry.lastActivityAt,
-            title: entry.title,
-            userTurnCount: entry.userTurnCount,
-            paperItemID: entry.paperItemID,
-            providerSessionId: entry.providerSessionId,
-            scopedConversationKey: entry.scopedConversationKey,
-            mode: entry.kind === "paper" ? "paper" : "open",
-          }));
-        } else if (
-          isCodexConversationSystem() ||
-          isAntigravityConversationSystem()
-        ) {
-          entries = (
-            isAntigravityConversationSystem()
-              ? await loadAllAntigravityConversationHistory({
-                  libraryID,
-                  limit,
-                })
-              : await loadAllCodexConversationHistory({ libraryID, limit })
-          ).map((entry) => ({
-            conversationKey: entry.conversationKey,
-            conversationID: entry.conversationID,
-            libraryID,
-            lastActivityAt: entry.lastActivityAt,
-            title: entry.title,
-            userTurnCount: entry.userTurnCount,
-            paperItemID: entry.paperItemID,
-            providerSessionId: entry.providerSessionId,
-            scopedConversationKey: entry.scopedConversationKey,
-            mode: entry.kind === "paper" ? "paper" : "open",
-          }));
-        } else {
-          entries = (
-            await loadAllConversationHistory({ libraryID, limit })
-          ).map((entry) => ({
-            conversationKey: entry.conversationKey,
-            conversationID: entry.conversationID,
-            libraryID,
-            lastActivityAt: entry.lastActivityAt,
-            title: entry.title,
-            userTurnCount: entry.userTurnCount,
-            sessionVersion: entry.sessionVersion,
-            paperItemID: entry.paperItemID,
-            mode: entry.mode,
-          }));
-        }
-        return entries
+        const activeSystem = currentConversationSystem;
+        const loadSystemEntries = async (
+          system: ConversationSystem,
+        ): Promise<SidebarConv[]> => {
+          if (
+            system === "claude_code" ||
+            system === "codex" ||
+            system === "antigravity"
+          ) {
+            const summaries =
+              system === "claude_code"
+                ? await loadAllClaudeConversationHistory({ libraryID, limit })
+                : system === "antigravity"
+                  ? await loadAllAntigravityConversationHistory({
+                      libraryID,
+                      limit,
+                    })
+                  : await loadAllCodexConversationHistory({ libraryID, limit });
+            return summaries.map((entry) => ({
+              conversationKey: entry.conversationKey,
+              conversationID: entry.conversationID,
+              conversationSystem: system,
+              libraryID,
+              lastActivityAt: entry.lastActivityAt,
+              title: entry.title,
+              userTurnCount: entry.userTurnCount,
+              paperItemID: entry.paperItemID,
+              providerSessionId: entry.providerSessionId,
+              scopedConversationKey: entry.scopedConversationKey,
+              mode: entry.kind === "paper" ? "paper" : "open",
+            }));
+          }
+          return (await loadAllConversationHistory({ libraryID, limit })).map(
+            (entry) => ({
+              conversationKey: entry.conversationKey,
+              conversationID: entry.conversationID,
+              conversationSystem: "upstream" as const,
+              libraryID,
+              lastActivityAt: entry.lastActivityAt,
+              title: entry.title,
+              userTurnCount: entry.userTurnCount,
+              sessionVersion: entry.sessionVersion,
+              paperItemID: entry.paperItemID,
+              mode: entry.mode,
+            }),
+          );
+        };
+        const perSystem = await Promise.all(
+          getStandaloneHistorySystems().map(async (system) => {
+            try {
+              return await loadSystemEntries(system);
+            } catch (err) {
+              appLogger.warn("LLM: standalone history rows failed", {
+                system,
+                error: err,
+              });
+              return [] as SidebarConv[];
+            }
+          }),
+        );
+        return perSystem
+          .flat()
+          .filter((entry) =>
+            isUnifiedHistoryRowListed(
+              {
+                system: entry.conversationSystem || activeSystem,
+                userTurnCount: entry.userTurnCount,
+              },
+              activeSystem,
+            ),
+          )
+          .sort((a, b) => {
+            if (b.lastActivityAt !== a.lastActivityAt) {
+              return b.lastActivityAt - a.lastActivityAt;
+            }
+            return b.conversationKey - a.conversationKey;
+          })
           .map(toStandaloneHistoryEntry)
           .filter(
             (entry) =>
               !pendingDeletionStore.isConversationPendingDeletion(
                 entry.conversationKey,
               ),
-          );
+          )
+          .slice(0, limit);
       };
 
       const loadStandaloneSearchDocument = async (
@@ -2085,7 +4191,7 @@ export function openStandaloneChat(options?: {
         const cached = searchDocCache.get(entry.conversationKey);
         if (cached?.fingerprint === fingerprint) return cached.document;
         const messages = await conversationRepository.loadMessages({
-          system: currentConversationSystem,
+          system: entry.system,
           conversationKey: entry.conversationKey,
           limit: 200,
         });
@@ -2120,9 +4226,75 @@ export function openStandaloneChat(options?: {
         }
       };
 
+      // One window per chat: in a torn-off window, picking a chat another
+      // torn-off window shows brings that window forward, and this one stays
+      // as it is. True when it did.
+      const bringForwardOtherTornWindow = (
+        conversationKey: number,
+      ): boolean => {
+        if (linkedToReader) return false;
+        const holder = findTornWindowForConversation(conversationKey);
+        if (!holder || holder === newWin) return false;
+        bringChatWindowForward(holder);
+        return true;
+      };
+
+      // A history row, or a follower's chat (see showFollowerChat): the
+      // fields a switch reads. selectInZotero: false leaves showing the
+      // paper in Zotero to the caller.
       const selectStandaloneSearchEntry = async (
-        entry: ConversationHistoryEntry,
+        entry: Pick<
+          ConversationHistoryEntry,
+          | "system"
+          | "kind"
+          | "sourceState"
+          | "conversationKey"
+          | "libraryID"
+          | "paperItemID"
+          | "sessionVersion"
+        >,
+        options?: { selectInZotero?: boolean },
       ): Promise<boolean> => {
+        // This window did not switch (the side panel keeps its tab).
+        if (bringForwardOtherTornWindow(entry.conversationKey)) return false;
+        // A row of another runtime opens in that runtime: the window adopts
+        // it (leaving WebChat first) right before it mounts the row's chat.
+        // The sidebar's runtime stays as it is.
+        const targetSystem = entry.system;
+        if (
+          targetSystem !== currentConversationSystem &&
+          !getStandaloneHistorySystems().includes(targetSystem)
+        ) {
+          return false;
+        }
+        // The open claims its sequence number once every refusal check has
+        // passed, before its first await, so a refused click never cancels an
+        // earlier open and a later click always wins over this one. A
+        // follower claims the chat in the registry then too, so an open of
+        // the chat elsewhere meanwhile finds this window (one window per
+        // chat); an open that fails gives the claim back, unless a later
+        // open has made its own.
+        let openSeq = 0;
+        const claimOpen = () => {
+          openSeq = ++standaloneHistoryOpenSeq;
+          if (!linkedToReader) {
+            setTornWindowConversation(newWin, entry.conversationKey);
+          }
+        };
+        const releaseClaim = () => {
+          if (!linkedToReader && openSeq === standaloneHistoryOpenSeq) {
+            setTornWindowConversation(newWin, activeConversationKey);
+          }
+        };
+        const isNewestOpen = () =>
+          openSeq === standaloneHistoryOpenSeq && !cancelled && !newWin.closed;
+        const adoptTargetRuntime = async (): Promise<boolean> => {
+          if (!isNewestOpen()) return false;
+          // Read at this moment: an earlier open may have moved the window.
+          if (targetSystem === currentConversationSystem) return true;
+          const adopted = await adoptStandaloneRuntime(targetSystem);
+          return adopted && isNewestOpen();
+        };
         try {
           if (entry.kind === "paper") {
             if (isOrphanHistoryEntry(entry)) {
@@ -2175,22 +4347,31 @@ export function openStandaloneChat(options?: {
               conversationKey: entry.conversationKey,
               paperItem,
               sessionVersion: sv,
+              system: targetSystem,
             });
             if (!portalItem) return false;
             const targetModeSnapshot = primeHistoryNavigationMode({
-              system: currentConversationSystem,
+              system: targetSystem,
               libraryID:
                 Number(entry.libraryID || 0) ||
                 Number(paperItem.libraryID || 0) ||
                 getCurrentLibraryScopeID(),
-              surface: "standalone",
+              surface: windowSurface,
               mode: "paper",
               conversationKey: entry.conversationKey,
               paperItemID: paperItem.id,
             });
             let mounted = false;
+            claimOpen();
             try {
-              if (navigationDecision === "select-target-paper") {
+              // The standalone window shows the row's paper in Zotero too and
+              // follows it there; a torn-off window only makes it its own
+              // paper and leaves Zotero as it is.
+              if (
+                linkedToReader &&
+                options?.selectInZotero !== false &&
+                navigationDecision === "select-target-paper"
+              ) {
                 const selected = await maybeSelectStandaloneHistoryPaperItem(
                   navigationDecision,
                   paperItem,
@@ -2208,7 +4389,9 @@ export function openStandaloneChat(options?: {
                   }
                   return false;
                 }
+                if (!isNewestOpen()) return false;
               }
+              if (!(await adoptTargetRuntime())) return false;
               standaloneMode = "paper";
               currentPaperItem = paperItem;
               currentBasePaperItem = paperItem;
@@ -2216,34 +4399,43 @@ export function openStandaloneChat(options?: {
               paperTab.classList.add("active");
               openTab.classList.remove("active");
               syncPaperTabLabel();
-              mountChatPanel(portalItem, paperItem);
+              await showStandaloneConversation(portalItem, paperItem);
               mounted = true;
             } finally {
-              if (!mounted) targetModeSnapshot.restore();
+              if (!mounted) {
+                targetModeSnapshot.restore();
+                releaseClaim();
+              }
             }
           } else {
             const portalItem = buildStandalonePortalItem({
               mode: "open",
               conversationKey: entry.conversationKey,
+              system: targetSystem,
             });
             if (!portalItem) return false;
             const targetModeSnapshot = primeHistoryNavigationMode({
-              system: currentConversationSystem,
+              system: targetSystem,
               libraryID:
                 Number(entry.libraryID || 0) || getCurrentLibraryScopeID(),
-              surface: "standalone",
+              surface: windowSurface,
               mode: "global",
               conversationKey: entry.conversationKey,
             });
             let mounted = false;
+            claimOpen();
             try {
+              if (!(await adoptTargetRuntime())) return false;
               standaloneMode = "open";
               paperTab.classList.remove("active");
               openTab.classList.add("active");
-              mountChatPanel(portalItem);
+              await showStandaloneConversation(portalItem);
               mounted = true;
             } finally {
-              if (!mounted) targetModeSnapshot.restore();
+              if (!mounted) {
+                targetModeSnapshot.restore();
+                releaseClaim();
+              }
             }
           }
           return true;
@@ -2253,33 +4445,154 @@ export function openStandaloneChat(options?: {
         }
       };
 
-      const searchPopupController = createHistorySearchPopupController({
-        parent: root,
+      // The list sources the Search history popup and the side panel's
+      // History list share.
+      const standaloneHistoryListSources = {
+        showRuntimeLabel: true,
         loadEntries: loadAllStandaloneSearchEntries,
         loadDocument: loadStandaloneSearchDocument,
-        onSelect: selectStandaloneSearchEntry,
-        onDelete: async (entry) => {
-          await queueStandaloneHistoryDeletion(
-            toStandaloneDeletionEntry(entry),
-          );
-        },
         translate: t,
-        log: (...args) => appLogger.warn("LLM: standalone search popup", args),
-        resolveLabel: (entry) =>
+        log: (...args: unknown[]) =>
+          appLogger.warn("LLM: standalone history list", args),
+        resolveLabel: (entry: ConversationHistoryEntry) =>
           isOrphanHistoryEntry(entry)
             ? t("Orphan")
             : entry.kind === "paper"
               ? resolvePaperLabel(entry.paperItemID)
               : t("Library chat"),
-        resolveScopeLabel: (entry) =>
+        resolveScopeLabel: (entry: ConversationHistoryEntry) =>
           entry.kind === "paper"
             ? resolvePaperSearchScopeLabel(entry.paperItemID, entry.sourceState)
             : t("Library chat"),
+      };
+
+      const searchPopupController = createHistorySearchPopupController({
+        ...standaloneHistoryListSources,
+        parent: root,
+        // Another window taking the chat also answers the pick: the popup
+        // closes.
+        onSelect: (entry) =>
+          bringForwardOtherTornWindow(entry.conversationKey) ||
+          selectStandaloneSearchEntry(entry),
+        onDelete: async (entry) => {
+          await queueStandaloneHistoryDeletion(
+            toStandaloneDeletionEntry(entry),
+          );
+        },
       });
+
+      const resolveStandaloneHistoryEntryPaper = (
+        entry: ConversationHistoryEntry,
+      ): Zotero.Item | null =>
+        entry.kind === "paper" && !isOrphanHistoryEntry(entry)
+          ? resolveHistoryEntryPaperBaseItem(
+              entry,
+              (id) => Zotero.Items.get(id) as Zotero.Item | null,
+            )
+          : null;
+
+      const readPixelStyleVariable = (name: string): number => {
+        const value = Number.parseFloat(
+          lowerArea.style.getPropertyValue(name) || "",
+        );
+        return Number.isFinite(value) && value > 0 ? value : 0;
+      };
+
+      // Third column: History (read-only past chats) and a temporary side
+      // chat that follows the main chat's paper or library. A torn-off
+      // window's is read only: no side chats, and "Open as main chat" loads
+      // the chat into this window (or brings forward the window holding it).
+      standaloneSidePanel = createStandaloneSidePanel({
+        win: newWin,
+        lowerArea,
+        mainBody: contentArea,
+        toggleHost: followerActions || tabRowTrailing,
+        readOnly: !linkedToReader,
+        getMainContext: () => ({
+          mode: standaloneMode,
+          conversationKey: activeConversationKey,
+          basePaperItem:
+            standaloneMode === "paper" ? currentBasePaperItem : null,
+          libraryID: getCurrentLibraryScopeID(),
+          conversationSystem: currentConversationSystem,
+        }),
+        historyList: standaloneHistoryListSources,
+        buildHistoryEntryItem: (entry) => {
+          if (entry.kind !== "paper") {
+            return buildStandalonePortalItem({
+              mode: "open",
+              conversationKey: entry.conversationKey,
+              system: entry.system,
+            });
+          }
+          const paperItem = resolveStandaloneHistoryEntryPaper(entry);
+          if (!paperItem) return null;
+          const sessionVersion = Number(entry.sessionVersion || 0);
+          return buildStandalonePortalItem({
+            mode: "paper",
+            conversationKey: entry.conversationKey,
+            paperItem,
+            sessionVersion: sessionVersion > 0 ? sessionVersion : 1,
+            system: entry.system,
+          });
+        },
+        resolveHistoryEntryPaper: resolveStandaloneHistoryEntryPaper,
+        openAsMainChat: selectStandaloneSearchEntry,
+        minWindowWidth,
+        getReservedLeftWidth: () =>
+          !linkedToReader || sidebar.dataset.sidebarState === "collapsed"
+            ? 0
+            : readPixelStyleVariable("--llm-standalone-sidebar-panel-width") +
+              STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
+        onLayoutChanged: () => {
+          applyAutoSidebarStateForCurrentWidth();
+          standaloneSidebarResize.relayout();
+          standaloneSidePanel?.relayout();
+        },
+        // Every paper keeps its tabs until the window closes; a paper that
+        // is gone (deleted) gives them up.
+        shouldKeepWorkspace: (key) => {
+          const paperID = resolveSidePanelWorkspacePaperID(key);
+          return paperID > 0 ? Boolean(Zotero.Items.get(paperID)) : true;
+        },
+      });
+      disposeStandaloneSidePanel = () => {
+        standaloneSidePanel?.dispose();
+        standaloneSidePanel = null;
+      };
 
       iconSearch.addEventListener("click", () => {
         searchPopupController.toggle();
       });
+      // A follower's History lists every chat, under its own button; the
+      // side panel toggle comes first in the top row, then Open in main
+      // window.
+      if (iconFollowerHistory) {
+        const historyButton = iconFollowerHistory;
+        historyButton.addEventListener("click", () => {
+          searchPopupController.toggle({ anchor: historyButton });
+        });
+      }
+      if (iconFollowerOpenMain) {
+        const openMainButton = iconFollowerOpenMain;
+        followerActions?.append(openMainButton);
+        if (iconFollowerMore) followerActions?.append(iconFollowerMore);
+        // The chat moves to the standalone window (opened if closed), and
+        // this window closes once that window shows it; otherwise it stays.
+        openMainButton.addEventListener("click", () => {
+          const identity = shownChatIdentity();
+          if (!identity || openMainButton.disabled) return;
+          openMainButton.disabled = true;
+          void openConversationInLeader(identity).then((shown) => {
+            if (cancelled || newWin.closed) return;
+            if (shown) {
+              newWin.close();
+              return;
+            }
+            openMainButton.disabled = false;
+          });
+        });
+      }
 
       // ----------------------------------------------------------------
       // Skills popup — open/close/render/interactions
@@ -2425,7 +4738,10 @@ export function openStandaloneChat(options?: {
             item.append(icon, label);
 
             // Tooltip summarizes source + available actions
-            const tooltipLines = [entry.description || entry.filename, ""];
+            const tooltipLines = [
+              t(entry.description || "") || entry.filename,
+              "",
+            ];
             if (entry.source === "system") {
               tooltipLines.push(`Shipped built-in (v${entry.version ?? 0})`);
             } else if (entry.source === "customized") {
@@ -2661,7 +4977,11 @@ export function openStandaloneChat(options?: {
       doc.addEventListener("mousedown", (e: Event) => {
         const target = e.target as HTMLElement;
         if (exportPopup.style.display !== "none") {
-          if (!exportPopup.contains(target) && !iconExport.contains(target)) {
+          if (
+            !exportPopup.contains(target) &&
+            !iconExport.contains(target) &&
+            !iconFollowerMore?.contains(target)
+          ) {
             exportPopup.style.display = "none";
           }
         }
@@ -2845,13 +5165,14 @@ export function openStandaloneChat(options?: {
             currentConversationSystem,
             currentLibraryID,
             key,
+            windowSurface,
           );
           const newItem = buildStandalonePortalItem({
             mode: "open",
             conversationKey: key,
           });
           if (!newItem) return false;
-          mountChatPanel(newItem);
+          await showStandaloneConversation(newItem);
           return true;
         }
         if (!currentBasePaperItem) return false;
@@ -2863,7 +5184,7 @@ export function openStandaloneChat(options?: {
         });
         currentPaperItem = currentBasePaperItem;
         if (!newItem) return false;
-        mountChatPanel(newItem);
+        await showStandaloneConversation(newItem);
         return true;
       };
 
@@ -2959,7 +5280,15 @@ export function openStandaloneChat(options?: {
               : null,
           surrendered: standaloneSurrenderedDeletions.has(entry.id),
           dropped: Boolean(event.dropped),
+          holdsOneChat: !linkedToReader,
         });
+        if (action.type === "close") {
+          // A follower holds one chat: it keeps it, with its panel's Undo,
+          // while Undo is possible, and closes once the deletion is final. It
+          // never falls back to another chat (which another window may hold).
+          newWin.close();
+          return;
+        }
         if (action.type === "leave") {
           const surfaceEntry = toStandaloneDeletionSurfaceEntry(entry);
           const left =
@@ -3000,6 +5329,7 @@ export function openStandaloneChat(options?: {
             void enqueueStandaloneConversationDeletionEvent(() =>
               handleStandaloneConversationDeletionEvent(event),
             );
+            standaloneSidePanel?.onConversationDeletionChanged();
             return;
           }
           scheduleStandaloneSidebarRender();
@@ -3030,7 +5360,7 @@ export function openStandaloneChat(options?: {
         conversationID: entry.conversationID,
         conversationKey: entry.conversationKey,
         kind: entry.kind,
-        conversationSystem: currentConversationSystem,
+        conversationSystem: entry.system,
         libraryID: entry.libraryID || getCurrentLibraryScopeID(),
         lastActivityAt: entry.lastActivityAt,
         title: entry.title,
@@ -3224,43 +5554,61 @@ export function openStandaloneChat(options?: {
           return;
         const key = Number(target.dataset.conversationKey);
         if (!key || key === activeConversationKey) return;
+        const openSeq = ++standaloneHistoryOpenSeq;
+        const rowSystem =
+          standaloneSidebarEntriesByKey.get(key)?.conversationSystem ||
+          currentConversationSystem;
 
-        activeConversationKey = key;
+        const openRow = () => {
+          activeConversationKey = key;
+          markStandaloneSidebarActiveRow(key);
 
-        // Update active class
-        const conversationItems = Array.from(
-          sidebarList.querySelectorAll(".llm-standalone-conv-item"),
-        ) as HTMLElement[];
-        for (const el of conversationItems) {
-          el.classList.remove("active");
-        }
-        target.classList.add("active");
-
-        if (standaloneMode === "open") {
-          const currentLibraryID = getCurrentLibraryScopeID();
-          rememberStandaloneGlobalConversation(
-            currentConversationSystem,
-            currentLibraryID,
-            key,
-          );
-          const newItem = buildStandalonePortalItem({
-            mode: "open",
-            conversationKey: key,
-          });
-          if (newItem) mountChatPanel(newItem);
-        } else {
-          if (currentBasePaperItem) {
-            const sessionVersion = Number(target.dataset.sessionVersion || "0");
+          if (standaloneMode === "open") {
+            const currentLibraryID = getCurrentLibraryScopeID();
+            rememberStandaloneGlobalConversation(
+              currentConversationSystem,
+              currentLibraryID,
+              key,
+              windowSurface,
+            );
             const newItem = buildStandalonePortalItem({
-              mode: "paper",
+              mode: "open",
               conversationKey: key,
-              paperItem: currentBasePaperItem,
-              sessionVersion,
             });
-            currentPaperItem = currentBasePaperItem;
-            if (newItem) mountChatPanel(newItem);
+            if (newItem) void showStandaloneConversation(newItem);
+          } else {
+            if (currentBasePaperItem) {
+              const sessionVersion = Number(
+                target.dataset.sessionVersion || "0",
+              );
+              const newItem = buildStandalonePortalItem({
+                mode: "paper",
+                conversationKey: key,
+                paperItem: currentBasePaperItem,
+                sessionVersion,
+              });
+              currentPaperItem = currentBasePaperItem;
+              if (newItem) void showStandaloneConversation(newItem);
+            }
           }
+        };
+
+        if (rowSystem === currentConversationSystem) {
+          openRow();
+          return;
         }
+        // A row of another runtime: the window adopts that runtime first.
+        void adoptStandaloneRuntime(rowSystem).then((adopted) => {
+          if (
+            !adopted ||
+            openSeq !== standaloneHistoryOpenSeq ||
+            cancelled ||
+            newWin.closed
+          ) {
+            return;
+          }
+          openRow();
+        });
       });
 
       sidebarList.addEventListener("keydown", (e: Event) => {
@@ -3355,9 +5703,9 @@ export function openStandaloneChat(options?: {
         });
       };
 
-      const mountStandaloneOpenConversation = (
+      const mountStandaloneOpenConversation = async (
         conversationKey: number,
-      ): boolean => {
+      ): Promise<boolean> => {
         const normalizedKey = Number.isFinite(conversationKey)
           ? Math.floor(conversationKey)
           : 0;
@@ -3371,6 +5719,7 @@ export function openStandaloneChat(options?: {
           currentConversationSystem,
           currentLibraryID,
           normalizedKey,
+          windowSurface,
         );
         const nextItem = buildStandalonePortalItem({
           mode: "open",
@@ -3379,8 +5728,8 @@ export function openStandaloneChat(options?: {
         if (!nextItem) {
           return false;
         }
-        mountChatPanel(nextItem);
         scheduleStandaloneSidebarRender();
+        await showStandaloneConversation(nextItem);
         return true;
       };
 
@@ -3399,7 +5748,7 @@ export function openStandaloneChat(options?: {
           }
           if (cancelled) return false;
           await touchStandaloneEmptyDraftActivity(conversationKey, "global");
-          return mountStandaloneOpenConversation(conversationKey);
+          return await mountStandaloneOpenConversation(conversationKey);
         };
 
       const restoreStandaloneOpenConversation = async (
@@ -3413,7 +5762,7 @@ export function openStandaloneChat(options?: {
             ? resolveRememberedGlobalPanelItem(
                 getCurrentLibraryScopeID(),
                 currentConversationSystem,
-                "standalone",
+                windowSurface,
               )
             : null;
         const conversationKey = rememberedItem
@@ -3422,7 +5771,7 @@ export function openStandaloneChat(options?: {
         if (!conversationKey || cancelled) {
           return false;
         }
-        return mountStandaloneOpenConversation(conversationKey);
+        return await mountStandaloneOpenConversation(conversationKey);
       };
 
       // Icon strip handlers — new chat
@@ -3450,13 +5799,14 @@ export function openStandaloneChat(options?: {
               currentConversationSystem,
               currentLibraryID,
               newKey,
+              windowSurface,
             );
             const newItem = buildStandalonePortalItem({
               mode: "open",
               conversationKey: newKey,
             });
             if (!newItem) return;
-            mountChatPanel(newItem);
+            await showStandaloneConversation(newItem);
             await renderSidebar();
           } else {
             if (currentBasePaperItem) {
@@ -3473,7 +5823,7 @@ export function openStandaloneChat(options?: {
               if (!newItem) return;
               activeConversationKey = newKey;
               currentPaperItem = currentBasePaperItem;
-              mountChatPanel(newItem);
+              await showStandaloneConversation(newItem);
               await renderSidebar();
             }
           }
@@ -3493,13 +5843,9 @@ export function openStandaloneChat(options?: {
         ) as HTMLElement | null;
         if (btn) btn.click();
       });
-      iconExport.addEventListener("click", (e: Event) => {
-        e.stopPropagation();
-        if (exportPopup.style.display !== "none") {
-          exportPopup.style.display = "none";
-          return;
-        }
-        const iconRect = iconExport.getBoundingClientRect();
+      // The export popup opens under `anchor`, flush with its right edge.
+      const openExportPopup = (anchor: HTMLElement) => {
+        const iconRect = anchor.getBoundingClientRect();
         exportPopup.style.position = "fixed";
         exportPopup.style.left = "auto";
         exportPopup.style.right = `${Math.max(
@@ -3508,6 +5854,14 @@ export function openStandaloneChat(options?: {
         )}px`;
         exportPopup.style.top = `${Math.round(iconRect.bottom + 4)}px`;
         exportPopup.style.display = "flex";
+      };
+      iconExport.addEventListener("click", (e: Event) => {
+        e.stopPropagation();
+        if (exportPopup.style.display !== "none") {
+          exportPopup.style.display = "none";
+          return;
+        }
+        openExportPopup(iconExport);
       });
       exportPopupCopyBtn.addEventListener("click", () => {
         exportPopup.style.display = "none";
@@ -3529,6 +5883,74 @@ export function openStandaloneChat(options?: {
         ) as HTMLElement | null;
         if (btn) btn.click();
       });
+
+      // A follower's More menu. Its items run the handlers of the Task
+      // progress, Export and Delete buttons, which a follower keeps out of
+      // the page (the same buttons, so the same state and the same flows).
+      if (
+        iconFollowerMore &&
+        followerMoreMenu &&
+        followerMoreTaskItem &&
+        followerMoreExportItem &&
+        followerMoreDeleteItem
+      ) {
+        const moreButton = iconFollowerMore;
+        const moreMenu = followerMoreMenu;
+        const taskItem = followerMoreTaskItem;
+        const hideMoreMenu = () => {
+          moreMenu.style.display = "none";
+          moreButton.setAttribute("aria-expanded", "false");
+        };
+        const showMoreMenu = () => {
+          // Task progress shows its state, and is off where the row never
+          // shows (a note chat, no conversation).
+          const applies = iconTaskProgress.style.display !== "none";
+          const pressed = iconTaskProgress.getAttribute("aria-pressed");
+          taskItem.setAttribute(
+            "aria-checked",
+            applies && pressed === "true" ? "true" : "false",
+          );
+          taskItem.disabled = !applies;
+          exportPopup.style.display = "none";
+          moreMenu.style.display = "flex";
+          const rect = moreButton.getBoundingClientRect();
+          moreMenu.style.left = "auto";
+          moreMenu.style.right = `${Math.max(
+            8,
+            Math.round(newWin.innerWidth - rect.right),
+          )}px`;
+          moreMenu.style.top = `${Math.round(rect.bottom + 4)}px`;
+          moreButton.setAttribute("aria-expanded", "true");
+        };
+        moreButton.addEventListener("click", () => {
+          if (moreMenu.style.display !== "none") hideMoreMenu();
+          else showMoreMenu();
+        });
+        taskItem.addEventListener("click", () => {
+          hideMoreMenu();
+          iconTaskProgress.click();
+        });
+        followerMoreExportItem.addEventListener("click", () => {
+          hideMoreMenu();
+          openExportPopup(moreButton);
+        });
+        followerMoreDeleteItem.addEventListener("click", () => {
+          hideMoreMenu();
+          iconClear.click();
+        });
+        doc.addEventListener("mousedown", (e: Event) => {
+          if (moreMenu.style.display === "none") return;
+          const target = e.target as Node;
+          if (!moreMenu.contains(target) && !moreButton.contains(target)) {
+            hideMoreMenu();
+          }
+        });
+        doc.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key === "Escape" && moreMenu.style.display !== "none") {
+            hideMoreMenu();
+          }
+        });
+      }
 
       // -----------------------------------------------------------------------
       // Top bar tab switching
@@ -3561,7 +5983,7 @@ export function openStandaloneChat(options?: {
           // The window's backend is its own; the sidebar keeps the saved one.
           surfaceChoices.conversationSystem.set(
             resolvedNextSystem,
-            "standalone",
+            windowSurface,
           );
           currentConversationSystem = resolvedNextSystem;
           if (options?.forceFresh === true) {
@@ -3576,6 +5998,7 @@ export function openStandaloneChat(options?: {
                 resolvedNextSystem,
                 libraryID,
                 newKey,
+                windowSurface,
               );
               activeConversationKey = newKey;
             } else {
@@ -3595,6 +6018,7 @@ export function openStandaloneChat(options?: {
                 libraryID,
                 paperItemID,
                 newKey,
+                windowSurface,
               );
               activeConversationKey = newKey;
             }
@@ -3610,7 +6034,7 @@ export function openStandaloneChat(options?: {
         const currentSystem = currentConversationSystem;
         if (nextSystem === currentSystem) return;
         const forceFresh = options?.forceFresh === true;
-        surfaceChoices.conversationSystem.set(nextSystem, "standalone");
+        surfaceChoices.conversationSystem.set(nextSystem, windowSurface);
         currentConversationSystem = nextSystem;
         updateStandaloneSystemToggles();
         if (standaloneMode === "open") {
@@ -3633,6 +6057,7 @@ export function openStandaloneChat(options?: {
               nextSystem,
               libraryID,
               conversationKey,
+              windowSurface,
             );
             mountChatPanel(nextItem as Zotero.Item);
             scheduleStandaloneSidebarRender();
@@ -3653,7 +6078,7 @@ export function openStandaloneChat(options?: {
           const rememberedItem = resolveRememberedGlobalPanelItem(
             libraryID,
             nextSystem,
-            "standalone",
+            windowSurface,
           );
           const targetKey = rememberedItem
             ? getConversationKey(rememberedItem)
@@ -3664,12 +6089,15 @@ export function openStandaloneChat(options?: {
           }
           return;
         }
-        const nextRawItem =
-          getSelectedZoteroItem() || currentBasePaperItem || currentPaperItem;
+        // A torn-off window stays on its own paper, never the one Zotero
+        // shows.
+        const nextRawItem = linkedToReader
+          ? getSelectedZoteroItem() || currentBasePaperItem || currentPaperItem
+          : currentBasePaperItem || currentPaperItem || currentRawContextItem;
         const resolved = resolveInitialPanelItemState(nextRawItem, {
           conversationSystem: nextSystem,
           conversationMode: "paper",
-          surface: "standalone",
+          surface: windowSurface,
         });
         currentRawContextItem = nextRawItem || currentRawContextItem;
         currentBasePaperItem = resolved.basePaperItem || currentBasePaperItem;
@@ -3717,6 +6145,36 @@ export function openStandaloneChat(options?: {
         updateStandaloneSystemToggles();
       };
 
+      /**
+       * Makes `system` the window's runtime for a history row of that runtime,
+       * without mounting anything: the caller mounts the row's chat next.
+       * Leaves WebChat first. The sidebar's saved runtime is not touched.
+       * Resolves false when the runtime is off or a newer switch started.
+       */
+      adoptStandaloneRuntime = async (
+        system: ConversationSystem,
+      ): Promise<boolean> => {
+        if (
+          (system === "codex" && !isCodexAppServerModeEnabled()) ||
+          (system === "claude_code" && !getClaudeCodeModeEnabled())
+        ) {
+          return false;
+        }
+        const switchSeq = ++systemSwitchSeq;
+        if (isInWebChatMode) {
+          await currentChatHooks?.leaveWebChatMode?.();
+          if (switchSeq !== systemSwitchSeq || cancelled || newWin.closed) {
+            return false;
+          }
+        }
+        if (system !== currentConversationSystem) {
+          surfaceChoices.conversationSystem.set(system, windowSurface);
+          currentConversationSystem = system;
+        }
+        updateStandaloneSystemToggles();
+        return true;
+      };
+
       for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
         standaloneRuntimeSystemControls.buttons[system].addEventListener(
           "click",
@@ -3762,6 +6220,21 @@ export function openStandaloneChat(options?: {
           antigravityObserverId = undefined;
         };
         cleanupStandalonePrefObserver = unregister;
+        // The runtime of the chat on screen was turned off. The leader moves
+        // to the Agent runtime; a follower holds one chat, so it closes rather
+        // than show another chat (which another window may hold). It closes
+        // after this pref notification: closing unregisters its observers,
+        // and doing that while Zotero walks the observer list skips the next
+        // window's.
+        const leaveTurnedOffRuntime = () => {
+          if (!linkedToReader) {
+            newWin.setTimeout(() => {
+              if (!newWin.closed) newWin.close();
+            }, 0);
+            return;
+          }
+          void switchConversationSystem("upstream");
+        };
         const onClaudeModePrefChange = () => {
           if (cancelled || newWin.closed) {
             unregister();
@@ -3781,7 +6254,7 @@ export function openStandaloneChat(options?: {
               });
             demoteConversationSystemOnEverySurface("claude_code");
             if (isClaudeConversationSystem()) {
-              void switchConversationSystem("upstream");
+              leaveTurnedOffRuntime();
               return;
             }
           }
@@ -3795,7 +6268,7 @@ export function openStandaloneChat(options?: {
           if (!isCodexAppServerModeEnabled()) {
             demoteConversationSystemOnEverySurface("codex");
             if (isCodexConversationSystem()) {
-              void switchConversationSystem("upstream");
+              leaveTurnedOffRuntime();
               return;
             }
           }
@@ -3844,7 +6317,7 @@ export function openStandaloneChat(options?: {
           currentConversationSystem,
           getCurrentLibraryScopeID(),
           mode === "open" ? "global" : "paper",
-          { surface: "standalone" },
+          { surface: windowSurface },
         );
         paperTab.classList.toggle("active", mode === "paper");
         openTab.classList.toggle("active", mode === "open");
@@ -3867,7 +6340,7 @@ export function openStandaloneChat(options?: {
         const resolved = resolveInitialPanelItemState(rawItem, {
           conversationSystem: currentConversationSystem,
           conversationMode: "paper",
-          surface: "standalone",
+          surface: windowSurface,
         });
         const paperItem =
           resolved.basePaperItem ||
@@ -3921,22 +6394,28 @@ export function openStandaloneChat(options?: {
             const rememberedItem = resolveRememberedGlobalPanelItem(
               getCurrentLibraryScopeID(),
               currentConversationSystem,
-              "standalone",
+              windowSurface,
             );
             const key = rememberedItem ? getConversationKey(rememberedItem) : 0;
             if (!key) return;
             commitStandaloneMode("open");
-            mountStandaloneOpenConversation(key);
+            await mountStandaloneOpenConversation(key);
             return;
           }
 
-          const rawItem =
-            getSelectedZoteroItem() ||
-            currentRawContextItem ||
-            currentBasePaperItem ||
-            currentPaperItem;
+          // A torn-off window returns to its own paper, never the one Zotero
+          // shows; once that paper is in the trash it has none.
+          const rawItem = linkedToReader
+            ? getSelectedZoteroItem() ||
+              currentRawContextItem ||
+              currentBasePaperItem ||
+              currentPaperItem
+            : currentBasePaperItem || currentPaperItem || currentRawContextItem;
           const target = resolvePaperSwitchTarget(rawItem);
-          if (!target.paperItem) {
+          if (
+            !target.paperItem ||
+            (!linkedToReader && (target.paperItem as any).deleted)
+          ) {
             showNoPaperChatSourceStatus();
             return;
           }
@@ -4005,15 +6484,30 @@ export function openStandaloneChat(options?: {
         }
         lastAutoState = autoState;
       };
+      // The History pane is measured against the room left of the side
+      // panel. The panel widens the window by its own width, so opening or
+      // closing it leaves that room (and the pane's state) unchanged; the
+      // pending part covers the moment before the window reports its size.
+      // Only a real narrowing (or a screen too small for the panel) counts.
+      const resolveAutoSidebarWidth = (width: number) =>
+        Math.max(
+          0,
+          width -
+            (standaloneSidePanel?.getOccupiedWidth() || 0) +
+            (standaloneSidePanel?.getPendingWindowWidthChange() || 0),
+        );
+      const applyAutoSidebarStateForCurrentWidth = () => {
+        applyAutoSidebarState(resolveAutoSidebarWidth(root.clientWidth || 0));
+      };
       const handleResize = () => {
-        applyAutoSidebarState(root.clientWidth || 0);
+        applyAutoSidebarStateForCurrentWidth();
       };
       const RO =
         (newWin as any).ResizeObserver || (globalThis as any).ResizeObserver;
       if (RO) {
         const resizeObserver = new RO((entries: any[]) => {
           const width = entries[0]?.contentRect?.width || root.clientWidth || 0;
-          applyAutoSidebarState(width);
+          applyAutoSidebarState(resolveAutoSidebarWidth(width));
         });
         resizeObserver.observe(root);
       } else {
@@ -4032,10 +6526,43 @@ export function openStandaloneChat(options?: {
 
       // Listen for paper tab changes in the main Zotero window.
       // When the user switches to a different paper, update the standalone chat.
-      standaloneItemChangeHandler = (rawItem: Zotero.Item | null) => {
+      // A torn-off window keeps its own paper and never follows (see below).
+      const readActivePaperID = () =>
+        standaloneMode === "paper"
+          ? Number(currentPaperItem?.id || 0) || null
+          : null;
+      // A pinned paper opened from the sidebar selects it in Zotero; until
+      // that settles, other papers Zotero shows on the way are not followed.
+      // Arriving at the pinned paper settles it. A paper skipped meanwhile is
+      // checked again when the wait ends, so the window ends on what Zotero
+      // shows.
+      let pinnedPaperNavigation: { paperID: number; until: number } | null =
+        null;
+      let pinnedPaperRecheck: number | null = null;
+      const followReaderItem = (rawItem: Zotero.Item | null) => {
         if (cancelled || standaloneMode !== "paper") return;
         const target = resolvePaperSwitchTarget(rawItem);
         const newBasePaper = target.paperItem;
+        if (pinnedPaperNavigation) {
+          const arrived =
+            Number(newBasePaper?.id || 0) === pinnedPaperNavigation.paperID;
+          if (arrived || Date.now() > pinnedPaperNavigation.until) {
+            pinnedPaperNavigation = null;
+          } else {
+            if (pinnedPaperRecheck === null) {
+              pinnedPaperRecheck = newWin.setTimeout(
+                () => {
+                  pinnedPaperRecheck = null;
+                  if (cancelled) return;
+                  pinnedPaperNavigation = null;
+                  standaloneItemChangeHandler?.(readSelectedTabItem());
+                },
+                Math.max(0, pinnedPaperNavigation.until - Date.now()) + 50,
+              );
+            }
+            return;
+          }
+        }
         if (!newBasePaper) {
           currentRawContextItem = rawItem;
           currentBasePaperItem = null;
@@ -4078,6 +6605,349 @@ export function openStandaloneChat(options?: {
         }
       };
 
+      // Follow the selected main-window tab from Zotero's own tab notifier.
+      // The panels' onItemChange only fires when a tab's own host re-renders
+      // with a new signature, so re-selecting a tab seen before was missed.
+      const readSelectedTabItem = (): Zotero.Item | null => {
+        const tabs = (mainWin as any)?.Zotero_Tabs;
+        const tabID = tabs?.selectedID;
+        if (!tabID) return null;
+        if (tabs.selectedType === "library") return getSelectedZoteroItem();
+        const reader = (Zotero as any).Reader?.getByTabID?.(tabID);
+        const itemID = Number(reader?.itemID || 0);
+        return itemID > 0 ? (Zotero.Items.get(itemID) as Zotero.Item) : null;
+      };
+      if (linkedToReader) {
+        ownActivePaperIDReader = readActivePaperID;
+        standaloneActivePaperIDReader = ownActivePaperIDReader;
+        ownItemChangeHandler = followReaderItem;
+        standaloneItemChangeHandler = ownItemChangeHandler;
+        const tabFollowObserverID = Zotero.Notifier.registerObserver(
+          {
+            notify: (event: string) => {
+              if (event !== "select") return;
+              // Zotero_Tabs updates selectedID after it notifies.
+              mainWin?.setTimeout(() => {
+                if (cancelled || newWin.closed) return;
+                const item = readSelectedTabItem();
+                if (item) standaloneItemChangeHandler?.(item);
+              }, 0);
+            },
+          },
+          ["tab"],
+          "llm-standalone-tab-follow",
+        );
+        cleanupStandaloneTabFollow = () =>
+          Zotero.Notifier.unregisterObserver(tabFollowObserverID);
+      } else {
+        // A torn-off window's own paper moved to the trash (or deleted)
+        // closes the window when it holds that paper's chat; the chat stays
+        // in history. A library chat only forgets the paper it came from.
+        const closeForTrashedOwnPaper = () => {
+          if (cancelled || newWin.closed || !currentBasePaperItem) return;
+          const paper = Zotero.Items.get(
+            Number(currentBasePaperItem.id || 0),
+          ) as Zotero.Item | false;
+          if (paper && !(paper as any).deleted) return;
+          if (standaloneMode === "paper") {
+            newWin.close();
+            return;
+          }
+          currentRawContextItem = null;
+          currentBasePaperItem = null;
+          currentPaperItem = null;
+          syncPaperTabLabel();
+          updateContentTitle();
+        };
+        const paperWatchObserverID = Zotero.Notifier.registerObserver(
+          {
+            notify: (event: string, _type: string, ids: unknown[]) => {
+              if (event !== "trash" && event !== "delete" && event !== "modify")
+                return;
+              const paperID = Number(currentBasePaperItem?.id || 0);
+              if (!paperID || !ids.some((id) => Number(id) === paperID)) return;
+              newWin.setTimeout(closeForTrashedOwnPaper, 0);
+            },
+          },
+          ["item"],
+          "llm-torn-chat-paper-watch",
+        );
+        cleanupTornPaperWatch = () =>
+          Zotero.Notifier.unregisterObserver(paperWatchObserverID);
+      }
+
+      // -- Pinned papers ------------------------------------------------------
+      const savePinnedPapers = (ids: number[]) => {
+        pinnedPaperIDs = ids;
+        setStandalonePinnedPapersPref(ids);
+      };
+      const getPinnedPaper = (paperID: number): Zotero.Item | null => {
+        const item = Zotero.Items.get(paperID) as Zotero.Item | false;
+        return item && !(item as any).deleted ? item : null;
+      };
+      const togglePin = (paperID: number) => {
+        savePinnedPapers(togglePinnedPaper(pinnedPaperIDs, paperID));
+        if (!pinnedPaperIDs.includes(paperID)) {
+          readyPinnedPaperIDs.delete(paperID);
+        }
+        syncPinButton();
+        renderPinnedPapers();
+      };
+      /** The reader tab showing the paper (or one of its files), if open. */
+      const findPaperReaderTab = (
+        paperID: number,
+      ): { tabID: string; item: Zotero.Item } | null => {
+        const tabs = (mainWin as any)?.Zotero_Tabs;
+        for (const tab of (tabs?._tabs || []) as any[]) {
+          if (!String(tab?.type || "").startsWith("reader")) continue;
+          const item = Zotero.Items.get(Number(tab?.data?.itemID || 0)) as
+            | Zotero.Item
+            | false;
+          if (!item) continue;
+          const base = resolvePaperChatSourceItem(item);
+          if (Number(base?.id || 0) === paperID) {
+            return { tabID: String(tab.id), item };
+          }
+        }
+        return null;
+      };
+      /**
+       * Shows the paper in Zotero too: its reader tab when one is open,
+       * otherwise the paper selected in the library (no new reader tab).
+       * keepTabFocused stops Zotero from focusing the reader, which would
+       * bring the main Zotero window in front of this one.
+       */
+      const revealPaperInZotero = (paperID: number, readerTabID?: string) => {
+        try {
+          const tabs = (mainWin as any)?.Zotero_Tabs;
+          const keepFocus = { keepTabFocused: true };
+          if (readerTabID) {
+            tabs?.select?.(readerTabID, false, keepFocus);
+            return;
+          }
+          if (tabs && tabs.selectedID !== "zotero-pane") {
+            tabs.select?.("zotero-pane", false, keepFocus);
+          }
+          void (mainWin as any)?.ZoteroPane?.selectItem?.(paperID);
+        } catch (err) {
+          appLogger.warn("LLM: standalone pinned paper reveal failed", err);
+        }
+      };
+      const openPinnedPaper = (paperID: number) => {
+        if (cancelled || isInWebChatMode) return;
+        const paper = getPinnedPaper(paperID);
+        if (!paper) {
+          togglePin(paperID);
+          return;
+        }
+        const readerTab = findPaperReaderTab(paperID);
+        pinnedPaperNavigation = { paperID, until: Date.now() + 1500 };
+        const shown =
+          standaloneMode === "paper" &&
+          Number(currentBasePaperItem?.id || 0) === paperID;
+        if (!shown) {
+          const target = resolvePaperSwitchTarget(readerTab?.item || paper);
+          if (target.paperItem) {
+            mountRememberedStandalonePaperConversation({
+              paperItem: target.paperItem,
+              panelItem: target.panelItem,
+              rawItem: target.rawItem || target.paperItem,
+            });
+          }
+        }
+        revealPaperInZotero(paperID, readerTab?.tabID);
+      };
+      // "Open in main window" from a follower: this window shows the
+      // follower's chat. A paper chat shows its paper in Zotero too, the way
+      // a pinned paper does, so following the reader does not pull this
+      // window back to the paper Zotero showed before. True once shown.
+      const showFollowerChat = async (
+        identity: TornChatIdentity,
+      ): Promise<boolean> => {
+        if (cancelled || newWin.closed) return false;
+        const target = {
+          system: identity.system,
+          kind: identity.kind,
+          sourceState: "active" as const,
+          conversationKey: identity.conversationKey,
+          libraryID: identity.libraryID,
+          paperItemID: identity.paperItemID,
+        };
+        if (identity.kind !== "paper") {
+          return selectStandaloneSearchEntry(target);
+        }
+        const paperID = Math.floor(Number(identity.paperItemID || 0));
+        pinnedPaperNavigation = { paperID, until: Date.now() + 1500 };
+        const shown = await selectStandaloneSearchEntry(target, {
+          selectInZotero: false,
+        });
+        if (!shown || cancelled || newWin.closed) {
+          pinnedPaperNavigation = null;
+          return false;
+        }
+        revealPaperInZotero(paperID, findPaperReaderTab(paperID)?.tabID);
+        return true;
+      };
+      renderPinnedPapers = () => {
+        // A follower has no Pinned list.
+        if (cancelled || !linkedToReader) return;
+        const list = sidebarView.pinnedList;
+        list.replaceChildren();
+        const shownPaperID =
+          standaloneMode === "paper"
+            ? Number(currentBasePaperItem?.id || 0)
+            : 0;
+        let shownCount = 0;
+        for (const paperID of pinnedPaperIDs) {
+          const paper = getPinnedPaper(paperID);
+          if (!paper) continue;
+          shownCount += 1;
+          const row = doc.createElementNS(HTML_NS, "div") as HTMLDivElement;
+          row.className =
+            "llm-standalone-conv-item llm-standalone-pinned-paper";
+          row.classList.toggle("active", paperID === shownPaperID);
+          row.setAttribute("role", "button");
+          row.tabIndex = 0;
+          row.dataset.paperItemId = String(paperID);
+          let title = "";
+          try {
+            title = String(paper.getField("title") || "");
+          } catch {
+            title = "";
+          }
+          row.title = title || resolvePaperShortLabel(paper);
+          const label = doc.createElementNS(HTML_NS, "span") as HTMLSpanElement;
+          label.className = "llm-standalone-conv-title";
+          label.textContent = resolvePaperShortLabel(paper);
+          row.append(label);
+          const conversationKey = shownPaperConversationKeys.get(paperID) || 0;
+          const dot = resolvePinnedPaperDot({
+            writing: conversationKey > 0 && isRequestPending(conversationKey),
+            readyUnseen: readyPinnedPaperIDs.has(paperID),
+          });
+          if (dot === "writing") {
+            row.appendChild(
+              createHistoryActivityIndicator(
+                doc,
+                conversationKey,
+                t("Writing an answer"),
+              ),
+            );
+          } else if (dot === "ready") {
+            const ready = doc.createElementNS(
+              HTML_NS,
+              "span",
+            ) as HTMLSpanElement;
+            ready.className = "llm-standalone-pinned-ready";
+            ready.setAttribute("role", "img");
+            ready.setAttribute("aria-label", t("Answer ready"));
+            ready.title = t("Answer ready");
+            row.appendChild(ready);
+          }
+          const unpin = doc.createElementNS(
+            HTML_NS,
+            "button",
+          ) as HTMLButtonElement;
+          unpin.className = "llm-standalone-conv-delete";
+          unpin.type = "button";
+          unpin.dataset.action = "unpin";
+          unpin.title = t("Unpin");
+          unpin.setAttribute("aria-label", t("Unpin"));
+          row.appendChild(unpin);
+          list.appendChild(row);
+        }
+        // The section always shows (outside WebChat), empty or not.
+        sidebarView.pinnedRegion.hidden = isInWebChatMode;
+        sidebarView.pinnedClear.hidden = shownCount === 0;
+      };
+      // "Pinned" folds like an agent section; its fold is remembered.
+      let pinnedCollapsed = getStandaloneSidebarPinnedCollapsedPref();
+      const syncPinnedFold = () => {
+        const header = sidebarView.pinnedHeader;
+        header.setAttribute("aria-expanded", String(!pinnedCollapsed));
+        if (pinnedCollapsed) header.dataset.collapsed = "true";
+        else delete header.dataset.collapsed;
+        header.title = t(
+          pinnedCollapsed ? "Click to expand" : "Click to collapse",
+        );
+        sidebarView.pinnedList.hidden = pinnedCollapsed;
+      };
+      const togglePinnedFold = () => {
+        pinnedCollapsed = !pinnedCollapsed;
+        setStandaloneSidebarPinnedCollapsedPref(pinnedCollapsed);
+        syncPinnedFold();
+      };
+      syncPinnedFold();
+      sidebarView.pinnedHeader.addEventListener("click", (event) => {
+        if ((event.target as Element | null)?.closest?.("button")) return;
+        togglePinnedFold();
+      });
+      sidebarView.pinnedHeader.addEventListener("keydown", (event) => {
+        if (event.target !== sidebarView.pinnedHeader) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        togglePinnedFold();
+      });
+      sidebarView.pinnedClear.addEventListener("click", () => {
+        if (cancelled || !pinnedPaperIDs.length) return;
+        savePinnedPapers([]);
+        readyPinnedPaperIDs.clear();
+        syncPinButton();
+        renderPinnedPapers();
+      });
+      sidebarView.pinnedList.addEventListener("click", (event) => {
+        const target = event.target as Element | null;
+        const row = target?.closest?.(
+          ".llm-standalone-pinned-paper",
+        ) as HTMLElement | null;
+        const paperID = Number(row?.dataset.paperItemId || 0);
+        if (!row || paperID <= 0) return;
+        if (target?.closest?.('[data-action="unpin"]')) {
+          event.stopPropagation();
+          togglePin(paperID);
+          return;
+        }
+        openPinnedPaper(paperID);
+      });
+      sidebarView.pinnedList.addEventListener(
+        "keydown",
+        (event: KeyboardEvent) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          const row = (event.target as Element | null)?.closest?.(
+            ".llm-standalone-pinned-paper",
+          ) as HTMLElement | null;
+          if (!row || event.target !== row) return;
+          event.preventDefault();
+          openPinnedPaper(Number(row.dataset.paperItemId || 0));
+        },
+      );
+      iconPin.addEventListener("click", () => {
+        const paperID =
+          standaloneMode === "paper"
+            ? Number(currentBasePaperItem?.id || 0)
+            : 0;
+        if (paperID > 0) togglePin(paperID);
+      });
+      // A pinned paper's dot follows its main chat's answer.
+      disposePinnedPaperActivity = subscribeRequestActivity(
+        (conversationKey) => {
+          if (cancelled || !linkedToReader) return;
+          for (const [paperID, key] of shownPaperConversationKeys) {
+            if (key !== conversationKey) continue;
+            readyPinnedPaperIDs = updateReadyPinnedPapers(readyPinnedPaperIDs, {
+              paperID,
+              pending: isRequestPending(conversationKey),
+              shownPaperID:
+                standaloneMode === "paper"
+                  ? Number(currentBasePaperItem?.id || 0) || null
+                  : null,
+            });
+            if (pinnedPaperIDs.includes(paperID)) renderPinnedPapers();
+          }
+        },
+      );
+      renderPinnedPapers();
+
       // Initial mount preserves the current paper/library conversation. The
       // only automatic blank draft is created once during Zotero startup.
       appLogger.debug(
@@ -4092,8 +6962,25 @@ export function openStandaloneChat(options?: {
         "mode=" + standaloneMode,
       );
       scheduleStandaloneSidebarRender();
+      // Followers' "Open in main window" lands here; a request made while
+      // this window was opening runs now, after the initial mount.
+      if (linkedToReader) {
+        ownConversationOpener = showFollowerChat;
+        standaloneConversationOpener = ownConversationOpener;
+        const pending = takePendingLeaderConversation();
+        if (pending) {
+          showFollowerChat(pending.identity).then(pending.settle, (err) => {
+            appLogger.warn("LLM: standalone open follower chat failed", err);
+            pending.settle(false);
+          });
+        }
+      }
     } catch (err) {
       appLogger.warn("LLM: standalone initWindow failed", err);
+      // A follower waiting on this window keeps its chat.
+      if (linkedToReader && !ownConversationOpener) {
+        takePendingLeaderConversation()?.settle(false);
+      }
       // Show a visible error so the window isn't silently blank
       try {
         const root = newWin.document?.getElementById(
@@ -4125,16 +7012,54 @@ export function openStandaloneChat(options?: {
     unbindStandaloneTaskProgressToggle = null;
     disposeHistoryActivity?.();
     disposeHistoryActivity = null;
+    disposePinnedPaperActivity?.();
+    disposePinnedPaperActivity = null;
+    disposePluginUpdate?.();
+    disposePluginUpdate = null;
     unsubscribeStandalonePendingDeletions?.();
     unsubscribeStandalonePendingDeletions = null;
     cleanupStandalonePrefObserver?.();
+    cleanupStandaloneTabFollow?.();
+    cleanupStandaloneTabFollow = null;
+    cleanupTornPaperWatch?.();
+    cleanupTornPaperWatch = null;
     cleanupStandaloneVerticalResize?.();
     cleanupStandaloneVerticalResize = null;
     cleanupStandaloneSidebarResize?.();
     cleanupStandaloneSidebarResize = null;
     cleanupStandaloneSidebarFlyout?.();
     cleanupStandaloneSidebarFlyout = null;
-    standaloneItemChangeHandler = null;
+    // The side chat is never saved: closing the window drops it.
+    try {
+      disposeStandaloneSidePanel?.();
+    } catch (err) {
+      appLogger.warn("LLM: standalone side panel cleanup failed", err);
+    }
+    disposeStandaloneSidePanel = null;
+    // Only the window that set the reader link (and the follower-chat
+    // opener) clears it: closing a torn-off window leaves the standalone
+    // window following the PDF reader.
+    if (
+      ownItemChangeHandler &&
+      standaloneItemChangeHandler === ownItemChangeHandler
+    ) {
+      standaloneItemChangeHandler = null;
+    }
+    if (
+      ownActivePaperIDReader &&
+      standaloneActivePaperIDReader === ownActivePaperIDReader
+    ) {
+      standaloneActivePaperIDReader = null;
+    }
+    if (
+      ownConversationOpener &&
+      standaloneConversationOpener === ownConversationOpener
+    ) {
+      standaloneConversationOpener = null;
+    }
+    ownItemChangeHandler = null;
+    ownActivePaperIDReader = null;
+    ownConversationOpener = null;
     themeObserver?.disconnect();
     themeObserver = null;
     if (enforceStandaloneMinimumSize) {
@@ -4150,7 +7075,7 @@ export function openStandaloneChat(options?: {
       newWin.clearTimeout(standaloneAttachmentGcTimer);
       standaloneAttachmentGcTimer = null;
     }
-    setStandalonePending(false);
+    if (linkedToReader) setStandalonePending(false);
     // Remove the standalone window's content area from panel tracking
     const root = newWin.document?.getElementById(
       "llmforzotero-standalone-chat-root",
@@ -4166,9 +7091,19 @@ export function openStandaloneChat(options?: {
       void releaseClaudeRuntimeForBody(contentArea as Element);
       unregisterContextPanel(contentArea);
     }
-    const sessionWin = getStandaloneSessionWindow();
-    if (sessionWin === newWin || sessionWin === null) {
-      setStandaloneSessionWindow(null);
+    if (linkedToReader) {
+      const sessionWin = getStandaloneSessionWindow();
+      if (sessionWin === newWin || sessionWin === null) {
+        setStandaloneSessionWindow(null);
+      }
+    }
+    if (tornSurface) {
+      // The window's in-memory selection and choices (its reasoning levels
+      // too) go with it; nothing it chose was ever written to prefs.
+      disposeTornRegistration?.();
+      clearTornSelection(tornSurface);
+      clearTornSurfaceChoices(tornSurface);
+      clearSelectedReasoningForSurface(tornSurface);
     }
     releaseDisconnectedEmbeddedPanels(contentArea as Element | null);
   };
@@ -4176,4 +7111,5 @@ export function openStandaloneChat(options?: {
   newWin.addEventListener("load", initWindow, { once: true });
   // Note: unload is registered inside initWindow to avoid the XUL
   // about:blank → document transition firing a premature unload.
+  return newWin;
 }

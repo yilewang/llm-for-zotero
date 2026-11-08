@@ -72,3 +72,43 @@ export function revealLocalPath(path: string): LocalPathRevealMethod | null {
 
   return null;
 }
+
+/** Opens the file in the app the system uses for its type; true if it tried. */
+export function launchLocalPath(path: string): boolean {
+  const normalizedPath = path.trim();
+  if (!normalizedPath) return false;
+
+  try {
+    const zotero = getZoteroRevealLike();
+    if (typeof zotero?.launchFile === "function") {
+      zotero.launchFile(normalizedPath);
+      return true;
+    }
+  } catch {
+    /* fall through to nsIFile */
+  }
+
+  try {
+    const components = getComponentsLike();
+    const createLocalFile =
+      components?.classes?.["@mozilla.org/file/local;1"]?.createInstance;
+    const nsIFile = components?.interfaces?.nsIFile;
+    if (typeof createLocalFile === "function" && nsIFile) {
+      const file = createLocalFile(nsIFile) as
+        | (LocalPathFile & { launch?: () => void })
+        | undefined;
+      if (
+        typeof file?.initWithPath === "function" &&
+        typeof file.launch === "function"
+      ) {
+        file.initWithPath(normalizedPath);
+        file.launch();
+        return true;
+      }
+    }
+  } catch {
+    /* nothing can open it */
+  }
+
+  return false;
+}

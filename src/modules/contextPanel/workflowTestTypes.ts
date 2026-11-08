@@ -7,11 +7,20 @@ import type { RetrievalTimingReport } from "../../services/retrieval/retrievalTi
 import type { LibraryTextIndexStatus } from "../../services/libraryTextIndex/scheduler";
 import type { LibraryRetrieveResult } from "../../agent/services/libraryRetrieveService";
 import type { CodexAppServerModelCatalogEntry } from "../../codexAppServer/modelCatalog";
+import type { TornChatIdentity } from "./tornChatWindows";
 
 export type WorkflowTestCodexModelCatalogResponse = {
   models?: CodexAppServerModelCatalogEntry[];
   error?: string;
   delayed?: boolean;
+};
+
+/** One open chat window document: the standalone window or a torn-off one. */
+export type WorkflowTestChatWindowEntry = {
+  /** The window's openDialog name. */
+  name: string;
+  /** Declares windowtype "llmforzotero:chat" (a torn-off window). */
+  torn: boolean;
 };
 
 export type WorkflowTestFixture = {
@@ -44,12 +53,361 @@ export type WorkflowTestPanel = {
   contextSnapshot: ResolvedContextSource | null;
 };
 
+export type WorkflowTestSidePanel = WorkflowTestPanel & {
+  /** The ephemeral key the side chat was mounted on. */
+  conversationKey: number;
+  /** The selection surface the side body resolves to. */
+  surface: string;
+  /** The key the mounted panel root shows. */
+  mountedConversationKey: number;
+  conversationSystem: string;
+};
+
+export type WorkflowTestStandaloneSidePanelControl =
+  | "toggle"
+  | "close"
+  /** The "+" button after the last tab. */
+  | "new-tab"
+  /** The strip's New tab tab, and its close button. */
+  | "newtab-tab"
+  | "newtab-tab-close"
+  /** The new-tab page's "Side chat" and "History" rows. */
+  | "new-sidechat"
+  | "new-history"
+  /** The shown side chat's clear button. */
+  | "clear"
+  /** The shown side chat's "close this side chat?" card. */
+  | "confirm-keep"
+  | "confirm-send-last"
+  | "confirm-discard"
+  /** The panel's "close the side panel?" card. */
+  | "panel-confirm-keep"
+  | "panel-confirm-discard"
+  | "readonly-add-paper"
+  | "readonly-open-main";
+
+export type WorkflowTestTextMetrics = {
+  fontSize: string;
+  fontWeight: string;
+  topPx: number;
+  heightPx: number;
+};
+
+export type WorkflowTestSegmentedTabMetrics = {
+  groupPadding: string;
+  groupGap: string;
+  groupRadius: string;
+  groupHeightPx: number;
+  tabs: {
+    paddingLeft: string;
+    paddingRight: string;
+    paddingTop: string;
+    minWidth: string;
+    heightPx: number;
+    widthPx: number;
+    fontSize: string;
+    radius: string;
+    active: boolean;
+    fontWeight: string;
+    background: string;
+    color: string;
+  }[];
+};
+
+/** A history row's scope chip colours, with the row's text colours. */
+export type WorkflowTestHistoryChipColors = {
+  type: string;
+  color: string;
+  background: string;
+  metaColor: string;
+  titleColor: string;
+};
+
+/** A chat body's composer box, rows, and footer status line. */
+export type WorkflowTestComposerMetrics = {
+  boxHeightPx: number;
+  contextRowHeightPx: number;
+  inputHeightPx: number;
+  toolRowHeightPx: number;
+  /** Font style of the input's placeholder ("normal", "italic"). */
+  placeholderFontStyle: string;
+  /** Visible chip labels in the context row. */
+  contextChips: string[];
+  /** The visible tool-row buttons' text, left to right. */
+  toolButtons: string[];
+  /** Height of each visible tool-row button. */
+  toolButtonHeightsPx: number[];
+  statusText: string;
+  statusClass: string;
+  statusColor: string;
+  /** The model button shows its name (not the icon-only fallback). */
+  modelNameShown: boolean | null;
+};
+
+/** One animation frame sampled while the side panel opens or closes. */
+export type WorkflowTestStandaloneSidePanelSlideFrame = {
+  timeMs: number;
+  outerWidth: number;
+  innerWidth: number;
+  screenX: number;
+  screenY: number;
+  mainWidthPx: number;
+  mainLeftPx: number;
+  /** The columns row's scroll offset; the row never scrolls. */
+  columnsScrollLeft: number;
+  panelWidthPx: number;
+  panelLeftPx: number;
+  panelShown: boolean;
+  /** Strip tabs (the New tab tab included) while the panel shows. */
+  panelTabCount: number;
+};
+
+export type WorkflowTestStandaloneSidePanelDiagnostics = {
+  open: boolean;
+  toggleExpanded: string | null;
+  toggleLabel: string;
+  toggleControls: string | null;
+  /**
+   * "closed", "newtab", "history", "readonly", or "sidechat" (the shown
+   * tab's kind).
+   */
+  view: string;
+  /** The shown tab's id; null on the new-tab page. */
+  activeTab: string | null;
+  /** The bar's tabs, left to right. */
+  tabs: {
+    id: string;
+    kind: string;
+    title: string;
+    active: boolean;
+    /** The tab's close button is visible. */
+    closeVisible: boolean;
+  }[];
+  /** The "+" button after the last tab. */
+  newTabButton: { visible: boolean; pressed: boolean };
+  /** Every tab in the strip, the New tab tab included. */
+  stripTabCount: number;
+  /** The New tab tab; `tabs` lists only the other tabs. */
+  newTabTab: {
+    present: boolean;
+    active: boolean;
+    title: string;
+    closeVisible: boolean;
+    index: number;
+  };
+  /** The panel's "close the side panel?" card. */
+  panelConfirm: { visible: boolean; text: string };
+  /** The visible view's title row text. */
+  titleText: string;
+  /**
+   * Computed type and box metrics of the panel's parts and their main-window
+   * counterparts, for the "same design language" checks.
+   */
+  design: {
+    mainTitle: WorkflowTestTextMetrics | null;
+    sideTitle: WorkflowTestTextMetrics | null;
+    tabRowHeightPx: number;
+    barHeightPx: number;
+    navRow: WorkflowTestTextMetrics | null;
+    launchRow: WorkflowTestTextMetrics | null;
+    /** The visible chat start page title (New tab, or an empty chat). */
+    startTitle: WorkflowTestTextMetrics | null;
+    /** The New tab page: the chat start page with two nav rows. */
+    newTabPage: {
+      title: string;
+      subtitle: string;
+      subtitleFontStyle: string;
+      centreDxPx: number;
+      centreDyPx: number;
+      rowLefts: number[];
+      titleTopPx: number;
+      subtitleTopPx: number | null;
+      /** The main chat's start-page title and tagline; null without one. */
+      mainTitleTopPx: number | null;
+      mainSubtitleTopPx: number | null;
+    } | null;
+    dayLabel: WorkflowTestTextMetrics | null;
+    sectionLabel: WorkflowTestTextMetrics | null;
+    /** --llm-font-scale on the main chat and on each panel chat. */
+    mainFontScale: string;
+    sideFontScales: string[];
+    /** Paper chat | Library chat. */
+    mainTabs: WorkflowTestSegmentedTabMetrics | null;
+    /** The panel's browser-style tab strip, and the main row's →| toggle. */
+    browserTabs: {
+      toggleTopPx: number;
+      toggleBottomPx: number;
+      /** Bottom of the 32px ⇤ sidebar toggle; null when it is hidden. */
+      navToggleBottomPx: number | null;
+      /** Top of Paper chat | Library chat; the tabs start on this line. */
+      mainSwitchTopPx: number;
+      /** Middle lines (y of the box's centre) of the strip and its parts. */
+      centres: {
+        /** The main tab row, the →| toggle and Paper chat | Library chat. */
+        tabRow: number;
+        toggle: number;
+        mainSwitch: number;
+        strip: number;
+        /** The "+" button and the panel's close button. */
+        newTabButton: number;
+        closeButton: number;
+        /** Each strip tab's icon, title and (when shown) close button. */
+        tabs: { icon: number; title: number; close: number | null }[];
+      };
+      panelLeftPx: number;
+      stripTopPx: number;
+      stripBottomPx: number;
+      /** The main column's tab row (→| toggle, Paper chat | Library chat). */
+      tabRowTopPx: number;
+      tabRowBottomPx: number;
+      stripBackground: string;
+      /** Top of the panel content under the strip. */
+      contentTopPx: number;
+      tabs: {
+        leftPx: number;
+        rightPx: number;
+        topPx: number;
+        bottomPx: number;
+        active: boolean;
+        background: string;
+        color: string;
+        radius: string;
+        /** The bottom flares' size and paint (active tab only). */
+        flareBefore: { widthPx: number; image: string };
+        flareAfter: { widthPx: number; image: string };
+      }[];
+    } | null;
+    /** Chips in the panel's visible history lists, one per label type. */
+    sideChips: WorkflowTestHistoryChipColors[];
+    /** The History view's search field, when it shows. */
+    searchField: {
+      topPx: number;
+      heightPx: number;
+      hasLens: boolean;
+      background: string;
+      placeholder: string;
+    } | null;
+  };
+  panelWidthPx: number;
+  mainContentWidthPx: number;
+  /** The standalone window's outer box and its screen. */
+  window: {
+    outerWidth: number;
+    screenX: number;
+    screenY: number;
+    availLeft: number;
+    availWidth: number;
+  };
+  /** The History pane: "expanded" or "collapsed". */
+  sidebarState: string;
+  /** The divider between the main chat and the panel. */
+  splitter: {
+    visible: boolean;
+    widthPx: number;
+    lineColor: string;
+    cursor: string;
+  };
+  panelBackground: string;
+  mainBackground: string;
+  /** The new-tab page's launch rows ("sidechat", "history"). */
+  launchRows: string[];
+  /** The History tab's Search history rows, while it shows. */
+  historyKeys: number[];
+  /** Every side chat tab, shown or not. */
+  sideChats: {
+    tabId: string;
+    conversationKey: number;
+    messageTexts: string[];
+    shown: boolean;
+  }[];
+  readOnly: {
+    title: string;
+    pill: string;
+    conversationKey: number;
+    messageTexts: string[];
+    inputDisabled: boolean;
+    placeholder: string;
+    actionButtons: string[];
+    statusText: string;
+    editableBubbles: number;
+    retryButtons: number;
+    deleteButtons: number;
+    forkButtons: number;
+    quoteButtons: number;
+    copyButtons: number;
+    composer: WorkflowTestComposerMetrics | null;
+  } | null;
+  sideChat: {
+    conversationKey: number;
+    conversationKind: string;
+    messageTexts: string[];
+    pill: string;
+    placeholder: string;
+    statusText: string;
+    inputHeightPx: number;
+    sendMainButtons: number;
+    retryButtons: number;
+    editableBubbles: number;
+    forkButtons: number;
+    deleteButtons: number;
+    contextNotes: string[];
+    selectedContextTexts: string[];
+    confirmVisible: boolean;
+    confirmText: string;
+    clearDisabled: boolean;
+    composer: WorkflowTestComposerMetrics | null;
+  } | null;
+  main: {
+    conversationKey: number;
+    inputHeightPx: number;
+    statusText: string;
+    selectedContextSources: string[];
+    selectedContextTexts: string[];
+    askSideButtons: number;
+    composer: WorkflowTestComposerMetrics | null;
+  };
+};
+
+export type WorkflowTestEphemeralConversationRowCounts = {
+  globalCatalog: number;
+  paperCatalog: number;
+  messages: number;
+  registry: number;
+  searchIndex: number;
+  ledger: number;
+  forkLinks: number;
+  pendingDeletions: number;
+  agentRuns: number;
+  agentRunEvents: number;
+  agentTranscript: number;
+  agentToolResultHandles: number;
+  agentMemory: number;
+  agentEvidence: number;
+  agentCoverage: number;
+  planDocuments: number;
+  planDocumentOwners: number;
+  attachmentRefs: number;
+  usageEvents: number;
+};
+
 export type WorkflowTestRuntimeSystemToggle = {
   system: RuntimeConversationSystem;
   visible: boolean;
   active: boolean;
   disabled: boolean;
   ariaPressed: boolean;
+};
+
+/** The composer's runtime badge and its menu, as a reader sees them. */
+export type WorkflowTestRuntimeBadge = {
+  visible: boolean;
+  /** Text on the badge itself ("Agent", "Chat", "Codex" or "Claude"). */
+  label: string;
+  /** False when the badge is disabled (a static label). */
+  clickable: boolean;
+  menuOpen: boolean;
+  /** Menu entries in display order; empty while the menu is closed. */
+  menuItems: Array<{ system: string; label: string; selected: boolean }>;
 };
 
 export type WorkflowTestPermissionSurfaceDiagnostics = {
@@ -208,9 +566,15 @@ export type WorkflowTestFooterLayout = {
   statusWrapped: boolean;
   controlsPinnedToFirstLine: boolean;
   textGlyphsAligned: boolean;
+  statusBarHeight: number;
+  spaceAboveStatus: number;
 };
 
 export type WorkflowTestStandaloneComposerResizeDiagnostics = {
+  oneLineHeight: number;
+  resizeHandleTargets: string[];
+  textOffsetFromModeLabel: number | null;
+  nativeResize: string;
   heightBeforeDrag: number;
   heightAfterDrag: number;
   heightAfterInput: number;
@@ -234,11 +598,13 @@ export type WorkflowTestDiagnostics = {
   selectedContextLabels: string[];
   composerCollectionLabels: string[];
   composerTagLabels: string[];
+  composerAttachedConversationLabels: string[];
   sentContextBadgeLabels: string[];
   sentContextItemLabels: string[];
   historyNewVisible?: boolean;
   historyToggleVisible?: boolean;
   runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
+  runtimeBadge?: WorkflowTestRuntimeBadge;
   webChatMode?: boolean;
   modelButtonDisabled?: boolean;
   inputValue?: string;
@@ -344,6 +710,7 @@ export type WorkflowTestStandaloneDiagnostics = {
   openTabText?: string;
   statusText?: string;
   runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
+  runtimeBadge?: WorkflowTestRuntimeBadge;
   lastSend: SendQuestionOptions | null;
   lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
 };
@@ -407,9 +774,69 @@ export type WorkflowTestPendingSendDeleteResult = {
   statusText: string;
 };
 
+/** The window's pin button and its "Pinned papers" rows. */
+export type WorkflowTestStandalonePinnedPapers = {
+  pinButton: { visible: boolean; pressed: boolean; label: string };
+  regionVisible: boolean;
+  /**
+   * The "Clear" button on the section's label row: present once a paper is
+   * pinned (on screen only while the pointer is over the section).
+   */
+  clearVisible: boolean;
+  /**
+   * Left edges (px) of the section's label and first row, and of the first
+   * history day label and row, so the two can be checked to line up.
+   */
+  edges: {
+    pinnedLabel: number | null;
+    pinnedRow: number | null;
+    historyLabel: number | null;
+    historyRow: number | null;
+  };
+  rows: Array<{
+    paperItemId: number;
+    label: string;
+    active: boolean;
+    /** "writing" while its chat answers, "ready" for an unseen answer. */
+    dot: "writing" | "ready" | null;
+  }>;
+};
+
 export type WorkflowTestHistoryRow = {
   conversationKey: number;
   title: string;
+  /** The runtime the row belongs to ("upstream", "codex", "claude_code"). */
+  system?: string;
+  /** The small runtime name on the row ("Codex", "Claude"; "" for Agent). */
+  runtimeLabel?: string;
+  /** The row's time text ("Draft" for an empty draft). */
+  isDraft?: boolean;
+};
+
+/** A chat written straight into one runtime's catalog and message store. */
+export type WorkflowTestSeededHistoryConversation = {
+  system: ConversationSystem;
+  kind: "global" | "paper";
+  conversationKey: number;
+  libraryID: number;
+};
+
+/** Two history rows clicked in one task, before either switch ends. */
+export type WorkflowTestRapidHistoryClicks = {
+  diagnostics: WorkflowTestDiagnostics;
+  /** Uncaught errors and rejected promises seen while the clicks settled. */
+  errors: string[];
+};
+
+/** A history search typed into the panel's search popup, then a row opened. */
+export type WorkflowTestHistorySearchOpen = {
+  /** Conversation keys the popup listed for the query. */
+  resultKeys: number[];
+  /** The listed rows' runtimes, in the same order. */
+  resultSystems: string[];
+  /** The listed rows' runtime names, in the same order. */
+  resultRuntimeLabels: string[];
+  opened: boolean;
 };
 
 export type WorkflowTestSeededTurn = {
@@ -625,6 +1052,19 @@ export type WorkflowTestApi = {
     noteHtml: string;
   }) => Promise<WorkflowTestStandaloneNoteFixture>;
   renderPanelForItem: (itemId: number) => Promise<WorkflowTestPanel>;
+  /** Mounts a temporary side chat on a fresh ephemeral key. */
+  renderSidePanelForItem: (input: {
+    itemId: number;
+    mode: "paper" | "global";
+    backgroundContext?: string;
+  }) => Promise<WorkflowTestSidePanel>;
+  /** Drops a side chat's in-memory state. */
+  discardSidePanelConversation: (conversationKey: number) => void;
+  /** Rows every store holds for one conversation key. */
+  getEphemeralConversationRowCounts: (
+    conversationKey: number,
+    runIds?: string[],
+  ) => Promise<WorkflowTestEphemeralConversationRowCounts>;
   refreshActiveConversationPanels: (conversationKey?: number) => void;
   exerciseNativeQuestionReview: (
     panelId: string,
@@ -667,6 +1107,27 @@ export type WorkflowTestApi = {
    * One scenario of the agent stop rules (turnBoundary.ts) through the
    * panel's send flow; only the model is scripted.
    */
+  /**
+   * One Agent turn whose scripted model calls record_paper_decisions through
+   * the panel's send flow and the real stores; only the model is scripted.
+   */
+  exercisePaperDecisionsTurn: (
+    input: {
+      panelId: string;
+    } & import("./paperDecisionsReplay").PaperDecisionsTurnInput,
+  ) => Promise<import("./paperDecisionsReplay").PaperDecisionsTurnResult>;
+  /**
+   * One tools/call through the plugin's MCP endpoint under a scope for the
+   * panel's conversation, with the call's completed activity.
+   */
+  callScopedMcpToolForConversation: (input: {
+    panelId: string;
+    runId: string;
+    name: string;
+    arguments: unknown;
+  }) => ReturnType<
+    typeof import("./paperDecisionsReplay").callScopedMcpToolForConversation
+  >;
   exerciseAgentStopRules: (input: {
     panelId: string;
     scenario: import("./stopRulesReplay").StopRuleScenario;
@@ -780,7 +1241,7 @@ export type WorkflowTestApi = {
     planSeen: boolean;
     hydrated: boolean;
     checklist: {
-      source: "action" | "codex" | "outcomes";
+      source: "action" | "codex" | "claude" | "outcomes";
       title: string;
       steps: Array<{
         label: string;
@@ -801,7 +1262,7 @@ export type WorkflowTestApi = {
       runId?: string;
       text?: string;
       title?: string;
-      checklistSource?: "action" | "codex" | "outcomes";
+      checklistSource?: "action" | "codex" | "claude" | "outcomes";
     }>;
     /** Each paper row's reads over every turn, by `libraryID:itemId`. */
     paperRows: Record<
@@ -818,6 +1279,12 @@ export type WorkflowTestApi = {
           snippet?: string;
           whyMatched?: string;
         }>;
+        /** The paper's latest agent decision (`latestTaskPaperDecision`). */
+        decision?: import("../../agent/context/taskPaperLedger").TaskPaperDecisionRecord;
+        /** Each question's decision about the paper, by turn. */
+        decisions: Array<
+          import("../../agent/context/taskPaperLedger").TaskPaperDecisionRecord
+        >;
       }
     >;
   } | null;
@@ -886,7 +1353,7 @@ export type WorkflowTestApi = {
     text: string,
     overrides?: Pick<
       SendQuestionOptions,
-      "forcedSkillIds" | "selectedTagContexts"
+      "forcedSkillIds" | "selectedTagContexts" | "attachedConversations"
     >,
   ) => Promise<{ conversationKey: number; sendSettledSequenceBefore: number }>;
   /**
@@ -911,14 +1378,53 @@ export type WorkflowTestApi = {
       | "fullTextPaperContexts"
       | "selectedCollectionContexts"
       | "selectedTagContexts"
+      | "attachedConversations"
     >,
   ) => Promise<WorkflowTestDiagnostics>;
+  /**
+   * Types "/" in the composer, clicks "Add past conversation", reads the
+   * picker rows, and clicks the row with `input.rowIndex`, or the first row
+   * whose title contains `input.title`.
+   */
+  pickPastConversationInPanel: (
+    panelId: string,
+    input?: { title?: string; rowIndex?: number },
+  ) => Promise<{
+    slashItemVisible: boolean;
+    rowTitles: string[];
+    rowLabels: string[];
+    rowMetas: string[];
+    rowRuntimeLabels: string[];
+    picked: boolean;
+  }>;
+  /**
+   * Adds a past chat to the panel's latest user message the way the agent's
+   * past_chat_attach does (through the panel's attach handler, via "agent"),
+   * then reads the refs from the in-memory message and the stored row.
+   */
+  attachPastChatAsAgentInPanel: (
+    panelId: string,
+    input: {
+      conversationKey: number;
+      title: string;
+      system?: ConversationSystem;
+    },
+  ) => Promise<{
+    outcome: { ok: true } | { ok: false; reason: string };
+    memoryRefs: import("../../shared/types").AttachedConversationRef[];
+    storedRefs: import("../../shared/types").AttachedConversationRef[];
+    diagnostics: WorkflowTestDiagnostics;
+  }>;
   clickPanelSystemToggle: (
     panelId: string,
     system: RuntimeConversationSystem,
   ) => Promise<WorkflowTestDiagnostics>;
-  clickPanelRuntimeModeToggle: (
+  /** Opens the runtime badge menu; resolves with the badge and its items. */
+  openPanelRuntimeMenu: (panelId: string) => Promise<WorkflowTestRuntimeBadge>;
+  /** Picks a runtime from the badge menu and waits for the switch to finish. */
+  pickPanelRuntime: (
     panelId: string,
+    system: ConversationSystem,
   ) => Promise<WorkflowTestDiagnostics>;
   clickPanelSystemTogglesRapidly: (
     panelId: string,
@@ -974,6 +1480,10 @@ export type WorkflowTestApi = {
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   toggleStandaloneSidebar: () => Promise<WorkflowTestStandaloneDiagnostics>;
   hoverStandaloneSidebarToggle: () => Promise<WorkflowTestStandaloneDiagnostics>;
+  openStandaloneRuntimeMenu: () => Promise<WorkflowTestRuntimeBadge>;
+  pickStandaloneRuntime: (
+    system: ConversationSystem,
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
   clickStandaloneSystemToggle: (
     system: RuntimeConversationSystem,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
@@ -1047,9 +1557,89 @@ export type WorkflowTestApi = {
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
   getStandaloneDiagnostics: () => Promise<WorkflowTestStandaloneDiagnostics>;
   closeStandalone: () => Promise<void>;
+  /** Starts opening (or focuses) the standalone window without waiting. */
+  beginOpenStandaloneForTest: (itemId: number) => void;
+  isStandaloneWindowActiveForTest: () => boolean;
+  /**
+   * Opens a torn-off window on the chat and waits for its panel; its panel
+   * body is the window's `.llm-standalone-content`.
+   */
+  openTornChatWindowForTest: (
+    identity: TornChatIdentity,
+    placement?: { screenX: number; screenY: number },
+  ) => Promise<{ surface: string }>;
+  getTornChatWindowsForTest: () => Window[];
+  closeTornChatWindowsForTest: () => Promise<void>;
+  listChatWindowsForTest: () => WorkflowTestChatWindowEntry[];
+  /** Replaces the update checker, installer and release-notes fetcher; null restores them. */
+  setPluginUpdateDeps: (
+    deps: import("../pluginUpdate").PluginUpdateDeps | null,
+  ) => void;
+  /** The window's side panel: open state, view, and each view's contents. */
+  getStandaloneSidePanelDiagnostics: () => Promise<WorkflowTestStandaloneSidePanelDiagnostics>;
+  /** Clicks one side panel control (toggle, tabs, launch rows, confirm). */
+  clickStandaloneSidePanelControl: (
+    control: WorkflowTestStandaloneSidePanelControl,
+  ) => Promise<WorkflowTestStandaloneSidePanelDiagnostics>;
+  /** Slows (ms) or restores (null) the side panel's open/close slide. */
+  setStandaloneSidePanelSlideDuration: (durationMs: number | null) => void;
+  /** Clicks a side panel control and samples each frame for `sampleMs`. */
+  recordStandaloneSidePanelSlide: (
+    control: WorkflowTestStandaloneSidePanelControl,
+    sampleMs?: number,
+  ) => Promise<WorkflowTestStandaloneSidePanelSlideFrame[]>;
+  /** Drags the side panel's divider by `deltaX` screen pixels. */
+  /** Opens the window's Search history popup, reads its chips, closes it. */
+  readStandaloneSearchPopupChipColors: () => Promise<
+    WorkflowTestHistoryChipColors[]
+  >;
+  dragStandaloneSidePanelSplitter: (
+    deltaX: number,
+  ) => Promise<WorkflowTestStandaloneSidePanelDiagnostics>;
+  /** Clicks a row of the History tab's Search history list. */
+  clickStandaloneSidePanelHistoryRow: (
+    conversationKey: number,
+  ) => Promise<WorkflowTestStandaloneSidePanelDiagnostics>;
+  /** Clicks the bar's tab at `index` (0 = leftmost), or its close button. */
+  clickStandaloneSidePanelTab: (
+    index: number,
+    part?: "tab" | "close",
+  ) => Promise<WorkflowTestStandaloneSidePanelDiagnostics>;
+  /** Clicks the newest assistant answer's footer action in one chat. */
+  clickStandaloneChatMessageAction: (
+    scope: "main" | "readonly" | "sidechat",
+    actionClass: string,
+  ) => Promise<WorkflowTestStandaloneSidePanelDiagnostics>;
+  /** Forgets a non-active conversation's in-memory history (stored rows stay). */
+  evictStandaloneConversationFromMemory: (
+    conversationKey: number,
+  ) => Promise<void>;
+  /** Runs the real conversation load for the open read-only view's key. */
+  probeStandaloneReadOnlyBorrowedLoad: (paperItemId: number) => Promise<{
+    conversationKey: number;
+    borrowedBefore: boolean;
+    loadedBefore: boolean;
+    borrowedAfter: boolean;
+    loadedAfter: boolean;
+  }>;
+  /** Types into the shown side chat's composer and presses Send. */
+  sendStandaloneSideChat: (text: string) => Promise<void>;
+  /** Opens the main chat's "/" menu and reads its "Add side chat" item. */
+  openStandaloneSlashSideChatItem: () => Promise<{
+    visible: boolean;
+    disabled: boolean;
+    hint: string;
+  }>;
+  /** Clicks the main chat's "Add side chat" item (menu already open). */
+  clickStandaloneSlashSideChatItem: () => Promise<WorkflowTestStandaloneSidePanelDiagnostics>;
   getLastSend: () => SendQuestionOptions | null;
   getDiagnostics: (panelId?: string) => Promise<WorkflowTestDiagnostics>;
   configurePermissionCatalogs: (input?: { delayFirstCodex?: boolean }) => void;
+  configureCodexDirectCatalog: (input: {
+    cachedClientVersion?: string;
+    liveAuthPath?: string;
+  }) => void;
+  getCodexDirectCatalogRequests: () => string[];
   configureCodexModelCatalogs: (
     responses: WorkflowTestCodexModelCatalogResponse[],
   ) => void;
@@ -1276,7 +1866,94 @@ export type WorkflowTestApi = {
       | WorkflowTestNoteFixture
       | WorkflowTestStandaloneNoteFixture,
   ) => Promise<void>;
-  listPanelHistory: (panelId: string) => Promise<WorkflowTestHistoryRow[]>;
+  listPanelHistory: (
+    panelId: string,
+    /** `reopen`: close an open menu first, so the list is read again. */
+    options?: { reopen?: boolean },
+  ) => Promise<WorkflowTestHistoryRow[]>;
+  /**
+   * Writes a chat (one user turn and one answer) into a runtime's catalog
+   * and message store directly, as a finished chat of that runtime would be
+   * stored; no Codex or Claude Code process takes part.
+   */
+  seedHistoryConversation: (input: {
+    system: ConversationSystem;
+    kind: "global" | "paper";
+    /** The paper (or note) a paper chat belongs to. */
+    paperItemId?: number;
+    userText: string;
+    assistantText?: string;
+  }) => Promise<WorkflowTestSeededHistoryConversation>;
+  /** Removes a seeded chat's local rows (catalog, messages, index). */
+  deleteSeededHistoryConversation: (
+    seeded: WorkflowTestSeededHistoryConversation,
+  ) => Promise<void>;
+  /** Clicks a row of the panel's history menu; waits for the open to end. */
+  clickPanelHistoryRow: (
+    panelId: string,
+    conversationKey: number,
+  ) => Promise<WorkflowTestDiagnostics>;
+  /**
+   * Clicks the visible row of `conversationKey` while a test-only hook forces
+   * that open to fail, waits for the open to settle, and clears the hook.
+   * `interceptorHit` records whether the hook was consulted for that key.
+   */
+  clickPanelHistoryRowWithForcedOpenFailure: (
+    panelId: string,
+    conversationKey: number,
+    system: ConversationSystem,
+  ) => Promise<{
+    diagnostics: WorkflowTestDiagnostics;
+    interceptorHit: boolean;
+  }>;
+  /** Clicks several history rows in one task, then waits for the panel. */
+  clickPanelHistoryRowsRapidly: (
+    panelId: string,
+    conversationKeys: number[],
+  ) => Promise<WorkflowTestRapidHistoryClicks>;
+  /**
+   * Opens the panel's Search history popup, searches `query`, and clicks the
+   * row of `conversationKey` (when `conversationKey` is 0, only lists).
+   */
+  searchAndOpenPanelHistory: (
+    panelId: string,
+    query: string,
+    conversationKey: number,
+  ) => Promise<WorkflowTestHistorySearchOpen>;
+  /**
+   * Renames a history row through its rename button and dialog. Resolves
+   * with the title each runtime's catalog holds for that key afterwards.
+   */
+  renamePanelHistoryConversation: (
+    panelId: string,
+    conversationKey: number,
+    title: string,
+  ) => Promise<Record<ConversationSystem, string | null>>;
+  /** Rows of the standalone window's own history list (left sidebar). */
+  listStandaloneSidebarHistory: () => Promise<WorkflowTestHistoryRow[]>;
+  /** Clicks a row of the window's history list; waits for the mount. */
+  clickStandaloneSidebarHistoryRow: (
+    conversationKey: number,
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  /** The window's pin button and "Pinned papers" rows. */
+  listStandalonePinnedPapers: () => Promise<WorkflowTestStandalonePinnedPapers>;
+  /** Clicks the pin button next to the paper chat's title. */
+  clickStandalonePinButton: () => Promise<WorkflowTestStandalonePinnedPapers>;
+  /** Clicks "Clear" on the "Pinned papers" label row (unpins all). */
+  clickStandalonePinnedClear: () => Promise<WorkflowTestStandalonePinnedPapers>;
+  /** Clicks a "Pinned papers" row (open) or its × (unpin). */
+  clickStandalonePinnedPaper: (
+    paperItemId: number,
+    action?: "open" | "unpin",
+  ) => Promise<WorkflowTestStandaloneDiagnostics>;
+  /**
+   * Opens the window's Search history popup, searches `query`, and clicks
+   * the row of `conversationKey`.
+   */
+  searchAndOpenStandaloneHistory: (
+    query: string,
+    conversationKey: number,
+  ) => Promise<WorkflowTestHistorySearchOpen>;
   deletePanelHistoryConversation: (
     panelId: string,
     conversationKey: number,

@@ -1781,9 +1781,7 @@ describe("live: instruction-driven digest scenarios", function () {
     });
     await api.selectPanelModelEntry(panel.panelId, MODEL_ENTRY_ID);
     diag = await api.getDiagnostics(panel.panelId);
-    if (diag.runtimeMode !== "agent") {
-      diag = await api.clickPanelRuntimeModeToggle(panel.panelId);
-    }
+    // The built-in runtime is Agent whenever the Agent feature is on.
     assert.equal(diag.runtimeMode, "agent", "Agent mode is on");
     assert.equal(diag.conversationKind, "global", "still a Library chat");
     const conversationKey = Number(

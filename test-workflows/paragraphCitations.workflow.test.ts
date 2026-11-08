@@ -7,10 +7,10 @@ import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelec
 import { waitForAssistantQuoteValidationForTests } from "../src/modules/contextPanel/quoteValidation/scheduling";
 import { createSourcePopover } from "../src/modules/contextPanel/sourcePopover";
 
-describe("workflow: paragraph source footers", function () {
+describe("workflow: per-sentence citation marks", function () {
   this.timeout(120000);
 
-  it("reads full native PDFs, groups sources, reopens stored evidence and jumps to its passage", async function () {
+  it("reads full native PDFs, marks each cited sentence in place, reopens stored evidence and jumps to its passage", async function () {
     assert.isTrue(Zotero.DataDirectory.dir.endsWith("/.scaffold/test/data"));
     const api = (Zotero as any).LLMForZotero.api
       .workflowTest as WorkflowTestApi;
@@ -81,21 +81,60 @@ describe("workflow: paragraph source footers", function () {
       const deadline = Date.now() + 15000;
       while (!chip && Date.now() < deadline) {
         chip = doc.querySelector<HTMLElement>(
-          ".llm-paper-source-indicator .llm-web-source-chip",
+          ".llm-paper-cite-mark .llm-web-source-chip",
         );
         if (!chip) await Zotero.Promise.delay(50);
       }
-      assert.isOk(
-        chip,
-        "stored paragraph citation reopens as a compact footer",
-      );
+      assert.isOk(chip, "stored paragraph citation reopens as a compact mark");
       await waitForAssistantQuoteValidationForTests(seeded.conversationKey!);
       // Quote validation schedules a separate conversation repaint.
       await Zotero.Promise.delay(250);
-      chip = doc.querySelector<HTMLElement>(
-        ".llm-paper-source-indicator .llm-web-source-chip",
+      const marks = Array.from(
+        doc.querySelectorAll<HTMLElement>(".llm-paper-cite-mark"),
+      ) as HTMLElement[];
+      assert.lengthOf(
+        marks,
+        2,
+        "each citation run keeps its own mark after background quote validation",
       );
-      assert.isOk(chip, "the footer survives background quote validation");
+      for (const mark of marks) {
+        assert.isTrue(
+          mark.classList.contains("llm-web-source-indicator") &&
+            mark.classList.contains("llm-paper-source-indicator"),
+        );
+      }
+      assert.equal(marks[0].dataset.citationIds, firstCitation.id);
+      assert.equal(marks[0].dataset.citationNumbers, "1");
+      assert.equal(
+        marks[1].dataset.citationIds,
+        `${firstCitation.id} ${secondCitation.id}`,
+      );
+      assert.equal(marks[1].dataset.citationNumbers, "1 2");
+      assert.deepEqual(
+        marks.map(
+          (mark) => mark.querySelector(".llm-paper-source-count")?.textContent,
+        ),
+        ["1", "1, 2"],
+        "each mark shows its passages' answer-wide numbers",
+      );
+      assert.match(
+        marks[0].previousSibling?.textContent || "",
+        /repeated sessions$/,
+        "a mid-sentence mark stays where its token was, against its words",
+      );
+      assert.match(marks[0].nextSibling?.textContent || "", /^, and /);
+      assert.match(
+        marks[1].previousSibling?.textContent || "",
+        /population result\.$/,
+        "a token after the period marks the sentence it closes",
+      );
+      assert.equal(
+        marks[0].closest("p"),
+        marks[1].closest("p"),
+        "both marks stay in their paragraph",
+      );
+      chip = marks[1].querySelector<HTMLElement>(".llm-web-source-chip");
+      assert.isOk(chip, "the mark survives background quote validation");
       const indicator = chip!.closest(".llm-paper-source-indicator")!;
       indicator.dispatchEvent(new (win as any).MouseEvent("mouseenter"));
       assert.equal(
@@ -109,17 +148,23 @@ describe("workflow: paragraph source footers", function () {
         "false",
         "keyboard focus alone must not open the quote container",
       );
-      const footerIcon = chip!.querySelector<HTMLElement>(
-        ".llm-paper-source-icon",
-      )!;
-      const iconStyle = win.getComputedStyle(footerIcon)!;
+      assert.isNull(
+        chip!.querySelector(".llm-paper-source-icon"),
+        "a mark shows numbers only, no icon",
+      );
       const chipStyle = win.getComputedStyle(chip!)!;
-      assert.include(iconStyle.maskImage, "action-text-context.svg");
-      assert.notEqual(iconStyle.backgroundColor, "rgba(0, 0, 0, 0)");
       assert.isAbove(Number.parseFloat(chipStyle.borderTopWidth), 0);
       assert.equal(
-        chip!.querySelector(".llm-paper-source-count")?.textContent,
-        "2 Quotes",
+        chip!.getAttribute("aria-label"),
+        "Supporting passages 1, 2",
+      );
+      const singleChip = marks[0].querySelector<HTMLElement>(
+        ".llm-web-source-chip",
+      )!;
+      assert.isAtLeast(
+        singleChip.getBoundingClientRect().width + 0.5,
+        singleChip.getBoundingClientRect().height,
+        "a one-number mark is at least as wide as it is tall",
       );
       const paragraph = chip!.closest("p") as HTMLElement;
       const originalFontSize = paragraph.style.fontSize;
@@ -141,16 +186,6 @@ describe("workflow: paragraph source footers", function () {
         );
       }
       paragraph.style.fontSize = originalFontSize;
-      assert.lengthOf(
-        doc.querySelectorAll(".llm-paper-source-indicator"),
-        1,
-        "citations throughout one paragraph coalesce into a single footer",
-      );
-      assert.equal(
-        chip!.closest(".llm-paper-source-indicator"),
-        chip!.closest("p")?.lastElementChild,
-        "the footer follows the entire paragraph",
-      );
       assert.lengthOf(
         doc.querySelectorAll(".llm-quote-card"),
         1,
@@ -210,6 +245,13 @@ describe("workflow: paragraph source footers", function () {
         "Supporting passages",
       );
       assert.lengthOf(popover.querySelectorAll(".llm-paper-source-passage"), 2);
+      assert.deepEqual(
+        Array.from(popover.querySelectorAll(".llm-paper-source-heading")).map(
+          (heading) => (heading?.textContent || "").split(" · ")[0],
+        ),
+        ["Quote 1", "Quote 2"],
+        "passage headings use the answer-wide numbers",
+      );
       assert.include(popover.textContent || "", methods);
       assert.isAbove(
         Number.parseFloat(
@@ -264,9 +306,49 @@ describe("workflow: paragraph source footers", function () {
           timestamp: Date.now(),
         },
       });
+      // An old answer's paragraph-end token: one mark at the paragraph end.
+      const oldMark = bubble.querySelector<HTMLElement>(".llm-paper-cite-mark");
       assert.equal(
-        bubble.querySelector(".llm-paper-source-count")?.textContent,
-        "1 Quote",
+        oldMark?.querySelector(".llm-paper-source-count")?.textContent,
+        "1",
+      );
+      assert.equal(oldMark, oldMark?.closest("p")?.lastElementChild);
+      assert.equal(
+        oldMark?.previousSibling?.textContent,
+        "One supporting passage.",
+      );
+      renderAssistantRichText({
+        body: host,
+        bubble,
+        panelItem: item,
+        assistantMessage: {
+          role: "assistant",
+          text: `Drift is slow at 0.46 [[cite:${secondCitation.id}]]. Activity is **stable [[cite:${firstCitation.id}]]**. Unknown [[cite:invented]].`,
+          quoteCitations: [firstCitation, secondCitation],
+          timestamp: Date.now(),
+        },
+      });
+      const [moved, inBold] = Array.from(
+        bubble.querySelectorAll<HTMLElement>(".llm-paper-cite-mark"),
+      ) as HTMLElement[];
+      assert.equal(
+        moved.previousSibling?.textContent,
+        "Drift is slow at 0.46.",
+        "the mark follows the sentence's period, with no space before it",
+      );
+      assert.match(moved.nextSibling?.textContent || "", /^ Activity is /);
+      assert.equal(moved.dataset.citationNumbers, "1");
+      assert.equal(inBold.dataset.citationNumbers, "2");
+      assert.equal(
+        inBold.parentElement?.tagName.toLowerCase(),
+        "strong",
+        "a token inside inline formatting keeps its place",
+      );
+      assert.equal(inBold.previousSibling?.textContent, "stable");
+      assert.match(
+        bubble.querySelector("p")?.textContent || "",
+        /Unknown\.$/,
+        "an unknown citation leaves no space or mark behind",
       );
       renderAssistantRichText({
         body: host,

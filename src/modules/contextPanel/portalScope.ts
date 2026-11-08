@@ -13,6 +13,8 @@ import { normalizePositiveInt } from "../../services/context/normalizers";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import { getLockedGlobalConversationKey } from "./prefHelpers";
 import {
+  isSideSurface,
+  isTornSurface,
   recall,
   recallMode,
   type SelectionSurface,
@@ -351,14 +353,16 @@ export function resolveNoteFocusSystemSwitch(params: {
 /**
  * The library chat lock (a pref) belongs to the sidebar panels: it keeps them
  * on a Library chat while it answers, across paper selections. The standalone
- * window does not follow the selection in Library chat, so it has no lock and
- * never reads this one.
+ * and torn windows (and their side chats) do not follow the selection in
+ * Library chat, so they have no lock and never read this one.
  */
 function readSurfaceLockedGlobalConversationKey(
   libraryID: number,
   surface: SelectionSurface | undefined,
 ): number | null {
-  return surface === "standalone"
+  return surface === "standalone" ||
+    isTornSurface(surface) ||
+    isSideSurface(surface)
     ? null
     : getLockedGlobalConversationKey(libraryID);
 }

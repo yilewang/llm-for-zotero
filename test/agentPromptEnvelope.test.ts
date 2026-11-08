@@ -440,7 +440,7 @@ describe("agent prompt envelope", function () {
       // still block in yolo belong in the same sentence, and only those.
       assert.include(
         yolo,
-        "Requested review workflows, database integrity and the paper selection card for discovered papers remain binding",
+        "Requested review workflows, database integrity and the paper selection card for papers the user asked you to find remain binding",
       );
       for (const unenforced of [
         "Explicit user restrictions",
@@ -583,13 +583,16 @@ describe("agent prompt envelope direct workflow", function () {
     "A write result with a verified receipt already confirms the change; do not re-read the target to confirm it.";
 
   /** The Original Agent's "## Direct agent workflow" system block. */
-  async function directWorkflowBlock(): Promise<string> {
+  async function directWorkflowBlock(
+    metadata?: Record<string, unknown>,
+  ): Promise<string> {
     const rendered = await renderAgentPromptEnvelope(
       resolvedAgentRequest({
         conversationKey: 912_101,
         mode: "agent",
         model: "test-model",
         userText: "Summarize this paper and save it as a note",
+        ...(metadata ? { metadata } : {}),
       }),
       [],
       [],
@@ -607,7 +610,7 @@ describe("agent prompt envelope direct workflow", function () {
 
   it("asks a turn to declare the parts of a compound request", async function () {
     const DECLARE_PARTS =
-      "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update in your first step, together with that step's first tool calls. The host marks each part done from the tools' results; never mark one done yourself.";
+      "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update before reading, together with that step's first tool calls; with nothing attached, declare them after library_retrieve has chosen the papers. The host marks each part done from the tools' results; never mark one done yourself.";
     assert.include(await directWorkflowBlock(), DECLARE_PARTS);
   });
 
@@ -620,6 +623,16 @@ describe("agent prompt envelope direct workflow", function () {
     assert.isAbove(
       block.indexOf(DIGEST_PART),
       block.indexOf("declare each part with task_update"),
+    );
+  });
+
+  it("states the step's tool-call limit: 8, or 10 in a batch job", async function () {
+    const limit = (n: number) =>
+      `One step runs at most ${n} tool calls, unless a job page states more; calls past that are not run, so make them in the next step.`;
+    assert.include(await directWorkflowBlock(), limit(8));
+    assert.include(
+      await directWorkflowBlock({ hostRecordedBatchJob: true }),
+      limit(10),
     );
   });
 
@@ -723,6 +736,26 @@ describe("agent prompt envelope paper scope", function () {
       WHOLE_LIBRARY_SCOPE_RULE,
       "only when the user explicitly asks for every paper in the library",
     );
+    // The line says what the scope is; a digest part is how chosen papers
+    // are read in depth, not a step every turn takes.
+    assert.include(
+      WHOLE_LIBRARY_SCOPE_RULE,
+      "Nothing is attached, so the turn's scope is the whole library and you choose its papers",
+    );
+    assert.include(
+      WHOLE_LIBRARY_SCOPE_RULE,
+      "to read the chosen papers in depth, declare a digest part",
+    );
+    // Routing (library first, then outside) has one owner, the search
+    // routing contract in the fixed prompt; the turn line does not repeat it.
+    for (const routing of [
+      "outside",
+      "literature_search",
+      "scholarly",
+      "offer",
+      "web",
+    ])
+      assert.notInclude(WHOLE_LIBRARY_SCOPE_RULE, routing, routing);
   });
 
   it("gives the whole-library rule only when nothing is attached", async function () {

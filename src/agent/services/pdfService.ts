@@ -143,7 +143,7 @@ export class PdfService {
     citationLabel: string;
     sourceLabel: string;
     paperContext: PaperContextRef;
-    backend: "raw_pdf_text";
+    backend: "mineru" | "raw_pdf_text";
   }> {
     const contextItem = canInspectZoteroItems()
       ? resolveContextItemFromPaperContext(params.paperContext)
@@ -170,7 +170,7 @@ export class PdfService {
         citationLabel: formatPaperCitationLabel(params.paperContext),
         sourceLabel: formatPaperSourceLabel(params.paperContext),
         paperContext: params.paperContext,
-        backend: "raw_pdf_text",
+        backend: pdfContext.sourceType === "mineru" ? "mineru" : "raw_pdf_text",
       };
     }
     const selected = new Map<number, string>();
@@ -209,7 +209,7 @@ export class PdfService {
       citationLabel: formatPaperCitationLabel(params.paperContext),
       sourceLabel: formatPaperSourceLabel(params.paperContext),
       paperContext: params.paperContext,
-      backend: "raw_pdf_text",
+      backend: pdfContext.sourceType === "mineru" ? "mineru" : "raw_pdf_text",
     };
   }
 

@@ -12,9 +12,31 @@ import type {
 import { registerWebSearchSources } from "../../../webAccess/runSources";
 import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
 import { getWebAccessProvider } from "../../../webAccess/prefs";
+import {
+  buildDeepSeekQuery,
+  countQueryCharacters,
+  DEEPSEEK_DOMAIN_LIMIT,
+  DEEPSEEK_QUERY_LIMIT,
+} from "../../../webAccess/deepseekSearchClient";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { neverSelected } from "../guidance";
 import { fail, ok, validateObject } from "../shared";
+import { WebAccessError } from "../../../webAccess/errors";
+import {
+  buildOutsideSearchReasonDetail,
+  OUTSIDE_SEARCH_NEED_PROPERTIES,
+  OUTSIDE_SEARCH_NEED_SENTENCE,
+  OUTSIDE_SEARCH_STOP_NOTE,
+  outsideSearchNeedError,
+} from "./outsideSearchNeed";
+import {
+  buildOutsideSearchNote,
+  latchOutsideSearch,
+  outsideSearchLatch,
+  recordOutsideSearch,
+  tracksOutsideSearchTurn,
+  webSearchUnavailableMessage,
+} from "./outsideSearchLedger";
 import {
   createConfiguredWebAccessProvider,
   isWebAccessToolAvailable,
@@ -36,7 +58,35 @@ export type WebSearchInput = {
 
 export type WebSearchToolResult = WebSearchResponse & {
   citation: ReturnType<typeof webCitationInstruction>;
+  /**
+   * The turn's web-search ledger and stop note; last, so the model reads
+   * it after the results.
+   */
+  nextStep: string;
+  /** Set when the web latch refused the call; no provider was reached. */
+  unavailable?: "latched";
+  message?: string;
 };
+
+/**
+ * Why web search cannot work again this turn, or undefined: an exhausted
+ * quota or a rejected key does not recover by retrying. A rate limit or a
+ * service failure may, so it does not latch.
+ */
+function webSearchLatchReason(error: unknown): string | undefined {
+  if (!(error instanceof WebAccessError)) return undefined;
+  if (error.code === "quota" || error.code === "plan_limit")
+    return "quota exhausted";
+  if (error.code === "authentication") return "authentication rejected";
+  return undefined;
+}
+
+function webProviderLabel(): string {
+  const provider = getWebAccessProvider();
+  if (provider === "anysearch") return "AnySearch";
+  if (provider === "deepseek") return "DeepSeek";
+  return "Tavily";
+}
 
 function normalizeTopic(value: unknown): WebSearchTopic {
   return value === "news" || value === "finance" ? value : "general";
@@ -63,9 +113,9 @@ function normalizeDate(value: unknown): string | undefined {
     : undefined;
 }
 
-function normalizeDomains(value: unknown): string[] | undefined {
+function normalizeDomains(value: unknown, maxItems = 10): string[] | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.length > 10) return undefined;
+  if (!Array.isArray(value) || value.length > maxItems) return undefined;
   const domains = value.map((entry) =>
     typeof entry === "string" ? entry.trim().toLowerCase() : "",
   );
@@ -89,6 +139,88 @@ function normalizeDomains(value: unknown): string[] | undefined {
   return Array.from(new Set(domains));
 }
 
+const DEEPSEEK_SEARCH_FIELDS = [
+  "query",
+  "maxResults",
+  "includeDomains",
+  "excludeDomains",
+  "startDate",
+  "endDate",
+  // The outside-search need; validateWebSearchCall checks it, and it never
+  // reaches the provider or the query limit.
+  "need",
+  "gap",
+];
+
+/** DeepSeek filters become query operators, so they share the query limit. */
+function validateDeepSeekSearch(
+  args: Record<string, unknown>,
+  query: string,
+): AgentToolInputValidation<WebSearchInput> {
+  if (
+    Object.keys(args).some(
+      (key) => !DEEPSEEK_SEARCH_FIELDS.includes(key) && args[key] !== undefined,
+    )
+  ) {
+    return fail(
+      "DeepSeek search supports query, maxResults, includeDomains, excludeDomains, startDate and endDate; depth, topic and timeRange are not supported.",
+    );
+  }
+  const maxResults = args.maxResults ?? 5;
+  if (
+    typeof maxResults !== "number" ||
+    !Number.isInteger(maxResults) ||
+    maxResults < 1 ||
+    maxResults > 10
+  ) {
+    return fail("maxResults must be an integer from 1 to 10");
+  }
+  const startDate = normalizeDate(args.startDate);
+  const endDate = normalizeDate(args.endDate);
+  if (args.startDate !== undefined && !startDate) {
+    return fail("startDate must use YYYY-MM-DD");
+  }
+  if (args.endDate !== undefined && !endDate) {
+    return fail("endDate must use YYYY-MM-DD");
+  }
+  if (startDate && endDate && startDate > endDate) {
+    return fail("startDate must not be after endDate");
+  }
+  const includeDomains = normalizeDomains(
+    args.includeDomains,
+    DEEPSEEK_DOMAIN_LIMIT,
+  );
+  const excludeDomains = normalizeDomains(
+    args.excludeDomains,
+    DEEPSEEK_DOMAIN_LIMIT,
+  );
+  if (args.includeDomains !== undefined && !includeDomains) {
+    return fail(
+      `includeDomains must contain at most ${DEEPSEEK_DOMAIN_LIMIT} valid domain names`,
+    );
+  }
+  if (args.excludeDomains !== undefined && !excludeDomains) {
+    return fail(
+      `excludeDomains must contain at most ${DEEPSEEK_DOMAIN_LIMIT} valid domain names`,
+    );
+  }
+  const value: WebSearchInput = {
+    query,
+    maxResults,
+    ...(includeDomains ? { includeDomains } : {}),
+    ...(excludeDomains ? { excludeDomains } : {}),
+    ...(startDate ? { startDate } : {}),
+    ...(endDate ? { endDate } : {}),
+  };
+  const length = countQueryCharacters(buildDeepSeekQuery(value));
+  if (length > DEEPSEEK_QUERY_LIMIT) {
+    return fail(
+      `query with filters uses ${length} of ${DEEPSEEK_QUERY_LIMIT} characters; shorten the query or drop filters`,
+    );
+  }
+  return ok(value);
+}
+
 export function validateWebSearchInput(
   args: unknown,
 ): AgentToolInputValidation<WebSearchInput> {
@@ -99,11 +231,13 @@ export function validateWebSearchInput(
   if (!query) return fail("query is required");
   if (query.length > 2_000)
     return fail("query must be 2,000 characters or less");
-  if (getWebAccessProvider() === "anysearch") {
+  const provider = getWebAccessProvider();
+  if (provider === "anysearch") {
     if (
       Object.keys(args).some(
         (key) =>
-          !["query", "maxResults"].includes(key) && args[key] !== undefined,
+          !["query", "maxResults", "need", "gap"].includes(key) &&
+          args[key] !== undefined,
       )
     ) {
       return fail(
@@ -121,6 +255,7 @@ export function validateWebSearchInput(
     }
     return ok({ query, maxResults });
   }
+  if (provider === "deepseek") return validateDeepSeekSearch(args, query);
   if (args.depth !== "basic" && args.depth !== "advanced") {
     return fail("depth must be one of: basic, advanced");
   }
@@ -176,19 +311,41 @@ export function validateWebSearchInput(
   });
 }
 
+/**
+ * The model's call: the search parameters plus the need that sends it
+ * outside the turn's papers and the library. The need stays out of the
+ * validated input, so the provider never receives it.
+ */
+export function validateWebSearchCall(
+  args: unknown,
+): AgentToolInputValidation<WebSearchInput> {
+  const validated = validateWebSearchInput(args);
+  if (!validated.ok) return validated;
+  const needError = outsideSearchNeedError(args as Record<string, unknown>);
+  return needError ? fail(needError) : validated;
+}
+
+function storedQuery(args: unknown): string {
+  const query = validateObject<Record<string, unknown>>(args)
+    ? args.query
+    : undefined;
+  return typeof query === "string" ? query.trim() : "";
+}
+
 function buildSearchTraceDetails(
   args: unknown,
   content: unknown,
 ): AgentTraceDetail[] {
-  const input = validateWebSearchInput(args);
   const result =
     content && typeof content === "object"
       ? (content as Partial<WebSearchToolResult>)
       : {};
   const details: AgentTraceDetail[] = [];
-  if (input.ok) {
-    details.push({ label: "Query", value: input.value.query });
-  }
+  // Stored args come from past calls; do not validate them against today's provider.
+  const query = storedQuery(args);
+  if (query) details.push({ label: "Query", value: query });
+  const reason = buildOutsideSearchReasonDetail(args);
+  if (reason) details.push(reason);
   for (const source of result.results || []) {
     details.push({
       label: "URL",
@@ -204,6 +361,53 @@ function buildSearchTraceDetails(
   return details;
 }
 
+const DEEPSEEK_SEARCH_SPEC = {
+  description:
+    `Search the current public web with DeepSeek Search; write the query in the user's language by default. The query may use at most ${DEEPSEEK_QUERY_LIMIT} characters, including the site and date filters built from includeDomains, excludeDomains, startDate and endDate. No depth, topic or time range. Returns ranked results with summaries; web_read reads a result's page text. ` +
+    OUTSIDE_SEARCH_NEED_SENTENCE +
+    ".",
+  inputSchema: {
+    type: "object",
+    required: ["query", "need"],
+    additionalProperties: false,
+    properties: {
+      query: {
+        type: "string",
+        minLength: 1,
+        maxLength: DEEPSEEK_QUERY_LIMIT,
+        description: `The focused web search query. At most ${DEEPSEEK_QUERY_LIMIT} characters, including any filters.`,
+      },
+      maxResults: { type: "integer", minimum: 1, maximum: 10 },
+      includeDomains: {
+        type: "array",
+        maxItems: DEEPSEEK_DOMAIN_LIMIT,
+        items: { type: "string" },
+        description: "Search only these sites.",
+      },
+      excludeDomains: {
+        type: "array",
+        maxItems: DEEPSEEK_DOMAIN_LIMIT,
+        items: { type: "string" },
+        description: "Leave out these sites.",
+      },
+      startDate: {
+        type: "string",
+        description: "YYYY-MM-DD. Only pages published after this date.",
+      },
+      endDate: {
+        type: "string",
+        description: "YYYY-MM-DD. Only pages published before this date.",
+      },
+      ...OUTSIDE_SEARCH_NEED_PROPERTIES,
+    },
+  },
+};
+
+const DEEPSEEK_SEARCH_GUIDANCE = {
+  matches: neverSelected,
+  instruction: `DeepSeek Search accepts query, maxResults, includeDomains, excludeDomains, startDate and endDate; do not send depth, topic or timeRange. Keep the query within ${DEEPSEEK_QUERY_LIMIT} characters including filters. Use web_read with searched URLs only when search summaries are insufficient. Every final-answer paragraph that uses web results must end with the exact hidden source marker described in the tool result, using only returned sourceId values. Do not add a references footer.`,
+};
+
 export function createWebSearchTool(
   providerFactory: WebAccessProviderFactory = createConfiguredWebAccessProvider,
 ): AgentToolDefinition<WebSearchInput, WebSearchToolResult> {
@@ -211,10 +415,12 @@ export function createWebSearchTool(
     spec: {
       name: "web_search",
       description:
-        "Search the current public web with Tavily when the answer materially needs current facts or concrete general-web evidence. Use literature_search for scholarly discovery; a request may use both for distinct evidence needs.",
+        "Search the current public web with Tavily; write the query in the user's language by default. Returns ranked results with snippets; web_read reads a result's page text. " +
+        OUTSIDE_SEARCH_NEED_SENTENCE +
+        ".",
       inputSchema: {
         type: "object",
-        required: ["query", "depth"],
+        required: ["query", "depth", "need"],
         additionalProperties: false,
         properties: {
           query: {
@@ -248,6 +454,7 @@ export function createWebSearchTool(
             maxItems: 10,
             items: { type: "string" },
           },
+          ...OUTSIDE_SEARCH_NEED_PROPERTIES,
         },
       },
       executionClass: "read",
@@ -258,34 +465,41 @@ export function createWebSearchTool(
     guidance: {
       matches: neverSelected,
       instruction:
-        "Use web_search when the request needs current or general public evidence. A mixed request may also use literature_search for distinct scholarly evidence. Preserve the user's language by default, explicitly choose basic or advanced from the current retrieval need, and use web_read when search snippets are insufficient. Every final-answer paragraph that uses web results must end with the exact hidden source marker described in the tool result, using only returned sourceId values. Do not add a references footer.",
+        "Always explicitly choose basic or advanced from the current retrieval need, and use web_read when search snippets are insufficient. Every final-answer paragraph that uses web results must end with the exact hidden source marker described in the tool result, using only returned sourceId values. Do not add a references footer.",
     },
     presentation: {
       label: "Search Web",
       traceIcon: "web",
       mergeResultIntoCallTrace: true,
       buildTraceSummary: ({ args, content }) => {
-        const input = validateWebSearchInput(args);
         const result = content as Partial<WebSearchToolResult> | undefined;
-        if (!input.ok || !result) return null;
+        if (!result) return null;
         if (result.provider === "anysearch") return "Searched web · AnySearch";
-        return `Searched web · Depth: ${input.value.depth}`;
+        if (result.provider === "deepseek") return "Searched web · DeepSeek";
+        const depth = validateObject<Record<string, unknown>>(args)
+          ? args.depth
+          : undefined;
+        if (depth !== "basic" && depth !== "advanced") return null;
+        return `Searched web · Depth: ${depth}`;
       },
       summaries: {
         onCall: ({ args }) => {
-          const validated = validateWebSearchInput(args);
-          return validated.ok
-            ? `Searching the web for “${validated.value.query}”`
+          const query = storedQuery(args);
+          return query
+            ? `Searching the web for “${query}”`
             : "Searching the web";
         },
         onSuccess: "Web search complete",
-        onEmpty: "No web results found",
+        onEmpty: ({ content }) =>
+          (content as { unavailable?: unknown } | undefined)?.unavailable
+            ? "Web search unavailable this turn"
+            : "No web results found",
         onError: "Web search failed",
       },
       buildTraceDetails: ({ args, content }) =>
         buildSearchTraceDetails(args, content),
     },
-    validate: validateWebSearchInput,
+    validate: validateWebSearchCall,
     planInvocation: (input) =>
       readOnlyInvocationPlan({
         domains: ["network"],
@@ -302,10 +516,38 @@ export function createWebSearchTool(
       // after the model received its schema. Never drop unsupported fields.
       const validated = validateWebSearchInput(input);
       if (!validated.ok) throw new Error(validated.error);
-      const result = await providerFactory().search({
-        ...validated.value,
-        signal: context.signal,
-      });
+      // The turn's outside-search ledger; untracked run ids keep no state.
+      const turn = tracksOutsideSearchTurn(context.runId)
+        ? context.runId
+        : undefined;
+      const latched = turn ? outsideSearchLatch(turn, "web") : undefined;
+      if (latched)
+        return {
+          provider: webProviderLabel(),
+          query: validated.value.query,
+          results: [],
+          citation: webCitationInstruction([]),
+          unavailable: "latched",
+          message: latched,
+          nextStep: latched,
+        };
+      const provider = providerFactory();
+      if (turn) recordOutsideSearch(turn, "web", validated.value.query);
+      let result: WebSearchResponse;
+      try {
+        result = await provider.search({
+          ...validated.value,
+          signal: context.signal,
+        });
+      } catch (error) {
+        const reason = webSearchLatchReason(error);
+        if (!turn || !reason) throw error;
+        const message = webSearchUnavailableMessage(webProviderLabel(), reason);
+        latchOutsideSearch(turn, "web", message);
+        // The model reads the latch message; the code and status stay.
+        const failure = error as WebAccessError;
+        throw new WebAccessError(message, failure.code, failure.status);
+      }
       const results = registerWebSearchSources(context.runId, result.results);
       return {
         ...result,
@@ -313,34 +555,45 @@ export function createWebSearchTool(
         citation: webCitationInstruction(
           results.map((source) => source.sourceId),
         ),
+        nextStep: turn
+          ? buildOutsideSearchNote(turn, "web")
+          : OUTSIDE_SEARCH_STOP_NOTE,
       };
     },
   };
   return {
     ...tool,
     get spec() {
-      if (getWebAccessProvider() !== "anysearch") return tool.spec;
+      const provider = getWebAccessProvider();
+      if (provider === "deepseek")
+        return { ...tool.spec, ...DEEPSEEK_SEARCH_SPEC };
+      if (provider !== "anysearch") return tool.spec;
       return {
         ...tool.spec,
         description:
-          "Search the public web with AnySearch. Supports query and result count only, not depth, topic, date/domain filters or vertical selection. Use literature_search for scholarly discovery and web_read for page text.",
+          "Search the public web with AnySearch. Supports query and result count only, not depth, topic, date/domain filters or vertical selection. Write the query in the user's language by default; use web_read for page text. " +
+          OUTSIDE_SEARCH_NEED_SENTENCE +
+          ".",
         inputSchema: {
           type: "object",
-          required: ["query"],
+          required: ["query", "need"],
           additionalProperties: false,
           properties: {
             query: { type: "string", minLength: 1, maxLength: 2000 },
             maxResults: { type: "integer", minimum: 1, maximum: 10 },
+            ...OUTSIDE_SEARCH_NEED_PROPERTIES,
           },
         },
       };
     },
     get guidance() {
-      if (getWebAccessProvider() !== "anysearch") return tool.guidance;
+      const provider = getWebAccessProvider();
+      if (provider === "deepseek") return DEEPSEEK_SEARCH_GUIDANCE;
+      if (provider !== "anysearch") return tool.guidance;
       return {
         matches: neverSelected,
         instruction:
-          "Use web_search for current or general public evidence. AnySearch accepts query and maxResults only; do not invent depth, topic, date/domain filters or vertical options. Use web_read with searched URLs only when snippets are insufficient. Every final-answer paragraph using web information must end with the hidden source marker described in the result, using only returned sourceId values. Do not add a references footer.",
+          "AnySearch accepts query and maxResults only; do not invent depth, topic, date/domain filters or vertical options. Use web_read with searched URLs only when snippets are insufficient. Every final-answer paragraph using web information must end with the hidden source marker described in the result, using only returned sourceId values. Do not add a references footer.",
       };
     },
   };

@@ -105,6 +105,14 @@ export type UtilityLLMParams = {
    */
   timeoutMs: number;
   systemMessages?: string[];
+  /**
+   * Let the call go out when the caller names neither an API URL nor a key.
+   * `callLLM` then resolves the connection from the saved default model
+   * entry, or from the auth mode itself (Codex login, Copilot), and fails
+   * with its own error when there is none. Reader calls set this because
+   * full-read batches always reached `callLLM` that way.
+   */
+  allowImplicitConnection?: boolean;
   /** Test seam: replaces the actual model call. */
   llmCall?: (chatParams: ChatParams) => Promise<ModelTurnOutcome>;
 };
@@ -403,7 +411,10 @@ export async function callUtilityLLM(
   params: UtilityLLMParams,
 ): Promise<UtilityLLMResult> {
   const model = (params.model || "").trim();
-  if (!model || (!params.apiBase && !params.apiKey)) {
+  if (
+    !model ||
+    (!params.allowImplicitConnection && !params.apiBase && !params.apiKey)
+  ) {
     return { ok: false, reason: "not_configured" };
   }
 

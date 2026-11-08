@@ -95,7 +95,17 @@ describe("Codex app-server connection test MCP probe", function () {
       config?: { mcp_servers?: Record<string, { required?: boolean }> };
     };
     const probeServers = probeParams.config?.mcp_servers || {};
-    assert.isTrue(Object.values(probeServers)[0]?.required);
+    // The probe's own server is required; the user-level entry is off.
+    assert.isTrue(
+      Object.entries(probeServers).find(
+        ([name]) => name !== "llm_for_zotero",
+      )?.[1]?.required,
+    );
+    assert.equal(
+      (probeServers.llm_for_zotero as { enabled?: boolean } | undefined)
+        ?.enabled,
+      false,
+    );
     assert.notProperty(calls[2]?.params as Record<string, unknown>, "config");
     assert.equal(result.reply, "OK");
     assert.isTrue(result.mcpConnected);

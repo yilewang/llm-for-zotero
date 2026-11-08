@@ -247,6 +247,25 @@ describe("textUtils selected text prompt composition", function () {
     assert.equal(gaugeEl.dataset.warning, "true");
   });
 
+  it("adds a cache hit line to the hover only when the provider reported cache data", function () {
+    const tokenEl = {
+      textContent: "",
+      title: "",
+      dataset: {} as Record<string, string>,
+      style: { display: "" },
+    } as unknown as HTMLElement;
+
+    setTokenUsage(tokenEl, 40_000, 1_000_000, null, { cacheHitRatio: 0.724 });
+    assert.equal(tokenEl.dataset.cache, "Cache hit 72%");
+
+    setTokenUsage(tokenEl, 40_000, 1_000_000, null, {});
+    assert.isUndefined(tokenEl.dataset.cache);
+
+    // No usage measured yet: the hover asks for a message, with no cache line.
+    setTokenUsage(tokenEl, 0, undefined, null, { cacheHitRatio: 0.5 });
+    assert.isUndefined(tokenEl.dataset.cache);
+  });
+
   it("uses one localized unavailable presentation for tooltip and accessibility", function () {
     const priorZotero = (globalThis as { Zotero?: unknown }).Zotero;
     let ariaLabel = "";

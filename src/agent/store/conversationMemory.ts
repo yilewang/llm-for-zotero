@@ -1,3 +1,4 @@
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import { appLogger } from "../../core/logging";
 import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
 import {
@@ -181,6 +182,8 @@ export async function recordAgentTurn(
   const key = normalizeConversationKey(conversationKey);
   if (!key) return;
   if (isConversationKeyRetiredInMemory(key)) return;
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(key)) return;
   const entry = clipTurnMemory(question, toolsUsed, finalAnswer);
   const existing = store.get(key) ?? [];
 

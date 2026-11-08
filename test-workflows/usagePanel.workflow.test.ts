@@ -158,10 +158,12 @@ function sectionTitles(root: HTMLElement): string[] {
 
 describe("workflow: usage statistics preferences tab", function () {
   this.timeout(180000);
-  const api = getWorkflowTestApi();
+  let api: WorkflowTestApi;
   const fixtures: WorkflowTestFixture[] = [];
 
   before(async function () {
+    // Resolved at run time: an earlier suite may have restarted the plugin.
+    api = getWorkflowTestApi();
     // Earlier suites answer real turns, and a recorded turn is exactly what
     // this ledger is for, so the never-used state has to be established rather
     // than assumed. No other workflow suite reads the usage ledger.

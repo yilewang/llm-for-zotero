@@ -1399,6 +1399,7 @@ export const conversationRepository = {
       // creates the target conversation, and resume never rebinds it, so a fork
       // that inherits the source header would stay bound to the source scope.
       let forkedCodexThreadId: string | null = null;
+      let forkedCodexPermissionRecord: string | undefined;
       if (params.system === "codex" && sourceProviderSessionId) {
         const discardForkEntry = async () => {
           await conversationRepository
@@ -1412,11 +1413,13 @@ export const conversationRepository = {
             .catch(() => {});
         };
         try {
-          forkedCodexThreadId = await codexAppServerForkService.forkThread({
+          const forked = await codexAppServerForkService.forkThread({
             threadId: sourceProviderSessionId,
             targetConversationKey: entry.conversationKey,
             targetInstanceID: entry.instanceID,
           });
+          forkedCodexThreadId = forked.threadId;
+          forkedCodexPermissionRecord = forked.providerPermissionRecord;
         } catch (err) {
           await discardForkEntry();
           throw err;
@@ -1436,6 +1439,9 @@ export const conversationRepository = {
           updatedAt: Date.now(),
           title: entry.title,
           providerSessionId: forkedCodexThreadId,
+          // The fork keeps the Zotero write approval mode it was created
+          // with; storing it keeps the first turn from replacing the fork.
+          providerPermissionState: forkedCodexPermissionRecord,
           instanceID: entry.instanceID,
         });
         if (!persistedProviderSession) {

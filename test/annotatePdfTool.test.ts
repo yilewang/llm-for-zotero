@@ -7,6 +7,10 @@ import {
 } from "../src/agent/store/changeJournal";
 import type { AgentToolContext } from "../src/agent/types";
 import { ChangeJournalTestDb } from "./helpers/changeJournalTestDb";
+import {
+  annotationMatchesPayload,
+  stickyNotePosition,
+} from "../src/services/pdf/pdfAnnotationState";
 
 /**
  * Zotero's annotation contract has several edges that throw rather than
@@ -295,6 +299,98 @@ describe("annotate_pdf", function () {
     assert.isEmpty(saved);
   });
 
+  it("writes an underline over the same lines a highlight would cover", async function () {
+    const saved = install();
+    const tool = createAnnotatePdfTool(gateway, resolve);
+    const validated = tool.validate({
+      ...validArgs,
+      annotationType: "underline",
+    });
+    if (!validated.ok) assert.fail(validated.error);
+    const result = (await tool.execute(validated.value, context)) as any;
+    assert.equal(saved[0].type, "underline");
+    assert.equal(saved[0].text, "A Title");
+    assert.deepEqual(saved[0].position, resolved.position);
+    assert.equal(result.content.expectedAnnotation.type, "underline");
+  });
+
+  it("puts a sticky note as one 22-point square at the passage's first line, with no text", async function () {
+    const saved = install();
+    const tool = createAnnotatePdfTool(gateway, async () => ({
+      ...resolved,
+      position: {
+        pageIndex: 2,
+        rects: [
+          [100, 730, 300, 742],
+          [100, 716, 250, 728],
+        ],
+      },
+    }));
+    const validated = tool.validate({
+      attachmentId: 55,
+      text: "A Title",
+      annotationType: "note",
+      comment: "Check this claim.",
+    });
+    if (!validated.ok) assert.fail(validated.error);
+    await tool.execute(validated.value, context);
+    const json = saved[0];
+    assert.equal(json.type, "note");
+    assert.notProperty(json, "text", "Zotero refuses text on a note");
+    assert.deepEqual(json.position, {
+      pageIndex: 2,
+      rects: [[100, 730, 122, 752]],
+    });
+    assert.equal(json.comment, "Check this claim.");
+  });
+
+  it("asks for the comment a sticky note would show", function () {
+    const tool = createAnnotatePdfTool(gateway, resolve);
+    assert.isFalse(
+      tool.validate({
+        attachmentId: 55,
+        text: "A Title",
+        annotationType: "note",
+      }).ok,
+    );
+    assert.isFalse(
+      tool.validate({ ...validArgs, annotationType: "ink" }).ok,
+      "image and ink annotations are not offered",
+    );
+  });
+
+  it("does not reuse a highlight at the passage when an underline was asked for", async function () {
+    const saved = install();
+    const highlight = {
+      id: 900,
+      parentID: 55,
+      isAnnotation: () => true,
+      annotationType: "highlight",
+      annotationText: resolved.text,
+      annotationComment: validArgs.comment,
+      annotationColor: "#ff6666",
+      annotationPageLabel: resolved.pageLabel,
+      annotationSortIndex: resolved.sortIndex,
+      annotationPosition: JSON.stringify(resolved.position),
+    };
+    const tool = createAnnotatePdfTool(
+      {
+        getItem: () => ({
+          id: 55,
+          isAttachment: () => true,
+          isPDFAttachment: () => true,
+          getAnnotations: () => [highlight],
+        }),
+      } as never,
+      resolve,
+    );
+    const input = tool.validate({ ...validArgs, annotationType: "underline" });
+    if (!input.ok) assert.fail(input.error);
+    const result = (await tool.execute(input.value, context)) as any;
+    assert.notEqual(result.content?.status, "already_exists");
+    assert.lengthOf(saved, 1);
+  });
+
   it("honours an edited comment from the confirmation card", function () {
     const tool = createAnnotatePdfTool(gateway, resolve);
     const validated = tool.validate(validArgs);
@@ -309,5 +405,86 @@ describe("annotate_pdf", function () {
       (applied.value as { comment?: string }).comment,
       "A better summary.",
     );
+  });
+
+  describe("annotation payloads by type", function () {
+    const passage = {
+      text: "A passage",
+      pageLabel: "2",
+      sortIndex: "00001|000010|00050",
+      position: { pageIndex: 1, rects: [[50, 700, 300, 712]] },
+      source: { documentFingerprint: "f", startChar: 10, endChar: 19 },
+      color: "#ffd400",
+      comment: "Why?",
+    };
+    const native = (fields: Record<string, unknown>) => ({
+      parentID: 20,
+      deleted: false,
+      isAnnotation: () => true,
+      annotationComment: "Why?",
+      annotationColor: "#ffd400",
+      annotationPageLabel: "2",
+      annotationSortIndex: passage.sortIndex,
+      ...fields,
+    });
+
+    it("matches a highlight by default and an underline only as an underline", function () {
+      const lines = JSON.stringify(passage.position);
+      const highlight = native({
+        annotationType: "highlight",
+        annotationText: "A passage",
+        annotationPosition: lines,
+      });
+      assert.isTrue(annotationMatchesPayload(highlight, 20, passage));
+      assert.isFalse(
+        annotationMatchesPayload(highlight, 20, {
+          ...passage,
+          type: "underline",
+        }),
+      );
+      assert.isTrue(
+        annotationMatchesPayload(
+          native({
+            annotationType: "underline",
+            annotationText: "A passage",
+            annotationPosition: lines,
+          }),
+          20,
+          { ...passage, type: "underline" },
+        ),
+      );
+    });
+
+    it("matches a sticky note by its square and no text", function () {
+      const position = stickyNotePosition(passage.position);
+      assert.deepEqual(position, {
+        pageIndex: 1,
+        rects: [[50, 700, 72, 722]],
+      });
+      const payload = { ...passage, position, type: "note" as const };
+      assert.isTrue(
+        annotationMatchesPayload(
+          native({
+            annotationType: "note",
+            annotationText: null,
+            annotationPosition: JSON.stringify(position),
+          }),
+          20,
+          payload,
+        ),
+      );
+      assert.isFalse(
+        annotationMatchesPayload(
+          native({
+            annotationType: "note",
+            annotationText: null,
+            annotationPosition: JSON.stringify(passage.position),
+          }),
+          20,
+          payload,
+        ),
+        "a note over the passage's lines is not the note square",
+      );
+    });
   });
 });

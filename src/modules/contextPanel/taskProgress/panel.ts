@@ -14,12 +14,19 @@
  * that panel and that conversation, in memory only: a new run in the
  * conversation leaves it as it is, and the panel showing another
  * conversation drops it, back to the automatic rule.
+ *
+ * And the dock (`registerTaskProgressDock`): the standalone window's side
+ * panel can show Task progress in a tab of its own. While that tab is open the
+ * row leaves the chat and the row's "Move to side panel" button (→|) opens
+ * the tab. The Task progress button only says whether the row is in the chat:
+ * not pressed while the tab is open, and a click brings the row back.
  */
 import {
   listTaskPaperScope,
   type TaskPaperScopeListing,
 } from "../../../agent/context/taskPaperScopeListing";
 import { libraryIndexService } from "../../../services/libraryIndexService";
+import { t } from "../../../utils/i18n";
 import { reconcileChatScroll } from "../chatScrollSnapshots";
 import {
   chatHistory,
@@ -43,6 +50,7 @@ import {
   noteTaskQuestion,
   setTaskScope,
   subscribeTaskProgress,
+  syncTaskAnswerCitations,
   taskReadInDepth,
   taskTurnIndexFor,
 } from "./store";
@@ -61,14 +69,89 @@ import {
 
 type MountedPanel = {
   view: TaskProgressView;
+  /** The input last resolved, before the dock hides the row. */
+  input: TaskProgressViewInput | null;
   /** The row the view is bound to; a rebuilt panel has a new one. */
   row: HTMLElement;
   conversationKey: number | null;
   /** The row can show in the conversation and mode shown (`toggleApplies`). */
   toggleApplies: boolean;
+  /** A side panel tab showed it at the last sync. */
+  docked?: boolean;
 };
 
 const panels = new Map<Element, MountedPanel>();
+
+/** A side panel that can show this panel body's Task progress in a tab. */
+export type TaskProgressDock = {
+  /** Its Task progress tab is open: the row stays out of the chat. */
+  isDocked: () => boolean;
+  /** Open the panel if closed, then the Task progress tab (the →| button). */
+  open: () => void;
+  /** Close the tab: the row comes back to the chat (the button's click). */
+  close: () => void;
+  /** The input resolved for the conversation the body shows. */
+  onInput: (input: TaskProgressViewInput) => void;
+};
+
+const docks = new WeakMap<Element, TaskProgressDock>();
+
+const MOVE_BUTTON_CLASS = "llm-task-progress-move";
+
+/**
+ * Let a side panel show this body's Task progress. Returns the unregistering;
+ * the body syncs again either way, so the row and its button follow.
+ */
+export function registerTaskProgressDock(
+  body: Element,
+  dock: TaskProgressDock,
+): () => void {
+  docks.set(body, dock);
+  if (panels.has(body)) syncTaskProgressPanel(body);
+  return () => {
+    if (docks.get(body) !== dock) return;
+    docks.delete(body);
+    const button = body.querySelector(`.${MOVE_BUTTON_CLASS}`);
+    const card = button?.closest(".llm-task-progress-card") as HTMLElement;
+    if (card) delete card.dataset.movable;
+    button?.remove();
+    if (panels.has(body) && !isGone(body)) syncTaskProgressPanel(body);
+  };
+}
+
+/** The input last resolved for the body's conversation (the dock's tab). */
+export function getTaskProgressPanelInput(
+  body: Element,
+): TaskProgressViewInput | null {
+  return panels.get(body)?.input || null;
+}
+
+/** The row's →| button, in its card, while a dock is registered. */
+function ensureMoveButton(body: Element, row: HTMLElement): void {
+  const card = row.closest(".llm-task-progress-card") as HTMLElement | null;
+  if (!card) return;
+  if (
+    Array.from(card.children).some((child) =>
+      child.classList.contains(MOVE_BUTTON_CLASS),
+    )
+  )
+    return;
+  const doc = body.ownerDocument;
+  if (!doc) return;
+  const button = doc.createElement("button") as HTMLButtonElement;
+  button.type = "button";
+  button.className = MOVE_BUTTON_CLASS;
+  const label = t("Move to side panel");
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.addEventListener("click", (event: Event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    docks.get(body)?.open();
+  });
+  card.insertBefore(button, row.nextSibling);
+  card.dataset.movable = "true";
+}
 
 /**
  * The user's choice per panel body, for one conversation. Keyed by the body,
@@ -249,6 +332,12 @@ function settleFromHistory(conversationKey: number, requestId: number): void {
     quoteCitations:
       latest.runMode === "agent" ? latest.quoteCitations : undefined,
   });
+  if (latest.runMode === "agent")
+    syncTaskAnswerCitations(
+      conversationKey,
+      { runId: record.runId, turn: record.turnIndex },
+      latest,
+    );
 }
 
 /** Idempotent; the first mounted panel installs it (tests call it directly). */
@@ -349,11 +438,12 @@ function resolvePanelInput(body: Element): TaskProgressViewInput | null {
   const record = getTaskProgress(conversationKey);
   if (
     libraryID > 0 &&
-    shouldShowTaskProgress({
-      ...visibility,
-      planSeen: Boolean(record?.planSeen),
-      readInDepth: taskReadInDepth(record),
-    })
+    (docks.get(body)?.isDocked() ||
+      shouldShowTaskProgress({
+        ...visibility,
+        planSeen: Boolean(record?.planSeen),
+        readInDepth: taskReadInDepth(record),
+      }))
   ) {
     const nothingAdded =
       !scope.paperCount && !scope.collectionCount && !scope.tagCount;
@@ -446,6 +536,7 @@ export function mountTaskProgressPanel(body: Element): TaskProgressView | null {
   const win = body.ownerDocument?.defaultView;
   const mounted: MountedPanel = {
     view: null as never,
+    input: null,
     row,
     conversationKey: null,
     toggleApplies: false,
@@ -508,7 +599,21 @@ export function syncTaskProgressPanel(body: Element): void {
   if (!input) return;
   mounted.conversationKey = input.conversationKey;
   mounted.toggleApplies = toggleApplies(input);
-  view.setInput(input);
+  mounted.input = input;
+  const dock = docks.get(body);
+  if (dock) ensureMoveButton(body, mounted.row);
+  dock?.onInput(input);
+  const docked = Boolean(dock?.isDocked());
+  const movedBack = Boolean(mounted.docked) && !docked;
+  mounted.docked = docked;
+  // Docked, the row stays out of the chat: the tab shows it.
+  view.setInput(
+    docked
+      ? { ...input, visibility: { ...input.visibility, userChoice: "hidden" } }
+      : input,
+  );
+  // Back from the tab: the card opens as the tab's list was left.
+  if (movedBack) view.resume();
   paintTaskProgressToggle(body);
 }
 
@@ -521,6 +626,12 @@ export function toggleTaskProgressPanel(body: Element): void {
   const mounted = panels.get(body);
   const conversationKey = mounted?.conversationKey;
   if (!mounted || !conversationKey || !mounted.toggleApplies) return;
+  // Docked, the click brings the row back to the chat.
+  const dock = docks.get(body);
+  if (dock?.isDocked()) {
+    dock.close();
+    return;
+  }
   userChoices.set(body, {
     conversationKey,
     choice: mounted.view.isVisible() ? "hidden" : "shown",
@@ -556,9 +667,12 @@ function paintTaskProgressToggle(body: Element): void {
   if (!button || isGone(body)) return;
   const mounted = panels.get(body);
   const applies = Boolean(mounted?.toggleApplies);
+  const docked = applies && Boolean(docks.get(body)?.isDocked());
   applyTaskProgressToggleState(button, {
     applies,
-    shown: applies && Boolean(mounted?.view.isVisible()),
+    // Pressed only while the row is in the chat.
+    shown: !docked && applies && Boolean(mounted?.view.isVisible()),
+    docked,
   });
 }
 

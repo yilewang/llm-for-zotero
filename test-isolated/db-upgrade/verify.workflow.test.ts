@@ -325,15 +325,17 @@ describe(`DB upgrade ${phase} (${reverse ? "older" : "newer"} build)`, function 
           const conversation = record.conversations.find(
             (entry) => entry.label === label,
           )!;
+          // The built-in runtime is Agent whenever the feature is on; these
+          // continuations are plain chat, so the feature is off for upstream.
+          if (conversation.system === "upstream") {
+            setPrefs({ enableAgentMode: false });
+          }
           const panel = await openConversation(conversation);
           if (conversation.system === "upstream") {
             await api().selectPanelModelEntry(
               panel.panelId,
               LIVE_MODEL_ENTRY_ID,
             );
-            const diag = await api().getDiagnostics(panel.panelId);
-            if (diag.runtimeMode === "agent")
-              await api().clickPanelRuntimeModeToggle(panel.panelId);
           }
           const turn = await api().sendLiveChatTurn(
             panel.panelId,

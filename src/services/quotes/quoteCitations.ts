@@ -1360,18 +1360,44 @@ function buildQuoteCitationWithPolicy(
  * written out and the stored citation format is unchanged.
  */
 export function normalizeQuoteCitations(value: unknown): QuoteCitation[] {
-  return normalizeQuoteCitationsWith(value, rebuildMintedQuoteCitation).map(
-    (citation) => {
-      if (!(citation as MintedQuoteCitation).allowShortQuoteText) {
-        return citation;
-      }
-      const { allowShortQuoteText: _marker, ...stored } =
-        citation as MintedQuoteCitation;
-      void _marker;
-      return stored;
-    },
-  );
+  if (!Array.isArray(value)) return [];
+  // One answer is drawn from the same stored array several times; reuse the
+  // result while the entries are unchanged. Callers get their own copies.
+  let signature: string | null = null;
+  try {
+    signature = JSON.stringify(value);
+  } catch {
+    signature = null;
+  }
+  const cached = signature ? normalizedQuoteCitationsCache.get(value) : null;
+  if (cached && cached.signature === signature) {
+    return cached.citations.map((citation) => ({ ...citation }));
+  }
+  const citations = normalizeQuoteCitationsWith(
+    value,
+    rebuildMintedQuoteCitation,
+  ).map((citation) => {
+    if (!(citation as MintedQuoteCitation).allowShortQuoteText) {
+      return citation;
+    }
+    const { allowShortQuoteText: _marker, ...stored } =
+      citation as MintedQuoteCitation;
+    void _marker;
+    return stored;
+  });
+  if (signature) {
+    normalizedQuoteCitationsCache.set(value, {
+      signature,
+      citations: citations.map((citation) => ({ ...citation })),
+    });
+  }
+  return citations;
 }
+
+const normalizedQuoteCitationsCache = new WeakMap<
+  unknown[],
+  { signature: string; citations: QuoteCitation[] }
+>();
 
 function normalizeQuoteCitationsWith(
   value: unknown,
@@ -1750,6 +1776,12 @@ export type QuoteSourceText = {
   requiresPageHint?: unknown;
   pageHintIndex?: unknown;
   pageHintLabel?: unknown;
+  /**
+   * The text is the item's own Zotero abstract field, read natively. It is
+   * evidence for a quote an abstract-kind citation names, even where a
+   * body-evidence review otherwise sets abstracts aside.
+   */
+  zoteroAbstractField?: unknown;
 };
 
 export type QuoteSourceIndexEntry = {
@@ -1766,6 +1798,8 @@ export type QuoteSourceIndexEntry = {
   requiresPageHint?: boolean;
   pageHintIndex?: number;
   pageHintLabel?: string;
+  /** See `QuoteSourceText.zoteroAbstractField`. */
+  zoteroAbstractField?: boolean;
 };
 
 export type QuoteSourceIndex = {
@@ -2036,7 +2070,12 @@ function filterSourceIndexForBodyEvidenceQuotes(
       return shouldKeepEvidence(citation, isBodyQuoteCitation(citation));
     }),
     sources: sourceIndex.sources.filter((source) => {
-      return shouldKeepEvidence(source, isBodyQuoteSource(source));
+      // The Zotero abstract field is kept for the abstract-kind citation
+      // that names its item; it never makes the item's scope a body scope.
+      return shouldKeepEvidence(
+        source,
+        isBodyQuoteSource(source) || Boolean(source.zoteroAbstractField),
+      );
     }),
   };
 }
@@ -2139,6 +2178,7 @@ export function buildQuoteSourceIndex(params: {
         normalizeQuoteMatchSource(source.sourceMatchSource) === "pdf-page-text",
       pageHintIndex: normalizePageHintIndex(source.pageHintIndex),
       pageHintLabel: normalizePageHintLabel(source.pageHintLabel),
+      ...(source.zoteroAbstractField ? { zoteroAbstractField: true } : {}),
     });
   }
   return { quoteCitations, sources, metadataTexts: [...metadataTextSet] };
@@ -5321,8 +5361,8 @@ export function buildQuoteAnchorPromptBlock(
   if (!normalized.length) return [];
   const lines = [
     "Verified quote anchors:",
-    "- At the end of an explanatory paragraph, use [[cite:ID]] or [[cite:ID1,ID2]] for the exact passages supporting its claims. The app shows a small source footer with the original passages and PDF links. Cite at paragraph boundaries, not after every sentence.",
-    "- Use [[quote:ID]] on its own line only to recommend a passage the reader should read to address the question, or when showing exact wording helps. Avoid displaying the same passage as a card merely because it backs a paragraph.",
+    "- At the end of each sentence that a passage supports, just before its final punctuation, use one [[cite:ID]] or [[cite:ID1,ID2]] token for the exact passages supporting it. The app shows a small passage-number mark that opens the original passages and PDF links. A sentence that adds nothing from the paper gets no token.",
+    "- Use [[quote:ID]] on its own line only to recommend a passage the reader should read to address the question, or when showing exact wording helps. Avoid displaying the same passage as a card merely because it backs a sentence.",
     "- When you need to include one of these exact quotes, write only the matching token, e.g. [[quote:Q_x7a2]].",
     "- Do not manually copy the quote or sourceLabel when a quote anchor is available; the app will render the quote and clickable citation.",
     "- Quote text is provenance-locked source text: never translate or paraphrase it to match the user's language.",
@@ -5336,7 +5376,7 @@ export function buildQuoteAnchorPromptBlock(
       `- Quote anchor ${citation.id}:`,
       `  quoteText: ${jsonEscape(truncateForPrompt(citation.quoteText))}`,
       `  sourceLabel: ${jsonEscape(citation.citationLabel)}`,
-      `  Paragraph support: [[cite:${citation.id}]]. Reading recommendation: [[quote:${citation.id}]].`,
+      `  Sentence support: [[cite:${citation.id}]]. Reading recommendation: [[quote:${citation.id}]].`,
     );
   }
   return lines;

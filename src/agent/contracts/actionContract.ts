@@ -28,10 +28,12 @@ import {
   actionDetailsForLibraryMutation,
   judgeLibraryMutationTargets,
   mutationPostconditionIsSatisfied,
+  mutationNoChangeOutcome,
   mutationReachedFromHandler,
   mutationTargetCountFromHandler,
 } from "../services/libraryMutation/handlerOperations";
 import { describeItemIds } from "../services/libraryMutation/handlerUtilities";
+import { asMutationStateView } from "../services/libraryMutation/stateView";
 import {
   verifyRecordedPostImage,
   type PostImageReader,
@@ -157,6 +159,87 @@ function splitByTarget(
           ]
         : []),
     ].join(" "),
+  };
+}
+
+/**
+ * The receipt of an operation a checkpointed batch ran one item at a time
+ * and did not finish cleanly, judged part by part: a part that ran on the
+ * captured states, one that failed with its own reason, and one that never
+ * started not at all, so it stays owed rather than rejected.
+ */
+function checkpointedReceipt(
+  base: Omit<
+    AgentActionReceipt,
+    "verification" | "status" | "appliedTargets" | "alreadySatisfiedTargets"
+  >,
+  evidence: AgentLibraryMutationEvidence,
+  parts: NonNullable<AgentLibraryMutationEvidence["checkpointParts"]>,
+): AgentActionReceipt {
+  const applied: string[] = [];
+  const alreadySatisfied: string[] = [];
+  const rejected: string[] = [];
+  const reasons: string[] = [];
+  let unverified = false;
+  let notStarted = 0;
+  // Indexed once: each part's check would otherwise rebuild the view over
+  // every row of the captured state, which is quadratic in the batch.
+  const before = asMutationStateView(evidence.preState);
+  const after = asMutationStateView(evidence.postState);
+  for (const part of parts) {
+    const targets = actionDetailsForLibraryMutation(
+      part.operationValue,
+    ).requestedTargets;
+    if (part.outcome === "not_started") {
+      notStarted += 1;
+      continue;
+    }
+    if (
+      part.outcome === "ran" &&
+      mutationPostconditionIsSatisfied(part.operationValue, after)
+    ) {
+      (mutationPostconditionIsSatisfied(part.operationValue, before)
+        ? alreadySatisfied
+        : applied
+      ).push(...targets);
+      continue;
+    }
+    rejected.push(...targets);
+    if (part.outcome === "ran") unverified = true;
+    reasons.push(
+      `${targets.join(", ")}: ${
+        part.error ||
+        `the captured native post-state does not show ${part.operationValue.type}`
+      }`,
+    );
+  }
+  const landed = applied.length + alreadySatisfied.length > 0;
+  if (notStarted)
+    reasons.push(
+      `Stopped by the user after ${parts.length - notStarted} of ${parts.length}; the rest were not started.`,
+    );
+  return {
+    ...base,
+    evidenceRef: evidence.journalStepId || base.evidenceRef,
+    verification: unverified
+      ? "unverified"
+      : landed
+        ? "verified"
+        : "not_applicable",
+    status:
+      notStarted === parts.length
+        ? "cancelled"
+        : !landed
+          ? "failed"
+          : rejected.length || notStarted
+            ? "partial"
+            : applied.length
+              ? "applied"
+              : "already_satisfied",
+    appliedTargets: applied,
+    alreadySatisfiedTargets: alreadySatisfied,
+    rejectedTargets: rejected,
+    reasons: [...base.reasons, ...reasons],
   };
 }
 
@@ -526,6 +609,8 @@ export class ActionContractService {
         expected.position &&
         expected.color === parameters.annotationColor &&
         expected.comment === parameters.annotationComment &&
+        (expected.type || "highlight") ===
+          (parameters.annotationType || "highlight") &&
         (parameters.pageIndex === undefined ||
           expected.position.pageIndex === parameters.pageIndex) &&
         findQuoteSourceSpansAllowingLayoutArtifacts(
@@ -638,6 +723,8 @@ export class ActionContractService {
       return this.externalMutationReceipt(base, proposal, params);
     }
     const evidence = matchingNativeEvidence(proposal, params.actionEvidence);
+    if (evidence?.checkpointParts)
+      return checkpointedReceipt(base, evidence, evidence.checkpointParts);
     // A call the user stopped between its items answers for the items it
     // reached. The rest never started: it neither applied nor refused them,
     // so the receipt names them in neither list and they stay owed.
@@ -646,6 +733,34 @@ export class ActionContractService {
       innermostToolResult(params.content),
     );
     const judged = reached || operation;
+    // A call that changed nothing because there was nothing to find is an
+    // answer, not work already done: `observed`, with its reason, and its
+    // targets excepted rather than counted as done.
+    const noChange =
+      evidence && !reached && params.effect === "none"
+        ? mutationNoChangeOutcome(
+            operation,
+            innermostToolResult(params.content),
+            evidence.preState,
+            evidence.postState,
+          )
+        : undefined;
+    if (evidence && noChange) {
+      const searched = proposal.requestedTargets.length
+        ? proposal.requestedTargets
+        : evidenceTargets(evidence);
+      return {
+        ...base,
+        evidenceRef: evidence.journalStepId || base.evidenceRef,
+        verification: "verified",
+        status: "observed",
+        requestedTargets: searched,
+        appliedTargets: [],
+        alreadySatisfiedTargets: [],
+        rejectedTargets: searched,
+        reasons: [noChange, ...base.reasons],
+      };
+    }
     const verified = Boolean(
       evidence && mutationPostconditionIsSatisfied(judged, evidence.postState),
     );

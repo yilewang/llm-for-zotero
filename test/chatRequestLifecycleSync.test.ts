@@ -33,6 +33,7 @@ function fakePanelBody(conversationKey: number): Element {
   };
   return {
     isConnected: true,
+    ownerDocument: { defaultView: { closed: false } },
     querySelector: (selector: string) =>
       selector === "#llm-main" ? root : null,
   } as unknown as Element;

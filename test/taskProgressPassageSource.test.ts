@@ -2,7 +2,10 @@ import { assert } from "chai";
 import type { TaskPaperReadEvent } from "../src/agent/context/taskPaperLedger";
 import { navigateToTaskPaperPassage } from "../src/modules/contextPanel/assistantCitationLinks";
 import { locateQuoteInPageTexts } from "../src/services/pdf/livePdfSelectionLocator";
-import { cleanTaskPaperSnippet } from "../src/modules/contextPanel/taskProgress/view";
+import {
+  cleanTaskPaperSnippet,
+  isTaskPaperTitleQuote,
+} from "../src/modules/contextPanel/taskProgress/view";
 import {
   buildTaskPaperPassageSearchTexts,
   canOpenTaskPaperPassage,
@@ -340,5 +343,30 @@ describe("task progress passage source", function () {
       assert.equal(status.textContent, "");
       assert.isTrue(button.disabled, "the first click still owns the button");
     });
+  });
+
+  it("knows a cited quote that is only the paper's title", function () {
+    const title =
+      "Signal and action coupling measures predict code change in a sample study";
+    assert.isTrue(
+      isTaskPaperTitleQuote(
+        "Signal and action coupling measures predict code change in a sample study",
+        title,
+      ),
+    );
+    assert.isTrue(
+      isTaskPaperTitleQuote(
+        "signal and action coupling measures predict code change in a sample study.",
+        title,
+      ),
+      "case and punctuation do not count",
+    );
+    assert.isFalse(
+      isTaskPaperTitleQuote(
+        "highly redundant and highly stable cliques that in turn synergistically connect",
+        title,
+      ),
+    );
+    assert.isFalse(isTaskPaperTitleQuote("", title));
   });
 });

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.vscode/
+.DS_Store
+.adapter-state/
+.run/
+.playwright-mcp/
+tweet-yuvadm-config.png
+
+# Internal dev docs (do not commit)
+docs/internal/
+personal_bugs.md

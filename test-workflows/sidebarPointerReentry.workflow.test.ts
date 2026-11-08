@@ -282,14 +282,31 @@ describe("workflow: sidebar pointer reentry", function () {
               (_, index) => `Draft line ${index + 1}: a follow-up question.`,
             ).join("\n")
           : "";
-      const emptyComposerViewportHeight = box.clientHeight;
+      // The composer floats over the chat's bottom: the part left to read is
+      // the chat box less the floor it runs on under the chips and composer.
+      const readableHeight = () => {
+        const overlay = (name: string) =>
+          parseFloat(
+            body
+              .querySelector<HTMLElement>("#llm-main")!
+              .style.getPropertyValue(name),
+          ) || 0;
+        const shortcuts = overlay("--llm-shortcuts-overlay");
+        return (
+          box.clientHeight -
+          overlay("--llm-composer-overlay") -
+          shortcuts -
+          Math.min(shortcuts, 6)
+        );
+      };
+      const emptyComposerViewportHeight = readableHeight();
       input.value = draft;
       input.dispatchEvent(new win.Event("input", { bubbles: true }));
       await settle();
       if (draft) {
         assert.isAbove(input.getBoundingClientRect().height, 150);
         assert.isBelow(
-          box.clientHeight,
+          readableHeight(),
           emptyComposerViewportHeight - 50,
           "the sidebar viewport shrinks to make room for the multiline draft",
         );

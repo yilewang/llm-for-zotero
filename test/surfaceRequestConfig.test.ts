@@ -175,4 +175,27 @@ describe("request config: a panel's send uses its own surface's model", function
       "low",
     );
   });
+
+  it("clearing one surface's reasoning leaves the torn windows' alone", function () {
+    selectedReasoningCache.set(reasoningCacheKey("side", 7777), "low");
+    selectedReasoningCache.set(reasoningCacheKey("torn:1", 7777), "high");
+    selectedReasoningCache.set(reasoningCacheKey("torn:12", 7777), "high");
+    clearSelectedReasoningForSurface("side");
+    assert.isUndefined(
+      selectedReasoningCache.get(reasoningCacheKey("side", 7777)),
+    );
+    assert.equal(
+      selectedReasoningCache.get(reasoningCacheKey("torn:1", 7777)),
+      "high",
+    );
+    clearSelectedReasoningForSurface("torn:1");
+    assert.isUndefined(
+      selectedReasoningCache.get(reasoningCacheKey("torn:1", 7777)),
+    );
+    assert.equal(
+      selectedReasoningCache.get(reasoningCacheKey("torn:12", 7777)),
+      "high",
+    );
+    clearSelectedReasoningForSurface("torn:12");
+  });
 });

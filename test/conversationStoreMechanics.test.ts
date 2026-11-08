@@ -115,6 +115,14 @@ function richMessage(overrides: Partial<StoredChatMessage> = {}) {
     selectedTagContexts: [
       { name: "salience", normalizedName: "salience", libraryID: 1 },
     ],
+    attachedConversations: [
+      {
+        system: "codex" as const,
+        conversationKey: 31,
+        title: "Earlier codex chat",
+        libraryID: 1,
+      },
+    ],
     screenshotImages: ["data:image/png;base64,AAA"],
     attachments: [
       {
@@ -240,6 +248,14 @@ describe("conversation store mechanics", function () {
         9,
       );
       assert.strictEqual(loaded.selectedTagContexts?.[0]?.name, "salience");
+      assert.deepEqual(loaded.attachedConversations, [
+        {
+          system: "codex",
+          conversationKey: 31,
+          title: "Earlier codex chat",
+          libraryID: 1,
+        },
+      ]);
       assert.deepEqual(loaded.screenshotImages, ["data:image/png;base64,AAA"]);
       assert.strictEqual(loaded.attachments?.[0]?.id, "att-1");
       assert.strictEqual(loaded.modelName, "gpt-5");

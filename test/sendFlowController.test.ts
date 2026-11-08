@@ -7,6 +7,7 @@ import {
 } from "../src/modules/contextPanel/state";
 import { assert } from "chai";
 import type {
+  AttachedConversationRef,
   ChatAttachment,
   CollectionContextRef,
   Message,
@@ -64,6 +65,14 @@ describe("sendFlowController", function () {
   const selectedTag: TagContextRef = {
     name: "Stable",
     normalizedName: "stable",
+    libraryID: 1,
+  };
+
+  const attachedChat: AttachedConversationRef = {
+    system: "codex",
+    conversationKey: 1_500_000_777,
+    conversationID: "codex-1",
+    title: "Earlier chat",
     libraryID: 1,
   };
 
@@ -616,6 +625,9 @@ describe("sendFlowController", function () {
     let lastSentTagContexts: TagContextRef[] | undefined;
     let lastEditCollectionContexts: CollectionContextRef[] | undefined;
     let lastEditTagContexts: TagContextRef[] | undefined;
+    let lastSentAttachedConversations: AttachedConversationRef[] | undefined;
+    let lastEditAttachedConversations: AttachedConversationRef[] | undefined;
+    const clearedAttachedConversationOwners: number[] = [];
     let lastStatus: { message: string; level: string } | null = null;
     const statuses: Array<{ message: string; level: string }> = [];
     let activeRequestId = 0;
@@ -661,6 +673,10 @@ describe("sendFlowController", function () {
       getSelectedPaperContexts: () => [selectedPaper],
       getSelectedCollectionContexts: () => [],
       getSelectedTagContexts: () => [],
+      getAttachedConversations: () => [],
+      clearAttachedConversations: (ownerId: number) => {
+        clearedAttachedConversationOwners.push(ownerId);
+      },
       getFullTextPaperContexts: () => [selectedPaper],
       getPdfModePaperContexts: () => [],
       resolvePaperContextNextSendMode: () => "full-next" as const,
@@ -721,6 +737,7 @@ describe("sendFlowController", function () {
         lastEditPdfUploadSystemMessages = opts.pdfUploadSystemMessages;
         lastEditCollectionContexts = opts.selectedCollectionContexts;
         lastEditTagContexts = opts.selectedTagContexts;
+        lastEditAttachedConversations = opts.attachedConversations;
         lastEditContextSource = opts.contextSource;
         activeRequestId = 0;
         activeAbortController = null;
@@ -741,6 +758,7 @@ describe("sendFlowController", function () {
         lastSentForcedSkillIds = opts.forcedSkillIds;
         lastSentCollectionContexts = opts.selectedCollectionContexts;
         lastSentTagContexts = opts.selectedTagContexts;
+        lastSentAttachedConversations = opts.attachedConversations;
         lastSentContextSource = opts.contextSource;
         lastSentPdfPaperContexts = opts.pdfPaperContexts;
         lastSentWebchatSendPdf = opts.webchatSendPdf === true;
@@ -819,6 +837,7 @@ describe("sendFlowController", function () {
         lastSentForcedSkillIds,
         lastSentCollectionContexts,
         lastSentTagContexts,
+        lastSentAttachedConversations,
         lastSentContextSource,
         lastSentPdfPaperContexts,
         lastSentWebchatSendPdf,
@@ -833,6 +852,9 @@ describe("sendFlowController", function () {
       getLastEditPdfUploadSystemMessages: () => lastEditPdfUploadSystemMessages,
       getLastEditCollectionContexts: () => lastEditCollectionContexts,
       getLastEditTagContexts: () => lastEditTagContexts,
+      getLastEditAttachedConversations: () => lastEditAttachedConversations,
+      getClearedAttachedConversationOwners: () =>
+        clearedAttachedConversationOwners.slice(),
       getLastEditContextSource: () => lastEditContextSource,
       getLastStatus: () => lastStatus,
       getStatuses: () => statuses.slice(),
@@ -2361,6 +2383,103 @@ describe("sendFlowController", function () {
 
     assert.equal(getLastSend().lastRuntimeMode, "chat");
     assert.deepEqual(getLastSend().lastSentTagContexts, [selectedTag]);
+  });
+
+  it("sends attached past chats with the message and clears them from the composer", async function () {
+    const { controller, getLastSend, getClearedAttachedConversationOwners } =
+      createBaseDeps({
+        getAttachedConversations: () => [attachedChat],
+      });
+
+    await controller.doSend();
+
+    assert.deepEqual(getLastSend().lastSentAttachedConversations, [
+      attachedChat,
+    ]);
+    assert.deepEqual(getClearedAttachedConversationOwners(), [item.id]);
+  });
+
+  it("does not clear the composer past chats when there are none", async function () {
+    const { controller, getLastSend, getClearedAttachedConversationOwners } =
+      createBaseDeps();
+
+    await controller.doSend();
+
+    assert.isUndefined(getLastSend().lastSentAttachedConversations);
+    assert.deepEqual(getClearedAttachedConversationOwners(), []);
+  });
+
+  it("counts an attached past chat as content for an otherwise empty send", async function () {
+    const emptyContext = {
+      getSelectedTextContextEntries: () => [],
+      getSelectedPaperContexts: () => [],
+      getFullTextPaperContexts: () => [],
+      getSelectedFiles: () => [],
+      getSelectedImages: () => [],
+      resolvePromptText: resolveProductionPromptText,
+    };
+    const empty = createBaseDeps({
+      ...emptyContext,
+      getAttachedConversations: () => [],
+    });
+    empty.inputBox.value = "";
+    await empty.controller.doSend();
+    assert.equal(empty.getCounts().sendCalled, 0);
+
+    const withChat = createBaseDeps({
+      ...emptyContext,
+      getAttachedConversations: () => [attachedChat],
+    });
+    withChat.inputBox.value = "";
+    await withChat.controller.doSend();
+    assert.equal(withChat.getCounts().sendCalled, 1);
+    assert.deepEqual(withChat.getLastSend().lastSentAttachedConversations, [
+      attachedChat,
+    ]);
+  });
+
+  it("passes attached past chats through latest-turn edit retries", async function () {
+    const { controller, getLastEditAttachedConversations } = createBaseDeps({
+      getAttachedConversations: () => [attachedChat],
+      getActiveEditSession: () => ({
+        conversationKey: item.id,
+        userTimestamp: 10,
+        assistantTimestamp: 20,
+      }),
+      getLatestEditablePair: async () => ({
+        conversationKey: item.id,
+        pair: {
+          userMessage: { timestamp: 10 },
+          assistantMessage: { timestamp: 20, streaming: false },
+        },
+      }),
+    });
+
+    await controller.doSend();
+
+    assert.deepEqual(getLastEditAttachedConversations(), [attachedChat]);
+  });
+
+  it("blocks attached past chats for webchat sends", async function () {
+    const { controller, inputBox, getCounts, getLastStatus } = createBaseDeps({
+      getSelectedProfile: () => ({
+        entryId: "entry-1",
+        model: "chatgpt-web",
+        apiBase: "",
+        apiKey: "",
+        providerLabel: "ChatGPT",
+        authMode: "webchat",
+        providerProtocol: "web_sync",
+      }),
+      getAttachedConversations: () => [attachedChat],
+    });
+
+    await controller.doSend();
+
+    assert.equal(getCounts().sendCalled, 0);
+    assert.equal(getCounts().editCalled, 0);
+    assert.equal(inputBox.value, "ask question");
+    assert.equal(getLastStatus()?.level, "error");
   });
 
   it("passes selected collections through latest-turn edit retries", async function () {

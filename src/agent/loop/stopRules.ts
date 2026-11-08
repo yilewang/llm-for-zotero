@@ -27,14 +27,15 @@ export type RunStopRule =
   // The model could not be reached after the automatic retries; the work
   // is kept and "continue" goes on.
   | "connection_lost"
+  // The model's answer was empty, and empty again when asked once more;
+  // the work is kept and "continue" goes on.
+  | "empty_answer"
   // Incomplete model steps reached the segment's round limit.
   | "incomplete_step_limit"
   // The final-answer gate rejected the answer and allows no more corrections.
   | "final_gate_rejected"
   // The model's final answer passed the final-answer gate.
   | "final_answer"
-  // A step asked for too many tool calls after its one retry, or at the limit.
-  | "tool_call_overflow"
   // A tool the model called ended the run with its terminal result.
   | "terminal_tool"
   // A tool the model called could not run or verify its action.

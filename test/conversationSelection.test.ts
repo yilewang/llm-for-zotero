@@ -39,6 +39,7 @@ import {
 import { buildDefaultUpstreamGlobalConversationKey } from "../src/modules/contextPanel/constants";
 import {
   clearStandaloneSelection,
+  clearTornSelection,
   forget,
   isRemembered,
   prime,
@@ -66,6 +67,9 @@ import {
   standaloneConversationModeByLibrary,
   standaloneGlobalConversationByLibrary,
   standalonePaperConversationByPaper,
+  tornGlobalByLibrary,
+  tornModeByLibrary,
+  tornPaperByPaper,
   webChatIsolatedConversationKeys,
 } from "../src/modules/contextPanel/state";
 import { flushPaperRestoreSelectionWrites } from "../src/shared/paperConversationRestore";
@@ -173,6 +177,9 @@ function clearMaps(): void {
   activeCodexGlobalConversationByLibrary.clear();
   activeCodexPaperConversationByPaper.clear();
   clearStandaloneSelection();
+  tornModeByLibrary.clear();
+  tornGlobalByLibrary.clear();
+  tornPaperByPaper.clear();
   webChatIsolatedConversationKeys.clear();
 }
 
@@ -370,6 +377,57 @@ describe("conversationSelection", function () {
         rememberMode(fixture.system, LIBRARY_ID, "paper");
         assert.equal(fixture.modeMap().get(fixture.modeStateKey()), "paper");
         assert.equal(fixture.getMode(), "paper");
+      });
+
+      describe("side chat surface", function () {
+        const sideGlobal = (): SelectionScope => ({
+          ...globalScopeFor(),
+          surface: "side",
+        });
+        const sidePaper = (): SelectionScope => ({
+          ...paperScopeFor(),
+          surface: "side",
+        });
+
+        it("remembers nothing, in any slot or pref", function () {
+          remember(sideGlobal(), fixture.globalKey(), { persist: true });
+          remember(sidePaper(), fixture.paperKey());
+          rememberMode(fixture.system, LIBRARY_ID, "global", {
+            surface: "side",
+          });
+          assert.isFalse(fixture.globalMap().has(fixture.globalStateKey()));
+          assert.isFalse(fixture.paperMap().has(fixture.paperStateKey()));
+          assert.isFalse(fixture.modeMap().has(fixture.modeStateKey()));
+          assert.isNull(fixture.getGlobal());
+          assert.isNull(fixture.getMode());
+          assert.equal(standaloneGlobalConversationByLibrary.size, 0);
+          assert.equal(standalonePaperConversationByPaper.size, 0);
+          assert.equal(standaloneConversationModeByLibrary.size, 0);
+        });
+
+        it("primes nothing", function () {
+          prime({
+            system: fixture.system,
+            libraryID: LIBRARY_ID,
+            mode: "global",
+            conversationKey: fixture.globalKey(),
+            surface: "side",
+          }).restore();
+          assert.isFalse(fixture.modeMap().has(fixture.modeStateKey()));
+          assert.isNull(fixture.getMode());
+          assert.isNull(fixture.getGlobal());
+          assert.equal(standaloneConversationModeByLibrary.size, 0);
+        });
+
+        it("reads the window's choice, then the sidebar's", function () {
+          fixture.setGlobal(fixture.globalKey());
+          assert.equal(recall(sideGlobal()), fixture.globalKey());
+          remember(
+            { ...globalScopeFor(), surface: "standalone" },
+            fixture.globalKey() + 2,
+          );
+          assert.equal(recall(sideGlobal()), fixture.globalKey() + 2);
+        });
       });
 
       describe("standalone surface", function () {
@@ -595,6 +653,178 @@ describe("conversationSelection", function () {
       });
     });
   }
+
+  describe("torn window surfaces", function () {
+    const paperScope = (
+      surface: SelectionScope["surface"],
+    ): SelectionScope => ({
+      system: "upstream",
+      libraryID: 1,
+      kind: "paper",
+      paperItemID: 10,
+      surface,
+    });
+    const globalScope = (
+      surface: SelectionScope["surface"],
+    ): SelectionScope => ({
+      system: "upstream",
+      libraryID: 1,
+      kind: "global",
+      surface,
+    });
+
+    it("a torn surface remembers its own paper and global keys apart from the standalone window", function () {
+      remember(paperScope("standalone"), 501);
+      remember(paperScope("torn:1"), 502);
+      assert.equal(recallActive(paperScope("standalone")), 501);
+      assert.equal(recallActive(paperScope("torn:1")), 502);
+      // Falls back to the window, then the sidebar.
+      assert.equal(recallActive(paperScope("torn:2")), 501);
+      assert.equal(recallActive(paperScope("embedded")), 0);
+
+      activeGlobalConversationByLibrary.set(1, 701);
+      assert.equal(recallActive(globalScope("torn:1")), 701);
+      remember(globalScope("torn:1"), 702);
+      assert.equal(recallActive(globalScope("torn:1")), 702);
+      assert.equal(recallActive(globalScope("standalone")), 701);
+      assert.equal(recallActive(globalScope("embedded")), 701);
+    });
+
+    it("a torn surface keeps its own mode, read before the window's and the sidebar's", function () {
+      rememberMode("upstream", 1, "paper");
+      assert.equal(
+        recallMode("upstream", 1, {
+          source: "active+persisted",
+          surface: "torn:1",
+        }),
+        "paper",
+      );
+      rememberMode("upstream", 1, "global", { surface: "standalone" });
+      assert.equal(
+        recallMode("upstream", 1, {
+          source: "active+persisted",
+          surface: "torn:1",
+        }),
+        "global",
+      );
+      rememberMode("upstream", 1, "paper", { surface: "torn:1" });
+      assert.equal(
+        recallMode("upstream", 1, {
+          source: "active+persisted",
+          surface: "torn:1",
+        }),
+        "paper",
+      );
+      assert.equal(
+        recallMode("upstream", 1, {
+          source: "active+persisted",
+          surface: "standalone",
+        }),
+        "global",
+      );
+    });
+
+    it("clearStandaloneSelection leaves torn slots; clearTornSelection clears only its own", function () {
+      remember(paperScope("torn:1"), 511);
+      remember(paperScope("torn:2"), 512);
+      remember(globalScope("torn:1"), 521);
+      rememberMode("upstream", 1, "global", { surface: "torn:1" });
+      remember(paperScope("standalone"), 530);
+
+      clearStandaloneSelection();
+      assert.equal(recallActive(paperScope("standalone")), 0);
+      assert.equal(recallActive(paperScope("torn:1")), 511);
+      assert.equal(recallActive(paperScope("torn:2")), 512);
+      assert.equal(recallActive(globalScope("torn:1")), 521);
+
+      clearTornSelection("torn:1");
+      assert.equal(recallActive(paperScope("torn:1")), 0);
+      assert.equal(recallActive(globalScope("torn:1")), 0);
+      assert.isNull(
+        recallMode("upstream", 1, {
+          source: "active+persisted",
+          surface: "torn:1",
+        }),
+      );
+      assert.equal(recallActive(paperScope("torn:2")), 512);
+    });
+
+    it("a torn surface never writes selection prefs", function () {
+      for (const fixture of FIXTURES) {
+        const scope = {
+          system: fixture.system,
+          libraryID: LIBRARY_ID,
+          surface: "torn:1",
+        } as const;
+        remember({ ...scope, kind: "global" }, fixture.globalKey(), {
+          persist: true,
+        });
+        remember(
+          { ...scope, kind: "paper", paperItemID: PAPER_ID },
+          fixture.paperKey(),
+        );
+        rememberMode(fixture.system, LIBRARY_ID, "global", {
+          surface: "torn:1",
+        });
+        prime({
+          system: fixture.system,
+          libraryID: LIBRARY_ID,
+          mode: "global",
+          conversationKey: fixture.globalKey() + 1,
+          surface: "torn:1",
+        });
+        assert.isFalse(fixture.globalMap().has(fixture.globalStateKey()));
+        assert.isFalse(fixture.paperMap().has(fixture.paperStateKey()));
+        assert.isFalse(fixture.modeMap().has(fixture.modeStateKey()));
+        assert.equal(
+          recallActive({ ...scope, kind: "global" }),
+          fixture.globalKey() + 1,
+        );
+      }
+      assert.equal(prefStore.size, 0);
+      assert.equal(standaloneGlobalConversationByLibrary.size, 0);
+      assert.equal(standaloneConversationModeByLibrary.size, 0);
+    });
+
+    it("primes and restores a torn window's own slots", function () {
+      remember(globalScope("torn:1"), 801);
+      const snapshot = prime({
+        system: "upstream",
+        libraryID: 1,
+        mode: "global",
+        conversationKey: 802,
+        surface: "torn:1",
+      });
+      assert.equal(recallActive(globalScope("torn:1")), 802);
+      snapshot.restore();
+      assert.equal(recallActive(globalScope("torn:1")), 801);
+    });
+
+    it("rememberProvisioned re-points a torn slot that names the retired key", function () {
+      remember(paperScope("torn:1"), 601);
+      remember(paperScope("torn:2"), 603);
+      rememberProvisioned(paperScope("embedded"), 601, 602);
+      assert.equal(recallActive(paperScope("torn:1")), 602);
+      assert.equal(recallActive(paperScope("torn:2")), 603);
+      // Only a torn window asked, so the sidebar's saved chat stays unset.
+      assert.equal(recallActive(paperScope("embedded")), 0);
+    });
+
+    it("forget drops a deleted key from torn slots", function () {
+      remember(globalScope("torn:1"), 901);
+      remember(globalScope("torn:2"), 902);
+      forget(globalScope("embedded"), { expectedKey: 901 });
+      assert.equal(recallActive(globalScope("torn:1")), 0);
+      assert.equal(recallActive(globalScope("torn:2")), 902);
+    });
+
+    it("isRemembered counts a key remembered on a torn surface", function () {
+      remember(paperScope("torn:1"), 611);
+      assert.isTrue(isRemembered(paperScope("torn:1"), 611));
+      assert.isTrue(isRemembered(paperScope("embedded"), 611));
+      assert.isFalse(isRemembered(paperScope("embedded"), 612));
+    });
+  });
 
   it("keeps the upstream webchat guard: an isolated key is remembered in the map only", function () {
     const key = buildDefaultUpstreamGlobalConversationKey(LIBRARY_ID) + 9;

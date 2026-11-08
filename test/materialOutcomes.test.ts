@@ -225,7 +225,41 @@ describe("material outcome ledger", function () {
     assert.equal(ledger.entries[0].runId, "run-1");
     assert.equal(ledger.entries[0].materialKind, "guide");
     assert.equal(ledger.entries[0].materialTitle, "Representational drift");
+    assert.notProperty(ledger.entries[0], "outsidePaperCount");
     assert.isEmpty(ledger.dropped);
+  });
+
+  it("counts the outside papers the stored document cites", async function () {
+    const materialRef: MaterialRef = {
+      documentId: "run-1:document:1",
+      documentVersion: 1,
+      contentHash: "sha256:review",
+    };
+    const document = directDocument({
+      documentId: materialRef.documentId,
+      contentHash: materialRef.contentHash,
+    });
+    const outsidePaper = (paperId: string, id: string) => ({
+      paperId,
+      doi: `10.1000/${paperId}`,
+      csl: { id, type: "article-journal" as const, title: paperId },
+    });
+    await harness.addDocument({
+      ...document,
+      citationBundle: {
+        ...document.citationBundle,
+        outsidePapers: [
+          outsidePaper("paper_a", "ext-1"),
+          outsidePaper("paper_b", "ext-2"),
+        ],
+      },
+    });
+    harness.addRun("run-1", 10);
+    harness.addEvent("run-1", finalizedEvent(materialRef));
+
+    const ledger = await loadMaterialOutcomesForConversation(CONVERSATION_KEY);
+    assert.lengthOf(ledger.entries, 1);
+    assert.equal(ledger.entries[0].outsidePaperCount, 2);
   });
 
   it("leaves a batch item's material out of the block it never entered", async function () {
@@ -753,6 +787,38 @@ describe("finalized material recovery lines", function () {
       lines[1].endsWith("status=finalized"),
       "the host, not the title, decides where the line ends",
     );
+  });
+
+  it("points a document that cites outside papers to their import", function () {
+    const lines = formatMaterialOutcomeRecoveryLines([
+      {
+        materialRef,
+        materialTitle: "Representational drift",
+        runId: "run-1",
+        status: "finalized",
+        outsidePaperCount: 3,
+      },
+      {
+        materialRef: { ...materialRef, documentId: "run-1:document:2" },
+        materialTitle: "One outside paper",
+        runId: "run-1",
+        status: "write_failed",
+        outsidePaperCount: 1,
+      },
+      {
+        materialRef: { ...materialRef, documentId: "run-1:document:3" },
+        materialTitle: "Library only",
+        runId: "run-1",
+        status: "finalized",
+      },
+    ]);
+    assert.deepEqual(lines, [
+      "Finalized material available (not saved as a note):",
+      "documentId=run-1:document:1 version=1 hash=sha256:guide title=\"Representational drift\" status=finalized — cites 3 outside papers; if the user asks to import them, call library_import kind:'document_citations' with this documentId",
+      "documentId=run-1:document:2 version=1 hash=sha256:guide title=\"One outside paper\" status=write_failed — a previous save of this material failed — cites 1 outside paper; if the user asks to import it, call library_import kind:'document_citations' with this documentId",
+      'documentId=run-1:document:3 version=1 hash=sha256:guide title="Library only" status=finalized',
+      "If the user asks to save it, call note_write with that documentId; do not regenerate it.",
+    ]);
   });
 
   it("caps a very long title so one entry cannot flood the block", function () {

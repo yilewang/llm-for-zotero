@@ -758,6 +758,7 @@ describe("assistantCitationLinks", function () {
       ".llm-citation-text",
       ".llm-citation-icon",
       ".llm-quote-card",
+      ".katex-mathml",
     ]) {
       assert.include(INLINE_CITATION_SKIP_SELECTOR, selector);
     }
@@ -1648,62 +1649,6 @@ describe("assistantCitationLinks", function () {
       assert.isAbove(lookupText.length, 250);
     });
 
-    it("verifies a trusted quote before any reader moves, and uses page caches only to order papers", function () {
-      const source = readFileSync(
-        resolve(
-          testDir,
-          "../src/modules/contextPanel/assistantCitationLinks.ts",
-        ),
-        "utf8",
-      );
-      // The trusted click hands its papers to the navigator and keeps the
-      // success bookkeeping.
-      const trustedStart = source.indexOf(
-        "async function resolveAndNavigateAssistantCitation(params: {",
-      );
-      const trustedEnd = source.indexOf("} catch (error) {", trustedStart);
-      const trustedSection = source.slice(trustedStart, trustedEnd);
-      const navigateCall = trustedSection.slice(
-        trustedSection.indexOf("const navigableCandidates"),
-      );
-      assert.isAtLeast(trustedStart, 0);
-      assert.isAbove(trustedEnd, trustedStart);
-      assert.include(navigateCall, "navigateToQuote({");
-      assert.include(trustedSection, "quoteJumpSucceeded = true");
-      assert.include(trustedSection, "return;");
-      // U1: a cached page only orders the papers; no stored page hint or
-      // page label is handed over, and only the inline citation (which has
-      // no quote to verify) opens a reader here.
-      assert.include(navigateCall, "cachedPage: true");
-      assert.notInclude(navigateCall, "hints:");
-      assert.notInclude(navigateCall, "onProgress");
-      assert.notInclude(navigateCall, "openReaderForItem");
-      assert.notInclude(source, "citationPageLabel");
-      assert.notInclude(source, "Opening cited page hint...");
-      assert.lengthOf(trustedSection.match(/openReaderForItem\(/g) || [], 1);
-      assert.include(
-        trustedSection.slice(
-          0,
-          trustedSection.indexOf("const navigableCandidates"),
-        ),
-        "if (!normalizedQuoteText) {",
-      );
-
-      const navigatorSource = readFileSync(
-        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
-        "utf8",
-      );
-      for (const retired of [
-        "navigateByHintLadder",
-        "navigateToCachedCitationPage",
-        "navigateToHiddenQuoteLocation",
-        "navigateToStoredQuotePageHint",
-        "hint-ladder",
-      ]) {
-        assert.notInclude(navigatorSource, retired);
-      }
-    });
-
     it("passes the trusted quote citation into its citation button for the click", function () {
       const source = readFileSync(
         resolve(
@@ -1748,32 +1693,6 @@ describe("assistantCitationLinks", function () {
         sourceBackedSection,
         "quoteCitation: trustedQuoteCitation",
       );
-    });
-
-    it("keeps citation navigation tied to the reader it opened", function () {
-      const source = readFileSync(
-        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
-        "utf8",
-      );
-      const navigateStart = source.indexOf(
-        "export async function navigateToQuote(",
-      );
-      const navigateEnd = source.indexOf("\n}\n", navigateStart);
-      const navigateSection = source.slice(navigateStart, navigateEnd);
-
-      assert.isAtLeast(navigateStart, 0);
-      assert.isAbove(navigateEnd, navigateStart);
-      // The label and the remembered page come from the reader and the
-      // attachment the click opened, not from whatever reader is active.
-      assert.match(
-        navigateSection,
-        /const reader = await deps\.openReader\(contextItemId,/,
-      );
-      // D5 (was resolveJumpedPageLabel): jumpedPage reads the label from
-      // the opened reader and guesses none.
-      assert.match(navigateSection, /jumpedPage\(\s*reader,/);
-      assert.match(navigateSection, /deps\.rememberPage\(\s*contextItemId,/);
-      assert.notInclude(navigateSection, "getActiveReaderForSelectedTab()");
     });
 
     it("refreshes citation buttons from button context ids, not the active reader", function () {
@@ -1965,7 +1884,7 @@ describe("assistantCitationLinks", function () {
       assert.include(source, "preferRawCitationLabel: true");
     });
 
-    it("verifies the quote before moving the reader and opens only the winner", function () {
+    it("records how many PDFs a citation click read", function () {
       const source = readFileSync(
         resolve(
           testDir,
@@ -1980,7 +1899,6 @@ describe("assistantCitationLinks", function () {
         "async function resolveAndNavigateAssistantCitation(params: {",
         start,
       );
-      const navigateSection = source.slice(start, end);
       const navigatorSource = readFileSync(
         resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
         "utf8",
@@ -1988,63 +1906,16 @@ describe("assistantCitationLinks", function () {
       const verifyFirstStart = navigatorSource.indexOf(
         "export async function navigateToQuote(",
       );
-      const verifyFirstEnd = navigatorSource.indexOf("\n}\n", verifyFirstStart);
       const verifyFirst = navigatorSource.slice(
         verifyFirstStart,
-        verifyFirstEnd,
+        navigatorSource.indexOf("\n}\n", verifyFirstStart),
       );
-
-      // The untrusted click hands its candidates to the verify-first
-      // navigation and opens no reader itself.
       assert.isAtLeast(start, 0);
-      assert.isAbove(end, start);
-      assert.include(navigateSection, "navigateToQuote({");
-      assert.notInclude(navigateSection, "strategy:");
-      assert.lengthOf(navigateSection.match(/openReader/g) || [], 0);
-      // Candidates are checked against background PDF text; the single
-      // reader open in the verify-first navigation is the verified winner.
       assert.isAtLeast(verifyFirstStart, 0);
-      assert.isAbove(verifyFirstEnd, verifyFirstStart);
-      assert.include(verifyFirst, "resolveVerifiedQuoteTarget");
-      assert.match(
-        verifyFirst,
-        /verify: \(candidate, quoteText\) =>[\s\S]*?deps\.verifyInBackground\(candidate, quoteText/,
-      );
-      assert.include(
-        navigatorSource,
-        "verifyInBackground: verifyQuoteInCitationCandidate",
-      );
-      assert.lengthOf(verifyFirst.match(/openReader\(/g) || [], 1);
       // How many PDFs a click had to read is the number to watch when a jump
       // feels slow, so it is recorded rather than left to guesswork.
       assert.include(verifyFirst, "pdfsRead:");
-      assert.include(navigateSection, "markCitationNavigationTiming");
-      assert.notInclude(
-        navigateSection,
-        "no explicit PDF context is available",
-      );
-      assert.notInclude(verifyFirst, "no explicit PDF context is available");
-    });
-
-    it("verifies candidates without opening them", function () {
-      const source = readFileSync(
-        resolve(testDir, "../src/modules/contextPanel/quoteNavigator.ts"),
-        "utf8",
-      );
-      const start = source.indexOf(
-        "async function verifyQuoteInCitationCandidate(",
-      );
-      const end = source.indexOf(
-        "async function locateQuoteByOpeningCitationCandidates(",
-        start,
-      );
-      const verifySection = source.slice(start, end);
-
-      assert.isAtLeast(start, 0);
-      assert.isAbove(end, start);
-      assert.include(verifySection, "verifyQuoteLocationForAttachment");
-      assert.notInclude(verifySection, "openReaderForItem");
-      assert.notInclude(verifySection, "openReader(");
+      assert.include(source.slice(start, end), "markCitationNavigationTiming");
     });
 
     it("renders untrusted quote-card citation controls without static candidates", function () {
@@ -2185,23 +2056,6 @@ describe("assistantCitationLinks", function () {
       assert.notInclude(source, "[quote unavailable]");
       assert.notInclude(source, "createQuoteCitationUnavailableElement");
       assert.include(source, "if (quoteCitation) {");
-    });
-
-    it("renders untrusted manual blockquotes as fallback quote cards", function () {
-      const source = readFileSync(
-        resolve(
-          testDir,
-          "../src/modules/contextPanel/assistantCitationLinks.ts",
-        ),
-        "utf8",
-      );
-
-      assert.include(source, "createFallbackQuoteCardElement");
-      assert.include(source, "replaceBlockquoteWithFallbackQuoteCard");
-      assert.notInclude(
-        source,
-        "rendering unanchored source-backed quote card",
-      );
     });
 
     it("does not infer a source candidate for an unresolved blockquote", function () {

@@ -233,6 +233,74 @@ describe("resolveConversationDeletionSurfaceAction", function () {
       { type: "leave", remember: true },
     );
   });
+
+  describe("a surface that holds one chat (a follower window)", function () {
+    const holding = (
+      eventType: Parameters<
+        typeof resolveConversationDeletionSurfaceAction
+      >[0]["eventType"],
+      overrides: {
+        surface?: ConversationDeletionSurfaceSnapshot;
+        surrendered?: boolean;
+        dropped?: boolean;
+      } = {},
+    ) =>
+      resolveConversationDeletionSurfaceAction({
+        eventType,
+        entry: entry(),
+        surface: overrides.surface || surface(),
+        surrendered: overrides.surrendered ?? false,
+        dropped: overrides.dropped,
+        holdsOneChat: true,
+      });
+
+    it("keeps its chat while Undo is possible, and after Undo", function () {
+      assert.deepEqual(holding("queued"), { type: "none" });
+      assert.deepEqual(holding("undone"), { type: "none" });
+    });
+
+    it("closes once the deletion is final", function () {
+      for (const eventType of [
+        "committing",
+        "quarantined",
+        "finalize-failed",
+        "local-deleted",
+        "cleanup-pending",
+        "completed",
+        "finalized",
+      ] as const) {
+        assert.deepEqual(holding(eventType), { type: "close" }, eventType);
+      }
+    });
+
+    it("stays when the chat survives or it shows another chat", function () {
+      assert.deepEqual(holding("finalized", { dropped: true }), {
+        type: "none",
+      });
+      assert.deepEqual(
+        holding("committing", { surface: surface({ conversationKey: 9 }) }),
+        { type: "none" },
+      );
+    });
+
+    it("never goes back to a chat; it only forgets one it gave up", function () {
+      assert.deepEqual(
+        holding("undone", {
+          surface: surface({ conversationKey: 9 }),
+          surrendered: true,
+        }),
+        { type: "forget" },
+      );
+      assert.deepEqual(
+        holding("finalized", {
+          surface: surface({ conversationKey: 9 }),
+          surrendered: true,
+          dropped: true,
+        }),
+        { type: "forget" },
+      );
+    });
+  });
 });
 
 describe("createSerializedConversationDeletionEventQueue", function () {

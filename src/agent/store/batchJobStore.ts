@@ -11,6 +11,8 @@
  * Schema and lifecycle follow the plugin's existing durable stores.
  */
 
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
+
 export const BATCH_JOBS_TABLE = "llm_for_zotero_agent_batch_jobs";
 
 export type BatchJobStatus = "running" | "completed" | "cancelled" | "failed";
@@ -114,6 +116,11 @@ export async function createBatchJob(params: {
   totalCount?: number;
   now: number;
 }): Promise<void> {
+  if (isEphemeralConversationKey(params.conversationKey)) {
+    throw new Error(
+      "A temporary side chat cannot create a batch job: it never persists anything.",
+    );
+  }
   if (!hasDb()) return;
   await Zotero.DB.queryAsync(
     `INSERT OR REPLACE INTO ${BATCH_JOBS_TABLE}
@@ -211,6 +218,21 @@ export async function getBatchJob(
   )) as unknown as JobRow[] | null;
   const row = Array.isArray(rows) ? rows[0] : null;
   return row ? toRecord(row) : null;
+}
+
+/** Every job of one action in this conversation, newest first. */
+export async function listConversationBatchJobs(
+  conversationKey: number,
+  action: string,
+): Promise<BatchJobRecord[]> {
+  if (!hasDb()) return [];
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT * FROM ${BATCH_JOBS_TABLE}
+     WHERE conversation_key = ? AND action = ?
+     ORDER BY created_at DESC, job_id DESC`,
+    [conversationKey, action],
+  )) as unknown as JobRow[] | null;
+  return Array.isArray(rows) ? rows.map(toRecord) : [];
 }
 
 /**

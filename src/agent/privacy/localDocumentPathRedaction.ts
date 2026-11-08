@@ -1091,6 +1091,9 @@ export class AgentEventLocalDocumentStreamRedactor {
       return summary || details ? [{ ...safeEvent, summary, details }] : [];
     }
     if (event.type === "codex_progress") {
+      // A step list is a whole snapshot, not a fragment of a longer text:
+      // holding back its tail would drop or garble the list.
+      if (event.steps?.length) return [this.streams.redactTerminalValue(event)];
       const safeEvent = this.streams.redactTerminalValue(event);
       const channel = `codex_progress:${event.itemId}`;
       this.pendingEventFactories.set(channel, (text) => ({

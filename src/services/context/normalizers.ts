@@ -1,4 +1,5 @@
 import type {
+  AttachedConversationRef,
   CollectionContextRef,
   NoteContextRef,
   PaperContentSourceMode,
@@ -105,6 +106,7 @@ export function normalizeSelectedTextSource(
   if (value === "model") return "model";
   if (value === "note") return "note";
   if (value === "note-edit") return "note-edit";
+  if (value === "sidechat") return "sidechat";
   return "pdf";
 }
 
@@ -456,6 +458,58 @@ export function normalizeTagContextRefs(
       scope,
       includeAutomatic,
       ...(excludedItemIds ? { excludedItemIds } : {}),
+    });
+  }
+  return out;
+}
+
+/** Most past conversations one user message can attach. */
+export const MAX_ATTACHED_CONVERSATIONS = 3;
+const ATTACHED_CONVERSATION_TITLE_MAX_LENGTH = 512;
+
+export function normalizeAttachedConversationRefs(
+  value: unknown,
+  options?: {
+    sanitizeText?: TextSanitizer;
+  },
+): AttachedConversationRef[] {
+  if (!Array.isArray(value)) return [];
+  const sanitize = options?.sanitizeText;
+  const out: AttachedConversationRef[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (out.length >= MAX_ATTACHED_CONVERSATIONS) break;
+    if (!entry || typeof entry !== "object") continue;
+    const typed = entry as Record<string, unknown>;
+    const system = typed.system;
+    if (system !== "upstream" && system !== "claude_code" && system !== "codex")
+      continue;
+    const conversationKey = normalizePositiveInt(typed.conversationKey);
+    const libraryID = normalizePositiveInt(typed.libraryID);
+    if (!conversationKey || !libraryID) continue;
+    const dedupeKey = `${system}:${conversationKey}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const title =
+      normalizeText(typed.title, sanitize).slice(
+        0,
+        ATTACHED_CONVERSATION_TITLE_MAX_LENGTH,
+      ) || `Conversation ${conversationKey}`;
+    const conversationID = normalizeText(typed.conversationID, sanitize);
+    const kind =
+      typed.kind === "paper" || typed.kind === "global"
+        ? typed.kind
+        : undefined;
+    const paperItemID = normalizePositiveInt(typed.paperItemID);
+    out.push({
+      system,
+      conversationKey,
+      ...(conversationID ? { conversationID } : {}),
+      title,
+      libraryID,
+      ...(kind ? { kind } : {}),
+      ...(paperItemID ? { paperItemID } : {}),
+      ...(typed.via === "agent" ? { via: "agent" as const } : {}),
     });
   }
   return out;

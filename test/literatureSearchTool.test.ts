@@ -1,7 +1,10 @@
 import { assert } from "chai";
 import { createLiteratureSearchTool } from "../src/agent/tools/read/literatureSearch";
+import { AGENT_SEARCH_TOOL_ROUTES } from "../src/agent/model/agentPersona";
 import type { AgentToolContext } from "../src/agent/types";
+import { EPHEMERAL_PAPER_CONVERSATION_KEY_BASE } from "../src/shared/conversationKeySpace";
 import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
+import { paperSourceId } from "../src/webAccess/paperSources";
 
 describe("literature_search tool", function () {
   const baseContext: AgentToolContext = {
@@ -26,20 +29,39 @@ describe("literature_search tool", function () {
       originalFetch;
   });
 
-  it("says its metadata mode proposes changes to approve, and reading a paper uses answer", function () {
+  it("says its metadata mode proposes changes to approve, and reading a paper uses literature_read", function () {
     const tool = createLiteratureSearchTool({} as never);
     // A literature review once called workflow:'review' to read an abstract
-    // and waited on a metadata-change card nobody asked for.
+    // and waited on a metadata-change card nobody asked for. Reading for an
+    // answer is any search that informs one (2026-10-20).
     assert.include(
       tool.spec.description,
-      "To read a paper's abstract or details, use workflow:'answer'; workflow:'review' with mode:'metadata' proposes metadata changes the user must approve, so use it only when the user asks to check or fix an item's metadata.",
+      "Use workflow:'answer' for any search that informs an answer",
     );
+    assert.include(
+      tool.spec.description,
+      "workflow:'review' with mode:'metadata' proposes changes to approve; use it only when the user asks to check or fix an item's metadata.",
+    );
+    assert.include(
+      tool.spec.description,
+      "To read a paper's abstract or full text, use literature_read.",
+    );
+    // A review's search for outside papers carries the review flag, so the
+    // card asks whether to import them (maintainer decision, 2026-10-29).
+    // The card's choice is the skill's to state, not this description's.
+    assert.include(
+      tool.spec.description,
+      "A literature review that needs outside papers finds them with workflow:'review' and forLiteratureReview:true.",
+    );
+    assert.notInclude(tool.spec.description, "cite them without importing");
     // A summary of the folder once turned into a discovery card of
-    // external papers nobody asked for.
+    // external papers nobody asked for. The plugin Agent's search-tool map
+    // owns that rule now; the description states mechanics only.
     assert.include(
-      tool.spec.description,
-      "never for work on papers already in the turn's scope (summaries, reviews, comparisons)",
+      AGENT_SEARCH_TOOL_ROUTES,
+      "Show the paper selection card (literature_review) only when the user asks you to find or recommend papers (with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it), or for a literature review that needs papers outside the library, including one that mixes library and outside papers.",
     );
+    assert.notInclude(tool.spec.description, "only when the user asks to find");
   });
 
   it("supports metadata lookups through the unified online tool", async function () {
@@ -92,6 +114,8 @@ describe("literature_search tool", function () {
 
     const tool = createLiteratureSearchTool({
       resolveMetadataItem: () => null,
+      // The item an applied result would write; a card is only offered for one.
+      resolveMetadataWriteTarget: () => ({ item: { id: 7 } }),
       getEditableArticleMetadata: () => null,
       fetchMetadataByIdentifier: async () => null,
     } as never);
@@ -107,6 +131,42 @@ describe("literature_search tool", function () {
     assert.equal((result as { mode: string }).mode, "metadata");
     assert.equal((result as { workflow: string }).workflow, "answer");
     assert.lengthOf((result as { results: unknown[] }).results, 2);
+
+    // A metadata review shows its card in a chat that can apply it, and
+    // none in a temporary side chat, which is read-only (2026-10-21).
+    const review = tool.validate({
+      mode: "metadata",
+      workflow: "review",
+      title: "Example Title",
+    });
+    assert.isTrue(review.ok);
+    if (!review.ok) return;
+    const reviewed = await tool.execute(review.value, baseContext);
+    const toolResult = {
+      callId: "call-metadata",
+      name: "literature_search",
+      ok: true,
+      content: reviewed,
+    };
+    assert.isNotNull(
+      await tool.createResultReviewAction?.(
+        review.value,
+        toolResult,
+        baseContext,
+      ),
+    );
+    const sideChat: AgentToolContext = {
+      ...baseContext,
+      request: resolvedAgentRequest({
+        conversationKey: EPHEMERAL_PAPER_CONVERSATION_KEY_BASE,
+        mode: "agent",
+        userText: "Check this paper's metadata",
+        libraryID: 1,
+      }),
+    };
+    assert.isNull(
+      await tool.createResultReviewAction?.(review.value, toolResult, sideChat),
+    );
   });
 
   it("resolves metadata lookups from the current Zotero item when only item context is provided", async function () {
@@ -210,6 +270,7 @@ describe("literature_search tool", function () {
       mode: "search",
       source: "openalex",
       query: "neural networks",
+      need: "user_named_outside_source",
     });
     assert.isTrue(validated.ok);
     if (!validated.ok) return;
@@ -221,6 +282,8 @@ describe("literature_search tool", function () {
     assert.lengthOf(results, 1);
     assert.equal(results[0].title, "Related Paper");
     assert.equal(results[0].doi, "10.1000/related");
+    // A document cites an outside paper by this id: the paper's source id.
+    assert.equal(results[0].paperId, paperSourceId("doi:10.1000/related"));
     assert.equal(tool.presentation?.traceIcon, "library");
     assert.isTrue(tool.presentation?.mergeResultIntoCallTrace);
     assert.deepEqual(
@@ -288,6 +351,8 @@ describe("literature_search tool", function () {
       mode: "search",
       source: "openalex",
       query: "reviewable papers",
+      need: "not_in_scope_or_library",
+      gap: "The library has no reviewable papers.",
     });
     assert.isTrue(validated.ok);
     if (!validated.ok) return;

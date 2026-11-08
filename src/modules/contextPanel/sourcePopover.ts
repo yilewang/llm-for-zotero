@@ -69,6 +69,13 @@ export function createSourcePopover(
     icon: Node;
     activation?: "hover" | "click";
     populate: (popover: HTMLElement, close: () => void) => void;
+    /** Extra classes on the chip button. */
+    chipClassName?: string;
+    /**
+     * A click on the chip; return true when it was handled (the card then
+     * closes instead of pinning open).
+     */
+    onChipClick?: (event: MouseEvent) => boolean;
   },
 ): HTMLElement {
   const wrapper = doc.createElement("span");
@@ -81,7 +88,9 @@ export function createSourcePopover(
 
   const chip = doc.createElement("button");
   chip.type = "button";
-  chip.className = "llm-web-source-chip";
+  chip.className = options.chipClassName
+    ? `llm-web-source-chip ${options.chipClassName}`
+    : "llm-web-source-chip";
   chip.setAttribute("aria-label", options.label);
   chip.setAttribute("aria-haspopup", "dialog");
   chip.setAttribute("aria-expanded", "false");
@@ -123,8 +132,21 @@ export function createSourcePopover(
     }, 120);
   };
 
+  // The card's content is built when it first opens: an answer can carry
+  // many marks, and most are never opened.
+  let populated = false;
+  const populate = () => {
+    if (populated) return;
+    populated = true;
+    options.populate(popover, () => {
+      pinned = false;
+      close();
+    });
+  };
+
   const open = () => {
     clearCloseTimer();
+    populate();
     if (!popover.isConnected) {
       (doc.body || doc.documentElement).appendChild(popover);
     }
@@ -177,11 +199,6 @@ export function createSourcePopover(
     };
   };
 
-  options.populate(popover, () => {
-    pinned = false;
-    close();
-  });
-
   const handleFocusOut = () => {
     doc.defaultView?.setTimeout(() => {
       if (focusIsInside()) return;
@@ -233,6 +250,11 @@ export function createSourcePopover(
   chip.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (options.onChipClick?.(event)) {
+      pinned = false;
+      close();
+      return;
+    }
     pinned = !pinned;
     wrapper.classList.toggle("expanded", pinned);
     if (!pinned) {

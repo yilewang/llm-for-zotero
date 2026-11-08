@@ -45,12 +45,15 @@ describe("workflow: streaming in actual native chat hosts", function () {
     values.reduce((total, value) => total + value, 0) /
     Math.max(1, values.length);
 
+  // Tab count is a load setting, not a code path: agent runs use the heavier
+  // 4 tabs. The 1-tab chat runs go first so no extra readers exist yet.
   for (const tabCount of [1, 4]) {
     for (const surface of ["independent", "stacked", "standalone"] as const) {
       for (const runMode of ["agent", "chat"] as const) {
         // Ordinary Chat shares the host lifecycle; one retained tab is enough.
         if (runMode === "chat" && (tabCount !== 1 || surface === "stacked"))
           continue;
+        if (runMode === "agent" && tabCount === 1) continue;
         const title =
           runMode === "agent"
             ? `keeps streaming interactive in ${surface} with ${tabCount} retained reader tabs`

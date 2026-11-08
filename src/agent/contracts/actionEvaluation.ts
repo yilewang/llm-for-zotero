@@ -304,7 +304,15 @@ export function formatReceiptStatus(receipts: AgentActionReceipt[]): string {
       const operation = collectionAddOnly(receipt)
         ? `${receipt.operation} (added only; the items stay in their other collections)`
         : receipt.operation;
-      return `[Action status: ${operation} — ${receipt.status}${coverage};${proof} proof:${receipt.proofDomain}]`;
+      // An observed write that excepted its targets changed nothing; its
+      // reason (a search that found nothing) is the whole outcome.
+      const outcome =
+        receipt.status === "observed" &&
+        receipt.rejectedTargets.length &&
+        receipt.reasons[0]
+          ? ` ${receipt.reasons[0]};`
+          : "";
+      return `[Action status: ${operation} — ${receipt.status}${coverage};${outcome}${proof} proof:${receipt.proofDomain}]`;
     })
     .join("\n");
 }

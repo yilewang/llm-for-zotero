@@ -11,6 +11,7 @@ import {
   MutationNoEffectError,
 } from "./externalMutationCoordinator";
 import {
+  inJournalTransaction,
   isAgentChangeJournalAvailable,
   listJournalActions,
   updateJournalStep,
@@ -177,13 +178,20 @@ async function create(params: Creation, id?: string) {
             ? async (ctx) => {
                 const result = await params.finalize!(ctx);
                 const html = typeof result === "string" ? result : result.html;
-                // Preserve the exact final payload before its native write.
-                if (stepId)
-                  await updateJournalStep({
-                    stepId,
-                    status: "applying",
-                    result: { preparedHtml: await storeRecoveryText(html) },
-                  });
+                // Preserve the exact final payload before its native write,
+                // in its own transaction so another flow's rollback cannot
+                // drop it. The first save has committed and this runs under a
+                // notifier queue, not a transaction, after the step's claim.
+                if (stepId) {
+                  const preparedHtml = await storeRecoveryText(html);
+                  await inJournalTransaction(() =>
+                    updateJournalStep({
+                      stepId,
+                      status: "applying",
+                      result: { preparedHtml },
+                    }),
+                  );
+                }
                 return result;
               }
             : undefined,

@@ -8,7 +8,9 @@ import {
   filterHistorySearchPopupVisibleEntries,
   HISTORY_SEARCH_POPUP_DELETE_CLASS,
   HISTORY_SEARCH_POPUP_ITEM_TAG,
+  limitHistorySearchListEntries,
   mapHistorySearchPopupResults,
+  mergeHistorySearchHiddenKeys,
   resolveHistorySearchPopupThemeFromColors,
   shouldCloseHistorySearchPopupAfterSelection,
   sortHistorySearchPopupEntries,
@@ -147,5 +149,66 @@ describe("historySearchPopupController helpers", function () {
       resolveHistorySearchPopupThemeFromColors(["rgb(232, 232, 232)"]),
       "light",
     );
+  });
+  it("reads color-mix() surfaces, which compute to color(srgb ...)", function () {
+    assert.equal(
+      resolveHistorySearchPopupThemeFromColors(["color(srgb 0.18 0.18 0.18)"]),
+      "dark",
+    );
+    assert.equal(
+      resolveHistorySearchPopupThemeFromColors([
+        "color(srgb 0.95 0.95 0.96 / 0.9)",
+      ]),
+      "light",
+    );
+    assert.equal(
+      resolveHistorySearchPopupThemeFromColors([
+        "color(srgb 1 1 1 / 0)",
+        "rgb(30, 30, 30)",
+      ]),
+      "dark",
+      "a fully transparent surface is skipped",
+    );
+  });
+  it("merges optimistic deletes with caller-excluded keys", function () {
+    const hidden = new Set([1]);
+    assert.strictEqual(mergeHistorySearchHiddenKeys(hidden), hidden);
+    assert.strictEqual(mergeHistorySearchHiddenKeys(hidden, new Set()), hidden);
+    assert.strictEqual(mergeHistorySearchHiddenKeys(hidden, null), hidden);
+    const excluded = new Set([7]);
+    assert.strictEqual(
+      mergeHistorySearchHiddenKeys(new Set(), excluded),
+      excluded,
+    );
+    const merged = mergeHistorySearchHiddenKeys(hidden, new Set([2, 1]));
+    assert.deepEqual(Array.from(merged).sort(), [1, 2]);
+    assert.deepEqual(Array.from(hidden), [1], "inputs stay unchanged");
+  });
+
+  it("hides excluded keys through the visible-entry filter", function () {
+    const entries = [
+      historyEntry(1, 30),
+      historyEntry(2, 20),
+      historyEntry(3, 10),
+    ];
+    const visible = filterHistorySearchPopupVisibleEntries(
+      entries,
+      mergeHistorySearchHiddenKeys(new Set([1]), new Set([3])),
+    );
+    assert.deepEqual(
+      visible.map((entry) => entry.conversationKey),
+      [2],
+    );
+  });
+
+  it("limits list entries to the first N", function () {
+    const entries = [1, 2, 3, 4, 5];
+    assert.deepEqual(limitHistorySearchListEntries(entries, 3), [1, 2, 3]);
+    assert.deepEqual(limitHistorySearchListEntries(entries, 2.7), [1, 2]);
+    assert.deepEqual(limitHistorySearchListEntries(entries, 10), entries);
+    assert.notStrictEqual(limitHistorySearchListEntries(entries), entries);
+    for (const limit of [undefined, 0, -1, Number.NaN, Infinity]) {
+      assert.deepEqual(limitHistorySearchListEntries(entries, limit), entries);
+    }
   });
 });

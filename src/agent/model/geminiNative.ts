@@ -66,6 +66,7 @@ type GeminiResponse = {
 type GeminiUsageMetadata = {
   promptTokenCount?: unknown;
   candidatesTokenCount?: unknown;
+  thoughtsTokenCount?: unknown;
   totalTokenCount?: unknown;
   cachedContentTokenCount?: unknown;
 };
@@ -82,7 +83,9 @@ async function reportGeminiUsage(
 ): Promise<void> {
   if (!onUsage || !usageMetadata) return;
   const promptTokens = geminiTokenCount(usageMetadata.promptTokenCount);
-  const completionTokens = geminiTokenCount(usageMetadata.candidatesTokenCount);
+  const completionTokens =
+    geminiTokenCount(usageMetadata.candidatesTokenCount) +
+    geminiTokenCount(usageMetadata.thoughtsTokenCount);
   const totalTokens =
     geminiTokenCount(usageMetadata.totalTokenCount) ||
     promptTokens + completionTokens;

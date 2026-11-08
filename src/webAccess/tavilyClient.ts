@@ -11,6 +11,7 @@ import type {
   WebSourceRecord,
 } from "./types";
 import { WebAccessError } from "./errors";
+import { normalizePageText } from "./pageText";
 
 const TAVILY_API_ORIGIN = "https://api.tavily.com";
 const TAVILY_SEARCH_URL = `${TAVILY_API_ORIGIN}/search`;
@@ -211,6 +212,7 @@ function normalizeOptionalPublicWebUrl(value: unknown): string | undefined {
 function normalizeSource(
   value: unknown,
   contentField: "content" | "raw_content",
+  wholePage = false,
 ) {
   const record = asRecord(value);
   const url = normalizePublicWebUrl(record.url);
@@ -230,7 +232,13 @@ function normalizeSource(
   const faviconUrl = normalizeOptionalPublicWebUrl(record.favicon);
   if (faviconUrl) source.faviconUrl = faviconUrl;
   if (contentField === "content" && content) source.snippet = content;
-  if (contentField === "raw_content" && content) source.content = content;
+  if (contentField === "raw_content" && wholePage) {
+    const page = normalizePageText(record.raw_content);
+    if (page.text) source.content = page.text;
+    if (page.truncated) source.truncated = true;
+  } else if (contentField === "raw_content" && content) {
+    source.content = content;
+  }
   const score = readFiniteNumber(record.score);
   if (score !== undefined) source.score = score;
   const publishedDate = normalizeDisplayText(record.published_date, 80);
@@ -416,7 +424,11 @@ export class TavilyClient implements WebAccessProvider {
   }
 
   async read(request: WebReadRequest): Promise<WebReadResponse> {
-    if (!request.query || !request.depth || !request.chunksPerSource) {
+    const wholePage = Boolean(request.wholePage);
+    if (
+      !wholePage &&
+      (!request.query || !request.depth || !request.chunksPerSource)
+    ) {
       throw new WebAccessError(
         "Tavily requires query, depth, and chunksPerSource.",
         "validation",
@@ -426,22 +438,33 @@ export class TavilyClient implements WebAccessProvider {
     const body = await this.request(
       "POST",
       TAVILY_EXTRACT_URL,
-      {
-        urls,
-        query: request.query,
-        chunks_per_source: request.chunksPerSource,
-        extract_depth: request.depth,
-        include_images: false,
-        include_favicon: true,
-        include_usage: true,
-        format: "text",
-      },
+      wholePage
+        ? {
+            // No query: Tavily returns the whole page, as Markdown so its
+            // headings make the outline.
+            urls,
+            extract_depth: request.depth || "basic",
+            include_images: false,
+            include_favicon: true,
+            include_usage: true,
+            format: "markdown",
+          }
+        : {
+            urls,
+            query: request.query,
+            chunks_per_source: request.chunksPerSource,
+            extract_depth: request.depth,
+            include_images: false,
+            include_favicon: true,
+            include_usage: true,
+            format: "text",
+          },
       request.signal,
     );
     const pages = Array.isArray(body.results)
       ? body.results.flatMap((entry) => {
           try {
-            return [normalizeSource(entry, "raw_content")];
+            return [normalizeSource(entry, "raw_content", wholePage)];
           } catch {
             return [];
           }

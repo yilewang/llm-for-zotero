@@ -406,7 +406,7 @@
           "params": [2500000000, "<id-1>"]
         },
         {
-          "sql": "INSERT INTO llm_for_zotero_chat_messages (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id, conversation_instance_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "sql": "INSERT INTO llm_for_zotero_chat_messages (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, attached_conversations_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id, conversation_instance_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           "params": [
             "lfz:profile-892394bd:upstream:global:lib-1:paper-0:legacy-2500000000",
             2500000000,
@@ -429,6 +429,7 @@
             null,
             "[{\"collectionId\":9,\"name\":\"Reviews\",\"libraryID\":1}]",
             "[{\"name\":\"salience\",\"libraryID\":1,\"normalizedName\":\"salience\",\"includeAutomatic\":false}]",
+            "[{\"system\":\"upstream\",\"conversationKey\":31,\"conversationID\":\"conv-31\",\"title\":\"Earlier chat\",\"libraryID\":1,\"kind\":\"global\"}]",
             "[\"data:image/png;base64,AAA\",\" \"]",
             "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"},{\"id\":\"att-2\",\"name\":\"Attachment\",\"category\":\"file\",\"mimeType\":\"application/octet-stream\",\"sizeBytes\":0}]",
             "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"}]",
@@ -480,7 +481,7 @@
           "params": [2500000000, "<id-1>"]
         },
         {
-          "sql": "INSERT INTO llm_for_zotero_chat_messages (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id, conversation_instance_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "sql": "INSERT INTO llm_for_zotero_chat_messages (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, attached_conversations_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id, conversation_instance_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
           "params": [
             "lfz:profile-892394bd:upstream:global:lib-1:paper-0:legacy-2500000000",
             2500000000,
@@ -501,6 +502,7 @@
             null,
             null,
             "[{\"id\":\"Q_1i5qfa3\",\"quoteText\":\"salience is defined as the weighted priority of a stimulus\",\"citationLabel\":\"(Smith 2020)\",\"contextItemId\":41,\"itemId\":41}]",
+            null,
             null,
             null,
             null,
@@ -633,6 +635,16 @@
               "includeAutomatic": false
             }
           ],
+          "attachedConversations": [
+            {
+              "system": "upstream",
+              "conversationKey": 31,
+              "conversationID": "conv-31",
+              "title": "Earlier chat",
+              "libraryID": 1,
+              "kind": "global"
+            }
+          ],
           "screenshotImages": ["data:image/png;base64,AAA"],
           "attachments": [
             {
@@ -729,6 +741,7 @@
           "citation_paper_contexts_json": "[{\"libraryID\":1,\"itemId\":44,\"contextItemId\":44,\"title\":\"Paper D\"}]",
           "collection_contexts_json": "[{\"collectionId\":9,\"name\":\"Reviews\",\"libraryID\":1}]",
           "tag_contexts_json": "[{\"name\":\"salience\",\"libraryID\":1,\"normalizedName\":\"salience\",\"includeAutomatic\":false}]",
+          "attached_conversations_json": "[{\"system\":\"upstream\",\"conversationKey\":31,\"conversationID\":\"conv-31\",\"title\":\"Earlier chat\",\"libraryID\":1,\"kind\":\"global\"}]",
           "screenshot_images": "[\"data:image/png;base64,AAA\",\" \"]",
           "attachments_json": "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"},{\"id\":\"att-2\",\"name\":\"Attachment\",\"category\":\"file\",\"mimeType\":\"application/octet-stream\",\"sizeBytes\":0}]",
           "model_attachments_json": "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"}]",
@@ -3364,7 +3377,7 @@
           "type": "table",
           "name": "llm_for_zotero_chat_messages",
           "tbl_name": "llm_for_zotero_chat_messages",
-          "sql": "CREATE TABLE llm_for_zotero_chat_messages (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        conversation_id TEXT,\n        conversation_instance_id TEXT,\n        conversation_key INTEGER NOT NULL,\n        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),\n        text TEXT NOT NULL,\n        timestamp INTEGER NOT NULL,\n        run_mode TEXT CHECK(run_mode IN ('chat', 'agent')),\n        agent_run_id TEXT,\n        document_id TEXT,\n        selected_text TEXT,\n        selected_text_contexts_json TEXT,\n        selected_texts_json TEXT,\n        selected_text_sources_json TEXT,\n        selected_text_paper_contexts_json TEXT,\n        selected_text_note_contexts_json TEXT,\n        forced_skill_ids_json TEXT,\n        paper_contexts_json TEXT,\n        pdf_paper_contexts_json TEXT,\n        full_text_paper_contexts_json TEXT,\n        citation_paper_contexts_json TEXT,\n        quote_citations_json TEXT,\n        collection_contexts_json TEXT,\n        tag_contexts_json TEXT,\n        screenshot_images TEXT,\n        attachments_json TEXT,\n        model_attachments_json TEXT,\n        generated_images_json TEXT,\n        model_name TEXT,\n        model_entry_id TEXT,\n        model_provider_label TEXT,\n        interrupted INTEGER,\n        completion_status TEXT,\n        completion_reason TEXT,\n        webchat_run_state TEXT,\n        webchat_completion_reason TEXT,\n        reasoning_summary TEXT,\n        reasoning_details TEXT,\n        context_tokens INTEGER,\n        context_window INTEGER\n      )"
+          "sql": "CREATE TABLE llm_for_zotero_chat_messages (\n        id INTEGER PRIMARY KEY AUTOINCREMENT,\n        conversation_id TEXT,\n        conversation_instance_id TEXT,\n        conversation_key INTEGER NOT NULL,\n        role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),\n        text TEXT NOT NULL,\n        timestamp INTEGER NOT NULL,\n        run_mode TEXT CHECK(run_mode IN ('chat', 'agent')),\n        agent_run_id TEXT,\n        document_id TEXT,\n        selected_text TEXT,\n        selected_text_contexts_json TEXT,\n        selected_texts_json TEXT,\n        selected_text_sources_json TEXT,\n        selected_text_paper_contexts_json TEXT,\n        selected_text_note_contexts_json TEXT,\n        forced_skill_ids_json TEXT,\n        paper_contexts_json TEXT,\n        pdf_paper_contexts_json TEXT,\n        full_text_paper_contexts_json TEXT,\n        citation_paper_contexts_json TEXT,\n        quote_citations_json TEXT,\n        collection_contexts_json TEXT,\n        tag_contexts_json TEXT,\n        attached_conversations_json TEXT,\n        screenshot_images TEXT,\n        attachments_json TEXT,\n        model_attachments_json TEXT,\n        generated_images_json TEXT,\n        model_name TEXT,\n        model_entry_id TEXT,\n        model_provider_label TEXT,\n        interrupted INTEGER,\n        completion_status TEXT,\n        completion_reason TEXT,\n        webchat_run_state TEXT,\n        webchat_completion_reason TEXT,\n        reasoning_summary TEXT,\n        reasoning_details TEXT,\n        context_tokens INTEGER,\n        context_window INTEGER\n      )"
         },
         {
           "type": "table",
@@ -3647,7 +3660,7 @@
           },
           {
             "cid": 24,
-            "name": "screenshot_images",
+            "name": "attached_conversations_json",
             "type": "TEXT",
             "notnull": 0,
             "dflt_value": null,
@@ -3655,7 +3668,7 @@
           },
           {
             "cid": 25,
-            "name": "attachments_json",
+            "name": "screenshot_images",
             "type": "TEXT",
             "notnull": 0,
             "dflt_value": null,
@@ -3663,7 +3676,7 @@
           },
           {
             "cid": 26,
-            "name": "model_attachments_json",
+            "name": "attachments_json",
             "type": "TEXT",
             "notnull": 0,
             "dflt_value": null,
@@ -3671,7 +3684,7 @@
           },
           {
             "cid": 27,
-            "name": "generated_images_json",
+            "name": "model_attachments_json",
             "type": "TEXT",
             "notnull": 0,
             "dflt_value": null,
@@ -3679,7 +3692,7 @@
           },
           {
             "cid": 28,
-            "name": "model_name",
+            "name": "generated_images_json",
             "type": "TEXT",
             "notnull": 0,
             "dflt_value": null,
@@ -3687,7 +3700,7 @@
           },
           {
             "cid": 29,
-            "name": "model_entry_id",
+            "name": "model_name",
             "type": "TEXT",
             "notnull": 0,
             "dflt_value": null,
@@ -3695,7 +3708,7 @@
           },
           {
             "cid": 30,
-            "name": "model_provider_label",
+            "name": "model_entry_id",
             "type": "TEXT",
             "notnull": 0,
             "dflt_value": null,
@@ -3703,6 +3716,14 @@
           },
           {
             "cid": 31,
+            "name": "model_provider_label",
+            "type": "TEXT",
+            "notnull": 0,
+            "dflt_value": null,
+            "pk": 0
+          },
+          {
+            "cid": 32,
             "name": "interrupted",
             "type": "INTEGER",
             "notnull": 0,
@@ -3710,7 +3731,7 @@
             "pk": 0
           },
           {
-            "cid": 32,
+            "cid": 33,
             "name": "completion_status",
             "type": "TEXT",
             "notnull": 0,
@@ -3718,7 +3739,7 @@
             "pk": 0
           },
           {
-            "cid": 33,
+            "cid": 34,
             "name": "completion_reason",
             "type": "TEXT",
             "notnull": 0,
@@ -3726,7 +3747,7 @@
             "pk": 0
           },
           {
-            "cid": 34,
+            "cid": 35,
             "name": "webchat_run_state",
             "type": "TEXT",
             "notnull": 0,
@@ -3734,7 +3755,7 @@
             "pk": 0
           },
           {
-            "cid": 35,
+            "cid": 36,
             "name": "webchat_completion_reason",
             "type": "TEXT",
             "notnull": 0,
@@ -3742,7 +3763,7 @@
             "pk": 0
           },
           {
-            "cid": 36,
+            "cid": 37,
             "name": "reasoning_summary",
             "type": "TEXT",
             "notnull": 0,
@@ -3750,7 +3771,7 @@
             "pk": 0
           },
           {
-            "cid": 37,
+            "cid": 38,
             "name": "reasoning_details",
             "type": "TEXT",
             "notnull": 0,
@@ -3758,7 +3779,7 @@
             "pk": 0
           },
           {
-            "cid": 38,
+            "cid": 39,
             "name": "context_tokens",
             "type": "INTEGER",
             "notnull": 0,
@@ -3766,7 +3787,7 @@
             "pk": 0
           },
           {
-            "cid": 39,
+            "cid": 40,
             "name": "context_window",
             "type": "INTEGER",
             "notnull": 0,
@@ -4632,7 +4653,7 @@
           "params": ["zoterollm_chat_messages"]
         },
         {
-          "sql": "CREATE TABLE IF NOT EXISTS llm_for_zotero_chat_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, conversation_instance_id TEXT, conversation_key INTEGER NOT NULL, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), text TEXT NOT NULL, timestamp INTEGER NOT NULL, run_mode TEXT CHECK(run_mode IN ('chat', 'agent')), agent_run_id TEXT, document_id TEXT, selected_text TEXT, selected_text_contexts_json TEXT, selected_texts_json TEXT, selected_text_sources_json TEXT, selected_text_paper_contexts_json TEXT, selected_text_note_contexts_json TEXT, forced_skill_ids_json TEXT, paper_contexts_json TEXT, pdf_paper_contexts_json TEXT, full_text_paper_contexts_json TEXT, citation_paper_contexts_json TEXT, quote_citations_json TEXT, collection_contexts_json TEXT, tag_contexts_json TEXT, screenshot_images TEXT, attachments_json TEXT, model_attachments_json TEXT, generated_images_json TEXT, model_name TEXT, model_entry_id TEXT, model_provider_label TEXT, interrupted INTEGER, completion_status TEXT, completion_reason TEXT, webchat_run_state TEXT, webchat_completion_reason TEXT, reasoning_summary TEXT, reasoning_details TEXT, context_tokens INTEGER, context_window INTEGER )",
+          "sql": "CREATE TABLE IF NOT EXISTS llm_for_zotero_chat_messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT, conversation_instance_id TEXT, conversation_key INTEGER NOT NULL, role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), text TEXT NOT NULL, timestamp INTEGER NOT NULL, run_mode TEXT CHECK(run_mode IN ('chat', 'agent')), agent_run_id TEXT, document_id TEXT, selected_text TEXT, selected_text_contexts_json TEXT, selected_texts_json TEXT, selected_text_sources_json TEXT, selected_text_paper_contexts_json TEXT, selected_text_note_contexts_json TEXT, forced_skill_ids_json TEXT, paper_contexts_json TEXT, pdf_paper_contexts_json TEXT, full_text_paper_contexts_json TEXT, citation_paper_contexts_json TEXT, quote_citations_json TEXT, collection_contexts_json TEXT, tag_contexts_json TEXT, attached_conversations_json TEXT, screenshot_images TEXT, attachments_json TEXT, model_attachments_json TEXT, generated_images_json TEXT, model_name TEXT, model_entry_id TEXT, model_provider_label TEXT, interrupted INTEGER, completion_status TEXT, completion_reason TEXT, webchat_run_state TEXT, webchat_completion_reason TEXT, reasoning_summary TEXT, reasoning_details TEXT, context_tokens INTEGER, context_window INTEGER )",
           "params": []
         },
         {
@@ -7511,7 +7532,7 @@
       "trace": [
         { "sql": "BEGIN", "params": [] },
         {
-          "sql": "UPDATE llm_for_zotero_chat_messages SET text = ?, timestamp = ?, run_mode = ?, agent_run_id = ?, selected_text = ?, selected_text_contexts_json = ?, selected_texts_json = ?, selected_text_sources_json = ?, selected_text_paper_contexts_json = ?, selected_text_note_contexts_json = ?, forced_skill_ids_json = ?, paper_contexts_json = ?, pdf_paper_contexts_json = ?, full_text_paper_contexts_json = ?, citation_paper_contexts_json = ?, collection_contexts_json = ?, tag_contexts_json = ?, screenshot_images = ?, attachments_json = ?, model_attachments_json = ?, generated_images_json = ?, model_name = ?, model_entry_id = ?, model_provider_label = ? WHERE id = ( SELECT id FROM llm_for_zotero_chat_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'user' ORDER BY timestamp DESC, id DESC LIMIT 1 )",
+          "sql": "UPDATE llm_for_zotero_chat_messages SET text = ?, timestamp = ?, run_mode = ?, agent_run_id = ?, selected_text = ?, selected_text_contexts_json = ?, selected_texts_json = ?, selected_text_sources_json = ?, selected_text_paper_contexts_json = ?, selected_text_note_contexts_json = ?, forced_skill_ids_json = ?, paper_contexts_json = ?, pdf_paper_contexts_json = ?, full_text_paper_contexts_json = ?, citation_paper_contexts_json = ?, collection_contexts_json = ?, tag_contexts_json = ?, attached_conversations_json = ?, screenshot_images = ?, attachments_json = ?, model_attachments_json = ?, generated_images_json = ?, model_name = ?, model_entry_id = ?, model_provider_label = ? WHERE id = ( SELECT id FROM llm_for_zotero_chat_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'user' ORDER BY timestamp DESC, id DESC LIMIT 1 )",
           "params": [
             "edited",
             "<now+4000>",
@@ -7530,6 +7551,7 @@
             "[{\"libraryID\":1,\"itemId\":44,\"contextItemId\":44,\"title\":\"Paper D\"}]",
             "[{\"collectionId\":9,\"name\":\"Reviews\",\"libraryID\":1}]",
             "[{\"name\":\"salience\",\"libraryID\":1,\"normalizedName\":\"salience\",\"includeAutomatic\":false}]",
+            "[{\"system\":\"upstream\",\"conversationKey\":31,\"conversationID\":\"conv-31\",\"title\":\"Earlier chat\",\"libraryID\":1,\"kind\":\"global\"}]",
             "[\"data:image/png;base64,AAA\",\" \"]",
             "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"},{\"id\":\"att-2\",\"name\":\"Attachment\",\"category\":\"file\",\"mimeType\":\"application/octet-stream\",\"sizeBytes\":0}]",
             "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"}]",
@@ -7640,6 +7662,16 @@
               "includeAutomatic": false
             }
           ],
+          "attachedConversations": [
+            {
+              "system": "upstream",
+              "conversationKey": 31,
+              "conversationID": "conv-31",
+              "title": "Earlier chat",
+              "libraryID": 1,
+              "kind": "global"
+            }
+          ],
           "screenshotImages": ["data:image/png;base64,AAA"],
           "attachments": [
             {
@@ -7723,6 +7755,7 @@
           "citation_paper_contexts_json": "[{\"libraryID\":1,\"itemId\":44,\"contextItemId\":44,\"title\":\"Paper D\"}]",
           "collection_contexts_json": "[{\"collectionId\":9,\"name\":\"Reviews\",\"libraryID\":1}]",
           "tag_contexts_json": "[{\"name\":\"salience\",\"libraryID\":1,\"normalizedName\":\"salience\",\"includeAutomatic\":false}]",
+          "attached_conversations_json": "[{\"system\":\"upstream\",\"conversationKey\":31,\"conversationID\":\"conv-31\",\"title\":\"Earlier chat\",\"libraryID\":1,\"kind\":\"global\"}]",
           "screenshot_images": "[\"data:image/png;base64,AAA\",\" \"]",
           "attachments_json": "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"},{\"id\":\"att-2\",\"name\":\"Attachment\",\"category\":\"file\",\"mimeType\":\"application/octet-stream\",\"sizeBytes\":0}]",
           "model_attachments_json": "[{\"id\":\"att-1\",\"name\":\"figure.png\",\"mimeType\":\"image/png\",\"sizeBytes\":12,\"category\":\"image\"}]",
@@ -7849,10 +7882,11 @@
           ]
         },
         {
-          "sql": "UPDATE llm_for_zotero_chat_messages SET text = ?, timestamp = ?, run_mode = ?, agent_run_id = ?, selected_text = ?, selected_text_contexts_json = ?, selected_texts_json = ?, selected_text_sources_json = ?, selected_text_paper_contexts_json = ?, selected_text_note_contexts_json = ?, forced_skill_ids_json = ?, paper_contexts_json = ?, pdf_paper_contexts_json = ?, full_text_paper_contexts_json = ?, citation_paper_contexts_json = ?, collection_contexts_json = ?, tag_contexts_json = ?, screenshot_images = ?, attachments_json = ?, model_attachments_json = ?, generated_images_json = ?, model_name = ?, model_entry_id = ?, model_provider_label = ? WHERE id = ( SELECT id FROM llm_for_zotero_chat_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'user' AND timestamp = ? ORDER BY timestamp DESC, id DESC LIMIT 1 )",
+          "sql": "UPDATE llm_for_zotero_chat_messages SET text = ?, timestamp = ?, run_mode = ?, agent_run_id = ?, selected_text = ?, selected_text_contexts_json = ?, selected_texts_json = ?, selected_text_sources_json = ?, selected_text_paper_contexts_json = ?, selected_text_note_contexts_json = ?, forced_skill_ids_json = ?, paper_contexts_json = ?, pdf_paper_contexts_json = ?, full_text_paper_contexts_json = ?, citation_paper_contexts_json = ?, collection_contexts_json = ?, tag_contexts_json = ?, attached_conversations_json = ?, screenshot_images = ?, attachments_json = ?, model_attachments_json = ?, generated_images_json = ?, model_name = ?, model_entry_id = ?, model_provider_label = ? WHERE id = ( SELECT id FROM llm_for_zotero_chat_messages WHERE (conversation_id = ? OR ((conversation_id IS NULL OR TRIM(conversation_id) = '') AND conversation_key = ?)) AND role = 'user' AND timestamp = ? ORDER BY timestamp DESC, id DESC LIMIT 1 )",
           "params": [
             "u1-restored",
             "<now+1000>",
+            null,
             null,
             null,
             null,

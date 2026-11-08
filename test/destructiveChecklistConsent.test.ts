@@ -127,9 +127,9 @@ describe("destructive checklist consent", function () {
       if (!applied?.ok) return;
       const op = (
         applied.value as {
-          operation: { masterItemId: number; otherItemIds: number[] };
+          operations: Array<{ masterItemId: number; otherItemIds: number[] }>;
         }
-      ).operation;
+      ).operations[0];
       assert.equal(
         op.masterItemId,
         200,
@@ -156,8 +156,8 @@ describe("destructive checklist consent", function () {
       assert.isTrue(applied?.ok);
       if (!applied?.ok) return;
       assert.deepEqual(
-        (applied.value as { operation: { otherItemIds: number[] } }).operation
-          .otherItemIds,
+        (applied.value as { operations: Array<{ otherItemIds: number[] }> })
+          .operations[0].otherItemIds,
         [201, 202],
       );
     });

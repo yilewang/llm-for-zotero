@@ -1,3 +1,4 @@
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import {
   planContextCacheReuse,
   type ContextCachePlan,
@@ -753,6 +754,8 @@ async function persistEvidenceLedger(
   conversationKey: number,
   ledger: Map<string, AgentEvidenceEntry>,
 ): Promise<void> {
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(conversationKey)) return;
   const dbReady = await ensureAgentEvidenceStore();
   const db = getDb();
   if (!dbReady || !db) return;

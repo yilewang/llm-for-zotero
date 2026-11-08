@@ -264,9 +264,10 @@ describe("quote card UI contract", function () {
   });
 
   it("renders completed quote-card bodies lazily through the markdown renderer", function () {
-    const renderSource = source(
-      "src/modules/contextPanel/assistantCitationLinks.ts",
-    );
+    // The body renderer is shared with Task progress's cited passages.
+    const renderSource =
+      source("src/modules/contextPanel/assistantCitationLinks.ts") +
+      source("src/modules/contextPanel/quoteCardMarkdown.ts");
 
     assert.include(renderSource, "renderQuoteCardBodyMarkdown");
     assert.include(renderSource, "renderRenderedMarkdownInto(container");
@@ -405,13 +406,13 @@ describe("quote card UI contract", function () {
     const previewRendererStart = markdownSource.indexOf(
       "export function renderRenderedMathPreviewInto",
     );
-    const fullRendererStart = markdownSource.indexOf(
-      "export function renderRenderedMarkdownInto",
-      previewRendererStart,
+    const nextFunctionStart = markdownSource.indexOf(
+      "export function ",
+      previewRendererStart + 1,
     );
     const previewRenderer = markdownSource.slice(
       previewRendererStart,
-      fullRendererStart,
+      nextFunctionStart,
     );
     assert.include(previewRenderer, "setRenderedMarkdownHtml");
     assert.notInclude(previewRenderer, "attachRenderedCodeBlockControls");

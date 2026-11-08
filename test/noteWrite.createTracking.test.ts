@@ -25,7 +25,7 @@ import {
   createStandaloneNoteFromChatHistory,
 } from "../src/modules/contextPanel/notes";
 import type { Message } from "../src/modules/contextPanel/types";
-import { normalizeNoteSourceText } from "../src/services/notes/noteRendering";
+import { noteHtmlToModelText } from "../src/services/notes/noteRendering";
 import { stripNoteHtml } from "../src/services/notes/noteSnapshot";
 import {
   getTrackedAssistantNoteForParent,
@@ -598,7 +598,7 @@ describe("noteWrite create tracking", function () {
         if (diff?.type === "diff_preview") {
           assert.equal(
             diff.before,
-            normalizeNoteSourceText(before),
+            noteHtmlToModelText(before),
             "both sides use the same readable Markdown representation",
           );
           assert.equal(
@@ -662,6 +662,348 @@ describe("noteWrite create tracking", function () {
       existing.getNote(),
       before.replace("copper-limitation", "copper-limitation (reviewed)"),
     );
+  });
+
+  describe("embedded items in a saved note", function () {
+    const citation =
+      '<span class="citation" data-citation="%7B%22citationItems%22%3A%5B%7B%22uris%22%3A%5B%22http%3A%2F%2Fzotero.org%2Fusers%2Flocal%2Fabc%2Fitems%2FITEM1%22%5D%2C%22locator%22%3A%2242%22%7D%5D%2C%22properties%22%3A%7B%7D%7D">(<span class="citation-item">Smith, 2020, p. 42</span>)</span>';
+    const root =
+      '<div data-schema-version="9" data-citation-items="%5B%7B%22uris%22%3A%5B%22http%3A%2F%2Fzotero.org%2Fusers%2Flocal%2Fabc%2Fitems%2FITEM1%22%5D%7D%5D">';
+    const before = `${root}<p>Drift follows turnover ${citation}.</p></div>`;
+    const token = () => {
+      const match = /\{\{citation:[0-9a-f]{6}[^}]*\}\}/.exec(
+        noteHtmlToModelText(before),
+      );
+      assert.isOk(match, "the model sees the citation as a placeholder");
+      return match![0];
+    };
+
+    it("saves a full rewrite with the citation chip and its registry intact", async function () {
+      const existing = saveExistingNote(61, 9, before);
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 61,
+        content: `# Reading note\n\nTurnover drives drift ${token()}.`,
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      await tool.execute(validated.value, baseContext);
+      const saved = existing.getNote();
+      assert.include(saved, citation);
+      assert.isTrue(saved.startsWith(root));
+      assert.include(saved, "Turnover drives drift");
+    });
+
+    it("saves the user's own review-box wording with the citation restored", async function () {
+      const existing = saveExistingNote(62, 9, before);
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 62,
+        content: `Model wording ${token()}.`,
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      tool.createPendingAction!(validated.value, baseContext);
+      const confirmed = tool.applyConfirmation!(validated.value, {
+        content: `User wording ${token()}.`,
+      });
+      assert.isTrue(confirmed.ok);
+      if (!confirmed.ok) return;
+      await tool.execute(confirmed.value, baseContext);
+      const saved = existing.getNote();
+      assert.include(saved, "User wording");
+      assert.include(saved, citation);
+    });
+
+    it("saves the user's review-box text that deletes a placeholder, and reports the deletion", async function () {
+      const existing = saveExistingNote(64, 9, before);
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 64,
+        content: `Model wording ${token()}.`,
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      tool.createPendingAction!(validated.value, baseContext);
+      const confirmed = tool.applyConfirmation!(validated.value, {
+        content: "User wording without the citation.",
+      });
+      assert.isTrue(confirmed.ok);
+      if (!confirmed.ok) return;
+      const result = (await tool.execute(confirmed.value, baseContext))
+        .content as any;
+      const saved = existing.getNote();
+      assert.include(saved, "User wording without the citation.");
+      assert.notInclude(saved, "data-citation=");
+      assert.include(
+        result.noteChange.description,
+        "This edit deleted 1 embedded item.",
+      );
+    });
+
+    it("refuses a placeholder the user invents in the review box", async function () {
+      const existing = saveExistingNote(65, 9, before);
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 65,
+        content: `Model wording ${token()}.`,
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      tool.createPendingAction!(validated.value, baseContext);
+      const confirmed = tool.applyConfirmation!(validated.value, {
+        content: `User wording ${token()} {{citation:abcdef}}.`,
+      });
+      assert.isTrue(confirmed.ok);
+      if (!confirmed.ok) return;
+      let error: unknown;
+      try {
+        await tool.execute(confirmed.value, baseContext);
+      } catch (caught) {
+        error = caught;
+      }
+      assert.match(String(error), /no embedded item \{\{citation:abcdef/);
+      assert.equal(existing.getNote(), before);
+    });
+
+    it("refuses to save a rewrite that drops the citation, leaving the note as it was", async function () {
+      const existing = saveExistingNote(63, 9, before);
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 63,
+        content: "Turnover drives drift.",
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      let error: unknown;
+      try {
+        await tool.execute(validated.value, baseContext);
+      } catch (caught) {
+        error = caught;
+      }
+      assert.match(String(error), /would delete 1 embedded item/);
+      assert.equal(existing.getNote(), before);
+    });
+  });
+
+  describe("new Zotero citations written by the model", function () {
+    const paperUri = "http://zotero.org/users/local/abc/items/PAPER9";
+    const itemData = {
+      type: "article-journal",
+      title: "Representational drift",
+      author: [{ family: "Smith", given: "Ann" }],
+      issued: { "date-parts": [[2020]] },
+    };
+    beforeEach(function () {
+      (parentItem as unknown as { key: string }).key = "PAPER9";
+      const zotero = globalScope.Zotero as unknown as Record<string, any>;
+      const getByKey = zotero.Items.getByLibraryAndKey;
+      zotero.Items = {
+        ...zotero.Items,
+        getByLibraryAndKey: (libraryID: number, key: string) =>
+          key === "PAPER9" ? parentItem : getByKey(libraryID, key),
+      };
+      zotero.URI = {
+        getItemURI: (item: { key: string }) =>
+          `http://zotero.org/users/local/abc/items/${item.key}`,
+      };
+      zotero.Utilities = {
+        ...zotero.Utilities,
+        Item: { itemToCSLJSON: () => JSON.parse(JSON.stringify(itemData)) },
+      };
+    });
+
+    /** The citation items a chip carries, decoded as Zotero reads them. */
+    function chipCitations(html: string) {
+      return Array.from(
+        html.matchAll(/class="citation" data-citation="([^"]*)"/g),
+        (match) => JSON.parse(decodeURIComponent(match[1])),
+      );
+    }
+    function rootRegistry(html: string) {
+      const match =
+        /^<div data-citation-items="([^"]*)"[^>]*data-schema-version="9"/.exec(
+          html,
+        );
+      return match ? JSON.parse(decodeURIComponent(match[1])) : null;
+    }
+
+    it("creates a note whose citation is Zotero's own clickable chip", async function () {
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "create",
+        targetItemId: 9,
+        content:
+          "# Reading note\n\nDrift follows turnover {{cite item=9 page=42}}.",
+      });
+      assert.isTrue(validated.ok, JSON.stringify(validated));
+      if (!validated.ok) return;
+      const pending = tool.createPendingAction!(
+        validated.value,
+        baseContext,
+      ) as { description: string };
+      assert.include(
+        pending.description,
+        "Adds 1 Zotero citation: (Smith, 2020, p. 42)",
+      );
+      assert.match(
+        validated.value.content,
+        /turnover \{\{citation:[0-9a-f]{6} \(Smith, 2020, p\. 42\)\}\}\./,
+        "the review shows the chip's own label",
+      );
+      const result = (await tool.execute(validated.value, baseContext))
+        .content as any;
+      const saved = savedItems.get(result.noteId)!.getNote();
+      assert.deepEqual(chipCitations(saved), [
+        {
+          citationItems: [{ uris: [paperUri], locator: "42" }],
+          properties: {},
+        },
+      ]);
+      assert.include(
+        saved,
+        '>(<span class="citation-item">Smith, 2020, p. 42</span>)</span>.',
+      );
+      assert.deepEqual(rootRegistry(saved), [{ uris: [paperUri], itemData }]);
+    });
+
+    it("adds a citation to an existing note and keeps its registry", async function () {
+      const other = {
+        uris: ["http://zotero.org/users/local/abc/items/OTHER1"],
+        itemData: { title: "Other" },
+      };
+      const before = `<div data-citation-items="${encodeURIComponent(JSON.stringify([other]))}" data-schema-version="9"><p>Drift follows turnover.</p></div>`;
+      const existing = saveExistingNote(64, 9, before);
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 64,
+        patches: [
+          {
+            find: "turnover.",
+            replace: "turnover {{cite item=9 page=4-9}}.",
+          },
+        ],
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      await tool.execute(validated.value, baseContext);
+      const saved = existing.getNote();
+      assert.include(stripNoteHtml(saved), "turnover (Smith, 2020, pp. 4-9).");
+      assert.deepEqual(rootRegistry(saved), [
+        other,
+        { uris: [paperUri], itemData },
+      ]);
+    });
+
+    it("registers an appended citation in the whole note's root", async function () {
+      const existing = saveExistingNote(65, 9, "<p>Existing text.</p>");
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "append",
+        targetNoteId: 65,
+        content: "A whole-work citation {{cite item=PAPER9}}.",
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      await tool.execute(validated.value, baseContext);
+      const saved = existing.getNote();
+      assert.include(saved, "Existing text.");
+      assert.deepEqual(chipCitations(saved)[0].citationItems, [
+        { uris: [paperUri] },
+      ]);
+      assert.include(stripNoteHtml(saved), "citation (Smith, 2020).");
+      assert.deepEqual(rootRegistry(saved), [{ uris: [paperUri], itemData }]);
+    });
+
+    it("uses Zotero's own citation formatter when Zotero has one", async function () {
+      (
+        globalScope.Zotero as unknown as Record<string, any>
+      ).EditorInstanceUtilities = {
+        formatCitation: (citation: {
+          citationItems: Array<{ locator?: string; itemData: unknown }>;
+        }) =>
+          `(<span class="citation-item">Zotero says p. ${citation.citationItems[0].locator}</span>)`,
+      };
+      const existing = saveExistingNote(66, 9, "<p>Text.</p>");
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 66,
+        content: "Text {{cite item=9 page=7}}.",
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      await tool.execute(validated.value, baseContext);
+      assert.include(existing.getNote(), "Zotero says p. 7");
+    });
+
+    it("refuses a citation of an item that does not exist, writing nothing", async function () {
+      const existing = saveExistingNote(67, 9, "<p>Text.</p>");
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 67,
+        content: "Text {{cite item=999 page=7}}.",
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      let error: unknown;
+      try {
+        await tool.execute(validated.value, baseContext);
+      } catch (caught) {
+        error = caught;
+      }
+      assert.match(String(error), /999 is not a Zotero paper or book/);
+      assert.equal(existing.getNote(), "<p>Text.</p>");
+    });
+
+    it("refuses a misspelled citation request instead of saving it as text", function () {
+      saveExistingNote(69, 9, "<p>Text.</p>");
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 69,
+        content: "Text {{cite:item=9 p.7}}.",
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      assert.throws(
+        () => tool.createPendingAction!(validated.value, baseContext),
+        /\{\{cite:item=9 p\.7\}\} is not a citation request/,
+      );
+    });
+
+    it("keeps a new citation through the user's own review-box wording", async function () {
+      const existing = saveExistingNote(68, 9, "<p>Text.</p>");
+      const tool = createNoteWriteTool(new ZoteroGateway());
+      const validated = tool.validate({
+        mode: "edit",
+        targetNoteId: 68,
+        content: "Model text {{cite item=9 page=3}}.",
+      });
+      assert.isTrue(validated.ok);
+      if (!validated.ok) return;
+      tool.createPendingAction!(validated.value, baseContext);
+      const token = /\{\{citation:[0-9a-f]{6}[^}]*\}\}/.exec(
+        validated.value.content,
+      )![0];
+      const confirmed = tool.applyConfirmation!(validated.value, {
+        content: `User text ${token}.`,
+      });
+      assert.isTrue(confirmed.ok);
+      if (!confirmed.ok) return;
+      await tool.execute(confirmed.value, baseContext);
+      const saved = existing.getNote();
+      assert.include(saved, "User text");
+      assert.include(stripNoteHtml(saved), "User text (Smith, 2020, p. 3).");
+      assert.deepEqual(rootRegistry(saved), [{ uris: [paperUri], itemData }]);
+    });
   });
 
   for (const example of [
@@ -1220,7 +1562,12 @@ describe("noteWrite create tracking", function () {
     assert.include(note.getNote(), 'data-attachment-key="IMG100_1"');
     assert.notInclude(note.getNote(), '<pre class="lang-svg">');
     assert.notInclude(note.getNote(), "&lt;svg");
-    assert.include(rasterizedSvg, '<svg xmlns="http://www.w3.org/2000/svg"');
+    assert.match(
+      rasterizedSvg,
+      /^<svg\b[^>]*\sxmlns="http:\/\/www.w3.org\/2000\/svg"/,
+    );
+    // A note image leaves the plugin: it is drawn on white.
+    assert.include(rasterizedSvg, '<svg style="background:#ffffff"');
     assert.deepEqual(importedImageParents, [100]);
     assert.deepEqual(importedImageMimeTypes, ["image/png"]);
     assert.deepEqual(importedImageByteSizes, [pngBytes.length]);

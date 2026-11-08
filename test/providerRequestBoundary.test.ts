@@ -29,6 +29,29 @@ describe("provider dispatch boundary", function () {
     assert.strictEqual(captured, init);
   });
 
+  it("sends the OpenCode session header on the /inference routes of both products", async function () {
+    for (const url of [
+      "https://opencode.ai/inference/go/v1/chat/completions",
+      "https://opencode.ai/inference/v1/chat/completions",
+    ]) {
+      let captured: RequestInit | undefined;
+      await sendProviderRequest({
+        url,
+        scope: { operationId: "op-1" },
+        init: { headers: { Authorization: "Bearer test" } },
+        fetchFn: (async (_url, sent) => {
+          captured = sent;
+          return new Response("OK");
+        }) as typeof fetch,
+      });
+      assert.equal(
+        new Headers(captured?.headers).get("x-opencode-session"),
+        "op-1",
+        url,
+      );
+    }
+  });
+
   it("refuses an empty OpenCode session before dispatch", async function () {
     let sent = false;
     try {

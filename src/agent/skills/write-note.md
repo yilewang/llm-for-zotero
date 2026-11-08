@@ -1,7 +1,7 @@
 ---
 id: write-note
 description: Create, save, or edit a Zotero note or Markdown note, including requested figures or an existing answer. Use only when the user explicitly requests a note.
-version: 18
+version: 19
 contexts: any
 activation: auto
 ---
@@ -16,8 +16,7 @@ Resolve an ambiguous target or operation before writing.
 
 ### Choose the content
 
-- To save an existing answer unchanged, use `note_write` with its `sourceMessageId` and destination.
-  Use `context_read` with `source: "conversation"` only to recover the source identity or exact text; do not regenerate or reformat it.
+- To save an existing answer unchanged, use `note_write` with its `sourceMessageId` and destination; do not regenerate or reformat it.
 - For a narrowly scoped note, such as selected figures with captions or a requested paragraph, keep that scope.
   Do not expand it into a reading-note template or add scientific interpretation that was not requested.
 - For new or revised reading notes, reuse supplied evidence and read further only as needed.

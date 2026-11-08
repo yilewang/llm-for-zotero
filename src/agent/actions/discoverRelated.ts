@@ -1,6 +1,7 @@
 import { buildActionCallDigest } from "../authorization/proposal";
 import { callTool } from "./executor";
 import { getMetadataField } from "./metadataSnapshot";
+import { HOST_ACTION_SEARCH_NEED } from "../tools/read/outsideSearchNeed";
 import type { PaperScopedActionProfile } from "./paperScope";
 import type {
   ActionExecutionContext,
@@ -169,6 +170,8 @@ export const discoverRelatedAction: AgentAction<
           source,
           limit,
           libraryID: ctx.libraryID,
+          // The user ran Discover related; the model did not choose to search.
+          need: HOST_ACTION_SEARCH_NEED,
         },
         ctx,
         `Finding ${mode} for "${seedTitle}"`,

@@ -1,0 +1,32 @@
+{
+  "name": "@llm-for-zotero/claude-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code bridge for llm-for-zotero. The plugin bundles and starts it; see README.md.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "serve:bridge": "tsx bin/start-bridge-server.ts --host 127.0.0.1 --port 19787"
+  },
+  "keywords": [
+    "zotero",
+    "claude-code",
+    "adapter",
+    "agent"
+  ],
+  "license": "AGPL-3.0-or-later",
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@anthropic-ai/sdk": "0.115.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "zod": "4.3.6"
+  }
+}

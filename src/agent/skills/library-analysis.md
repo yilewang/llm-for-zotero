@@ -1,7 +1,7 @@
 ---
 id: library-analysis
 description: Analyze your whole library or collection with statistics
-version: 5
+version: 6
 contexts: library-corpus
 activation: auto
 ---
@@ -20,6 +20,6 @@ Use targeted catalog searches for requested item details.
 For topics, methods, or findings, use scoped `library_retrieve`: `enumerate` for which papers, `verify` for a specific claim, and `summarize` for synthesis.
 Use relevant query variants when terminology or language affects recall.
 Treat its `paperMatches` as the paper ledger and its snippets as the body evidence, and assess them with the coverage frontier before deciding on close reading.
-Library results show what the request needs: `omitted` counts what a result left out, and `context_read` with its `toolResultHandle` pages the rest when the answer needs it.
+Library results show what the request needs: `omitted` counts what a result left out.
 A count of papers with retrieved evidence is not an exhaustive prevalence estimate when coverage is partial.
 Report missing, sampled, abstract-only, or unreadable evidence explicitly.

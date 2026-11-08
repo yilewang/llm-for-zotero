@@ -1,17 +1,25 @@
 <?xml version="1.0"?>
 <?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<!-- The document's minimum is the follower window's (360 x 480); the
+     standalone window raises its own to 500 x 500 once it loads. A larger
+     minimum here would open every follower at 500 px wide. -->
 <window
   id="llmforzotero-standalone-chat"
   title="LLM-for-Zotero"
   width="900"
   height="900"
-  minwidth="500"
-  minheight="500"
-  style="min-width: 500px; min-height: 500px"
+  minwidth="360"
+  minheight="480"
+  style="min-width: 360px; min-height: 480px"
+  tooltip="llmforzotero-html-tooltip"
   xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
   xmlns:html="http://www.w3.org/1999/xhtml"
 >
   <script src="standaloneTitlebar.js" />
+  <!-- Gecko shows an HTML title="" tooltip only when the window has a page
+       tooltip and names it in its tooltip attribute, as Zotero's own
+       windows do. -->
+  <tooltip id="llmforzotero-html-tooltip" page="true" />
   <html:div
     id="llmforzotero-standalone-chat-root"
     style="

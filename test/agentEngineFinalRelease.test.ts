@@ -471,6 +471,70 @@ describe("agent engine final UI release", function () {
     assert.include(statuses, "Continuing agent (page 2 · 7 of 30)");
   });
 
+  it("pushes the turn into the array chatHistory holds, loading a conversation not in memory first; a refused load keeps a local array", async function () {
+    for (const loads of [true, false]) {
+      const conversationKey = loads ? 124 : 125;
+      let messagesAtStart: unknown[] | undefined;
+      const runtime = {
+        getCapabilities: () => ({
+          streaming: true,
+          toolCalls: true,
+          multimodal: false,
+        }),
+        runTurn: async (params: any) => {
+          await params.onStart?.("run-history-array");
+          messagesAtStart = deps.chatHistory.get(conversationKey);
+          await params.onEvent?.({ type: "final", text: "Done." });
+          return {
+            kind: "completed",
+            runId: "run-history-array",
+            text: "Done.",
+          };
+        },
+      } as unknown as AgentRuntime;
+      const deps = createDeps({
+        runtime,
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      const prior = [
+        { role: "user", text: "earlier", timestamp: 1 },
+        { role: "assistant", text: "earlier answer", timestamp: 2 },
+      ];
+      let loadCalls = 0;
+      deps.ensureConversationLoaded = async () => {
+        loadCalls += 1;
+        // A real load sets the stored messages; a refused one sets nothing.
+        if (loads && !deps.chatHistory.has(conversationKey))
+          deps.chatHistory.set(conversationKey, [...prior]);
+      };
+      await sendAgentTurn(
+        {
+          body: {} as Element,
+          item: fakeItem(conversationKey),
+          question: "find the grid chat",
+        },
+        deps,
+      );
+      assert.isAtLeast(loadCalls, 1);
+      if (!loads) {
+        // A refused load leaves chatHistory alone, so the later load still
+        // reads the stored history.
+        assert.isFalse(deps.chatHistory.has(conversationKey));
+        continue;
+      }
+      const history = deps.chatHistory.get(conversationKey) || [];
+      assert.strictEqual(messagesAtStart, history);
+      const user = history.find(
+        (message: any) =>
+          message.role === "user" && message.text === "find the grid chat",
+      );
+      assert.exists(user, "the user message is in chatHistory");
+      assert.equal(history[0].text, "earlier", "loaded before the push");
+    }
+  });
+
   it("preserves and persists the final answer when completion fails after the final event", async function () {
     const statuses: string[] = [];
     const stored: any[] = [];
@@ -2021,6 +2085,65 @@ describe("agent engine final UI release", function () {
       assert.lengthOf(record.ledger.papers["1:3"].turns[2].citations, 1);
     });
 
+    it("shows the steps Claude Code keeps as the run's checklist, from Claude", async function () {
+      const conversationKey = 703;
+      const deps = createDeps({
+        runtime: runtimeWith(async (params) => {
+          await params.onStart?.("run-steps");
+          await params.onEvent?.({
+            type: "codex_progress",
+            itemId: "codex-plan-checklist",
+            text: "• Screen\n• Skim",
+            runtime: "claude",
+            steps: [
+              { content: "Screen", status: "in_progress" },
+              { content: "Skim", status: "pending" },
+            ],
+          });
+          await params.onEvent?.({
+            type: "codex_progress",
+            itemId: "codex-plan-checklist",
+            text: "✓ Screen\n• Skim",
+            runtime: "claude",
+            steps: [
+              { content: "Screen", status: "completed" },
+              { content: "Skim", status: "in_progress" },
+            ],
+          });
+          return {
+            kind: "completed",
+            runId: "run-steps",
+            text: "Done.",
+            usedFallback: false,
+          };
+        }),
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      deps.chatHistory.set(conversationKey, []);
+
+      await sendAgentTurn(
+        {
+          body: {} as Element,
+          item: fakeItem(conversationKey),
+          question: "Review the library",
+        },
+        deps,
+      );
+
+      const checklist = getTaskProgress(conversationKey)!.checklist;
+      assert.equal(checklist?.source, "claude");
+      assert.equal(checklist?.runId, "run-steps");
+      assert.deepEqual(
+        checklist?.steps.map((step) => [step.label, step.status]),
+        [
+          ["Screen", "completed"],
+          ["Skim", "in_progress"],
+        ],
+      );
+    });
+
     it("marks the run failed when the runtime throws after onStart", async function () {
       const conversationKey = 702;
       const deps = createDeps({
@@ -3110,6 +3233,15 @@ describe("agent request sites (golden)", function () {
     ] as any[];
     const images = ["data:image/png;base64,AAA"];
     const forcedSkillIds = ["skill-x"];
+    const attachedConversations = [
+      {
+        system: "upstream" as const,
+        conversationKey: 77,
+        conversationID: "conv-77",
+        title: "Earlier chat",
+        libraryID: 1,
+      },
+    ];
 
     await sendAgentTurn(
       {
@@ -3131,6 +3263,7 @@ describe("agent request sites (golden)", function () {
         fullTextPaperContexts: [paperB],
         selectedCollectionContexts: collections,
         selectedTagContexts: tags,
+        attachedConversations,
         attachments,
         modelAttachments,
         localDocuments,
@@ -3171,6 +3304,7 @@ describe("agent request sites (golden)", function () {
       citationPaperContexts: [normalized(paperA), normalized(paperB)],
       selectedCollectionContexts: collections,
       selectedTagContexts: tags,
+      attachedConversations,
       attachments: modelAttachments,
       localDocuments,
       screenshots: images,
@@ -3179,6 +3313,7 @@ describe("agent request sites (golden)", function () {
       history: [],
     });
     // The site passes these through by reference.
+    assert.strictEqual(params.attachedConversations, attachedConversations);
     assert.strictEqual(
       params.selectedTextContexts,
       storedUser.selectedTextContexts,
@@ -3192,6 +3327,76 @@ describe("agent request sites (golden)", function () {
     assert.strictEqual(params.screenshots, images);
     assert.strictEqual(params.forcedSkillIds, forcedSkillIds);
     assert.strictEqual(params.localDocuments, localDocuments);
+  });
+
+  it("send carries the chats of the slash messages before a Claude Code turn, and none on a slash turn", async function () {
+    const pastChat = (conversationKey: number) => ({
+      system: "upstream" as const,
+      conversationKey,
+      conversationID: `conv-${conversationKey}`,
+      title: `Chat ${conversationKey}`,
+      libraryID: 1,
+    });
+    const captured: any[] = [];
+    const run = async (
+      conversationKey: number,
+      question: string,
+      stored: any[],
+    ) => {
+      const deps = createDeps({
+        runtime: completedRuntime(),
+        pendingWrites: [],
+        idleRestores: [],
+        statuses: [],
+      });
+      deps.getConversationSystem = () => "claude_code";
+      deps.buildAgentRuntimeRequest = (params) => {
+        captured.push(params);
+        return { conversationKey: params.conversationKey } as any;
+      };
+      deps.chatHistory.set(conversationKey, stored);
+      await sendAgentTurn(
+        {
+          body: {} as Element,
+          item: fakeItem(conversationKey),
+          question,
+          attachedConversations: [pastChat(4)],
+        },
+        deps,
+      ).catch(() => undefined);
+    };
+    const storedSlashTurn = () => [
+      {
+        role: "user",
+        text: "first",
+        timestamp: 10,
+        attachedConversations: [pastChat(1)],
+      },
+      { role: "assistant", text: "a", timestamp: 11 },
+      {
+        role: "user",
+        text: "/review",
+        timestamp: 20,
+        attachedConversations: [pastChat(2)],
+      },
+      { role: "assistant", text: "review", timestamp: 21 },
+    ];
+    await run(134, "Compare them", storedSlashTurn());
+    await run(135, "/cost", storedSlashTurn());
+    assert.deepEqual(
+      captured[0].deliveredConversations?.map(
+        (entry: { conversationKey: number }) => entry.conversationKey,
+      ),
+      [4, 2],
+    );
+    assert.deepEqual(
+      captured[0].attachedConversations?.map(
+        (entry: { conversationKey: number }) => entry.conversationKey,
+      ),
+      [4],
+      "the message's own chats are unchanged",
+    );
+    assert.notProperty(captured[1], "deliveredConversations");
   });
 
   it("send falls back to the visible attachments only when no model attachments are given", async function () {
@@ -3248,6 +3453,14 @@ describe("agent request sites (golden)", function () {
       selectedTextNoteContexts: storedNoteContexts,
       citationPaperContexts: storedCitationPapers,
       forcedSkillIds: ["skill-stored"],
+      attachedConversations: [
+        {
+          system: "codex",
+          conversationKey: 1_500_000_777,
+          title: "Stored earlier chat",
+          libraryID: 1,
+        },
+      ],
       modelAttachments: [{ id: "m-stored", category: "text" }],
       attachments: [{ id: "a-stored", category: "image" }],
     };
@@ -3344,6 +3557,7 @@ describe("agent request sites (golden)", function () {
       citationPaperContexts: storedCitationPapers,
       selectedCollectionContexts: collections,
       selectedTagContexts: tags,
+      attachedConversations: userMessage.attachedConversations,
       attachments: userMessage.modelAttachments,
       localDocuments: undefined,
       screenshots: screenshotImages,
@@ -3353,6 +3567,11 @@ describe("agent request sites (golden)", function () {
     });
     // The retry hands over the forced skills the user row stored.
     assert.strictEqual(params.forcedSkillIds, userMessage.forcedSkillIds);
+    // ... and the past chats it attached.
+    assert.strictEqual(
+      params.attachedConversations,
+      userMessage.attachedConversations,
+    );
     assert.strictEqual(params.selectedTextNoteContexts, storedNoteContexts);
     assert.strictEqual(params.citationPaperContexts, storedCitationPapers);
     assert.strictEqual(

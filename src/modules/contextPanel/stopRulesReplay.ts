@@ -48,7 +48,9 @@ export type StopRuleScenario =
   | "prompt_too_long"
   | "abort_during_backoff"
   | "long_job_budget_resume"
-  | "final_only_empty";
+  | "final_only_empty"
+  | "scripted_analysis"
+  | "step_past_tool_limit";
 
 /** The search checkpoint and final-only texts, as the host writes them. */
 const CHECKPOINT_MARK = "Search checkpoint.";
@@ -166,6 +168,8 @@ async function stopRuleTurn(
     turnLimits?: Partial<TurnSafetyLimits>;
     /** The retry waits; none unless a scenario presses Stop during one. */
     retryBackoffMs?: readonly number[];
+    /** Real tools of the plugin's runtime, beside the stubs. */
+    realTools?: readonly string[];
   },
 ): Promise<TurnRecord> {
   const { body, item } = panel;
@@ -180,6 +184,8 @@ async function stopRuleTurn(
   );
   registry.register(deps.getAgentRuntime().getToolDefinition("task_update")!);
   for (const tool of stubLibraryTools(item.libraryID)) registry.register(tool);
+  for (const name of input.realTools || [])
+    registry.register(deps.getAgentRuntime().getToolDefinition(name)!);
   const prompts: string[] = [];
   const toolChoices: Array<string | undefined> = [];
   let steps = 0;
@@ -1127,6 +1133,107 @@ export async function exerciseAgentStopRules(
           earlierToolChoices: requests
             .slice(0, -1)
             .map((request) => request.tool_choice?.type),
+        };
+      }
+      // Twenty read-only scripts through the real zotero_script: with new
+      // results they are progress and get no checkpoint; with the same
+      // result (new script text, new log line) they still reach it.
+      case "scripted_analysis": {
+        const script = (index: number, same: boolean): AgentModelStep =>
+          toolStep([
+            {
+              id: `script-${same ? "same" : "new"}-${index}`,
+              name: "zotero_script",
+              arguments: {
+                access: "library",
+                effect: "read",
+                description: `Library analysis ${index}`,
+                script: [
+                  "const items = await Zotero.Items.getAll(env.libraryID, false, false, false);",
+                  "const papers = items.filter((item) => item.isRegularItem());",
+                  `env.log("pass ${index}");`,
+                  same
+                    ? "return { hasPapers: papers.length > 0 };"
+                    : `return { pass: ${index}, papers: papers.length };`,
+                ].join("\n"),
+              },
+            },
+          ]);
+        const run = (same: boolean) =>
+          stopRuleTurn(panel, {
+            question:
+              "Make a table of my library's papers per year and journal.",
+            realTools: ["zotero_script"],
+            step: (messages, params, index) =>
+              index <= 20 &&
+              params.toolChoice !== "none" &&
+              !lastPrompt(messages).includes(FINAL_ONLY_MARK)
+                ? script(index, same)
+                : finalStep("Papers per year and journal: see the table."),
+          });
+        const distinct = await run(false);
+        const repeated = await run(true);
+        return { distinct, repeated };
+      }
+      // A step of nine calls under the limit of eight: the first eight run
+      // (a real tag write among them), the ninth (a real tag write) does not
+      // and is made in the next step.
+      case "step_past_tool_limit": {
+        const stamp = Date.now();
+        const withinTag = `w4-within-limit-${stamp}`;
+        const pastTag = `w4-past-limit-${stamp}`;
+        const tagWrite = (id: string, tag: string): AgentToolCall => ({
+          id,
+          name: "library_update",
+          arguments: {
+            kind: "tags",
+            action: "add",
+            itemIds: [item.id],
+            tags: [tag],
+          },
+        });
+        const nativeTags = async () => {
+          const current = (await Zotero.Items.getAsync(item.id)) as Zotero.Item;
+          return current.getTags().map((entry) => entry.tag);
+        };
+        let tagsAfterFirstStep: string[] = [];
+        let pastResult = "";
+        const turn = await stopRuleTurn(panel, {
+          question: "Run every step and tag the paper.",
+          realTools: ["library_update"],
+          step: async (messages, _params, index) => {
+            if (index === 1)
+              return toolStep([
+                ...Array.from({ length: 8 }, (_, call) =>
+                  call === 1
+                    ? tagWrite("tag-within", withinTag)
+                    : {
+                        id: `command-${call}`,
+                        name: "run_command",
+                        arguments: { command: `step ${call}` },
+                      },
+                ),
+                tagWrite("tag-past", pastTag),
+              ]);
+            if (index === 2) {
+              tagsAfterFirstStep = await nativeTags();
+              const result = messages.find(
+                (message) =>
+                  message.role === "tool" &&
+                  message.tool_call_id === "tag-past",
+              );
+              pastResult = result ? contentText(result) : "";
+              return toolStep([tagWrite("tag-past-again", pastTag)]);
+            }
+            return finalStep("Every step ran and the paper is tagged.");
+          },
+        });
+        return {
+          turn,
+          withinTag,
+          pastTag,
+          tagsAfterFirstStep,
+          pastResult,
         };
       }
     }

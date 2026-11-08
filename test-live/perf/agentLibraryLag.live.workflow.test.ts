@@ -326,9 +326,7 @@ describe("live perf: agent library chat lag", function () {
         );
         await api.selectPanelModelEntry(panel.panelId, MODEL_ENTRY_ID);
         diag = await api.getDiagnostics(panel.panelId);
-        if (diag.runtimeMode !== "agent") {
-          diag = await api.clickPanelRuntimeModeToggle(panel.panelId);
-        }
+        // The built-in runtime is Agent whenever the Agent feature is on.
         assert.equal(diag.runtimeMode, "agent", "Agent mode is on");
         const conversationKey = diag.panelConversationKey;
 

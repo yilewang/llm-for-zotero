@@ -578,6 +578,32 @@ describe("local raw PDF path redaction", function () {
     assert.include(serialized, '"type":"message_rollback"');
   });
 
+  it("passes a step snapshot whole, redacting a path in its steps", function () {
+    const conversationKey = 7141;
+    const rawPath = "/private/papers/selected.pdf";
+    remember(conversationKey, [documentAt(rawPath)]);
+    const redactor = new AgentEventLocalDocumentStreamRedactor(conversationKey);
+    const events = [
+      ...redactor.process({
+        type: "codex_progress",
+        itemId: "codex-plan-checklist",
+        text: `• Read ${rawPath.slice(0, 10)}`,
+        runtime: "claude",
+        steps: [{ content: `Read ${rawPath}`, status: "pending" }],
+      }),
+      ...redactor.flush(),
+    ];
+
+    assert.lengthOf(events, 1);
+    assert.notInclude(JSON.stringify(events), rawPath);
+    const [event] = events;
+    assert.equal(event.type, "codex_progress");
+    assert.include(
+      (event as { steps: Array<{ content: string }> }).steps[0].content,
+      "[raw_pdf_path:zotero-pdf:10:11]",
+    );
+  });
+
   it("redacts each status and provider event on its own, holding nothing for the next one", function () {
     let conversationKey = 7140;
     for (const rawPath of [

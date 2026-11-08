@@ -107,6 +107,7 @@ for (const mode of ["safe", "auto", "yolo"] as const)
     it("discover_related reads nested library_read results and uses nested import counts", async function () {
       const registry = new AgentToolRegistry();
       let searchArgs: Record<string, unknown> | null = null;
+      let searchHostAction: boolean | undefined;
       let importArgs: Record<string, unknown> | null = null;
 
       registry.register(
@@ -145,8 +146,9 @@ for (const mode of ["safe", "auto", "yolo"] as const)
             requiresConfirmation: false,
           },
           (args) => ({ ok: true, value: args as Record<string, unknown> }),
-          async (input) => {
+          async (input, context) => {
             searchArgs = input;
+            searchHostAction = context.hostAction;
             return {
               results: [
                 {
@@ -203,6 +205,10 @@ for (const mode of ["safe", "auto", "yolo"] as const)
       assert.isTrue(result.ok);
       if (!result.ok) return;
       assert.equal(searchArgs?.doi, "10.1000/seed");
+      // A host action searches on the user's command, not the model's; the
+      // action executor, not the argument, marks the call as host-built.
+      assert.equal(searchArgs?.need, "host_action");
+      assert.isTrue(searchHostAction);
       assert.deepEqual(importArgs?.identifiers, ["10.1000/r1", "10.1000/r2"]);
       assert.deepEqual(result.output, {
         seedTitle: "Seed Paper",

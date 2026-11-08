@@ -952,3 +952,23 @@ describe("renderMarkdown code block presentation", function () {
     assert.include(html, "flowchart TD");
   });
 });
+
+describe("study-note blanks in Zotero notes", function () {
+  it("keeps a checklist item's checkbox when its text is a blank", function () {
+    for (const [source, html] of [
+      [
+        "- [ ] ____",
+        '<ul><li><input type="checkbox" disabled="disabled" /> ____</li></ul>',
+      ],
+      ["- ____", "<ul><li>____</li></ul>"],
+    ])
+      assert.equal(renderMarkdownForNote(source), html);
+  });
+
+  it("still turns an underscore line inside a quote into a divider", function () {
+    assert.equal(
+      renderMarkdownForNote("> Answer:\n> ___"),
+      "<blockquote><p>Answer:</p><hr/></blockquote>",
+    );
+  });
+});

@@ -6,6 +6,7 @@
  */
 import { assert } from "chai";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
+import { findCurrentTaskProgressSteps } from "../src/modules/contextPanel/taskProgress/view";
 import { executionCheckpointEvent } from "../src/agent/execution/checkpointEvents";
 import type { ExecutionCheckpoint } from "../src/agent/types";
 import type {
@@ -54,7 +55,10 @@ describe("workflow: task progress unified", function () {
       count: () =>
         root.querySelector(".llm-task-progress-count")?.textContent || "",
       drawer: root.querySelector("#llm-task-progress-drawer") as HTMLElement,
-      steps: root.querySelector(".llm-task-progress-steps") as HTMLElement,
+      /** The current question's visible Steps block, re-queried each read. */
+      get steps() {
+        return findCurrentTaskProgressSteps(root);
+      },
       head: () =>
         root.querySelector(".llm-task-progress-head")?.textContent || "",
       box: root.querySelector("#llm-chat-box") as HTMLElement,
@@ -218,8 +222,8 @@ describe("workflow: task progress unified", function () {
         () => `the one paper in scope lists: ${tp().head()}`,
       );
       assert.notInclude(tp().head(), "Preparing");
-      assert.isFalse(tp().steps.hidden, "the Steps block shows the action");
-      const stepsText = tp().steps.textContent || "";
+      assert.isOk(tp().steps, "the Steps block shows the action");
+      const stepsText = tp().steps?.textContent || "";
       assert.include(stepsText, "Auto Tag");
       assert.include(stepsText, "Reading the paper");
       assert.include(stepsText, "Proposing tags");
@@ -294,7 +298,7 @@ describe("workflow: task progress unified", function () {
       );
       tp().row.click();
       const lines = Array.from(
-        tp().steps.querySelectorAll(".llm-plan-task"),
+        tp().steps!.querySelectorAll(".llm-plan-task"),
       ) as HTMLElement[];
       assert.deepEqual(
         lines.map((line) => line.className.replace("llm-plan-task ", "")),
@@ -331,6 +335,85 @@ describe("workflow: task progress unified", function () {
       assert.notInclude(tp().box.textContent || "", "Compare the results");
       assert.isFalse(tp().row.hidden);
       assert.isTrue(tp().count().startsWith("1/3 steps · "), tp().count());
+    } finally {
+      restore();
+    }
+  });
+
+  it("shows Claude Code's steps in the Steps block, from Claude, and restores them", async function () {
+    const panel = await api.renderPanelForItem(fixtures[2].parentItemId);
+    const restore = showOnScreen(panel.panelId);
+    const steps = (statuses: string[]) => ({
+      type: "codex_progress" as const,
+      itemId: "codex-plan-checklist",
+      text: "",
+      runtime: "claude" as const,
+      steps: ["Screen the papers", "Skim the relevant", "Write the review"].map(
+        (content, index) => ({ content, status: statuses[index] }),
+      ),
+    });
+    try {
+      const tp = () => view(panel.panelId);
+      // Live: Claude Code's step list moves through the agent turn's own
+      // event handler, one snapshot per change.
+      const handle = await api.startTaskProgressReplay({
+        panelId: panel.panelId,
+        historyTurns: 0,
+        user: {},
+      });
+      await handle.emit(steps(["in_progress", "pending", "pending"]));
+      await handle.emit(steps(["completed", "in_progress", "pending"]));
+      await until(
+        () => {
+          api.flushTaskProgress();
+          return tp().count().startsWith("1/3 steps");
+        },
+        () => `the row counts Claude's steps: ${tp().count()}`,
+      );
+      assert.equal(
+        api.getTaskProgressSnapshot(handle.conversationKey)?.checklist?.source,
+        "claude",
+      );
+      assert.notInclude(
+        tp().box.textContent || "",
+        "Write the review",
+        "no checklist row in the chat trace",
+      );
+      handle.finish();
+      await api.clickPanelDelete(panel.panelId).catch(() => undefined);
+
+      // Stored: the same snapshots come back after a restart.
+      const second = await api.renderPanelForItem(fixtures[3].parentItemId);
+      const runId = `tp-claude-steps-${Date.now()}`;
+      const seeded = await api.seedTaskProgressConversation({
+        panelId: second.panelId,
+        turns: [
+          {
+            runId,
+            user: { text: "Review the drift papers" },
+            answer: "Reviewed.",
+            events: [
+              steps(["in_progress", "pending", "pending"]),
+              steps(["completed", "completed", "in_progress"]),
+            ],
+          },
+        ],
+      });
+      await api.reopenTaskProgressConversation({ panelId: second.panelId });
+      await until(() => {
+        api.flushTaskProgress();
+        return Boolean(
+          api.getTaskProgressSnapshot(seeded.conversationKey)?.hydrated,
+        );
+      }, "the conversation is rebuilt");
+      const snapshot = api.getTaskProgressSnapshot(seeded.conversationKey)!;
+      assert.equal(snapshot.checklist?.source, "claude");
+      assert.deepEqual(
+        snapshot.checklist?.steps.map((step) => step.status),
+        ["completed", "completed", "in_progress"],
+      );
+      // Later scenarios render this paper as a fresh chat.
+      await api.clickPanelDelete(second.panelId);
     } finally {
       restore();
     }
@@ -520,44 +603,82 @@ describe("workflow: task progress unified", function () {
         "both questions come back with their words",
       );
       tp().row.click();
+      // Every question is a section, newest first. None of the latest
+      // question's papers was used in its answer: they sit under a fold.
+      const sectionsNow = () =>
+        Array.from(
+          tp().root.querySelectorAll(".llm-task-progress-question-section"),
+        ) as HTMLElement[];
+      const openFold = async (section: HTMLElement) => {
+        const fold = () =>
+          section.querySelector(
+            ".llm-task-fold-slot .llm-task-fold",
+          ) as HTMLButtonElement | null;
+        await until(() => {
+          api.flushTaskProgress();
+          return Boolean(fold());
+        }, "the unused papers sit under a fold");
+        if (fold()!.getAttribute("aria-expanded") !== "true") fold()!.click();
+        await until(() => {
+          api.flushTaskProgress();
+          return section.querySelectorAll(".llm-task-paper").length > 0;
+        }, "the opened fold lists its papers");
+      };
+      const sections = sectionsNow();
+      assert.lengthOf(sections, 2);
+      await openFold(sections[0]);
       const stateOf = (index: number) =>
         tp()
           .items()
           .find((item) => item.dataset.key === key(index))?.dataset.state;
       // The latest question's papers show its own reads.
-      assert.lengthOf(tp().items(), 4);
-      assert.deepEqual([0, 1, 2, 3].map(stateOf), [
-        "listed",
-        "listed",
-        "read",
-        "matched",
-      ]);
+      assert.lengthOf(sections[0].querySelectorAll(".llm-task-paper"), 4);
+      assert.deepEqual(
+        [0, 1, 2, 3].map(
+          (index) =>
+            (
+              Array.from(
+                sections[0].querySelectorAll(".llm-task-paper"),
+              ) as HTMLElement[]
+            ).find((item) => item.dataset.key === key(index))?.dataset.state,
+        ),
+        ["listed", "listed", "read", "matched"],
+      );
       assert.equal(tp().head(), "", "no summary line above the paper list");
       // The first question is folded under its own header, newest first.
-      const sections = Array.from(
-        tp().root.querySelectorAll(".llm-task-progress-question-section"),
-      ) as HTMLElement[];
-      assert.lengthOf(sections, 1);
-      const earlier = sections[0].querySelector(
+      const earlier = sections[1].querySelector(
         ".llm-task-progress-question",
       ) as HTMLButtonElement;
       assert.equal(earlier.getAttribute("aria-expanded"), "false");
       assert.equal(
-        earlier.querySelector(".llm-task-progress-question-label")?.textContent,
-        "Question 1 · “Which papers measure drift?”",
+        earlier.querySelector(".llm-task-progress-dock-question-words")
+          ?.textContent,
+        "Which papers measure drift?",
+      );
+      assert.equal(
+        sections[1].querySelector(".llm-task-progress-question-name")
+          ?.textContent,
+        "Question 1",
       );
       earlier.click();
-      const earlierStates = Array.from(
-        sections[0].querySelectorAll(".llm-task-paper"),
-        (item) => [
+      await until(() => {
+        api.flushTaskProgress();
+        return sections[1].querySelectorAll(".llm-task-paper").length > 0;
+      }, "the earlier question lists its cited paper");
+      await openFold(sections[1]);
+      const earlierStates = (
+        Array.from(sections[1].querySelectorAll(".llm-task-paper"), (item) => [
           (item as HTMLElement).dataset.key,
           (item as HTMLElement).dataset.state,
-        ],
+        ]) as string[][]
+      ).sort((a, b) => a[0].localeCompare(b[0]));
+      assert.deepEqual(
+        earlierStates,
+        [
+          [key(0), "read"],
+          [key(1), "cited"],
+        ].sort((a, b) => a[0].localeCompare(b[0])),
       );
-      assert.deepEqual(earlierStates, [
-        [key(0), "read"],
-        [key(1), "cited"],
-      ]);
       await capture(panel.panelId, "tp-m5-reopened.png");
       earlier.click();
       tp().row.click();
@@ -685,11 +806,11 @@ describe("workflow: task progress unified", function () {
       assert.match(tp().count(), /^2\/2 steps/);
       tp().row.click();
       await until(
-        () => !tp().steps.hidden,
+        () => Boolean(tp().steps),
         "the Steps block shows the outcomes",
       );
       const lines = Array.from(
-        tp().steps.querySelectorAll(".llm-plan-task"),
+        tp().steps!.querySelectorAll(".llm-plan-task"),
       ) as HTMLElement[];
       const label = (line: HTMLElement) =>
         line.querySelector(".llm-plan-task-label")?.textContent || "";
@@ -703,7 +824,7 @@ describe("workflow: task progress unified", function () {
       assert.include(detail, "In a group library you cannot edit");
       assert.include(detail, `(${TITLES[1]}, n.d.)`);
       assert.equal(
-        tp().steps.querySelector(".llm-plan-status")?.textContent,
+        tp().steps!.querySelector(".llm-plan-status")?.textContent,
         "Completed with exceptions",
       );
       // Steps sit further apart than a wrapped label's lines, so each step
@@ -809,8 +930,8 @@ describe("workflow: task progress unified", function () {
       );
       assert.equal(tp().row.dataset.state, "working");
       tp().row.click();
-      await until(() => !tp().steps.hidden, "the Steps block shows the part");
-      const line = tp().steps.querySelector(".llm-plan-task") as HTMLElement;
+      await until(() => Boolean(tp().steps), "the Steps block shows the part");
+      const line = tp().steps!.querySelector(".llm-plan-task") as HTMLElement;
       assert.equal(
         line.querySelector(".llm-plan-task-label")?.textContent,
         `${readAll} · 2 of 4`,
@@ -828,12 +949,12 @@ describe("workflow: task progress unified", function () {
           api.flushTaskProgress();
           return (
             tp()
-              .steps.querySelector(".llm-plan-task-label")
+              .steps?.querySelector(".llm-plan-task-label")
               ?.textContent?.endsWith("· 3 of 4") || false
           );
         },
         () =>
-          `the delta moves the count: ${tp().steps.querySelector(".llm-plan-task-label")?.textContent}`,
+          `the delta moves the count: ${tp().steps!.querySelector(".llm-plan-task-label")?.textContent}`,
       );
       await until(
         () => tp().drawer.dataset.state === "open",

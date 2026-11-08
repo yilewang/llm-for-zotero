@@ -7,7 +7,14 @@ import { resolvedAgentRequest } from "./helpers/resolvedAgentRequest";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
 import type { AgentToolContext, AgentToolResult } from "../src/agent/types";
 import { literaturePaperIdentities } from "../src/agent/services/literatureDiscovery";
+import { OUTSIDE_SEARCH_STOP_NOTE } from "../src/agent/tools/read/outsideSearchNeed";
+import { clearOutsideSearchTurn } from "../src/agent/tools/read/outsideSearchLedger";
 
+/** Every outside evidence search states why the library cannot hold it. */
+const OUTSIDE_NEED = {
+  need: "not_in_scope_or_library",
+  gap: "The library lacks related work.",
+} as const;
 describe("ranked literature discovery workflow", function () {
   const originalFetch = globalThis.fetch;
   const originalZotero = globalThis.Zotero;
@@ -46,6 +53,7 @@ describe("ranked literature discovery workflow", function () {
   });
   beforeEach(function () {
     clearAgentToolResultHandleStore();
+    clearOutsideSearchTurn("discovery-test-run");
     globalThis.fetch = (async () => ({
       ok: true,
       status: 200,
@@ -90,6 +98,7 @@ describe("ranked literature discovery workflow", function () {
     extra: Record<string, unknown> = {},
   ) {
     const tool = createLiteratureSearchTool(gateway as never);
+    // A find-paper search states no reason (user decision 1a, 2026-10-20).
     const input = tool.validate({
       mode: "search",
       workflow: "review",
@@ -233,7 +242,67 @@ describe("ranked literature discovery workflow", function () {
     }
   });
 
-  it("does not accept prose as completed discovery while a shortlist review is still required", async function () {
+  it("lets the model choose the card or its answer when prose follows a paper-finding search", async function () {
+    // Live evals (2026-10-20): an evidence question opened a discovery with
+    // workflow:'review', and the gate replaced a full answer with an
+    // unrequested card. The correction offers both paths; the model, not a
+    // host reading of the user's words, picks one.
+    const context = makeContext();
+    const content = await search(context);
+    const controller = new AgentFinalAnswerController(context.request);
+    const records = [{ name: "literature_search", ok: true, content }];
+    const first = await controller.evaluate({
+      candidateText: "Two later studies found the same effect.",
+      canCorrect: true,
+      toolExecutionRecords: records,
+    });
+    assert.equal(first.kind, "correct");
+    if (first.kind === "correct") {
+      // Path (a): the user asked for papers themselves; the card, as before.
+      assert.include(
+        first.correction,
+        "If the user asked for papers themselves (find, recommend or suggest papers;",
+      );
+      // Listing papers lists the library's, as literature_search's
+      // description says (2026-10-31).
+      assert.notInclude(first.correction, "list papers");
+      // A list the user asked for in chat is answered in chat (user
+      // instructions come first, 2026-10-31).
+      assert.include(
+        first.correction,
+        "and not for a list in chat, show them on the card:",
+      );
+      assert.include(
+        first.correction,
+        "Use the active discovery sessionId and revision",
+      );
+      assert.include(first.correction, "call literature_review");
+      assert.include(first.correction, "Do not import silently");
+      // Path (b): otherwise the answer is given again, without the card.
+      assert.include(
+        first.correction,
+        "Otherwise, do not call literature_review: give your answer again as the final answer",
+      );
+    }
+    // The model chose path (b): its answer is accepted, and the remaining
+    // gates still run.
+    const second = await controller.evaluate({
+      candidateText: "Two later studies found the same effect.",
+      canCorrect: true,
+      toolExecutionRecords: records,
+    });
+    assert.equal(second.kind, "accept");
+    // A third look (after a later gate's correction) still accepts.
+    const third = await controller.evaluate({
+      candidateText: "Two later studies found the same effect.",
+      canCorrect: true,
+      toolExecutionRecords: records,
+    });
+    assert.equal(third.kind, "accept");
+  });
+
+  it("closes a discovery when the model takes the card after the correction", async function () {
+    // Path (a): the user asked for papers, so the model shows the card.
     const context = makeContext();
     const content = await search(context);
     const controller = new AgentFinalAnswerController(context.request);
@@ -243,14 +312,73 @@ describe("ranked literature discovery workflow", function () {
       toolExecutionRecords: [{ name: "literature_search", ok: true, content }],
     });
     assert.equal(first.kind, "correct");
-    if (first.kind === "correct")
-      assert.include(first.correction, "literature_review");
     const second = await controller.evaluate({
-      candidateText: "Here are some papers.",
+      candidateText: "Choose the papers to import on the card.",
       canCorrect: true,
+      toolExecutionRecords: [
+        { name: "literature_search", ok: true, content },
+        {
+          name: "literature_review",
+          ok: true,
+          content: { reviewRequired: true, discoveryPhase: "review" },
+        },
+      ],
+    });
+    assert.equal(second.kind, "accept");
+  });
+
+  it("accepts first-batch prose when no correction can be given before the card", async function () {
+    const context = makeContext();
+    const content = await search(context);
+    const controller = new AgentFinalAnswerController(context.request);
+    const decision = await controller.evaluate({
+      candidateText: "Here are some papers.",
+      canCorrect: false,
       toolExecutionRecords: [{ name: "literature_search", ok: true, content }],
     });
-    assert.equal(second.kind, "fail");
+    // Finish-only step or last round: the card cannot follow, and failing
+    // would only lose the answer.
+    assert.equal(decision.kind, "accept");
+  });
+
+  it("keeps a Find more expansion card-only: prose is corrected once, then fails", async function () {
+    // The user clicked Find more on a card, so prose is never the answer.
+    const expanding = {
+      name: "literature_review",
+      ok: true,
+      content: {
+        reviewRequired: true,
+        discoveryPhase: "expanding",
+        sessionId: "trh_active",
+        revision: 1,
+        batchSize: 5,
+      },
+    };
+    // An expansion's own further search carries the new revision.
+    const expansionSearch = {
+      name: "literature_search",
+      ok: true,
+      content: { reviewRequired: true, sessionId: "trh_active", revision: 1 },
+    };
+    for (const records of [[expanding], [expanding, expansionSearch]]) {
+      const controller = new AgentFinalAnswerController(makeContext().request);
+      const first = await controller.evaluate({
+        candidateText: "Here are more papers.",
+        canCorrect: true,
+        toolExecutionRecords: records,
+      });
+      assert.equal(first.kind, "correct");
+      if (first.kind === "correct") {
+        assert.include(first.correction, "select only NEW papers");
+        assert.notInclude(first.correction, "give your answer again");
+      }
+      const second = await controller.evaluate({
+        candidateText: "Here are more papers.",
+        canCorrect: true,
+        toolExecutionRecords: records,
+      });
+      assert.equal(second.kind, "fail");
+    }
   });
 
   it("does not close a discovery with a direct import of its candidates", async function () {
@@ -276,12 +404,15 @@ describe("ranked literature discovery workflow", function () {
     assert.equal(first.kind, "correct");
     if (first.kind === "correct")
       assert.include(first.correction, "literature_review");
+    // discoveryImportRefusal (the host refusing the import before it runs)
+    // guards imports, not this gate: after the correction, a second prose
+    // answer is the model's choice and is accepted.
     const second = await controller.evaluate({
       candidateText: "Imported three papers into the new collection.",
       canCorrect: true,
       toolExecutionRecords,
     });
-    assert.equal(second.kind, "fail");
+    assert.equal(second.kind, "accept");
   });
 
   it("accepts an explicit import: an answer-workflow search, then library_import", async function () {
@@ -395,6 +526,23 @@ describe("ranked literature discovery workflow", function () {
       assert.isTrue(
         shares(arxivCandidate, { doi: "10.48550/arXiv.2301.00001" }),
       );
+      // A result with an arxivId and the same paper's abs-URL-only form.
+      assert.isTrue(
+        shares(
+          {
+            title: "Arxiv Paper",
+            arxivId: "2301.00001",
+            sourceUrl: "http://arxiv.org/abs/2301.00001v1",
+          },
+          { sourceUrl: "https://arxiv.org/abs/2301.00001v3" },
+        ),
+      );
+      assert.isTrue(
+        shares(
+          { arxivId: "2301.00001" },
+          { sourceUrl: "https://arxiv.org/abs/2301.00001v3" },
+        ),
+      );
       assert.isFalse(
         shares(arxivCandidate, {
           sourceUrl: "http://arxiv.org/abs/2301.00002v1",
@@ -507,6 +655,7 @@ describe("ranked literature discovery workflow", function () {
   async function answerSearch(context: AgentToolContext) {
     const tool = createLiteratureSearchTool(gateway as never);
     const input = tool.validate({
+      ...OUTSIDE_NEED,
       mode: "search",
       workflow: "answer",
       query: "population coding",
@@ -595,6 +744,14 @@ describe("ranked literature discovery workflow", function () {
     if (more.kind !== "deliver") throw new Error("Did not continue discovery");
     const continuation = more.toolMessageContent as any;
     assert.equal(continuation.batchSize, 3);
+    // Find more may search again; that search stays a find-paper search,
+    // which states no reason (user decision 1a, 2026-10-20).
+    assert.include(
+      continuation.nextStep,
+      "A further search uses workflow:'review'.",
+    );
+    assert.notInclude(continuation.nextStep, "must set need");
+    assert.notInclude(continuation.nextStep, OUTSIDE_SEARCH_STOP_NOTE);
     let error = "";
     try {
       await tool.execute(
@@ -614,7 +771,12 @@ describe("ranked literature discovery workflow", function () {
   it("accepts a count of 1 to 25 papers on both discovery tools", function () {
     const search = createLiteratureSearchTool(gateway as never);
     const review = createLiteratureReviewTool(gateway as never);
-    const searchArgs = { mode: "search", workflow: "review", query: "x" };
+    const searchArgs = {
+      mode: "search",
+      workflow: "review",
+      query: "x",
+      ...OUTSIDE_NEED,
+    };
     const reviewArgs = {
       selections: [
         { candidateSetId: "trh_abc", candidateIndex: 1, reason: "Relevant" },
@@ -646,6 +808,7 @@ describe("ranked literature discovery workflow", function () {
       "What does recent research say about representational drift?";
     const tool = createLiteratureSearchTool(gateway as never);
     const parsed = tool.validate({
+      ...OUTSIDE_NEED,
       mode: "search",
       workflow: "answer",
       query: "representational drift",
@@ -670,14 +833,24 @@ describe("ranked literature discovery workflow", function () {
     // what the model reads.
     const description = createLiteratureSearchTool(gateway as never).spec
       .description;
+    assert.include(description, "and explicit imports (then library_import)");
+    // Every search that informs an answer takes workflow:'answer', named
+    // for the question live evals sent to the card (2026-10-20).
     assert.include(
       description,
-      "Explicit imports use workflow:'answer', then library_import",
+      "Use workflow:'answer' for any search that informs an answer, including whether other studies found or tested something",
     );
+    // Only a request for papers themselves takes workflow:'review', which
+    // leads to the card; answer results carry no card branch.
     assert.include(
       description,
-      "call literature_review to show the selection card",
+      "Use workflow:'review' when the user asks for papers themselves (find, recommend or suggest papers; with nothing attached, only if the library holds no relevant papers or the user asks for papers outside it); it leads to the selection card (literature_review); discovery never imports silently.",
     );
+    // A request to list papers lists the library's (2026-10-31): it is not
+    // a reason to search outside and open the card.
+    assert.notInclude(description, "list papers");
+    assert.notInclude(description, "For a find or recommend request");
+    assert.notInclude(description, "to choose from");
   });
 
   it("offers a discovery only the selection card in its next step", async function () {
@@ -692,8 +865,12 @@ describe("ranked literature discovery workflow", function () {
     assert.include(nextStep, content.sessionId);
     assert.include(
       nextStep,
-      "Never import during discovery or finish with prose instead of the card",
+      "Never import during discovery. If the user asked for papers themselves and not for a list in chat, finish with the card, not prose; otherwise answer without it.",
     );
+    assert.notInclude(nextStep, "finish with prose instead of the card");
+    // A discovery ends with the card, not an answer: no stop note.
+    assert.include(nextStep, "A further search uses workflow:'review'.");
+    assert.notInclude(nextStep, OUTSIDE_SEARCH_STOP_NOTE);
   });
 
   it("routes an unclassified answer-workflow search by the user's request", async function () {
@@ -702,6 +879,7 @@ describe("ranked literature discovery workflow", function () {
     const context = makeContext();
     const tool = createLiteratureSearchTool(gateway as never);
     const parsed = tool.validate({
+      ...OUTSIDE_NEED,
       mode: "search",
       workflow: "answer",
       query: "hippocampal replay",
@@ -710,22 +888,61 @@ describe("ranked literature discovery workflow", function () {
     const content = (await tool.execute(parsed.value, context)) as any;
     assert.isFalse(content.reviewRequired);
     const nextStep = String(content.nextStep);
-    assert.match(nextStep, /If the user asked to import/);
-    assert.isBelow(
-      nextStep.indexOf("library_import"),
-      nextStep.indexOf("call literature_review"),
+    // Answering is the default; the import branch follows, only for the
+    // request that names it, then the turn's ledger and the stop note. No
+    // card branch: it rode on every evidence result and led evidence
+    // questions to the card.
+    assert.match(
+      nextStep,
+      /^Unless the user asked to import papers or only to find or recommend them, answer the user's question from these results as supporting evidence; the turn's own papers remain the primary source\. /,
       nextStep,
     );
+    assert.match(nextStep, /If the user asked to import/);
     assert.isAtLeast(nextStep.indexOf("library_import"), 0, nextStep);
-    assert.match(nextStep, /Otherwise answer from these results/);
+    assert.notInclude(nextStep, "literature_review", nextStep);
+    assert.notInclude(nextStep, "Otherwise answer");
+    assert.include(
+      nextStep,
+      ` Outside searches this turn: 1 scholarly (queries: hippocampal replay). ${OUTSIDE_SEARCH_STOP_NOTE}`,
+    );
+    assert.isTrue(nextStep.endsWith(` ${OUTSIDE_SEARCH_STOP_NOTE}`), nextStep);
+  });
+
+  it("closes a search whose candidates cannot be saved with the stop note alone", async function () {
+    // Without a conversation the candidates get no handle, so neither the
+    // card nor an import can name them; the result still ends with the note.
+    const context = makeContext();
+    context.request.conversationKey = 0;
+    const content = await answerSearch(context);
+    assert.isUndefined(content.candidateSetId);
+    assert.isFalse(content.reviewRequired);
+    assert.equal(
+      content.nextStep,
+      `Outside searches this turn: 1 scholarly (queries: population coding). ${OUTSIDE_SEARCH_STOP_NOTE}`,
+    );
+  });
+
+  it("closes an answer-workflow search without results with the stop note", async function () {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ results: [] }),
+    })) as typeof fetch;
+    const content = await answerSearch(makeContext());
+    assert.lengthOf(content.results, 0);
+    assert.isTrue(
+      String(content.nextStep).endsWith(OUTSIDE_SEARCH_STOP_NOTE),
+      content.nextStep,
+    );
   });
   it("offers no card route to a caller that cannot see literature_review", async function () {
     // MCP clients never see literature_review; the routing must not send
-    // them there (the answer path returns no nextStep, as before).
+    // them there. They over-search too, so they get the stop note alone.
     const context = makeContext();
     context.isToolVisible = (spec) => spec.name !== "literature_review";
     const tool = createLiteratureSearchTool(gateway as never);
     const parsed = tool.validate({
+      ...OUTSIDE_NEED,
       mode: "search",
       workflow: "answer",
       query: "hippocampal replay",
@@ -733,7 +950,35 @@ describe("ranked literature discovery workflow", function () {
     if (!parsed.ok) throw new Error(parsed.error);
     const content = (await tool.execute(parsed.value, context)) as any;
     assert.isString(content.candidateSetId);
-    assert.isUndefined(content.nextStep);
+    assert.equal(
+      content.nextStep,
+      `Outside searches this turn: 1 scholarly (queries: hippocampal replay). ${OUTSIDE_SEARCH_STOP_NOTE}`,
+    );
+    assert.notMatch(content.nextStep, /literature_review|selection card/);
+  });
+
+  it("opens no discovery for a review-workflow search from a caller that cannot see literature_review", async function () {
+    const context = makeContext();
+    context.isToolVisible = (spec) => spec.name !== "literature_review";
+    const tool = createLiteratureSearchTool(gateway as never);
+    const parsed = tool.validate({
+      ...OUTSIDE_NEED,
+      mode: "search",
+      workflow: "review",
+      query: "hippocampal replay",
+    });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const content = (await tool.execute(parsed.value, context)) as any;
+    assert.isFalse(content.reviewRequired);
+    assert.isUndefined(content.sessionId);
+    assert.equal(
+      content.nextStep,
+      `Outside searches this turn: 1 scholarly (queries: hippocampal replay). ${OUTSIDE_SEARCH_STOP_NOTE}`,
+    );
+    assert.notMatch(
+      JSON.stringify(content),
+      /literature_review|selection card/,
+    );
   });
 
   it("requires the current expansion even when an earlier card was presented", async function () {
@@ -767,6 +1012,7 @@ describe("ranked literature discovery workflow", function () {
     }) as typeof fetch;
     const tool = createLiteratureSearchTool(gateway as never);
     const parsed = tool.validate({
+      ...OUTSIDE_NEED,
       mode: "references",
       query: "A seed without a DOI",
       workflow: "review",

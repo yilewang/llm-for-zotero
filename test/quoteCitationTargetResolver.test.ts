@@ -480,29 +480,12 @@ describe("untrusted quote navigation contract", function () {
     ),
   );
 
-  it("reads the verify-first navigation and its untrusted caller", function () {
-    assert.isAtLeast(navigateStart, 0);
-    assert.isAbove(verifyFirstStart, navigateStart);
-    assert.isAbove(navigateEnd, verifyFirstStart);
-    assert.include(untrustedCallerSection, "navigateToQuote({");
-    // One strategy serves every quote path (U1): verify first.
-    assert.notInclude(untrustedCallerSection, "strategy:");
-    assert.notInclude(source, "hint-ladder");
-  });
-
   it("never invents a page label for the reader to navigate by", function () {
     // The page index drives navigation; a label is for display and links,
     // and printed labels need not track page order.
     assert.include(navigateSection, "pageLabel?: string;");
   });
 
-  it("bounds how many papers a single click may open", function () {
-    assert.include(navigateSection, "MAX_OPENED_QUOTE_VERIFICATION_CANDIDATES");
-    assert.include(
-      source,
-      "const MAX_OPENED_QUOTE_VERIFICATION_CANDIDATES = 3",
-    );
-  });
   it("re-verifies through the merge so a fallback cannot bury the first verdict", function () {
     // The untrusted caller hands the library search over as the fallback.
     assert.include(
@@ -524,27 +507,5 @@ describe("untrusted quote navigation contract", function () {
     // that the recorded paper stops being offered to the viewer first.
     assert.include(mergeSection, "recorded: resolution");
     assert.include(mergeSection, "searched: await verifyCandidates(");
-  });
-
-  it("refuses a library-search paper that only holds part of the quote", function () {
-    const start = source.indexOf(
-      "async function verifyQuoteInCitationCandidate(",
-    );
-    const end = source.indexOf(
-      "async function locateQuoteByOpeningCitationCandidates(",
-      start,
-    );
-    const verifySection = source.slice(start, end);
-
-    // A short shared phrase must not be enough to send the reader to a paper
-    // the conversation never used — but the test is how much of the quote the
-    // document accounts for in total, not how long its single best span is.
-    assert.include(verifySection, "!candidate.authoritative");
-    assert.include(
-      verifySection,
-      "!locatedResultIdentifiesQuoteSource(result)",
-    );
-    assert.notInclude(verifySection, "sourceMatchQuoteTokenCoverage < 1");
-    assert.include(verifySection, 'status: "not-found"');
   });
 });

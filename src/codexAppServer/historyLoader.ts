@@ -33,7 +33,8 @@ function isDraftSummary(summary: ConversationCatalogEntry): boolean {
   );
 }
 
-function toEntry(
+/** One catalog row as this runtime's history row (title and draft rules). */
+export function toCodexConversationHistoryEntry(
   summary: ConversationCatalogEntry,
 ): CodexConversationHistoryEntry {
   const isDraft = isDraftSummary(summary);
@@ -52,22 +53,6 @@ function toEntry(
   };
 }
 
-export async function loadCodexConversationHistoryScope(params: {
-  libraryID: number;
-  kind: "global" | "paper";
-  paperItemID?: number;
-  limit?: number;
-}): Promise<CodexConversationHistoryEntry[]> {
-  const summaries = await conversationRepository.listCatalogEntries({
-    system: "codex",
-    libraryID: params.libraryID,
-    kind: params.kind,
-    paperItemID: params.paperItemID,
-    limit: params.limit,
-  });
-  return summaries.map(toEntry);
-}
-
 export async function loadAllCodexConversationHistory(params: {
   libraryID: number;
   limit?: number | null;
@@ -84,5 +69,5 @@ export async function loadAllCodexConversationHistory(params: {
       libraryID: params.libraryID,
       limit: normalizedLimit,
     })
-  ).map(toEntry);
+  ).map(toCodexConversationHistoryEntry);
 }

@@ -17,6 +17,7 @@ function panelBody(conversationKey: number, connected = true): Element {
   const root = { dataset: { itemId: String(conversationKey) } };
   return {
     isConnected: connected,
+    ownerDocument: { defaultView: { closed: false } },
     querySelector: (selector: string) =>
       selector === "#llm-main" ? root : null,
   } as unknown as Element;

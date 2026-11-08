@@ -1,3 +1,4 @@
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import type { AgentModelContentPart, AgentModelMessage } from "../types";
 import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
 import {
@@ -420,6 +421,8 @@ export async function readAgentConversationAnswer(
 async function persistTranscriptSegment(
   segment: AgentTranscriptSegment,
 ): Promise<"persisted" | "unavailable" | "failed"> {
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(segment.conversationKey)) return "unavailable";
   const dbReady = await ensureAgentTranscriptStore();
   const db = getDb();
   if (!dbReady || !db) return "unavailable";

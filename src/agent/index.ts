@@ -16,9 +16,11 @@ import { undoNoteChange } from "./actions/undoNoteChange";
 import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { initAgentCoverageStore } from "./context/coverageLedger";
 import { setLibraryOverviewGateway } from "./context/libraryOverview";
+import { setOutsidePaperPrefetchLookup } from "./context/outsidePaperRecords";
 import {
   resolveTaskPaperScopeSet,
   taskPaperScopeContextsOf,
+  withScopeItemKeys,
 } from "./context/taskPaperScopeListing";
 import { initPlanDocumentStore } from "./documents/store";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
@@ -26,6 +28,7 @@ import { createAgentModelAdapter } from "./model/factory";
 import { initDormantPlanTables } from "./store/dormantPlanTables";
 import { initDormantResearchTables } from "./store/dormantResearchTables";
 import { AgentRuntime } from "./runtime";
+import { LiteratureSearchService } from "./services/literatureSearchService";
 import { PdfPageService } from "./services/pdfPageService";
 import { PdfService } from "./services/pdfService";
 import { RetrievalService } from "./services/retrievalService";
@@ -118,9 +121,12 @@ async function createAgentSubsystemRuntime(
     resolveTurnScopePapers: async (request) => {
       const libraryID = request.turnPaperScope.libraryID || request.libraryID;
       if (!libraryID) return undefined;
-      return resolveTaskPaperScopeSet(
-        await libraryIndexService.getSnapshot(libraryID),
-        taskPaperScopeContextsOf(request.turnPaperScope),
+      return withScopeItemKeys(
+        resolveTaskPaperScopeSet(
+          await libraryIndexService.getSnapshot(libraryID),
+          taskPaperScopeContextsOf(request.turnPaperScope),
+        ),
+        (itemId) => zoteroGateway.getItem(itemId)?.key,
       );
     },
   });
@@ -156,6 +162,13 @@ async function createAgentSubsystemRuntime(
   // The prompt layer cannot import this module without creating a cycle,
   // so the gateway is pushed to it instead.
   setLibraryOverviewGateway(zoteroGateway);
+  // Recording an outside paper cannot import the search service without a
+  // cycle, so the lookup it starts in the background is installed here: the
+  // Crossref citation lookup submit_document uses by default.
+  const citationLookup = new LiteratureSearchService(zoteroGateway);
+  setOutsidePaperPrefetchLookup((doi) =>
+    citationLookup.lookupCitationMetadataByDoi(doi),
+  );
   _toolRegistry = toolRegistry;
   runtime = nextRuntime;
   _actionRegistry = actionRegistry;
@@ -191,6 +204,7 @@ export function shutdownAgentSubsystem(): void {
   runtime = null;
   _zoteroGateway = null;
   setLibraryOverviewGateway(null);
+  setOutsidePaperPrefetchLookup(null);
 }
 
 export function getCoreAgentRuntime(): AgentRuntime {
