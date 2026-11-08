@@ -38,7 +38,9 @@ import {
 } from "../chat";
 import {
   getAvailableModelEntries,
+  getNumberPref,
   getStringPref,
+  setNumberPref,
   setStringPref,
 } from "../prefHelpers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
@@ -56,6 +58,7 @@ import {
   type InlineAskModelTarget,
 } from "./inlineAskModel";
 import {
+  INLINE_ASK_TEXT_SIZES,
   openInlineAskOverlay,
   type InlineAskModelLine,
   type InlineAskModelPicker,
@@ -95,6 +98,13 @@ export type InlineAskCardHandle = InlineAskOverlayHandle & {
 /** Inline Ask's own model choice: the entry and effort picked in a card. */
 export const INLINE_ASK_MODEL_ENTRY_PREF = "inlineAskModelEntryId";
 export const INLINE_ASK_REASONING_PREF = "inlineAskReasoning";
+export const INLINE_ASK_TEXT_SIZE_PREF = "inlineAskTextSize";
+
+/** The saved text size in percent; an unknown value reads as 100. */
+function readInlineAskTextSize(): number {
+  const saved = getNumberPref(INLINE_ASK_TEXT_SIZE_PREF);
+  return saved !== null && INLINE_ASK_TEXT_SIZES.includes(saved) ? saved : 100;
+}
 
 export type InlineAskModelChoice = {
   target: InlineAskModelTarget;
@@ -580,8 +590,13 @@ export function openInlineAskCardForReader(params: {
       continueInSidebar: t("Continue in sidebar"),
       saveAsAnnotation: t("Save as annotation"),
       reasoningEffort: t("Reasoning effort"),
+      more: t("More"),
+      textSize: t("Text size"),
+      resetTextSize: t("Reset to 100%"),
       modelUnavailable: t("Inline Ask needs an API model."),
     },
+    textSize: readInlineAskTextSize(),
+    onTextSizeChange: (size) => setNumberPref(INLINE_ASK_TEXT_SIZE_PREF, size),
     runTurn,
     save: buildInlineAskSaveSetup(snapshot, params.resolveConversationKey),
     continueInSidebar: params.reachPanel

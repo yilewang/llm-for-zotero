@@ -40,6 +40,7 @@ const SAVED_PREF_KEYS = [
   "enableClaudeCodeMode",
   "showPopupAddText",
   "showPopupInlineAsk",
+  "inlineAskTextSize",
   "outputTokenAutoMigrationNoticePending",
 ];
 
@@ -134,6 +135,7 @@ describe("workflow: Inline Ask in the reader", function () {
     await api.reset();
     Zotero.Prefs.set(PREF_PREFIX + "showPopupAddText", true, true);
     Zotero.Prefs.set(PREF_PREFIX + "showPopupInlineAsk", true, true);
+    Zotero.Prefs.set(PREF_PREFIX + "inlineAskTextSize", 100, true);
   });
 
   afterEach(async function () {
@@ -505,6 +507,108 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isFalse(
       (await api.pointerDownOutsideReaderInlineAsk()).cardOpen,
       "a page click closes a card before its first question",
+    );
+  });
+
+  it("shows the passage as a quote line, dims it at rest, and scales all text from the More menu", async function () {
+    const fixture = await createFixture("Inline Ask text size", {
+      creators: ["Ratzon", "Derdikman", "Barak"],
+      date: "2024-03-15",
+    });
+    const open = () =>
+      api.openReaderInlineAsk({
+        attachmentItemId: fixture.pdfAttachmentId,
+        pageIndex: 0,
+        selectedText: SELECTED_TEXT,
+      });
+    const near = (
+      actual: number,
+      expected: number,
+      tol: number,
+      what: string,
+    ) =>
+      assert.isAtMost(
+        Math.abs(actual - expected),
+        tol,
+        `${what}: ${actual} vs ${expected}`,
+      );
+
+    // The passage: a quote line, no curly quotes, dimmed until hovered.
+    const opened = await open();
+    const message = JSON.stringify(opened);
+    assert.isTrue(opened.mounted, message);
+    assert.isTrue(opened.card.quoteHasBar, message);
+    assert.isFalse(opened.card.quoteHasQuoteMarks, message);
+    assert.equal(opened.quoteLabel, "Ratzon et al., 2024:", message);
+    assert.equal(opened.quoteText, SELECTED_TEXT, message);
+    assert.equal(opened.card.textSize, 100, message);
+    near(opened.card.quoteColorAlpha, 0.7, 0.02, "rest alpha");
+    assert.isFalse(opened.card.threadFaded, "no fade before a thread exists");
+    assert.equal(
+      (await api.hoverReaderInlineAskPassage(true)).quoteColorAlpha,
+      1,
+    );
+    near(
+      (await api.hoverReaderInlineAskPassage(false)).quoteColorAlpha,
+      0.7,
+      0.02,
+      "alpha after the pointer leaves",
+    );
+    const baseQuoteSize = opened.card.quoteFontSize;
+    assert.equal(baseQuoteSize, 13.5, message);
+
+    // The More menu: larger twice gives 120 percent.
+    const menu = await api.clickReaderInlineAskTextSize("toggle");
+    assert.isTrue(menu.moreMenuShown, JSON.stringify(menu));
+    assert.equal(menu.menuPercent, "100%");
+    await api.clickReaderInlineAskTextSize("larger");
+    const larger = await api.clickReaderInlineAskTextSize("larger");
+    assert.isTrue(larger.moreMenuShown, "the menu stays open");
+    assert.equal(larger.menuPercent, "120%");
+    assert.equal(larger.card.textSize, 120);
+    near(larger.card.quoteFontSize, baseQuoteSize * 1.2, 0.5, "passage size");
+    assert.equal(
+      Zotero.Prefs.get(PREF_PREFIX + "inlineAskTextSize", true),
+      120,
+      "the size is saved",
+    );
+
+    // A long answer at 120 percent scales too, and scrolls under the passage.
+    const Q = "inline-ask-text-size-question-marker";
+    await api.sendReaderInlineAsk({ text: Q });
+    const stream = await provider.waitForStream(Q);
+    const LONG = Array.from(
+      { length: 60 },
+      (_, index) => `Paragraph ${index + 1} of the long answer.`,
+    ).join("\n\n");
+    stream.push(LONG);
+    stream.finish();
+    const answered = await waitForCard(
+      (card) => card.phase === "answered" && card.answers[0]?.text !== "",
+      "the long answer completes",
+    );
+    near(answered.answerFontSize, 12.5 * 1.2, 0.5, "answer size at 120%");
+    assert.isTrue(answered.threadFaded, JSON.stringify(answered));
+    assert.isTrue(answered.quoteHasBar);
+
+    // Escape on the page, outside the card, closes a card that has a
+    // conversation; a new card then opens at the saved size.
+    const escaped = await api.endReaderInlineAsk({ via: "escape_page" });
+    assert.isTrue(escaped.cardRemoved, "Escape on the page closes the card");
+    const reopened = await open();
+    assert.isTrue(reopened.mounted, JSON.stringify(reopened));
+    assert.equal(reopened.card.textSize, 120);
+    near(reopened.card.quoteFontSize, baseQuoteSize * 1.2, 0.5, "reopened");
+
+    // Reset goes back to 100 percent and the base sizes.
+    await api.clickReaderInlineAskTextSize("toggle");
+    const reset = await api.clickReaderInlineAskTextSize("reset");
+    assert.equal(reset.card.textSize, 100);
+    assert.equal(reset.menuPercent, "100%");
+    assert.equal(reset.card.quoteFontSize, baseQuoteSize);
+    assert.equal(
+      Zotero.Prefs.get(PREF_PREFIX + "inlineAskTextSize", true),
+      100,
     );
   });
 });

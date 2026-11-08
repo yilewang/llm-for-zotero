@@ -89,6 +89,15 @@ export function setStringPref(key: string, value: string): void {
   getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, value, true);
 }
 
+export function getNumberPref(key: string): number | null {
+  const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function setNumberPref(key: string, value: number): void {
+  getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, value, true);
+}
+
 /** Clears a user value so the pref reads its default again. */
 export function clearPref(key: string): void {
   const prefs = getZoteroPrefs();
