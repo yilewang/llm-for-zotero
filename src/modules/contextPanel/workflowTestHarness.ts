@@ -7608,6 +7608,24 @@ function readWorkflowInlineAskCard(
           ?.querySelector('[data-llm-inline-ask-effort="true"]')
           ?.textContent?.trim() || ""
       : "",
+    rect: (() => {
+      const box = card?.getBoundingClientRect();
+      return {
+        left: Math.round(box?.left ?? 0),
+        top: Math.round(box?.top ?? 0),
+        width: Math.round(box?.width ?? 0),
+        height: Math.round(box?.height ?? 0),
+      };
+    })(),
+    threadMaxHeight: (() => {
+      const thread = card?.querySelector(
+        '[data-llm-inline-ask-thread="true"]',
+      ) as HTMLElement | null;
+      const max = thread
+        ? parseFloat(win?.getComputedStyle(thread)?.maxHeight || "")
+        : NaN;
+      return Number.isFinite(max) ? Math.round(max) : 0;
+    })(),
   };
 }
 
@@ -8344,6 +8362,66 @@ async function clickReaderInlineAskPromptMenuItem(
   ) as HTMLButtonElement | null;
   if (!item) throw new Error(`No Inline Ask menu item "${action}"`);
   item.click();
+  await Zotero.Promise.delay(50);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
+/** Drags the card by a blank point, or its corner grip, with pointer events. */
+async function dragReaderInlineAsk(input: {
+  part: "card" | "resize";
+  dx: number;
+  dy: number;
+}): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card, win } = requireWorkflowInlineAskCardElement();
+  const target =
+    input.part === "resize"
+      ? (card.querySelector(
+          '[data-llm-inline-ask-resize="true"]',
+        ) as HTMLElement | null)
+      : card;
+  if (!target) throw new Error("The Inline Ask card has no resize grip");
+  const rect = target.getBoundingClientRect();
+  // For the card: a point in its top padding, where the card itself is hit.
+  const startX =
+    input.part === "resize"
+      ? rect.left + rect.width / 2
+      : rect.left + rect.width / 2;
+  const startY =
+    input.part === "resize" ? rect.top + rect.height / 2 : rect.top + 4;
+  const fire = (type: string, x: number, y: number, node: EventTarget) =>
+    node.dispatchEvent(
+      new win.PointerEvent(
+        type,
+        cloneEventInitIntoWindow(
+          {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+            button: 0,
+            buttons: type === "pointerup" ? 0 : 1,
+            clientX: x,
+            clientY: y,
+          },
+          win,
+        ),
+      ),
+    );
+  fire("pointerdown", startX, startY, target);
+  await Zotero.Promise.delay(10);
+  const steps = 4;
+  for (let step = 1; step <= steps; step++) {
+    fire(
+      "pointermove",
+      startX + (input.dx * step) / steps,
+      startY + (input.dy * step) / steps,
+      target,
+    );
+    await Zotero.Promise.delay(10);
+  }
+  fire("pointerup", startX + input.dx, startY + input.dy, target);
   await Zotero.Promise.delay(50);
   return readWorkflowInlineAskCard(state.popupDoc);
 }
@@ -11599,6 +11677,7 @@ export function installWorkflowTestHarness(targetAddon: {
     continueReaderInlineAskInSidebar,
     openReaderInlineAskPromptMenu,
     clickReaderInlineAskPromptMenuItem,
+    dragReaderInlineAsk,
     editReaderInlineAskPrompt,
     openReaderInlineAskModelMenu,
     pickReaderInlineAskMenuOption,

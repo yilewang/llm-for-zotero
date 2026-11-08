@@ -420,6 +420,80 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isTrue(closed.cardRemoved, "Escape closes the card");
   });
 
+  it("moves the card by a blank point and resizes it by the corner grip", async function () {
+    const fixture = await createFixture("Inline Ask drag");
+    const opened = await api.openReaderInlineAsk({
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText: SELECTED_TEXT,
+    });
+    assert.isTrue(opened.mounted, JSON.stringify(opened));
+    const near = (actual: number, expected: number, label: string) =>
+      assert.isAtMost(Math.abs(actual - expected), 2, label);
+
+    // Move: the rect shifts by the drag and the card stays open and quiet.
+    const before = api.readReaderInlineAsk();
+    const moved = await api.dragReaderInlineAsk({
+      part: "card",
+      dx: 40,
+      dy: 30,
+    });
+    assert.isTrue(moved.mounted, "a move keeps the card open");
+    near(moved.rect.left - before.rect.left, 40, "moved right");
+    near(moved.rect.top - before.rect.top, 30, "moved down");
+    assert.equal(moved.rect.width, before.rect.width, "a move keeps the width");
+    assert.isFalse(moved.promptEditorShown, "a move opens no editor");
+    assert.equal(moved.phase, "compose", "a move sends nothing");
+
+    // Resize: width grows by the drag; the grip stays clear of the send arrow.
+    const wide = await api.dragReaderInlineAsk({
+      part: "resize",
+      dx: 60,
+      dy: 0,
+    });
+    near(wide.rect.width - moved.rect.width, 60, "widened");
+    near(wide.rect.left, moved.rect.left, "the left edge stays");
+
+    // Answer area: once a question exists, a vertical drag changes its max.
+    const Q = "inline-ask-drag-question-marker";
+    await api.sendReaderInlineAsk({ text: Q });
+    const stream = await provider.waitForStream(Q);
+    stream.push("Drag answer.");
+    stream.finish();
+    const answered = await waitForCard(
+      (card) =>
+        card.phase === "answered" && card.answers[0]?.text === "Drag answer.",
+      "the answer completes",
+    );
+    assert.isAbove(answered.threadMaxHeight, 80, "the answer area has a max");
+    const tall = await api.dragReaderInlineAsk({
+      part: "resize",
+      dx: 0,
+      dy: 50,
+    });
+    near(
+      tall.threadMaxHeight - answered.threadMaxHeight,
+      50,
+      "the answer area grew",
+    );
+    assert.equal(tall.rect.width, answered.rect.width, "no width change");
+    assert.equal(tall.phase, "answered");
+    assert.isTrue(
+      tall.composerHoldsControls,
+      "the send arrow is still in place",
+    );
+
+    // The card stays inside the window.
+    const win = Zotero.getMainWindow();
+    assert.isAtLeast(tall.rect.left, 0);
+    assert.isAtLeast(tall.rect.top, 0);
+    assert.isAtMost(tall.rect.left + tall.rect.width, win.innerWidth + 1);
+    assert.isAtMost(tall.rect.top + tall.rect.height, win.innerHeight + 1);
+
+    const closed = await api.endReaderInlineAsk({ via: "discard" });
+    assert.isTrue(closed.cardRemoved);
+  });
+
   it("closes a card without a conversation on a page click", async function () {
     const fixture = await createFixture("Inline Ask page click");
     const opened = await api.openReaderInlineAsk({
