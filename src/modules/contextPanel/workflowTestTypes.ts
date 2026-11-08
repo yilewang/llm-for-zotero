@@ -456,6 +456,10 @@ export type WorkflowTestReaderInlineAskCard = {
   messageActions: string[];
   modelLabel: string;
   effortLabel: string;
+  /** The card's box in the reader window, in whole pixels. */
+  rect: { left: number; top: number; width: number; height: number };
+  /** The answer area's max height in pixels (0 when it has none). */
+  threadMaxHeight: number;
 };
 
 /** The card's right-click menu on a pill or the empty pill row. */
@@ -2084,6 +2088,12 @@ export type WorkflowTestApi = {
   clickReaderInlineAskPromptMenuItem: (
     action: string,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Drags a blank point of the card ("card") or its corner grip ("resize"). */
+  dragReaderInlineAsk: (input: {
+    part: "card" | "resize";
+    dx: number;
+    dy: number;
+  }) => Promise<WorkflowTestReaderInlineAskCard>;
   /**
    * In the open prompt editor: presses typing keys in both fields, fills
    * Label and Prompt, and finishes with Enter in Label, Mod+Enter in Prompt,

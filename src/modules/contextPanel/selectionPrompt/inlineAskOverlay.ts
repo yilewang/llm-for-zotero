@@ -236,9 +236,9 @@ function svgIcon(
   return svg;
 }
 
-/** The plugin's bare up-arrow send glyph. */
+/** The up-arrow send glyph, drawn inside the card's send circle. */
 function sendIcon(doc: Document): Element {
-  return svgIcon(doc, 18, { fill: "none" }, [
+  return svgIcon(doc, 15, { fill: "none" }, [
     {
       tag: "path",
       attrs: {
@@ -283,6 +283,12 @@ const FLOATING_EDITOR_WIDTH = 286;
 type InlineAskPalette = ReaderOverlayPalette & {
   /** Placeholder text. */
   tertiary: string;
+  /** The send circle when a question can go, and its arrow. */
+  sendBg: string;
+  sendFg: string;
+  /** The send circle while the field is empty or a turn runs. */
+  sendOffBg: string;
+  sendOffFg: string;
   menuBorder: string;
   cardShadow: string;
   menuShadow: string;
@@ -305,6 +311,10 @@ function inlineAskPalette(dark: boolean): InlineAskPalette {
         accentFg: "#ffffff",
         hover: "rgba(255,255,255,0.07)",
         tertiary: "#6c6c72",
+        sendBg: "#ececee",
+        sendFg: "#1e1e20",
+        sendOffBg: "rgba(255,255,255,0.12)",
+        sendOffFg: "#85858b",
         menuBorder: "rgba(255,255,255,0.12)",
         cardShadow: "0 4px 14px rgba(0,0,0,.38)",
         menuShadow: "0 8px 18px rgba(0,0,0,.24)",
@@ -324,6 +334,10 @@ function inlineAskPalette(dark: boolean): InlineAskPalette {
         accentFg: "#ffffff",
         hover: "rgba(0,0,0,0.055)",
         tertiary: "#a2a2a7",
+        sendBg: "#1f1f1f",
+        sendFg: "#ffffff",
+        sendOffBg: "rgba(0,0,0,0.09)",
+        sendOffFg: "#8e8e93",
         menuBorder: "rgba(0,0,0,0.14)",
         cardShadow: "0 4px 14px rgba(0,0,0,.16)",
         menuShadow: "0 8px 18px rgba(0,0,0,.14)",
@@ -665,7 +679,7 @@ export function openInlineAskOverlay(
         "margin:0",
         "cursor:pointer",
       ]
-    : [];
+    : ["cursor:default"];
   const modelLabel = el(pairTag, [
     ...modelPairCss,
     ...pairButtonCss,
@@ -686,14 +700,17 @@ export function openInlineAskOverlay(
   }
   if (input.model || picker) fieldBar.append(modelLabel, effortLabel);
   const spacer = el("span", ["flex:1 1 auto"]);
+  // A filled circle, so the way to send reads at a glance.
   const sendBtn = el("button", [
     "flex:none",
-    "width:28px",
-    "height:28px",
+    "width:26px",
+    "height:26px",
+    "margin:1px 2px 1px 0",
     "border-radius:999px",
     "border:none",
-    "background:transparent",
-    `color:${palette.fill2}`,
+    `background:${palette.sendOffBg}`,
+    `color:${palette.sendOffFg}`,
+    "transition:background-color 120ms ease, color 120ms ease",
     "display:inline-flex",
     "align-items:center",
     "justify-content:center",
@@ -707,7 +724,9 @@ export function openInlineAskOverlay(
   sendBtn.appendChild(sendIcon(doc));
   const setSendDisabled = (disabled: boolean) => {
     sendBtn.disabled = disabled;
-    sendBtn.style.color = disabled ? palette.fill3 : palette.fill2;
+    sendBtn.style.background = disabled ? palette.sendOffBg : palette.sendBg;
+    sendBtn.style.color = disabled ? palette.sendOffFg : palette.sendFg;
+    sendBtn.style.opacity = "";
     sendBtn.style.cursor = disabled ? "default" : "pointer";
   };
   fieldBar.append(spacer, sendBtn);
@@ -732,11 +751,12 @@ export function openInlineAskOverlay(
       );
     }
   }
-  hoverTint(
-    sendBtn,
-    () => (sendBtn.disabled ? palette.fill3 : palette.fill2),
-    fg,
-  );
+  sendBtn.addEventListener("mouseenter", () => {
+    if (!sendBtn.disabled) sendBtn.style.opacity = "0.85";
+  });
+  sendBtn.addEventListener("mouseleave", () => {
+    sendBtn.style.opacity = "";
+  });
 
   const notice = el("div", [
     "font-size:11px",
@@ -766,6 +786,7 @@ export function openInlineAskOverlay(
     "flex-wrap:wrap",
     "margin-left:-4px",
     "min-height:22px",
+    "cursor:grab",
   ]);
   pills.setAttribute("data-llm-inline-ask-pills", "true");
   const promptSetup = input.promptEditing;
@@ -818,6 +839,12 @@ export function openInlineAskOverlay(
   renderPills();
 
   // ── Quick-prompt editor (Edit / Add): floats over the card ─────────────
+  /** The floating editor fits the card's current width. */
+  const currentEditorWidth = () =>
+    Math.min(
+      FLOATING_EDITOR_WIDTH,
+      (root.getBoundingClientRect().width || cardWidth) - 16,
+    );
   const promptEditor = el("div", [
     "display:none",
     "position:absolute",
@@ -1241,7 +1268,9 @@ export function openInlineAskOverlay(
     const rootRect = root.getBoundingClientRect();
     const rowRect = pills.getBoundingClientRect();
     const editorHeight = promptEditor.getBoundingClientRect().height;
-    const maxLeft = Math.max(6, rootRect.width - editorWidth - 8);
+    const width = currentEditorWidth();
+    promptEditor.style.width = `${Math.round(width)}px`;
+    const maxLeft = Math.max(6, rootRect.width - width - 8);
     const maxTop = Math.max(6, rootRect.height - editorHeight - 8);
     promptEditor.style.left = `${Math.round(
       Math.min(Math.max(6, editAnchorX - 14), maxLeft),
@@ -1580,6 +1609,34 @@ export function openInlineAskOverlay(
     saveFooter,
   );
 
+  // The corner grip: drag to widen the card and lengthen the answer area.
+  const resizeGrip = el("div", [
+    "position:absolute",
+    "right:1px",
+    "bottom:1px",
+    "width:14px",
+    "height:14px",
+    `color:${palette.tertiary}`,
+    "opacity:0.45",
+    "cursor:nwse-resize",
+    "touch-action:none",
+    "transition:opacity 120ms ease",
+  ]);
+  resizeGrip.setAttribute("data-llm-inline-ask-resize", "true");
+  resizeGrip.append(
+    svgIcon(
+      doc,
+      14,
+      {
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": "1.2",
+        "stroke-linecap": "round",
+      },
+      [{ tag: "path", attrs: { d: "M13 5L5 13M13 9.5L9.5 13" } }],
+    ),
+  );
+
   root.append(
     quoteSection,
     thread,
@@ -1588,6 +1645,7 @@ export function openInlineAskOverlay(
     notice,
     promptEditor,
     saveView,
+    resizeGrip,
   );
 
   // ── Rendering ──────────────────────────────────────────────────────────
@@ -2156,9 +2214,163 @@ export function openInlineAskOverlay(
     textBox.placeCaretAtEnd();
   };
 
+  // ── Move and resize by dragging ────────────────────────────────────────
+  type Drag = {
+    kind: "move" | "resize";
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startLeft: number;
+    startTop: number;
+    startWidth: number;
+    /** The answer area's max height at the start, and its room to grow. */
+    startThreadMax: number;
+    threadLimit: number;
+  };
+  let drag: Drag | null = null;
+  /** The answer area's max height once the user has set it. */
+  let chosenThreadMax: number | null = null;
+  const viewSize = () => ({
+    vw: doc.defaultView?.innerWidth ?? 800,
+    vh: doc.defaultView?.innerHeight ?? 600,
+  });
+  // A real event's target is a different wrapper of the same node than the
+  // one this code holds, so compare nodes, not references.
+  const isNode = (node: Node, target: unknown) => {
+    try {
+      return Boolean(target) && node.isSameNode(target as Node);
+    } catch {
+      return false;
+    }
+  };
+  // The composer's empty space focuses the field instead (onFieldMouseDown).
+  const isBlankTarget = (target: unknown) =>
+    isNode(root, target) || isNode(pills, target);
+  const threadMaxNow = () => {
+    if (chosenThreadMax !== null) return chosenThreadMax;
+    const computed = parseFloat(
+      doc.defaultView?.getComputedStyle(thread)?.maxHeight || "",
+    );
+    return Number.isFinite(computed)
+      ? computed
+      : thread.getBoundingClientRect().height;
+  };
+  const endDrag = () => {
+    const ending = drag;
+    if (!ending) return;
+    drag = null;
+    root.style.cursor = "";
+    root.style.userSelect = "text";
+    root.style.setProperty("-moz-user-select", "text");
+    try {
+      root.releasePointerCapture(ending.pointerId);
+    } catch {
+      // Not captured (or already released).
+    }
+    doc.removeEventListener("pointermove", onDragMove, true);
+    doc.removeEventListener("pointerup", onDragEnd, true);
+    doc.removeEventListener("pointercancel", onDragEnd, true);
+  };
+  const onDragMove = (e: Event) => {
+    const pointer = e as PointerEvent;
+    const current = drag;
+    if (!current || pointer.pointerId !== current.pointerId) return;
+    e.preventDefault();
+    const dx = pointer.clientX - current.startX;
+    const dy = pointer.clientY - current.startY;
+    const { vw, vh } = viewSize();
+    if (current.kind === "move") {
+      const rect = root.getBoundingClientRect();
+      const left = Math.max(
+        READER_OVERLAY_MARGIN,
+        Math.min(
+          current.startLeft + dx,
+          vw - READER_OVERLAY_MARGIN - rect.width,
+        ),
+      );
+      const top = Math.max(
+        READER_OVERLAY_MARGIN,
+        Math.min(
+          current.startTop + dy,
+          vh - READER_OVERLAY_MARGIN - rect.height,
+        ),
+      );
+      root.style.left = `${Math.round(left)}px`;
+      root.style.top = `${Math.round(top)}px`;
+      return;
+    }
+    const left = parseFloat(root.style.left) || current.startLeft;
+    const width = Math.max(
+      MIN_CARD_WIDTH,
+      Math.min(current.startWidth + dx, vw - READER_OVERLAY_MARGIN - left),
+    );
+    root.style.width = `${Math.round(width)}px`;
+    chosenThreadMax = Math.round(
+      Math.max(80, Math.min(current.startThreadMax + dy, current.threadLimit)),
+    );
+    thread.style.maxHeight = `${chosenThreadMax}px`;
+  };
+  const onDragEnd = (e: Event) => {
+    if (drag && (e as PointerEvent).pointerId !== drag.pointerId) return;
+    endDrag();
+    if (root.isConnected) keepInViewport();
+  };
+  const onCardPointerDown = (e: Event) => {
+    const pointer = e as PointerEvent;
+    if (drag || pointer.button !== 0 || pointer.isPrimary === false) return;
+    const grip = resizeGrip.contains(pointer.target as Node | null);
+    if (!grip && !isBlankTarget(pointer.target)) return;
+    const rect = root.getBoundingClientRect();
+    const { vh } = viewSize();
+    const threadHeight = thread.getBoundingClientRect().height;
+    const startThreadMax = threadMaxNow();
+    // Growing the answer area may not push the card's bottom out of view.
+    const room = vh - READER_OVERLAY_MARGIN - rect.bottom;
+    const threadLimit =
+      threadHeight + room >= thread.scrollHeight
+        ? Number.POSITIVE_INFINITY
+        : threadHeight + room;
+    drag = {
+      kind: grip ? "resize" : "move",
+      pointerId: pointer.pointerId,
+      startX: pointer.clientX,
+      startY: pointer.clientY,
+      startLeft: rect.left,
+      startTop: rect.top,
+      startWidth: rect.width,
+      startThreadMax,
+      threadLimit,
+    };
+    // No text selection while dragging.
+    root.style.userSelect = "none";
+    root.style.setProperty("-moz-user-select", "none");
+    if (!grip) root.style.cursor = "grabbing";
+    try {
+      root.setPointerCapture(pointer.pointerId);
+    } catch {
+      // The document listeners below carry the drag without capture.
+    }
+    doc.addEventListener("pointermove", onDragMove, true);
+    doc.addEventListener("pointerup", onDragEnd, true);
+    doc.addEventListener("pointercancel", onDragEnd, true);
+  };
+  // The grab cursor shows over the card's own blank padding only; text keeps
+  // its text cursor.
+  const onCardHover = (e: Event) => {
+    if (drag) return;
+    root.style.cursor = isNode(root, e.target) ? "grab" : "";
+  };
+  const onCardEnter = () => {
+    resizeGrip.style.opacity = "1";
+  };
+  const onCardLeave = () => {
+    resizeGrip.style.opacity = "0.45";
+  };
+
   function close() {
     if (closed) return;
     closed = true;
+    endDrag();
     // Remove the card and registry entry first: a dead nested document can
     // make the listener removals below throw.
     root.remove();
@@ -2185,6 +2397,10 @@ export function openInlineAskOverlay(
     quoteSection.removeEventListener("click", onQuoteClick);
     textBox.detach();
     root.removeEventListener("pointerdown", onRootPointerDown);
+    root.removeEventListener("pointerdown", onCardPointerDown);
+    root.removeEventListener("pointermove", onCardHover);
+    root.removeEventListener("mouseenter", onCardEnter);
+    root.removeEventListener("mouseleave", onCardLeave);
     pills.removeEventListener("click", onPillsClick);
     pills.removeEventListener("contextmenu", onPillsContextMenu);
     if (picker) {
@@ -2232,6 +2448,10 @@ export function openInlineAskOverlay(
   quoteSection.addEventListener("click", onQuoteClick);
   textBox.attach();
   root.addEventListener("pointerdown", onRootPointerDown);
+  root.addEventListener("pointerdown", onCardPointerDown);
+  root.addEventListener("pointermove", onCardHover);
+  root.addEventListener("mouseenter", onCardEnter);
+  root.addEventListener("mouseleave", onCardLeave);
   pills.addEventListener("click", onPillsClick);
   pills.addEventListener("contextmenu", onPillsContextMenu);
   if (picker) {
