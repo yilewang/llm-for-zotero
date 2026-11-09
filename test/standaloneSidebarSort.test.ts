@@ -107,16 +107,19 @@ describe("standaloneSidebarSort", function () {
       "codex",
       "upstream",
       "claude_code",
+      "antigravity",
     ]);
     assert.deepEqual(parseStandaloneSidebarGroupOrder("x, codex ,codex"), [
       "codex",
       "upstream",
       "claude_code",
+      "antigravity",
     ]);
     assert.deepEqual(parseStandaloneSidebarGroupOrder(undefined), [
       "upstream",
       "codex",
       "claude_code",
+      "antigravity",
     ]);
   });
 

@@ -121,7 +121,10 @@ function normalizeOperation(
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
+  return value === "upstream" ||
+    value === "claude_code" ||
+    value === "codex" ||
+    value === "antigravity"
     ? value
     : null;
 }

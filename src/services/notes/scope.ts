@@ -144,6 +144,10 @@ export function resolvePreferredNoteFocusSystem(params: {
   if (preferred === "codex" && !params.codexAvailable) {
     return "upstream";
   }
+  // Antigravity chats about papers only: it has no tools to edit a note.
+  if (preferred === "antigravity") {
+    return "upstream";
+  }
   return preferred;
 }
 
@@ -156,6 +160,9 @@ export function resolveNoteFocusSystemSwitch(params: {
     return null;
   }
   if (params.nextSystem === "codex" && !params.codexAvailable) {
+    return null;
+  }
+  if (params.nextSystem === "antigravity") {
     return null;
   }
   return params.nextSystem;

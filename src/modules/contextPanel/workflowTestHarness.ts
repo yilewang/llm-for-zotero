@@ -1031,6 +1031,10 @@ const WORKFLOW_CONVERSATION_PERSISTENCE_TABLES = {
     catalogs: ["llm_for_zotero_codex_conversations"],
     messages: "llm_for_zotero_codex_messages",
   },
+  antigravity: {
+    catalogs: ["llm_for_zotero_antigravity_conversations"],
+    messages: "llm_for_zotero_antigravity_messages",
+  },
 } as const;
 
 async function countWorkflowRows(

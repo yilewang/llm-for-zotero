@@ -40,11 +40,17 @@ describe("conversation store tables", function () {
           global: "llm_for_zotero_codex_conversations",
           paper: "llm_for_zotero_codex_conversations",
         },
+        {
+          system: "antigravity",
+          messageTable: "llm_for_zotero_antigravity_messages",
+          global: "llm_for_zotero_antigravity_conversations",
+          paper: "llm_for_zotero_antigravity_conversations",
+        },
       ],
     );
   });
 
-  it("lists each catalog once: upstream global, upstream paper, Claude, Codex", function () {
+  it("lists each catalog once: upstream global, upstream paper, Claude, Codex, Antigravity", function () {
     assert.deepEqual(CONVERSATION_CATALOG_TABLES, [
       {
         system: "upstream",
@@ -70,11 +76,18 @@ describe("conversation store tables", function () {
         messageTable: "llm_for_zotero_codex_messages",
         kind: null,
       },
+      {
+        system: "antigravity",
+        catalogTable: "llm_for_zotero_antigravity_conversations",
+        messageTable: "llm_for_zotero_antigravity_messages",
+        kind: null,
+      },
     ]);
     assert.deepEqual(CONVERSATION_MESSAGE_TABLES, [
       "llm_for_zotero_chat_messages",
       "llm_for_zotero_claude_messages",
       "llm_for_zotero_codex_messages",
+      "llm_for_zotero_antigravity_messages",
     ]);
     assert.deepEqual(
       getConversationCatalogTables("upstream").map((c) => c.catalogTable),

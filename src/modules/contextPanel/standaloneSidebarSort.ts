@@ -104,16 +104,21 @@ export function formatStandaloneSidebarShortDate(
  * "Group by agent": the list split into one section per runtime, in an
  * order the user sets by dragging the section labels.
  */
-export type StandaloneSidebarGroupKey = "upstream" | "codex" | "claude_code";
+export type StandaloneSidebarGroupKey =
+  | "upstream"
+  | "codex"
+  | "claude_code"
+  | "antigravity";
 
 export const DEFAULT_STANDALONE_SIDEBAR_GROUP_ORDER: readonly StandaloneSidebarGroupKey[] =
-  ["upstream", "codex", "claude_code"];
+  ["upstream", "codex", "claude_code", "antigravity"];
 
 export function getStandaloneSidebarGroupLabel(
   key: StandaloneSidebarGroupKey,
 ): string {
   if (key === "codex") return "Codex";
   if (key === "claude_code") return "Claude";
+  if (key === "antigravity") return "Antigravity";
   return "Agent";
 }
 

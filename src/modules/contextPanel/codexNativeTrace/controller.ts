@@ -605,6 +605,21 @@ export function createCodexNativeActivityTraceController(
     if (appendStatus(text)) sync();
   };
 
+  /**
+   * One step another connected runtime ran and worded itself (Antigravity's
+   * `Reading paper.md`). Its phases share `itemId`, so they make one row.
+   */
+  const appendRuntimeToolStep = (step: {
+    itemId: string;
+    phase: "started" | "completed";
+    toolName: string;
+    text?: string;
+    ok?: boolean;
+  }): void => {
+    flushAllProgressCoalescers("event");
+    if (upsertToolActivity(step)) sync();
+  };
+
   const appendAgentMessageDelta = (
     event: CodexNativeTraceDeltaEvent,
   ): boolean => {
@@ -884,6 +899,7 @@ export function createCodexNativeActivityTraceController(
       sync();
     },
     appendItemStatus,
+    appendRuntimeToolStep,
     finish,
     noteSkillActivated,
     noteMcpConfirmationRequired,

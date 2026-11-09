@@ -6,6 +6,7 @@ export type RuntimeConversationSystem = Exclude<ConversationSystem, "upstream">;
 export const RUNTIME_CONVERSATION_SYSTEMS = [
   "codex",
   "claude_code",
+  "antigravity",
 ] as const satisfies readonly RuntimeConversationSystem[];
 
 type RuntimeSystemButtonMap<T> = Record<RuntimeConversationSystem, T>;
@@ -35,6 +36,7 @@ export type RuntimeSystemControlsStateInput = {
   activeSystem: ConversationSystem;
   codexEnabled: boolean;
   claudeEnabled: boolean;
+  antigravityEnabled?: boolean;
   busy?: boolean;
 };
 
@@ -48,19 +50,24 @@ type CreateRuntimeSystemControlsOptions = {
 const RUNTIME_SYSTEM_LABELS: RuntimeSystemButtonMap<string> = {
   codex: "Codex",
   claude_code: "Claude Code",
+  antigravity: "Antigravity",
 };
 
 function isRuntimeSystemEnabled(
   system: RuntimeConversationSystem,
   input: RuntimeSystemControlsStateInput,
 ): boolean {
-  return system === "codex" ? input.codexEnabled : input.claudeEnabled;
+  if (system === "codex") return input.codexEnabled;
+  if (system === "antigravity") return input.antigravityEnabled === true;
+  return input.claudeEnabled;
 }
 
 export function isRuntimeConversationSystem(
   value: unknown,
 ): value is RuntimeConversationSystem {
-  return value === "codex" || value === "claude_code";
+  return (
+    value === "codex" || value === "claude_code" || value === "antigravity"
+  );
 }
 
 export function resolveRuntimeSystemToggleTarget(

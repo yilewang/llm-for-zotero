@@ -208,6 +208,13 @@ import {
 } from "../../codexAppServer/portal";
 import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
 import { loadAllCodexConversationHistory } from "../../codexAppServer/historyLoader";
+import { buildDefaultAntigravityGlobalConversationKey } from "../../antigravity/constants";
+import {
+  createAntigravityGlobalPortalItem,
+  createAntigravityPaperPortalItem,
+} from "../../antigravity/portal";
+import { isAntigravityModeEnabled } from "../../antigravity/prefs";
+import { loadAllAntigravityConversationHistory } from "../../antigravity/historyLoader";
 import { clearActiveConversationForPendingDeletion } from "./conversationDeletionActivation";
 import {
   createSerializedConversationDeletionEventQueue,
@@ -767,10 +774,13 @@ export function openStandaloneChat(options?: {
         })
       : preferredConversationSystem === "codex" && isCodexAppServerModeEnabled()
         ? "codex"
-        : preferredConversationSystem === "claude_code" &&
-            getClaudeCodeModeEnabled()
-          ? "claude_code"
-          : "upstream");
+        : preferredConversationSystem === "antigravity" &&
+            isAntigravityModeEnabled()
+          ? "antigravity"
+          : preferredConversationSystem === "claude_code" &&
+              getClaudeCodeModeEnabled()
+            ? "claude_code"
+            : "upstream");
   const resolvedSourceState = resolveInitialPanelItemState(
     sourceItemForResolution,
     {
@@ -794,8 +804,12 @@ export function openStandaloneChat(options?: {
   const isClaudeConversationSystem = () =>
     currentConversationSystem === "claude_code";
   const isCodexConversationSystem = () => currentConversationSystem === "codex";
+  const isAntigravityConversationSystem = () =>
+    currentConversationSystem === "antigravity";
   const isRuntimeConversationSystem = () =>
-    isClaudeConversationSystem() || isCodexConversationSystem();
+    isClaudeConversationSystem() ||
+    isCodexConversationSystem() ||
+    isAntigravityConversationSystem();
   const initialLibraryID =
     Number(
       resolvedSourceState.item?.libraryID ||
@@ -836,6 +850,14 @@ export function openStandaloneChat(options?: {
       : sourceItem && (sourceItem as any).__llmCodexGlobalPortalItem === true
         ? Number(sourceItem.id || 0)
         : 0;
+  const sourceAntigravityGlobalKey =
+    resolvedSourceState.item &&
+    (resolvedSourceState.item as any).__llmAntigravityGlobalPortalItem === true
+      ? Number(resolvedSourceState.item.id || 0)
+      : sourceItem &&
+          (sourceItem as any).__llmAntigravityGlobalPortalItem === true
+        ? Number(sourceItem.id || 0)
+        : 0;
   const sourceUpstreamGlobalKey = isGlobalPortalItem(resolvedSourceState.item)
     ? Number(resolvedSourceState.item?.id || 0)
     : isGlobalPortalItem(sourceItem)
@@ -856,18 +878,25 @@ export function openStandaloneChat(options?: {
         ? sourceCodexGlobalKey
         : recall({ system: "codex", libraryID, kind: "global" }) ||
           buildDefaultCodexGlobalConversationKey(libraryID)
-      : sourceUpstreamGlobalKey > 0
-        ? sourceUpstreamGlobalKey
-        : (lockedKey ??
-          (rememberedUpstreamGlobalKey === GLOBAL_CONVERSATION_KEY_BASE
-            ? buildDefaultUpstreamGlobalConversationKey(libraryID)
-            : rememberedUpstreamGlobalKey) ??
-          buildDefaultUpstreamGlobalConversationKey(libraryID));
+      : isAntigravityConversationSystem()
+        ? sourceAntigravityGlobalKey > 0
+          ? sourceAntigravityGlobalKey
+          : recall({ system: "antigravity", libraryID, kind: "global" }) ||
+            buildDefaultAntigravityGlobalConversationKey(libraryID)
+        : sourceUpstreamGlobalKey > 0
+          ? sourceUpstreamGlobalKey
+          : (lockedKey ??
+            (rememberedUpstreamGlobalKey === GLOBAL_CONVERSATION_KEY_BASE
+              ? buildDefaultUpstreamGlobalConversationKey(libraryID)
+              : rememberedUpstreamGlobalKey) ??
+            buildDefaultUpstreamGlobalConversationKey(libraryID));
   const globalPortalItem = isClaudeConversationSystem()
     ? createClaudeGlobalPortalItem(libraryID, conversationKey)
     : isCodexConversationSystem()
       ? createCodexGlobalPortalItem(libraryID, conversationKey)
-      : createGlobalPortalItem(libraryID, conversationKey);
+      : isAntigravityConversationSystem()
+        ? createAntigravityGlobalPortalItem(libraryID, conversationKey)
+        : createGlobalPortalItem(libraryID, conversationKey);
   const initialPaperItem =
     initialMode === "paper"
       ? resolvedSourceState.item || initialBasePaperItem
@@ -1187,8 +1216,12 @@ function openChatWindowInstance(
   const isClaudeConversationSystem = () =>
     currentConversationSystem === "claude_code";
   const isCodexConversationSystem = () => currentConversationSystem === "codex";
+  const isAntigravityConversationSystem = () =>
+    currentConversationSystem === "antigravity";
   const isRuntimeConversationSystem = () =>
-    isClaudeConversationSystem() || isCodexConversationSystem();
+    isClaudeConversationSystem() ||
+    isCodexConversationSystem() ||
+    isAntigravityConversationSystem();
 
   const newWin = mainWin.openDialog(
     `chrome://${config.addonRef}/content/standaloneChat.xhtml`,
@@ -1534,6 +1567,7 @@ function openChatWindowInstance(
           activeSystem: currentConversationSystem,
           codexEnabled: isCodexAppServerModeEnabled(),
           claudeEnabled: getClaudeCodeModeEnabled(),
+          antigravityEnabled: isAntigravityModeEnabled(),
         });
       };
 
@@ -3027,10 +3061,15 @@ function openChatWindowInstance(
                   getCurrentLibraryScopeID(),
                   params.conversationKey,
                 ) as Zotero.Item)
-              : createGlobalPortalItem(
-                  getCurrentLibraryScopeID(),
-                  params.conversationKey,
-                );
+              : system === "antigravity"
+                ? (createAntigravityGlobalPortalItem(
+                    getCurrentLibraryScopeID(),
+                    params.conversationKey,
+                  ) as Zotero.Item)
+                : createGlobalPortalItem(
+                    getCurrentLibraryScopeID(),
+                    params.conversationKey,
+                  );
         }
         if (!params.paperItem) return null;
         return system === "claude_code"
@@ -3043,11 +3082,16 @@ function openChatWindowInstance(
                 params.paperItem,
                 params.conversationKey,
               ) as Zotero.Item)
-            : createPaperPortalItem(
-                params.paperItem,
-                params.conversationKey,
-                params.sessionVersion || 1,
-              );
+            : system === "antigravity"
+              ? (createAntigravityPaperPortalItem(
+                  params.paperItem,
+                  params.conversationKey,
+                ) as Zotero.Item)
+              : createPaperPortalItem(
+                  params.paperItem,
+                  params.conversationKey,
+                  params.sessionVersion || 1,
+                );
       };
 
       const scheduleStandaloneSidebarRender = () => {
@@ -3455,6 +3499,7 @@ function openChatWindowInstance(
           activeSystem: currentConversationSystem,
           codexEnabled: isCodexAppServerModeEnabled(),
           claudeEnabled: getClaudeCodeModeEnabled(),
+          antigravityEnabled: isAntigravityModeEnabled(),
           singleSystem: Boolean(resolveActiveNoteSession(activeItem)),
         });
 
@@ -4056,11 +4101,20 @@ function openChatWindowInstance(
         const loadSystemEntries = async (
           system: ConversationSystem,
         ): Promise<SidebarConv[]> => {
-          if (system === "claude_code" || system === "codex") {
+          if (
+            system === "claude_code" ||
+            system === "codex" ||
+            system === "antigravity"
+          ) {
             const summaries =
               system === "claude_code"
                 ? await loadAllClaudeConversationHistory({ libraryID, limit })
-                : await loadAllCodexConversationHistory({ libraryID, limit });
+                : system === "antigravity"
+                  ? await loadAllAntigravityConversationHistory({
+                      libraryID,
+                      limit,
+                    })
+                  : await loadAllCodexConversationHistory({ libraryID, limit });
             return summaries.map((entry) => ({
               conversationKey: entry.conversationKey,
               conversationID: entry.conversationID,
@@ -5992,7 +6046,12 @@ function openChatWindowInstance(
                 ? createClaudeGlobalPortalItem(libraryID, conversationKey)
                 : nextSystem === "codex"
                   ? createCodexGlobalPortalItem(libraryID, conversationKey)
-                  : createGlobalPortalItem(libraryID, conversationKey);
+                  : nextSystem === "antigravity"
+                    ? createAntigravityGlobalPortalItem(
+                        libraryID,
+                        conversationKey,
+                      )
+                    : createGlobalPortalItem(libraryID, conversationKey);
             activeConversationKey = conversationKey;
             rememberStandaloneGlobalConversation(
               nextSystem,
@@ -6057,7 +6116,13 @@ function openChatWindowInstance(
               ? createClaudePaperPortalItem(paperItem, newKey)
               : nextSystem === "codex"
                 ? createCodexPaperPortalItem(paperItem, newKey)
-                : createPaperPortalItem(paperItem, newKey, sessionVersion || 1);
+                : nextSystem === "antigravity"
+                  ? createAntigravityPaperPortalItem(paperItem, newKey)
+                  : createPaperPortalItem(
+                      paperItem,
+                      newKey,
+                      sessionVersion || 1,
+                    );
           activeConversationKey = newKey;
           currentPaperItem = paperItem;
           mountChatPanel(freshItem as Zotero.Item, currentRawContextItem);
@@ -6133,10 +6198,16 @@ function openChatWindowInstance(
       {
         const claudeModePrefKey = `${config.prefsPrefix}.enableClaudeCodeMode`;
         const codexModePrefKey = `${config.prefsPrefix}.enableCodexAppServerMode`;
+        const antigravityModePrefKey = `${config.prefsPrefix}.enableAntigravityMode`;
         let claudeObserverId: symbol | undefined;
         let codexObserverId: symbol | undefined;
+        let antigravityObserverId: symbol | undefined;
         const unregister = () => {
-          for (const observerId of [claudeObserverId, codexObserverId]) {
+          for (const observerId of [
+            claudeObserverId,
+            codexObserverId,
+            antigravityObserverId,
+          ]) {
             if (observerId === undefined) continue;
             try {
               (Zotero as any).Prefs.unregisterObserver(observerId);
@@ -6146,6 +6217,7 @@ function openChatWindowInstance(
           }
           claudeObserverId = undefined;
           codexObserverId = undefined;
+          antigravityObserverId = undefined;
         };
         cleanupStandalonePrefObserver = unregister;
         // The runtime of the chat on screen was turned off. The leader moves
@@ -6202,6 +6274,20 @@ function openChatWindowInstance(
           }
           updateStandaloneSystemToggles();
         };
+        const onAntigravityModePrefChange = () => {
+          if (cancelled || newWin.closed) {
+            unregister();
+            return;
+          }
+          if (!isAntigravityModeEnabled()) {
+            demoteConversationSystemOnEverySurface("antigravity");
+            if (isAntigravityConversationSystem()) {
+              void switchConversationSystem("upstream");
+              return;
+            }
+          }
+          updateStandaloneSystemToggles();
+        };
         try {
           claudeObserverId = (Zotero as any).Prefs.registerObserver(
             claudeModePrefKey,
@@ -6211,6 +6297,11 @@ function openChatWindowInstance(
           codexObserverId = (Zotero as any).Prefs.registerObserver(
             codexModePrefKey,
             onCodexModePrefChange,
+            true,
+          );
+          antigravityObserverId = (Zotero as any).Prefs.registerObserver(
+            antigravityModePrefKey,
+            onAntigravityModePrefChange,
             true,
           );
         } catch {

@@ -40,6 +40,8 @@ const CLAUDE_MESSAGES_TABLE = "llm_for_zotero_claude_messages";
 const CLAUDE_CATALOG_TABLE = "llm_for_zotero_claude_conversations";
 const CODEX_MESSAGES_TABLE = "llm_for_zotero_codex_messages";
 const CODEX_CATALOG_TABLE = "llm_for_zotero_codex_conversations";
+const ANTIGRAVITY_MESSAGES_TABLE = "llm_for_zotero_antigravity_messages";
+const ANTIGRAVITY_CATALOG_TABLE = "llm_for_zotero_antigravity_conversations";
 
 /** Each store's tables, by store. */
 export const CONVERSATION_STORE_TABLES_BY_SYSTEM: Readonly<
@@ -66,18 +68,30 @@ export const CONVERSATION_STORE_TABLES_BY_SYSTEM: Readonly<
     messageTable: CODEX_MESSAGES_TABLE,
     catalogTables: { global: CODEX_CATALOG_TABLE, paper: CODEX_CATALOG_TABLE },
   },
+  antigravity: {
+    system: "antigravity",
+    messageTable: ANTIGRAVITY_MESSAGES_TABLE,
+    catalogTables: {
+      global: ANTIGRAVITY_CATALOG_TABLE,
+      paper: ANTIGRAVITY_CATALOG_TABLE,
+    },
+  },
 };
 
-/** Every store's tables, in store order: upstream, Claude Code, Codex. */
+/**
+ * Every store's tables, in store order: upstream, Claude Code, Codex,
+ * Antigravity.
+ */
 export const CONVERSATION_STORE_TABLES: readonly ConversationStoreTables[] = [
   CONVERSATION_STORE_TABLES_BY_SYSTEM.upstream,
   CONVERSATION_STORE_TABLES_BY_SYSTEM.claude_code,
   CONVERSATION_STORE_TABLES_BY_SYSTEM.codex,
+  CONVERSATION_STORE_TABLES_BY_SYSTEM.antigravity,
 ];
 
 /**
  * Every catalog table once, in store order: upstream global, upstream paper,
- * Claude Code, Codex.
+ * Claude Code, Codex, Antigravity.
  */
 export const CONVERSATION_CATALOG_TABLES: readonly ConversationCatalogTable[] =
   CONVERSATION_STORE_TABLES.flatMap((store): ConversationCatalogTable[] =>
@@ -98,7 +112,10 @@ export const CONVERSATION_CATALOG_TABLES: readonly ConversationCatalogTable[] =
         })),
   );
 
-/** Every messages table, in store order: upstream, Claude Code, Codex. */
+/**
+ * Every messages table, in store order: upstream, Claude Code, Codex,
+ * Antigravity.
+ */
 export const CONVERSATION_MESSAGE_TABLES: readonly string[] =
   CONVERSATION_STORE_TABLES.map((store) => store.messageTable);
 

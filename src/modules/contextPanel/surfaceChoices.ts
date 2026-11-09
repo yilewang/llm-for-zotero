@@ -408,7 +408,9 @@ const conversationSystem = surfaceChoice<ConversationSystem>({
   getPref: getConversationSystemPref,
   setPref: setConversationSystemPref,
   normalize: (system) =>
-    system === "claude_code" || system === "codex" ? system : "upstream",
+    system === "claude_code" || system === "codex" || system === "antigravity"
+      ? system
+      : "upstream",
   // The side chat is never saved, so it runs only on the API runtime.
   side: () => "upstream",
 });

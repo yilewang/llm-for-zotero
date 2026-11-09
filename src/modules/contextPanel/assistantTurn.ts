@@ -71,6 +71,8 @@ export type AssistantTurnDeps = {
   requestId: number;
   /** A native Codex turn gets a trace and Codex-worded error messages. */
   isCodexNativeTurn: boolean;
+  /** An Antigravity turn gets the same activity trace for agy's steps. */
+  isAntigravityTurn?: boolean;
   /**
    * The turn's usage ledger. Built by the flow, because whether the turn
    * counts as a question is flow policy (a retry does not).
@@ -136,7 +138,7 @@ export type AssistantTurn = {
   /** The native trace, once attached; null otherwise. */
   readonly codexTrace: CodexNativeActivityTraceController | null;
   /**
-   * Builds the native trace (native Codex turns only), wired to the stream's
+   * Builds the native trace (Codex and Antigravity turns), wired to the stream's
    * repaint, and records the skills the user forced.
    */
   attachCodexTrace: (forcedSkillIds?: string[]) => void;
@@ -271,9 +273,10 @@ export function createAssistantTurn(deps: AssistantTurnDeps): AssistantTurn {
     },
 
     attachCodexTrace(forcedSkillIds?: string[]): void {
-      trace = deps.isCodexNativeTurn
-        ? createCodexTrace(message, stream.queueRefresh)
-        : null;
+      trace =
+        deps.isCodexNativeTurn || deps.isAntigravityTurn
+          ? createCodexTrace(message, stream.queueRefresh)
+          : null;
       noteExplicitCodexNativeSkillInvocations(trace, forcedSkillIds);
     },
 

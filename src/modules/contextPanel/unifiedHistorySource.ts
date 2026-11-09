@@ -1,5 +1,5 @@
 /**
- * One history list for Agent, Codex and Claude Code chats.
+ * One history list for Agent, Codex, Claude Code and Antigravity chats.
  *
  * Each runtime keeps its own catalog, but conversation keys never overlap
  * across runtimes (shared/conversationKeySpace.ts), so rows of several
@@ -26,6 +26,7 @@ export const UNIFIED_HISTORY_SYSTEM_ORDER: readonly ConversationSystem[] = [
   "upstream",
   "codex",
   "claude_code",
+  "antigravity",
 ];
 
 /**
@@ -38,6 +39,8 @@ export function resolveUnifiedHistorySystems(params: {
   activeSystem: ConversationSystem;
   codexEnabled: boolean;
   claudeEnabled: boolean;
+  /** Antigravity is off unless this is set, so older callers keep it off. */
+  antigravityEnabled?: boolean;
   singleSystem: boolean;
 }): ConversationSystem[] {
   if (params.singleSystem) return [params.activeSystem];
@@ -46,7 +49,8 @@ export function resolveUnifiedHistorySystems(params: {
       system === "upstream" ||
       system === params.activeSystem ||
       (system === "codex" && params.codexEnabled) ||
-      (system === "claude_code" && params.claudeEnabled),
+      (system === "claude_code" && params.claudeEnabled) ||
+      (system === "antigravity" && params.antigravityEnabled === true),
   );
 }
 
