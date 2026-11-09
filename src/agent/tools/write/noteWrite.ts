@@ -601,6 +601,13 @@ function prepareNoteWriteInput(
     input.content = sanitizeNoteHtml(html);
   }
   resolveCreateOrAppendContent(input);
+  // An edit's raw HTML is resolved before citations expand too, so a repeated
+  // preparation expands the same content and binds the same payload.
+  if (input.mode === "edit" && input._rawHtmlContent) {
+    input._isHtml = true;
+    input.content = sanitizeNoteHtml(input._rawHtmlContent);
+    delete input._rawHtmlContent;
+  }
   const lookup = citationLookup(zoteroGateway, context.request.libraryID);
   // A finalized document is saved exactly as stored; its citation requests
   // are turned into chips where its note HTML is built.
@@ -707,13 +714,9 @@ function prepareNoteWriteInput(
       }
       input._patchedHtml = patchedHtml;
       input.content = noteHtmlToModelText(patchedHtml);
+      input._isHtml = false;
       delete input._patches;
     }
-    if (input._rawHtmlContent) {
-      input._isHtml = true;
-      input.content = sanitizeNoteHtml(input._rawHtmlContent);
-    }
-    delete input._rawHtmlContent;
     input.content = input._isHtml
       ? input.content
       : normalizeNoteSourceText(input.content);
