@@ -532,6 +532,15 @@ export const libraryMutationHandlers = {
           );
         });
       const notes = (state.items || []).filter((item) => item.exists);
+      // A standalone note has no parent; its targetItemId only names the
+      // library its citations resolve in.
+      const placed = (
+        actual: (typeof notes)[number],
+        expected: (typeof operation.notes)[number],
+      ) =>
+        operation.target === "standalone"
+          ? !actual.parentItemId
+          : actual.parentItemId === expected.targetItemId;
       return (
         notes.length >= operation.notes.length &&
         operation.notes.every((expected) => {
@@ -541,7 +550,7 @@ export const libraryMutationHandlers = {
           );
           return notes.some(
             (actual) =>
-              actual.parentItemId === expected.targetItemId &&
+              placed(actual, expected) &&
               matches(actual.noteHtml) &&
               (expected.collections || []).every((collectionId) =>
                 (actual.collectionIds || []).includes(collectionId),

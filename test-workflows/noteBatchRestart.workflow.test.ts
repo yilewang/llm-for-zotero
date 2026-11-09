@@ -1091,10 +1091,6 @@ describe("workflow: note batch across a Zotero restart", function () {
       const report = JSON.stringify(result);
       assert.equal(result.resumeBatchId, batchId, report);
       assert.equal(result.priorRun?.status, "failed", report);
-      // The batch call itself succeeds. The run's own status is not asserted:
-      // the save_notes_batch postcondition (handlerRegistry.ts) looks for each
-      // note under its paper, so a standalone batch's receipt is unverified
-      // and the run ends blocked, with or without a restart.
       assert.isAtLeast(result.batchResults.length, 1, report);
       assert.isTrue(result.batchResults[0].ok, report);
       const rows = await listBatchItems(batchId);
@@ -1119,6 +1115,12 @@ describe("workflow: note batch across a Zotero restart", function () {
         );
         return;
       }
+
+      // The receipt is not asserted here: this variant edits the cited
+      // paper's title on purpose, and the batch postcondition rebuilds each
+      // citation from current metadata, so the kept note (written before the
+      // edit) does not verify. A standalone batch without that edit verifies
+      // (libraryNotesAndItemType.workflow.test.ts).
 
       // Kept: the step is applied with the reserved note, under the action
       // that opened it, and that action has no open note step left.

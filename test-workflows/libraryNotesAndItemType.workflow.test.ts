@@ -300,6 +300,76 @@ describe("workflow: notes and item type (W5-B)", function () {
     });
   });
 
+  describe("note_write_batch target:'standalone'", function () {
+    it("files parentless notes in the folder and verifies the receipt against them", async function () {
+      const papers: any[] = [];
+      for (const label of ["one", "two"]) {
+        const paper = new Zotero.Item("journalArticle");
+        paper.libraryID = libraryID();
+        paper.setField("title", `Standalone source ${label} ${SUFFIX}`);
+        await paper.saveTx();
+        created.items.push(paper.id);
+        papers.push(paper);
+      }
+      const folder = await makeCollection("Standalone batch folder");
+      const bodies = [
+        `Standalone digest one ${SUFFIX}`,
+        `Standalone digest two ${SUFFIX}`,
+      ];
+      const result = await withRegistry(
+        "yolo",
+        ["note_write_batch"],
+        (registry) =>
+          runTool(
+            registry,
+            "note_write_batch",
+            {
+              target: "standalone",
+              notes: papers.map((paper, index) => ({
+                targetItemId: paper.id,
+                content:
+                  index === 0
+                    ? `${bodies[0]} {{cite item=${paper.id}}}`
+                    : bodies[1],
+                collections: [folder.id],
+              })),
+            },
+            contextFor(papers[0].id, "File a standalone digest per paper"),
+          ),
+      );
+      const report = JSON.stringify(result);
+      assert.isTrue(result.ok, report);
+      const receipts = result.actionReceipts || [];
+      assert.isAtLeast(receipts.length, 1, report);
+      for (const receipt of receipts)
+        assert.equal(receipt.verification, "verified", report);
+
+      // Native readback: two live notes in the folder, neither with a parent,
+      // one per body.
+      const rows = (await Zotero.DB.queryAsync(
+        `SELECT n.itemID AS itemID, n.parentItemID AS parentItemID, n.note AS note
+         FROM itemNotes n JOIN collectionItems c ON c.itemID = n.itemID
+         WHERE c.collectionID = ?
+         AND n.itemID NOT IN (SELECT itemID FROM deletedItems)`,
+        [folder.id],
+      )) as any[];
+      const notes = rows.map((row) => ({
+        itemID: Number(row.itemID),
+        parentItemID: row.parentItemID,
+        note: String(row.note),
+      }));
+      created.items.push(...notes.map((note) => note.itemID));
+      assert.lengthOf(notes, 2, report);
+      for (const note of notes) assert.isNull(note.parentItemID);
+      for (const body of bodies)
+        assert.lengthOf(
+          notes.filter((note) => note.note.includes(body)),
+          1,
+          body,
+        );
+    });
+  });
+
   describe("note_write_batch retried after a restart", function () {
     it("writes only the papers with no note, reports the saved one, and settles the earlier batch", async function () {
       const papers: any[] = [];
