@@ -1580,9 +1580,9 @@ describe("workflow: note batch across a Zotero restart", function () {
         if (mode !== "legacy-edited") {
           // Only the paper in flight is refused; it keeps its one note.
           assert.lengthOf(unsaved, 1, rowText);
-          // The old step matched no row by body, so the refusal says the
-          // note cannot be tied to one row, and how to end the refusal.
-          assert.include(report, untiedNoteReason(reserved.id), report);
+          // The held note sits on the row's own paper, so the refusal names
+          // it as a note from the interrupted attempt.
+          assert.include(report, heldNoteReason(reserved.id), report);
           // One note on every paper, trashed notes included: the paper in
           // flight has only the reserved note, and no paper has a copy.
           for (const id of ids)

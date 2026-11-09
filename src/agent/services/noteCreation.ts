@@ -400,7 +400,11 @@ export async function findNoteHeldForRow(
   return unattributed
     ? {
         step: unattributed.step,
-        reason: untiedNoteReason(unattributed.note),
+        // A child row's held note sits on its own paper, so it is almost
+        // surely this item's; only a standalone note cannot be tied to a row.
+        reason: row.standalone
+          ? untiedNoteReason(unattributed.note)
+          : heldNoteReason(unattributed.forward),
       }
     : undefined;
 }
