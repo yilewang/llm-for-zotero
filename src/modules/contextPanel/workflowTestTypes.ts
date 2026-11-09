@@ -1427,6 +1427,8 @@ export type WorkflowTestApi = {
     killAfterNotes: number;
     variant: "crash" | "quit";
     target?: "item" | "standalone";
+    /** 2: two child notes on each paper (rows `item:N` and `item:N#2`). */
+    notesPerPaper?: 1 | 2;
   }) => ReturnType<
     typeof import("./noteBatchRestartReplay").startNoteBatchUntilQuit
   >;

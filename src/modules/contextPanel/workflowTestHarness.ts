@@ -11589,6 +11589,7 @@ export function installWorkflowTestHarness(targetAddon: {
         killAfterNotes: input.killAfterNotes,
         variant: input.variant,
         target: input.target,
+        notesPerPaper: input.notesPerPaper,
       }),
     resumeNoteBatchAfterRestart: (input) =>
       resumeNoteBatchAfterRestart(getPanel(input.panelId), {

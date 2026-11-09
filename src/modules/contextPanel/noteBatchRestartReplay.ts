@@ -82,32 +82,74 @@ function readCall(itemId: number, libraryID: number): AgentToolCall {
 /**
  * One note_write_batch over `papers`. A child note is written onto each
  * paper. A standalone note is filed into `collectionId` and cites its paper,
- * so its body is built from that paper's current metadata.
+ * so its body is built from that paper's current metadata. With
+ * `notesPerPaper: 2` each paper gets two child notes in a row, the second
+ * with its own body, so the batch has rows `item:N` and `item:N#2`.
  */
 function batchCall(
   papers: number[],
   target: "item" | "standalone" = "item",
   collectionId?: number,
+  notesPerPaper: 1 | 2 = 1,
 ): AgentToolCall {
   return {
     id: `batch-${(callCounter += 1)}`,
     name: "note_write_batch",
     arguments: {
       target,
-      notes: papers.map((itemId) =>
+      notes: papers.flatMap((itemId) =>
         target === "standalone"
-          ? {
-              targetItemId: itemId,
-              collections: collectionId ? [collectionId] : [],
-              content: `# Paper ${itemId}\n\nReading note on the finding of {{cite item=${itemId}}}.`,
-            }
-          : {
-              targetItemId: itemId,
-              content: `# Paper ${itemId}\n\nReading note on the finding of paper ${itemId}.`,
-            },
+          ? [
+              {
+                targetItemId: itemId,
+                collections: collectionId ? [collectionId] : [],
+                content: `# Paper ${itemId}\n\nReading note on the finding of {{cite item=${itemId}}}.`,
+              },
+            ]
+          : [
+              {
+                targetItemId: itemId,
+                content: `# Paper ${itemId}\n\nReading note on the finding of paper ${itemId}.`,
+              },
+              ...(notesPerPaper === 2
+                ? [
+                    {
+                      targetItemId: itemId,
+                      content: `# Paper ${itemId}, second note\n\nA second reading note on paper ${itemId}.`,
+                    },
+                  ]
+                : []),
+            ],
       ),
     },
   };
+}
+
+/** The `resume.blocked` rows a note_write_batch result reports, if any. */
+function resumeBlocked(
+  content: unknown,
+): Array<{ itemKey: string; reason: string }> {
+  const seen = new Set<unknown>();
+  const visit = (
+    value: unknown,
+  ): Array<{ itemKey: string; reason: string }> => {
+    if (!value || typeof value !== "object" || seen.has(value)) return [];
+    seen.add(value);
+    const resume = (value as { resume?: { blocked?: unknown } }).resume;
+    if (resume && Array.isArray(resume.blocked))
+      return resume.blocked.map(
+        (entry: { itemKey?: unknown; reason?: unknown }) => ({
+          itemKey: String(entry?.itemKey ?? ""),
+          reason: String(entry?.reason ?? ""),
+        }),
+      );
+    for (const child of Object.values(value)) {
+      const found = visit(child);
+      if (found.length) return found;
+    }
+    return [];
+  };
+  return visit(content);
 }
 
 /** The conversation key this panel's chat is stored under. */
@@ -132,6 +174,7 @@ export async function startNoteBatchUntilQuit(
     killAfterNotes: number;
     variant: "crash" | "quit";
     target?: "item" | "standalone";
+    notesPerPaper?: 1 | 2;
   },
 ): Promise<{ survived: true; notesSeen: number }> {
   const { body, item } = panel;
@@ -231,6 +274,7 @@ export async function startNoteBatchUntilQuit(
             ids,
             standalone ? "standalone" : "item",
             input.collection.collectionId,
+            input.notesPerPaper,
           ),
         ]);
       }
@@ -311,6 +355,8 @@ export async function resumeNoteBatchAfterRestart(
                 (event.content as { error?: unknown } | undefined)?.error || "",
               ),
               applied: appliedBy(event.actionReceipts),
+              // The rows a resume refused before writing, with the reason.
+              blocked: resumeBlocked(event.content),
             },
           ]
         : [],
