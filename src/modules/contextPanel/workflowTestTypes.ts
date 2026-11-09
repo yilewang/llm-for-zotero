@@ -2034,6 +2034,23 @@ export type WorkflowTestApi = {
     sentBubbleChipQuestions: string[];
     sentBubbleBarCount: number;
   }>;
+  exerciseReaderPopupModEnterSend: (input: {
+    panelId: string;
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    prompt: string;
+  }) => Promise<{
+    overlayMounted: boolean;
+    /** The box's hint line. */
+    hint: string;
+    /** Whether Cmd/Ctrl+Enter sent within 3 s (it must). */
+    sent: boolean;
+    overlayRemoved: boolean;
+    sentQuestion: string;
+    sentDisplayQuestion: string;
+    sentSelectedTexts: string[];
+  }>;
   exerciseReaderPopupDuplicateAttach: (input: {
     panelId: string;
     attachmentItemId: number;

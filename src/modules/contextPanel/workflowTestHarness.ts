@@ -6648,15 +6648,20 @@ function makeReaderPromptKey(
   );
 }
 
-/** Types `text` into the reader box and presses Enter. */
+/** Types `text` into the reader box and presses Enter (with `modifiers`). */
 function submitReaderPrompt(
   popupDoc: Document,
   editor: HTMLElement,
   text: string,
+  modifiers: KeyboardEventInit = {},
 ): void {
   editor.textContent = text;
   editor.dispatchEvent(
-    makeReaderPromptKey(popupDoc, { key: "Enter", code: "Enter" }),
+    makeReaderPromptKey(popupDoc, {
+      key: "Enter",
+      code: "Enter",
+      ...modifiers,
+    }),
   );
 }
 
@@ -6955,6 +6960,84 @@ async function exerciseReaderPopupInlinePrompt(
       sentDisplayQuestion: send.displayQuestion ?? "",
       sentSelectedTexts: send.selectedTexts ?? [],
       ...sentBubble,
+    };
+  } finally {
+    setWorkflowTestSendInterceptor(previousInterceptor);
+    if (popupDoc) closeReaderSelectionPromptOverlay(popupDoc);
+    selectionDoc?.defaultView?.getSelection?.()?.removeAllRanges();
+    popupHost?.remove();
+    await closeWorkflowReader(reader);
+  }
+}
+
+/**
+ * Cmd/Ctrl+Enter in the Add Text box attaches the question to the chip and
+ * sends the panel's message at once, with an empty composer.
+ */
+async function exerciseReaderPopupModEnterSend(
+  input: Parameters<WorkflowTestApi["exerciseReaderPopupModEnterSend"]>[0],
+): ReturnType<WorkflowTestApi["exerciseReaderPopupModEnterSend"]> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(input.panelId);
+  const reader = await openWorkflowPdfReader(
+    input.attachmentItemId,
+    input.pageIndex,
+  );
+  const previousInterceptor = getWorkflowTestSendInterceptor();
+  let popupHost: HTMLElement | null = null;
+  let selectionDoc: Document | null = null;
+  let popupDoc: Document | null = null;
+  try {
+    mountWorkflowPanelInReaderPane(panel, reader);
+    const popupAction = await dispatchWorkflowReaderAddTextPopup({
+      reader,
+      pageIndex: input.pageIndex,
+      selectedText: input.selectedText,
+    });
+    popupHost = popupAction.popupHost;
+    selectionDoc = popupAction.selectionDoc;
+    popupDoc = popupAction.popupDoc;
+    const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
+    const conversationKey = getConversationKey(mountedItem);
+    await waitForSelectedContext({
+      conversationKey,
+      selectedText: input.selectedText,
+      pageIndex: input.pageIndex,
+    });
+    const promptBox = await waitForReaderPromptEditor(popupDoc);
+    const hint =
+      popupDoc
+        .querySelector(READER_PROMPT_OVERLAY_SELECTOR)
+        ?.querySelector('[data-llm-reader-selection-prompt-hint="true"]')
+        ?.textContent?.trim() || "";
+    if (!promptBox) {
+      return {
+        overlayMounted: false,
+        hint,
+        sent: false,
+        overlayRemoved: false,
+        sentQuestion: "",
+        sentDisplayQuestion: "",
+        sentSelectedTexts: [],
+      };
+    }
+    installRecordingSendInterceptor();
+    submitReaderPrompt(
+      popupDoc,
+      promptBox,
+      input.prompt,
+      Zotero.isMac ? { metaKey: true } : { ctrlKey: true },
+    );
+    const sent = await sentWithin(3000);
+    const send = lastSend as SendQuestionOptions | null;
+    return {
+      overlayMounted: true,
+      hint,
+      sent,
+      overlayRemoved: !popupDoc.querySelector(READER_PROMPT_OVERLAY_SELECTOR),
+      sentQuestion: send?.question ?? "",
+      sentDisplayQuestion: send?.displayQuestion ?? "",
+      sentSelectedTexts: send?.selectedTexts ?? [],
     };
   } finally {
     setWorkflowTestSendInterceptor(previousInterceptor);
@@ -11885,6 +11968,7 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseReaderPopupActiveTabRouting,
     exerciseReaderPopupStandaloneRouting,
     exerciseReaderPopupInlinePrompt,
+    exerciseReaderPopupModEnterSend,
     exerciseReaderPopupDuplicateAttach,
     exerciseReaderPopupPromptDismissal,
     readReaderPopupActionRow,
