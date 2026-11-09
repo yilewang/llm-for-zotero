@@ -593,40 +593,35 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   // More menu: the actions the collapsed Stacked header folds away. It looks
   // like the standalone window's More menu and sits in the panel, outside the
   // header, whose size containment would anchor a fixed menu to the header.
-  const headerMoreMenu = createElement(
-    doc,
-    "div",
-    "llm-standalone-skill-ctx-menu llm-header-more-menu",
-    { id: "llm-header-more-menu" },
-  );
+  const headerMoreMenu = createElement(doc, "div", "llm-header-more-menu", {
+    id: "llm-header-more-menu",
+  });
   headerMoreMenu.setAttribute("role", "menu");
   headerMoreMenu.style.display = "none";
-  const createHeaderMoreItem = (id: string, label: string) => {
-    const item = createElement(doc, "button", "llm-standalone-skill-ctx-item", {
-      id,
-      type: "button",
-      textContent: label,
-    });
+  // Icon buttons only; the glyph comes from the item's own id (CSS) and the
+  // controller copies the real button's title and aria-label when it opens.
+  const createHeaderMoreItem = (
+    id: string,
+    label: string,
+    glyph: string,
+    extraClass = "",
+  ) => {
+    const item = createElement(
+      doc,
+      "button",
+      `llm-header-more-item llm-header-more-item-${glyph}${extraClass ? ` ${extraClass}` : ""}`,
+      { id, type: "button", title: label },
+    );
+    item.setAttribute("aria-label", label);
     item.setAttribute("role", "menuitem");
     return item;
   };
-  const headerMoreSeparator = createElement(
-    doc,
-    "div",
-    "llm-follower-menu-separator",
-  );
-  headerMoreSeparator.setAttribute("role", "separator");
-  const headerMoreDeleteItem = createHeaderMoreItem(
-    "llm-header-more-delete",
-    t("Delete conversation"),
-  );
-  headerMoreDeleteItem.classList.add("llm-standalone-skill-ctx-delete");
-  // Task progress and Open in window join the menu in the tight stage only;
+  // Task progress and Open in window join the strip in the tight stage only;
   // the controller shows these two items and their separator then.
   const headerMoreTopSeparator = createElement(
     doc,
     "div",
-    "llm-follower-menu-separator",
+    "llm-header-more-separator",
     { id: "llm-header-more-top-separator" },
   );
   headerMoreTopSeparator.setAttribute("role", "separator");
@@ -634,10 +629,12 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const headerMoreTaskItem = createHeaderMoreItem(
     "llm-header-more-task-progress",
     t("Show task progress"),
+    "task-progress",
   );
   const headerMorePopoutItem = createHeaderMoreItem(
     "llm-header-more-popout",
     t("Open in Window"),
+    "popout",
   );
   headerMoreTaskItem.style.display = "none";
   headerMorePopoutItem.style.display = "none";
@@ -645,10 +642,13 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     headerMoreTaskItem,
     headerMorePopoutItem,
     headerMoreTopSeparator,
-    createHeaderMoreItem("llm-header-more-settings", t("Settings")),
-    createHeaderMoreItem("llm-header-more-export", t("Export")),
-    headerMoreSeparator,
-    headerMoreDeleteItem,
+    createHeaderMoreItem("llm-header-more-settings", t("Settings"), "settings"),
+    createHeaderMoreItem("llm-header-more-export", t("Export"), "export"),
+    createHeaderMoreItem(
+      "llm-header-more-delete",
+      t("Delete conversation"),
+      "delete",
+    ),
   );
   container.appendChild(headerMoreMenu);
 

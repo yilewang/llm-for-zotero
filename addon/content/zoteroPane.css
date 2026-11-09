@@ -1418,13 +1418,110 @@
   background: var(--fill-quinary);
 }
 
-.llm-header-more-menu .llm-standalone-skill-ctx-item:disabled {
-  opacity: 0.45;
+/*
+ * The More strip: a row of icon buttons below the More button, with the same
+ * glyphs as the header buttons. Task progress and Open in window (and the
+ * separator after them) show in the tight stage only.
+ */
+.llm-header-more-menu {
+  display: none;
+  position: fixed;
+  z-index: 40;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--material-background) 96%, black 4%);
+  border: 1px solid var(--stroke-secondary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.llm-header-more-item {
+  appearance: none;
+  -moz-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fill-primary);
+  opacity: 0.72;
+  cursor: pointer;
+  font-size: 0;
+  line-height: 0;
+}
+
+.llm-header-more-item::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  pointer-events: none;
+}
+
+.llm-header-more-item-task-progress::before {
+  mask-image: url("icons/action-task-progress.svg");
+  -webkit-mask-image: url("icons/action-task-progress.svg");
+}
+
+.llm-header-more-item-popout::before {
+  mask-image: url("icons/action-popout.svg");
+  -webkit-mask-image: url("icons/action-popout.svg");
+}
+
+.llm-header-more-item-settings::before {
+  mask-image: url("icons/action-settings.svg");
+  -webkit-mask-image: url("icons/action-settings.svg");
+}
+
+.llm-header-more-item-export::before {
+  mask-image: url("icons/action-export.svg");
+  -webkit-mask-image: url("icons/action-export.svg");
+}
+
+.llm-header-more-item-delete::before {
+  mask-image: url("icons/action-clear.svg");
+  -webkit-mask-image: url("icons/action-clear.svg");
+}
+
+.llm-header-more-item:hover:not(:disabled),
+.llm-header-more-item:focus-visible {
+  opacity: 1;
+  background: var(--fill-quinary);
+}
+
+.llm-header-more-item-delete:hover:not(:disabled) {
+  color: #d32f2f;
+}
+
+.llm-header-more-item:disabled {
+  opacity: 0.35;
   cursor: default;
 }
 
-.llm-header-more-menu .llm-standalone-skill-ctx-item:disabled:hover {
-  background: transparent;
+.llm-header-more-separator {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--stroke-secondary);
 }
 
 /* Runtime spacing stays unchanged until the header actually runs out of room. */
@@ -1491,17 +1588,19 @@
 
 /*
  * Stacked capsule header. Three blocks on one row: new chat and history on
- * the left, the mode chip and runtime toggles in a capsule that sits in the
- * free space between, panel actions on the right. headerSpacing.ts picks
- * `data-fit` on the row from arithmetic on these sizes (keep them in step):
+ * the left, the mode chip and runtime toggles in a capsule that sits right
+ * after History (not centred), panel actions on the right. headerSpacing.ts
+ * picks `data-fit` on the row from arithmetic on these sizes (keep them in
+ * step):
  *   full     28px boxes, 10px least between blocks, every action shown
- *   menu     as full, with Settings, Export and Delete folded into More
- *   compact  as menu, with 24px boxes and 8px least between blocks
- *   tight    as compact, with Task progress and Open in window folded too,
+ *   compact  24px boxes, 8px least between blocks, every action shown
+ *   menu     as compact, with Settings, Export and Delete folded into More
+ *   tight    as menu, with Task progress and Open in window folded too,
  *            so the right block is the More button alone
- * The chip uses a fixed 12px font here (the base rule scales it with the
+ * The chip uses a fixed 16.8px font here (the base rule scales it with the
  * plugin font), so the capsule is one width at every font scale and the
- * stage does not depend on it. Every box is 28px with a 16px glyph at rest opacity 0.72; the row keeps its
+ * stage does not depend on it. Every box is 28px (24px from compact on)
+ * with a 16px glyph at rest opacity 0.72; the row keeps its
  * height in every stage. Independent keeps the @container rules above.
  */
 :root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row {
@@ -1511,7 +1610,8 @@
 }
 
 :root[data-llm-sidebar-layout="stacked"]
-  .llm-header-nav-row[data-fit="compact"] {
+  .llm-header-nav-row[data-fit="compact"],
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row[data-fit="menu"] {
   --llm-header-box: 24px;
   --llm-header-gap-min: 8px;
 }
@@ -1521,9 +1621,10 @@
   --llm-header-gap-min: 8px;
 }
 
-/* The history bar takes the room left of the actions; the capsule's auto
- * margins then split what is free after the new chat and history buttons, so
- * the gaps either side of it are equal and at least the stage's minimum. */
+/* The history bar takes the room left of the actions. The capsule follows
+ * the history button, one minimum gap away (the button's end margin); all
+ * free space falls between the capsule and the actions, which the row's
+ * column gap keeps at least the minimum gap from the bar. */
 :root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-bar {
   flex: 1 1 0%;
   gap: 0;
@@ -1549,7 +1650,7 @@
   height: 26px;
   padding: 2px;
   gap: 2px;
-  margin-inline: auto;
+  margin-inline: 0;
   border-radius: 13px;
   background: var(--fill-quinary);
 }
@@ -1592,7 +1693,8 @@
   margin: 0;
 }
 
-/* Fixed size: the capsule must not grow with the plugin font scale. */
+/* Fixed size: 16.8px is 12px x the 1.4 font scale the design was approved at; the
+ * capsule must not change with the sidebar width or the plugin font scale. */
 :root[data-llm-sidebar-layout="stacked"]
   .llm-header-nav-row
   .llm-mode-switch-sizer
@@ -1600,7 +1702,7 @@
 :root[data-llm-sidebar-layout="stacked"]
   .llm-header-nav-row
   .llm-mode-switch-option {
-  font-size: 12px;
+  font-size: 16.8px;
 }
 
 :root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-new,
@@ -1671,15 +1773,6 @@
   .llm-header-nav-row[data-fit="menu"]
   .llm-clear-btn,
 :root[data-llm-sidebar-layout="stacked"]
-  .llm-header-nav-row[data-fit="compact"]
-  .llm-settings-btn,
-:root[data-llm-sidebar-layout="stacked"]
-  .llm-header-nav-row[data-fit="compact"]
-  .llm-export-btn,
-:root[data-llm-sidebar-layout="stacked"]
-  .llm-header-nav-row[data-fit="compact"]
-  .llm-clear-btn,
-:root[data-llm-sidebar-layout="stacked"]
   .llm-header-nav-row[data-fit="tight"]
   .llm-settings-btn,
 :root[data-llm-sidebar-layout="stacked"]
@@ -1699,9 +1792,6 @@
 
 :root[data-llm-sidebar-layout="stacked"]
   .llm-header-nav-row[data-fit="menu"]
-  .llm-header-more-btn,
-:root[data-llm-sidebar-layout="stacked"]
-  .llm-header-nav-row[data-fit="compact"]
   .llm-header-more-btn,
 :root[data-llm-sidebar-layout="stacked"]
   .llm-header-nav-row[data-fit="tight"]

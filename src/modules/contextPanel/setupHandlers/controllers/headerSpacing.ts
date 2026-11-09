@@ -74,24 +74,27 @@ export function updateHeaderSpacing(header: HTMLElement | null): void {
 
 /**
  * The Stacked header row fits in one of four stages. "full" shows every
- * action. "menu" folds Settings, Export and Delete into the More button.
- * "compact" does the same with smaller boxes and tighter gaps between blocks.
- * "tight" keeps those boxes and gaps and folds Task progress and Open in
- * window too, so the right block is only the More button. The capsule has one
- * width in every stage and at every plugin font scale (its chip uses a fixed
- * font size), so the stages differ only in the buttons.
+ * action in 28px boxes. "compact" shows them all in 24px boxes with tighter
+ * gaps between blocks. "menu" keeps those boxes and gaps and folds Settings,
+ * Export and Delete into the More button. "tight" folds Task progress and
+ * Open in window too, so the right block is only the More button. The
+ * capsule has one width in every stage and at every plugin font scale (its
+ * chip uses a fixed font size), so the stages differ only in the buttons.
  * zoteroPane.css sets the same box sizes and gaps from `data-fit`; keep the
- * two in step (test/headerSpacing.test.ts reads both).
+ * two in step.
  */
-export type HeaderFit = "full" | "menu" | "compact" | "tight";
+export type HeaderFit = "full" | "compact" | "menu" | "tight";
 
 /** Roomiest stage first. */
 export const HEADER_FIT_STAGES: readonly HeaderFit[] = [
   "full",
-  "menu",
   "compact",
+  "menu",
   "tight",
 ];
+
+/** The roomiest stage that folds anything into More. */
+const FIRST_FOLDED_STAGE = HEADER_FIT_STAGES.indexOf("menu");
 
 export const HEADER_FIT_METRICS: Readonly<
   Record<
@@ -107,8 +110,8 @@ export const HEADER_FIT_METRICS: Readonly<
   >
 > = {
   full: { box: 28, minGap: 10, folded: false, foldedPinned: false },
-  menu: { box: 28, minGap: 10, folded: true, foldedPinned: false },
-  compact: { box: 24, minGap: 8, folded: true, foldedPinned: false },
+  compact: { box: 24, minGap: 8, folded: false, foldedPinned: false },
+  menu: { box: 24, minGap: 8, folded: true, foldedPinned: false },
   tight: { box: 24, minGap: 8, folded: true, foldedPinned: true },
 };
 
@@ -129,14 +132,15 @@ export type HeaderFitInput = {
   leftButtons: number;
   /** Task progress and Open in window: only the "tight" stage folds them. */
   pinnedRightButtons: number;
-  /** Settings, Export and Delete: the "menu", "compact" and "tight" stages fold them. */
+  /** Settings, Export and Delete: the "menu" and "tight" stages fold them. */
   foldableRightButtons: number;
   /**
-   * False keeps the "full" stage out of the choice. A web chat's Exit button
-   * is a text button wider than a box, so the arithmetic cannot count it;
-   * that row never shows it and Exit lives in the More menu. Default true.
+   * False keeps the "full" and "compact" stages out of the choice. A web
+   * chat's Exit button is a text button wider than a box, so the arithmetic
+   * cannot count it; that row never shows it and Exit lives in the More
+   * strip. Default true.
    */
-  allowFull?: boolean;
+  allowUnfolded?: boolean;
 };
 
 function blockWidth(buttons: number, box: number): number {
@@ -167,6 +171,9 @@ export function headerFitRequiredWidth(
     blockWidth(input.leftButtons, box) +
     input.capsule +
     blockWidth(rightButtons, box) +
+    // The capsule sits one minGap after History (the button's end margin);
+    // the actions keep at least one minGap from the left blocks (the row's
+    // column gap). Free space falls only on the second.
     2 * minGap
   );
 }
@@ -185,8 +192,10 @@ export function chooseHeaderFit(
   const fits = (stage: HeaderFit, spare: number) =>
     headerFitRequiredWidth(stage, input) + spare <= input.available;
   const last = HEADER_FIT_STAGES.length - 1;
-  const first = input.allowFull === false ? 1 : 0;
-  if (current === "full" && first > 0) current = "menu";
+  const first = input.allowUnfolded === false ? FIRST_FOLDED_STAGE : 0;
+  if (current && HEADER_FIT_STAGES.indexOf(current) < first) {
+    current = HEADER_FIT_STAGES[first];
+  }
   if (!current) {
     return (
       HEADER_FIT_STAGES.slice(first).find((stage) => fits(stage, 0)) ?? "tight"
@@ -251,7 +260,7 @@ export function updateHeaderFit(row: HTMLElement | null): void {
         "#llm-export",
         "#llm-clear",
       ]),
-      allowFull:
+      allowUnfolded:
         row.closest<HTMLElement>(".llm-panel")?.dataset.webchatMode !== "true",
     },
     isHeaderFit(row.dataset.fit) ? row.dataset.fit : null,

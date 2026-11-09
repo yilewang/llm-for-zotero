@@ -1,6 +1,3 @@
-import { t } from "../../../../utils/i18n";
-import { positionMenuBelowButton } from "../../menuPositioning";
-
 type HeaderMoreMenuDeps = {
   body: Element;
   panelDoc: Document;
@@ -23,8 +20,9 @@ export type HeaderMoreMenuController = {
 };
 
 /**
- * The Stacked header's More menu. Task progress and Open in window (tight
- * stage only), Settings, Export and Delete keep their one handler each, on their own buttons: an item clicks its button, so
+ * The Stacked header's More strip: icon buttons, no text. Task progress and
+ * Open in window (tight stage only), Settings, Export and Delete keep their
+ * one handler each, on their own buttons: an item clicks its button, so
  * authorization, confirmation and disabled state stay in one place. The
  * buttons are hidden while the row is collapsed, which does not stop a
  * programmatic click.
@@ -93,21 +91,51 @@ export function attachHeaderMoreMenuController(
         topSeparator.style.display = display;
       }
     }
-    // These buttons' titles change with state (Show or Hide task progress).
-    const taskItem = itemEl("llm-header-more-task-progress");
-    if (taskItem && deps.taskProgressBtn?.title) {
-      taskItem.textContent = deps.taskProgressBtn.title;
+    // These buttons' titles change with state (Show or Hide task progress)
+    // and the strip has no text, so the title is the item's only name.
+    for (const { id, source } of items) {
+      const el = itemEl(id);
+      const label = source?.title;
+      if (!el || !label) continue;
+      if (el.title !== label) el.title = label;
+      if (el.getAttribute("aria-label") !== label) {
+        el.setAttribute("aria-label", label);
+      }
     }
-    const deleteItem = itemEl("llm-header-more-delete");
-    if (deleteItem && deps.clearBtn) {
-      deleteItem.textContent = deps.clearBtn.title || t("Delete conversation");
-    }
+  };
+
+  // Right edge on the More button, below it, kept inside the panel.
+  const position = () => {
+    const win = deps.body.ownerDocument?.defaultView;
+    if (!win) return;
+    const margin = 8;
+    const panelRect = deps.body.getBoundingClientRect();
+    menu.style.position = "fixed";
+    menu.style.display = "flex";
+    menu.style.visibility = "hidden";
+    const menuRect = menu.getBoundingClientRect();
+    const buttonRect = moreBtn.getBoundingClientRect();
+    const minLeft = Math.max(margin, Math.round(panelRect.left) + 2);
+    const maxLeft = Math.max(
+      minLeft,
+      Math.min(
+        win.innerWidth - menuRect.width - margin,
+        Math.round(panelRect.right) - 2 - menuRect.width,
+      ),
+    );
+    const left = Math.min(
+      Math.max(minLeft, buttonRect.right - menuRect.width),
+      maxLeft,
+    );
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(buttonRect.bottom + 6)}px`;
+    menu.style.visibility = "visible";
   };
 
   const open = () => {
     deps.closeOtherMenus();
     syncItems();
-    positionMenuBelowButton(deps.body, menu, moreBtn);
+    position();
     moreBtn.setAttribute("aria-expanded", "true");
   };
 

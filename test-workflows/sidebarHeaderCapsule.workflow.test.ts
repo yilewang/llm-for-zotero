@@ -1,15 +1,15 @@
 /**
  * The Stacked sidebar header is three blocks: new chat and history, a capsule
- * with the mode chip and runtime toggles, and the panel actions. As the pane
- * narrows it moves through four stages, which the row writes as `data-fit`:
- * "full", "menu" (Settings, Export and Delete fold into the More button),
- * "compact" (24px boxes, 8px least between blocks), and "tight" (Task
- * progress and Open in window fold into More too). The chip has a fixed font
- * size here, so the stage and the capsule do not change with the plugin font
- * scale. This test sweeps the pane width in the real sidebar and checks the
- * stage, the geometry in each stage, the font-scale invariance, and the More
- * menu. The choice itself is unit-tested in
- * test/headerSpacing.test.ts.
+ * with the mode chip and runtime toggles, and the panel actions. The capsule
+ * sits right after History, never centred. As the pane narrows the row moves
+ * through four stages, which it writes as `data-fit`: "full" (28px boxes,
+ * 10px least between blocks), "compact" (24px boxes, 8px least), "menu"
+ * (Settings, Export and Delete fold into the More button), and "tight" (Task
+ * progress and Open in window fold into More too). The chip has a fixed
+ * 16.8px font here, so the stage and the capsule do not change with the
+ * plugin font scale. This test sweeps the pane width in the real sidebar and
+ * checks the stage, the geometry in each stage, the font-scale invariance,
+ * and the More icon strip.
  */
 import { assert } from "chai";
 import {
@@ -26,20 +26,21 @@ import type {
 const LAYOUT_PREF = "extensions.zotero.llmforzotero.sidebarLayout";
 /** Half a CSS pixel either way: what a 2x screen can still show. */
 const TOLERANCE = 0.5;
-const STAGES = ["full", "menu", "compact", "tight"] as const;
+const STAGES = ["full", "compact", "menu", "tight"] as const;
 type Stage = (typeof STAGES)[number];
 const MIN_GAP: Record<Stage, number> = {
   full: 10,
-  menu: 10,
   compact: 8,
+  menu: 8,
   tight: 8,
 };
 const BOX: Record<Stage, number> = {
   full: 28,
-  menu: 28,
   compact: 24,
+  menu: 24,
   tight: 24,
 };
+const CHIP_FONT = 16.8;
 
 describe("workflow: Stacked sidebar header capsule", function () {
   this.timeout(120000);
@@ -150,7 +151,7 @@ describe("workflow: Stacked sidebar header capsule", function () {
     if (fixture) await api.cleanupFixture(fixture);
   });
 
-  it("moves full, menu, compact, tight as the pane narrows, with sound geometry at every width", async function () {
+  it("moves full, compact, menu, tight as the pane narrows, with sound geometry at every width", async function () {
     const seen: Stage[] = [];
     let fullHeight = 0;
     for (let width = 600; width >= 200; width -= 10) {
@@ -170,18 +171,18 @@ describe("workflow: Stacked sidebar header capsule", function () {
         const node = q(selector);
         return node && node.getBoundingClientRect().width > 0 ? node : null;
       };
-      const folded = current !== "full";
+      const folded = current === "menu" || current === "tight";
       for (const id of ["#llm-settings", "#llm-export", "#llm-clear"]) {
         assert.equal(
           Boolean(visible(id)),
           !folded,
-          `${id} shows only in full: ${context}`,
+          `${id} shows unless folded: ${context}`,
         );
       }
       assert.equal(
         Boolean(visible("#llm-header-more")),
         folded,
-        `More shows only when the row is folded: ${context}`,
+        `More shows only in menu and tight: ${context}`,
       );
       for (const id of ["#llm-task-progress-toggle", "#llm-popout"]) {
         // Task progress belongs to a paper chat; it is shown here.
@@ -241,25 +242,33 @@ describe("workflow: Stacked sidebar header capsule", function () {
       }
       assert.closeTo(capsule.height, 26, TOLERANCE, `capsule: ${context}`);
 
-      // Gaps between blocks: at least the stage minimum, and equal either
-      // side of the capsule. The narrowest widths may overflow the row (no
-      // stage is smaller), so the gaps count only where the row has room.
+      // Gaps: the capsule is exactly the stage minimum after History (not
+      // doubled), and the actions are at least the minimum after the capsule.
+      // The narrowest widths may overflow the row (no stage is smaller), so
+      // the gaps count only where the row has room.
       const gapLeft = capsule.left - left[1].right;
       const gapRight = right[0].left - capsule.right;
-      const room = rowRect.width - (capsule.width + 2 * MIN_GAP[current]);
-      const blocks =
-        left[1].right -
-        left[0].left +
-        (right[right.length - 1].right - right[0].left);
-      if (blocks + 8 <= room) {
-        assert.isAtLeast(gapLeft, MIN_GAP[current] - TOLERANCE, context);
-        assert.isAtLeast(gapRight, MIN_GAP[current] - TOLERANCE, context);
-        assert.closeTo(gapLeft, gapRight, 1, `capsule is centred: ${context}`);
+      if (hasRoom) {
+        assert.closeTo(
+          gapLeft,
+          MIN_GAP[current],
+          1,
+          `history to capsule is the minimum gap: ${context}`,
+        );
+        assert.isAtLeast(gapRight, MIN_GAP[current] - 1, context);
+        if (width >= 500) {
+          // Free space lies between the capsule and the actions.
+          assert.isAbove(
+            gapRight,
+            gapLeft + 20,
+            `capsule is not centred: ${context}`,
+          );
+        }
       }
     }
     assert.deepEqual(
       seen,
-      ["full", "menu", "compact", "tight"],
+      ["full", "compact", "menu", "tight"],
       `the stages come in order down the sweep: ${seen.join(" > ")}`,
     );
   });
@@ -341,13 +350,23 @@ describe("workflow: Stacked sidebar header capsule", function () {
           results.push([scale, snapshot()]);
         }
         const [, base] = results[0];
-        assert.closeTo(base.chipFont, 12, 0.01, "the chip font is fixed 12px");
+        assert.closeTo(
+          base.chipFont,
+          CHIP_FONT,
+          0.01,
+          "the chip font is fixed 16.8px",
+        );
         for (const [scale, now] of results) {
           const context = `${width}px, --llm-font-scale ${scale}`;
           assert.equal(now.stage, base.stage, `same stage: ${context}`);
           assert.closeTo(now.capsule, base.capsule, 0.1, `capsule: ${context}`);
           assert.closeTo(now.chip, base.chip, 0.1, `chip: ${context}`);
-          assert.closeTo(now.chipFont, 12, 0.01, `chip font: ${context}`);
+          assert.closeTo(
+            now.chipFont,
+            CHIP_FONT,
+            0.01,
+            `chip font: ${context}`,
+          );
           assert.closeTo(now.left, base.left, 0.1, `box: ${context}`);
           assert.closeTo(now.more, base.more, 0.1, `More: ${context}`);
         }
@@ -362,7 +381,41 @@ describe("workflow: Stacked sidebar header capsule", function () {
       .filter((item) => item.style.display !== "none")
       .map((item) => item.id);
 
-  it("lists five items at a tight width and three at a menu width", async function () {
+  /** Every shown strip item is a 28px icon button named by title alone. */
+  function assertIconStrip(menu: HTMLElement, titles: Record<string, string>) {
+    for (const item of Array.from(
+      menu.querySelectorAll("[role=menuitem]"),
+    ) as HTMLButtonElement[]) {
+      if (item.style.display === "none") continue;
+      assert.equal(item.textContent!.trim(), "", `${item.id} has no text`);
+      assert.isNotEmpty(item.title, `${item.id} has a title`);
+      assert.equal(item.getAttribute("aria-label"), item.title, item.id);
+      assert.equal(item.title, titles[item.id], `${item.id} title`);
+      const rect = item.getBoundingClientRect();
+      assert.closeTo(rect.width, 28, TOLERANCE, `${item.id} width`);
+      assert.closeTo(rect.height, 28, TOLERANCE, `${item.id} height`);
+      assert.closeTo(
+        parseFloat(win().getComputedStyle(item).opacity),
+        0.72,
+        0.01,
+        `${item.id} rests at 0.72`,
+      );
+    }
+    const rect = menu.getBoundingClientRect();
+    const items = visibleItems(menu).map((id) =>
+      menu.querySelector(`#${id}`)!.getBoundingClientRect(),
+    );
+    for (const item of items) {
+      assert.closeTo(
+        item.top + item.height / 2,
+        rect.top + rect.height / 2,
+        1.5,
+        "the strip is one horizontal row",
+      );
+    }
+  }
+
+  it("lists five icon items at a tight width and three at a menu width", async function () {
     const menu = q<HTMLElement>("#llm-header-more-menu");
     const more = q<HTMLButtonElement>("#llm-header-more");
     const separators = () =>
@@ -371,18 +424,26 @@ describe("workflow: Stacked sidebar header capsule", function () {
       ).filter((node) => node.style.display !== "none").length;
     const open = async () => {
       more.click();
-      await until(() => menu.style.display !== "none", "More opens the menu");
+      await until(() => menu.style.display !== "none", "More opens the strip");
     };
     const close = async () => {
       more.click();
-      await until(() => menu.style.display === "none", "More closes the menu");
+      await until(() => menu.style.display === "none", "More closes the strip");
     };
+    const titleOf = (selector: string) => q<HTMLButtonElement>(selector).title;
+    const titles = () => ({
+      "llm-header-more-task-progress": titleOf("#llm-task-progress-toggle"),
+      "llm-header-more-popout": titleOf("#llm-popout"),
+      "llm-header-more-settings": titleOf("#llm-settings"),
+      "llm-header-more-export": titleOf("#llm-export"),
+      "llm-header-more-delete": titleOf("#llm-clear"),
+    });
     assert.equal(await setWidth(600), "full");
     // Find a width for each stage from the same arithmetic the row uses.
     const input = fitInput();
     const need = (s: Stage) => headerFitRequiredWidth(s, input);
     const menuWidth = Math.ceil(need("menu")) + 4;
-    const tightWidth = Math.floor(need("compact")) - 6;
+    const tightWidth = Math.floor(need("menu")) - 6;
     assert.equal(await setWidth(menuWidth), "menu");
     await open();
     assert.deepEqual(visibleItems(menu), [
@@ -390,7 +451,8 @@ describe("workflow: Stacked sidebar header capsule", function () {
       "llm-header-more-export",
       "llm-header-more-delete",
     ]);
-    assert.equal(separators(), 1, "one separator above Delete");
+    assert.equal(separators(), 0, "no separator without the top items");
+    assertIconStrip(menu, titles());
     await close();
 
     assert.equal(await setWidth(tightWidth), "tight");
@@ -402,11 +464,12 @@ describe("workflow: Stacked sidebar header capsule", function () {
       "llm-header-more-export",
       "llm-header-more-delete",
     ]);
-    assert.equal(separators(), 2, "a separator under Open in window too");
+    assert.equal(separators(), 1, "one separator under Open in window");
+    assertIconStrip(menu, titles());
     await close();
   });
 
-  it("opens the More menu with Settings, Export and Delete, Export matching its button", async function () {
+  it("opens the More strip with Settings, Export and Delete, Export matching its button", async function () {
     assert.equal(await setWidth(600), "full");
     assert.equal(widthOf("#llm-header-more"), 0, "More is hidden in full");
     const folded = await setWidth(
@@ -451,10 +514,14 @@ describe("workflow: Stacked sidebar header capsule", function () {
       );
     }
     assert.isFalse(q<HTMLButtonElement>("#llm-export").disabled);
-    assert.isOk(
-      menu.querySelector(".llm-follower-menu-separator"),
-      "a separator sits above Delete",
-    );
+    // The strip opens below More with its right edge on More's right edge.
+    // (The test window can place the panel off screen; the strip then clamps
+    // to the window, so the edge is compared only for an on-screen button.)
+    if (more.getBoundingClientRect().left > 0) {
+      assert.closeTo(menuRect.right, more.getBoundingClientRect().right, 1.5);
+    }
+    assert.isAbove(menuRect.top, more.getBoundingClientRect().bottom - 1);
+    assert.isAbove(menuRect.width, menuRect.height, "a horizontal strip");
 
     // Escape closes the menu and returns focus to the button.
     const KeyEvent = win().KeyboardEvent;
