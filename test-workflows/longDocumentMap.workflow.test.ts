@@ -38,6 +38,7 @@ import {
   clearSectionPickCache,
 } from "../src/agent/digests/sectionPicker";
 import { buildDocumentOutline } from "../src/services/paperContent/pdfContext";
+import { estimateTextTokens } from "../src/utils/modelInputCap";
 import type { ReaderAdapterFactories } from "../src/agent/reader/resolveReader";
 import type { ReaderCompletion } from "../src/shared/readerCompletion";
 import type { AgentToolContext } from "../src/agent/types";
@@ -614,6 +615,68 @@ describe("workflow: long documents are read by their map", function () {
     for (const page of [2, 3, 4])
       assert.include(wholeText, `Foundations p${page} line`);
     assert.notInclude(wholeText, "Methods p5");
+  });
+
+  it("reads exactly a section's own text where a chunk crosses its start, and a query scoped to it finds its start", async function () {
+    const context = await new PdfService().ensurePaperContext(bookmarked.paper);
+    const outline = buildDocumentOutline(context);
+    const section = (title: string) =>
+      outline.sections.find((entry) => entry.title === title)!;
+    // "1.2 Later ideas" starts halfway down page 4, inside a chunk that
+    // also holds the end of "Early ideas".
+    const later = section("Later ideas");
+    const lastEarlyLine = `Foundations p4 line ${LINES_PER_PAGE / 2}:`;
+    const crossing = context!.chunks.some(
+      (chunk) =>
+        chunk.includes("1.2 Later ideas") &&
+        chunk.split("\n").some((line) => line.startsWith(lastEarlyLine)),
+    );
+    assert.isTrue(crossing, "a chunk crosses the section start");
+    const linesOf = (output: any): string[] =>
+      output.papers[0].passages.flatMap((passage: any) =>
+        String(passage.text).split("\n"),
+      );
+    const tokensOf = (output: any) =>
+      output.papers[0].passages.reduce(
+        (sum: number, passage: any) => sum + estimateTextTokens(passage.text),
+        0,
+      );
+
+    const early = await read(bookmarked, {
+      mode: "targeted",
+      sectionIds: [section("Early ideas").sectionId],
+    });
+    const earlyLines = linesOf(early);
+    assert.isTrue(
+      earlyLines.some((line) => line.startsWith(lastEarlyLine)),
+      "the last line of Early ideas",
+    );
+    assert.notInclude(earlyLines.join("\n"), "1.2 Later ideas");
+    assert.notInclude(earlyLines.join("\n"), "More Foundations p4");
+    const earlyTokens = section("Early ideas").tokens;
+    assert.closeTo(tokensOf(early), earlyTokens, earlyTokens * 0.05);
+
+    const own = await read(bookmarked, {
+      mode: "targeted",
+      sectionIds: [later.sectionId],
+    });
+    assert.match(own.papers[0].passages[0].text, /^1\.2 Later ideas/);
+    assert.isFalse(
+      linesOf(own).some((line) => line.startsWith("Foundations p")),
+      "no line of Early ideas",
+    );
+    assert.closeTo(tokensOf(own), later.tokens, later.tokens * 0.05);
+
+    const found = await read(bookmarked, {
+      mode: "targeted",
+      sectionIds: [later.sectionId],
+      query: "Later ideas",
+      topK: 2,
+    });
+    assert.include(
+      found.papers[0].passages.map((passage: any) => passage.text).join("\n"),
+      "1.2 Later ideas",
+    );
   });
 
   it("lists one level of the map at a time", async function () {

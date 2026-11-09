@@ -64,6 +64,7 @@ import { isMineruEnabled } from "../../utils/mineruConfig";
 import type {
   PdfContext,
   PdfDocumentStructure,
+  SectionChunkPiece,
   DocumentStructureSection,
   ChunkStat,
   DocumentOutline,
@@ -765,7 +766,7 @@ async function cachePDFText(
 export function ensurePDFTextCached(
   item: Zotero.Item,
   options?: PaperTextLoadOptions,
-): Promise<void> {
+): Promise<PdfContext | undefined> {
   return paperTextStore.load(item, options, cachePDFText);
 }
 
@@ -962,23 +963,70 @@ function findSentenceBoundary(
 // ── Plain-text chunking (PDFWorker, notes) ────────────────────────────────────
 
 function splitIntoChunks(text: string, targetLength: number): string[] {
+  return splitIntoChunkSpans(text, targetLength).map((chunk) => chunk.text);
+}
+
+/** A chunk and the `[start, end)` offsets of its text in the source. */
+type ChunkSpan = { text: string; start: number; end: number };
+
+/**
+ * `splitIntoChunks` with where each chunk lies in `text`. A chunk joins
+ * paragraphs with a blank line, so its text can differ from the source's
+ * in whitespace only.
+ */
+function splitIntoChunkSpans(text: string, targetLength: number): ChunkSpan[] {
   if (!text) return [];
-  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  // "\r\n" and "\r" read as "\n"; offsets still index `text`.
+  const lineEnds = /\r\n?/g;
+  const rawAt: number[] = [];
+  let normalized = text;
+  if (text.includes("\r")) {
+    normalized = "";
+    let from = 0;
+    for (let match; (match = lineEnds.exec(text)); ) {
+      for (let at = from; at < match.index; at += 1) rawAt.push(at);
+      rawAt.push(match.index);
+      normalized += `${text.slice(from, match.index)}\n`;
+      from = match.index + match[0].length;
+    }
+    for (let at = from; at < text.length; at += 1) rawAt.push(at);
+    normalized += text.slice(from);
+  }
+  const raw = (offset: number) =>
+    rawAt.length ? (rawAt[offset] ?? text.length) : offset;
+  const lead = normalized.length - normalized.trimStart().length;
+  normalized = normalized.trim();
   if (!normalized) return [];
 
-  const paragraphs = normalized.split(/\n\s*\n/);
-  const chunks: string[] = [];
+  const chunks: ChunkSpan[] = [];
+  // `end` is where the chunk's last source character ends; a joined chunk's
+  // text can be shorter than its source span, so callers pass it explicitly.
+  const push = (chunk: string, start: number, end = start + chunk.length) =>
+    chunks.push({
+      text: chunk,
+      start: raw(lead + start),
+      end: raw(lead + end - 1) + 1,
+    });
   let current = "";
+  let currentStart = 0;
+  let currentEnd = 0;
 
   const pushCurrent = () => {
-    if (current.trim()) chunks.push(current.trim());
+    if (current.trim()) push(current.trim(), currentStart, currentEnd);
     current = "";
   };
 
-  for (const para of paragraphs) {
+  const separator = /\n\s*\n/g;
+  let paraStart = 0;
+  for (;;) {
+    const match = separator.exec(normalized);
+    const para = normalized.slice(
+      paraStart,
+      match ? match.index : normalized.length,
+    );
     const p = para.trim();
-    if (!p) continue;
-    if (p.length > targetLength) {
+    const pStart = paraStart + para.length - para.trimStart().length;
+    if (p && p.length > targetLength) {
       pushCurrent();
       let start = 0;
       while (start < p.length) {
@@ -986,22 +1034,30 @@ function splitIntoChunks(text: string, targetLength: number): string[] {
         const rawEnd = Math.min(start + targetLength, p.length);
         const end =
           rawEnd < p.length ? findSentenceBoundary(p, rawEnd, 200) : rawEnd;
-        const slice = p.slice(start, end).trim();
-        if (slice) chunks.push(slice);
+        const piece = p.slice(start, end);
+        const slice = piece.trim();
+        if (slice)
+          push(slice, pStart + start + piece.length - piece.trimStart().length);
         if (end >= p.length) break;
         const rawOverlapStart = Math.max(0, end - CHUNK_OVERLAP);
         start = findSentenceBoundary(p, rawOverlapStart, 100);
         // Guard: ensure forward progress to prevent infinite loop
         if (start <= prevStart) start = prevStart + targetLength;
       }
-      continue;
+    } else if (p) {
+      if (current.length + p.length + 2 <= targetLength) {
+        if (!current) currentStart = pStart;
+        current = current ? `${current}\n\n${p}` : p;
+        currentEnd = pStart + p.length;
+      } else {
+        pushCurrent();
+        current = p;
+        currentStart = pStart;
+        currentEnd = pStart + p.length;
+      }
     }
-    if (current.length + p.length + 2 <= targetLength) {
-      current = current ? `${current}\n\n${p}` : p;
-    } else {
-      pushCurrent();
-      current = p;
-    }
+    if (!match) break;
+    paraStart = match.index + match[0].length;
   }
   pushCurrent();
   return chunks;
@@ -1805,22 +1861,21 @@ export function buildChunkMetadata(
 
 /**
  * The structure's sections fitted to the chunks: each section with the
- * chunks it overlaps and its heading chain; a section no chunk overlaps is
- * left out and its subsections move up to its parent.
+ * chunks it overlaps (`spans`, where the chunks lie in the text) and its
+ * heading chain; a section no chunk overlaps is left out and its
+ * subsections move up to its parent.
  */
 function fitStructureToChunks(
   sections: DocumentStructureSection[],
-  chunkMeta: PdfChunkMeta[],
+  spans: ChunkSpan[],
 ): PdfDocumentStructure["sections"] {
   const ranges = sections.map((section) => {
     let chunkStart = -1;
     let chunkEnd = -1;
-    for (const meta of chunkMeta) {
-      const start = meta.sourceStart ?? 0;
-      const end = meta.sourceEnd ?? start;
-      if (start < section.charEnd && end > section.charStart) {
-        if (chunkStart < 0) chunkStart = meta.chunkIndex;
-        chunkEnd = meta.chunkIndex;
+    for (const [chunkIndex, span] of spans.entries()) {
+      if (span.start < section.charEnd && span.end > section.charStart) {
+        if (chunkStart < 0) chunkStart = chunkIndex;
+        chunkEnd = chunkIndex;
       }
     }
     return { chunkStart, chunkEnd };
@@ -1848,6 +1903,95 @@ function fitStructureToChunks(
     });
   });
   return fitted;
+}
+
+/**
+ * The position in `span.text` of the first character at or past source
+ * offset `offset`. The chunk text matches the source but for whitespace.
+ * Null when the two do not line up.
+ */
+function chunkPositionAt(
+  source: string,
+  span: ChunkSpan,
+  offset: number,
+): number | null {
+  if (offset <= span.start) return 0;
+  if (offset >= span.end) return span.text.length;
+  if (source.startsWith(span.text, span.start)) return offset - span.start;
+  let at = span.start;
+  for (let index = 0; index < span.text.length; index += 1) {
+    const char = span.text[index];
+    if (/\s/.test(char)) continue;
+    while (at < source.length && source[at] !== char && /\s/.test(source[at]))
+      at += 1;
+    if (source[at] !== char) return null;
+    if (at >= offset) return index;
+    at += 1;
+  }
+  return span.text.length;
+}
+
+/**
+ * The chunks cut at every section start, without the text a chunk repeats
+ * from the one before it: each piece lies in one deepest section. A chunk
+ * whose text does not line up with the source stays whole.
+ */
+function sectionPieces(
+  source: string,
+  spans: ChunkSpan[],
+  sections: PdfDocumentStructure["sections"],
+  pageAt: (offset: number) => number,
+): SectionChunkPiece[] {
+  const starts = [...new Set(sections.map((section) => section.charStart))];
+  const sectionAt = (offset: number) => {
+    let found = 0;
+    for (const [index, section] of sections.entries()) {
+      if (section.charStart > offset) break;
+      found = index;
+    }
+    return found;
+  };
+  const pieces: SectionChunkPiece[] = [];
+  let covered = 0;
+  for (const [chunkIndex, span] of spans.entries()) {
+    const from = Math.max(span.start, covered);
+    covered = Math.max(covered, span.end);
+    const cuts = [
+      from,
+      ...starts.filter((start) => start > from && start < span.end),
+      span.end,
+    ].sort((a, b) => a - b);
+    const positions = cuts.map((cut) => chunkPositionAt(source, span, cut));
+    if (positions.some((position) => position === null)) {
+      pieces.push({
+        chunkIndex,
+        start: 0,
+        end: span.text.length,
+        sourceStart: span.start,
+        sourceEnd: span.end,
+        sectionIndex: sectionAt(span.start),
+        pageStart: pageAt(span.start),
+        pageEnd: pageAt(span.end - 1),
+      });
+      continue;
+    }
+    for (let at = 0; at + 1 < cuts.length; at += 1) {
+      const start = positions[at]!;
+      const end = positions[at + 1]!;
+      if (!span.text.slice(start, end).trim()) continue;
+      pieces.push({
+        chunkIndex,
+        start,
+        end,
+        sourceStart: cuts[at],
+        sourceEnd: cuts[at + 1],
+        sectionIndex: sectionAt(cuts[at]),
+        pageStart: pageAt(cuts[at]),
+        pageEnd: pageAt(cuts[at + 1] - 1),
+      });
+    }
+  }
+  return pieces;
 }
 
 /**
@@ -1904,7 +2048,8 @@ export function allowsChapterMap(itemType: string | undefined): boolean {
  * result is `buildChunkMetadata`'s alone; with it, an unchaptered text adds
  * only its `textPages` (`textPageEntries`) and, with usable bookmarks, its
  * `bookmarkSections` (`bookmarkSectionTree`). With it, a text that lost
- * blank leading pages also carries the `textPageOffset` its bookmarks prove.
+ * pages also carries the `textPageOffset` its bookmarks prove; without a
+ * proof it gets no structure and no page map.
  */
 export function chunkPlainPdfText(
   text: string,
@@ -1926,22 +2071,35 @@ export function chunkPlainPdfText(
   | "bookmarkSections"
   | "textPageOffset"
 > {
-  const chunks = splitIntoChunks(text, CHUNK_TARGET_LENGTH);
+  const spans = splitIntoChunkSpans(text, CHUNK_TARGET_LENGTH);
+  const chunks = spans.map((span) => span.text);
   const chunkMeta = buildChunkMetadata(chunks, sourceType, {
     sourceText: text,
     pageChars: options.layout?.pageChars,
   });
   if (!options.structure) return { chunks, chunkMeta };
+  const pages = splitPdfTextPages(text, options.layout) || [];
+  const pageAtShifted = (offset: number, shiftBy: number) => {
+    let found = pages[0];
+    for (const page of pages) {
+      if (page.start > offset) break;
+      found = page;
+    }
+    return (found?.index ?? 0) + shiftBy;
+  };
   const pageOffset = textPageOffset({
     text,
     layout: options.layout,
     bookmarks: options.structure.bookmarks,
   });
-  const textParts = splitPdfTextPages(text, options.layout)?.length ?? 0;
-  // Only a proven shift past lost pages; a text with every page needs none.
-  const shift: Pick<PdfContext, "textPageOffset"> = pageOffset
-    ? { textPageOffset: { pageOffset, textParts } }
-    : {};
+  const textParts = pages.length;
+  // A proven shift (0 included) for text that lost pages; text with every
+  // page needs none.
+  const pageCount = options.layout?.totalPages ?? textParts;
+  const shift: Pick<PdfContext, "textPageOffset"> =
+    pageOffset !== null && textParts < pageCount
+      ? { textPageOffset: { pageOffset, textParts } }
+      : {};
   const unstructured = () => {
     const textPages = textPageEntries(text, options.layout, pageOffset);
     const tree = bookmarkSectionTree({
@@ -1949,13 +2107,21 @@ export function chunkPlainPdfText(
       layout: options.layout,
       bookmarks: options.structure?.bookmarks,
     });
-    const sections = tree ? fitStructureToChunks(tree.sections, chunkMeta) : [];
+    const sections = tree ? fitStructureToChunks(tree.sections, spans) : [];
     return {
       chunks,
       chunkMeta,
       ...(textPages ? { textPages } : {}),
       ...(tree && sections.length
-        ? { bookmarkSections: { pageCount: tree.pageCount, sections } }
+        ? {
+            bookmarkSections: {
+              pageCount: tree.pageCount,
+              sections,
+              pieces: sectionPieces(text, spans, sections, (offset) =>
+                pageAtShifted(offset, tree.pageOffset),
+              ),
+            },
+          }
         : {}),
       ...shift,
     };
@@ -1967,17 +2133,9 @@ export function chunkPlainPdfText(
     bookmarks: options.structure.bookmarks,
   });
   if (!detected) return unstructured();
-  const sections = fitStructureToChunks(detected.sections, chunkMeta);
+  const sections = fitStructureToChunks(detected.sections, spans);
   if (!sections.length) return unstructured();
-  const pages = splitPdfTextPages(text, options.layout) || [];
-  const pageAt = (offset: number) => {
-    let found = pages[0];
-    for (const page of pages) {
-      if (page.start > offset) break;
-      found = page;
-    }
-    return (found?.index ?? 0) + detected.pageOffset;
-  };
+  const pageAt = (offset: number) => pageAtShifted(offset, detected.pageOffset);
   const sectionAt = (offset: number) => {
     let found = 0;
     for (const [index, section] of sections.entries()) {
@@ -1986,14 +2144,20 @@ export function chunkPlainPdfText(
     }
     return found;
   };
-  const structured = chunkMeta.map((meta): PdfChunkMeta => {
-    const start = meta.sourceStart ?? 0;
-    const end = Math.max(start, (meta.sourceEnd ?? start) - 1);
+  const structured = chunkMeta.map((meta, chunkIndex): PdfChunkMeta => {
+    // Placed by where the chunker cut it, not by a text search.
+    const { start, end: spanEnd } = spans[chunkIndex];
+    const end = Math.max(start, spanEnd - 1);
     const sectionIndex = sectionAt(start);
     const section = sections[sectionIndex];
+    // A chunk that crosses a section start is in every section it touches.
+    const sectionIndexes = sections.flatMap((other, index) =>
+      other.charStart < spanEnd && other.charEnd > start ? [index] : [],
+    );
     return {
       ...meta,
       sectionIndex,
+      sectionIndexes,
       sectionLabel: section.title,
       sectionPath: section.path,
       sectionLevel: section.level,
@@ -2009,6 +2173,7 @@ export function chunkPlainPdfText(
       source: detected.source,
       pageCount: detected.pageCount,
       sections,
+      pieces: sectionPieces(text, spans, sections, pageAt),
       plainChunkMeta: chunkMeta,
     },
     ...shift,
@@ -2911,16 +3076,24 @@ function selectSectionDiverseFallback(
   return selected;
 }
 
-/** Whether a candidate is in a requested scope of sections or chunks. */
+/**
+ * Whether a candidate is in a requested scope of sections or chunks. A
+ * chunk that crosses a section start is in every section it touches.
+ */
 function inRequestedScope(
-  candidate: Pick<PaperContextCandidate, "chunkIndex" | "sectionIndex">,
+  candidate: Pick<
+    PaperContextCandidate,
+    "chunkIndex" | "sectionIndex" | "sectionIndexes"
+  >,
   sectionIds: readonly string[] = [],
   chunkIndexes: readonly number[] = [],
 ): boolean {
+  const sections =
+    candidate.sectionIndexes ??
+    (candidate.sectionIndex !== undefined ? [candidate.sectionIndex] : []);
   return (
     chunkIndexes.includes(candidate.chunkIndex) ||
-    (candidate.sectionIndex !== undefined &&
-      sectionIds.includes(sectionIdForIndex(candidate.sectionIndex)))
+    sections.some((index) => sectionIds.includes(sectionIdForIndex(index)))
   );
 }
 
@@ -2984,6 +3157,81 @@ export function buildBookmarkOutline(
   const map = ctx?.bookmarkSections;
   if (!ctx || !map?.sections.length) return null;
   return outlineFromStructure(map, ctx.chunks.length);
+}
+
+/** A run of a section's text: a chunk, or the part of it in the section. */
+export type SectionTextPiece = {
+  chunkIndex: number;
+  text: string;
+  /** 0-based PDF pages, when known. */
+  pageStart?: number;
+  pageEnd?: number;
+  /** The deepest section that holds it, when the chunks name sections. */
+  sectionIndex?: number;
+};
+
+/**
+ * A section's text in document order. A plain PDF's section (from
+ * `documentStructure` or `bookmarkSections`) gives only its own text, from
+ * the chunks cut at section starts (`pieces`); any other section gives its
+ * chunks whole.
+ */
+export function sectionTextPieces(
+  content: Pick<
+    PdfContext,
+    "chunks" | "chunkMeta" | "documentStructure" | "bookmarkSections"
+  >,
+  section: Pick<DocumentOutlineSection, "sectionId" | "title" | "chunkIndexes">,
+): SectionTextPiece[] {
+  const [from, to] = section.chunkIndexes;
+  const index = Number(section.sectionId.slice(1));
+  for (const map of [content.bookmarkSections, content.documentStructure]) {
+    const entry = map?.sections[index];
+    if (
+      !map?.pieces ||
+      !entry ||
+      entry.title !== section.title ||
+      entry.chunkStart !== from ||
+      entry.chunkEnd !== to
+    )
+      continue;
+    const namesSections = map === content.documentStructure;
+    return map.pieces.flatMap((piece) => {
+      if (piece.sourceStart >= entry.charEnd) return [];
+      if (piece.sourceEnd <= entry.charStart) return [];
+      const text = (content.chunks[piece.chunkIndex] || "")
+        .slice(piece.start, piece.end)
+        .trim();
+      return text
+        ? [
+            {
+              chunkIndex: piece.chunkIndex,
+              text,
+              pageStart: piece.pageStart,
+              pageEnd: piece.pageEnd,
+              ...(namesSections ? { sectionIndex: piece.sectionIndex } : {}),
+            },
+          ]
+        : [];
+    });
+  }
+  const pieces: SectionTextPiece[] = [];
+  for (let chunkIndex = from; chunkIndex <= to; chunkIndex += 1) {
+    const text = (content.chunks[chunkIndex] || "").trim();
+    if (!text) continue;
+    const meta = content.chunkMeta[chunkIndex];
+    pieces.push({
+      chunkIndex,
+      text,
+      ...(meta?.pageStart !== undefined
+        ? { pageStart: meta.pageStart, pageEnd: meta.pageEnd ?? meta.pageStart }
+        : {}),
+      ...(meta?.sectionIndex !== undefined
+        ? { sectionIndex: meta.sectionIndex }
+        : {}),
+    });
+  }
+  return pieces;
 }
 
 /**
@@ -3266,6 +3514,7 @@ export async function buildPaperRetrievalCandidates(
       chunkText: chunks[chunk.index],
       sectionLabel: meta?.sectionLabel,
       sectionIndex: meta?.sectionIndex,
+      ...(meta?.sectionIndexes ? { sectionIndexes: meta.sectionIndexes } : {}),
       sectionPath: meta?.sectionPath,
       enclosingSection: meta?.enclosingSection,
       chunkKind: meta?.chunkKind,

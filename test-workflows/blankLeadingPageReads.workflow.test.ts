@@ -9,12 +9,18 @@
  * - a page read of a paper that was never loaded proves the shift itself from
  *   the bookmarks, from PDFWorker's text and from Zotero's full-text cache;
  * - without bookmarks the shift cannot be proven, and the page read refuses
- *   rather than place text on the wrong page.
+ *   rather than place text on the wrong page;
+ * - bookmarks that two shifts fit equally well (a chapter title on every
+ *   page) prove nothing: the paper gets no chapter map and no page map,
+ *   and preloads whole;
+ * - text that lost only trailing blank pages is proven at shift 0, and a
+ *   page read works for every page its page map offers.
  */
 import { assert } from "chai";
 import { createPdfWithOutline } from "../test/helpers/outlinePdfFixture";
 import { resolvedAgentRequest } from "../test/helpers/resolvedAgentRequest";
 import { PdfService } from "../src/agent/services/pdfService";
+import { preparePaperPromptContext } from "../src/agent/context/paperPromptContext";
 import { PdfPageService } from "../src/agent/services/pdfPageService";
 import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import { paperTextStore } from "../src/services/paperContent/paperTextStore";
@@ -59,8 +65,12 @@ describe("workflow: page reads on a PDF with blank leading pages", function () {
   this.timeout(120000);
   const fixtures: Fixture[] = [];
 
-  async function importPdf(title: string, bytes: Uint8Array): Promise<Fixture> {
-    const parent = new Zotero.Item("book");
+  async function importPdf(
+    title: string,
+    bytes: Uint8Array,
+    parentType = "book",
+  ): Promise<Fixture> {
+    const parent = new Zotero.Item(parentType);
     parent.libraryID = Zotero.Libraries.userLibraryID;
     parent.setField("title", title);
     const parentItemId = Number(await parent.saveTx());
@@ -319,5 +329,105 @@ describe("workflow: page reads on a PDF with blank leading pages", function () {
       String((failure as Error)?.message ?? failure),
       /Could not read page text from this PDF/,
     );
+  });
+
+  it("gives a paper no chapter map or page map when two shifts fit its bookmarks equally, and preloads it whole", async function () {
+    // One blank leading page; each chapter's title heads every page of it,
+    // so shift 0 and shift 1 put every bookmark title on its page.
+    const tiedPages: string[][] = [
+      [],
+      ["Chapter 1 Origins", marker(2), "Origins continue on this page."],
+      ["Chapter 1 Origins", marker(3), "Origins continue on this page."],
+      ["Chapter 2 Methods", marker(4), "Methods continue on this page."],
+      ["Chapter 2 Methods", marker(5), "Methods continue on this page."],
+    ];
+    const fixture = await importPdf(
+      `Tied shift ${Date.now()}`,
+      await createPdfWithOutline({
+        pages: tiedPages,
+        outline: [
+          { title: "Chapter 1 Origins", page: 1 },
+          { title: "Chapter 2 Methods", page: 3 },
+        ],
+      }),
+    );
+    const extracted = await Zotero.PDFWorker.getFullText(
+      fixture.paper.contextItemId,
+    );
+    assert.isBelow(
+      String(extracted.text).split("\f").length,
+      tiedPages.length,
+      "Zotero dropped the blank leading page",
+    );
+    const context = await new PdfService().ensurePaperContext(fixture.paper);
+    assert.isOk(context?.chunks.length);
+    assert.isUndefined(context?.documentStructure, "no chapter map");
+    assert.isUndefined(context?.textPages, "no page map");
+    assert.isUndefined(context?.bookmarkSections, "no section map");
+    assert.isUndefined(context?.textPageOffset, "no shift proven");
+    const prepared = await preparePaperPromptContext(
+      resolvedAgentRequest({
+        conversationKey: 0,
+        mode: "agent",
+        libraryID: fixture.paper.libraryID,
+        userText: "Explain this book",
+        activePaperContext: fixture.paper,
+        conversationKind: "paper",
+      }),
+    );
+    assert.include(prepared.blocks[0], "Complete extracted paper text");
+    assert.include(prepared.blocks[0], marker(5));
+  });
+
+  it("proves a shift of 0 for text that lost only trailing blank pages, and reads every page its page map offers", async function () {
+    const TRAILING_BLANK = 2;
+    // Body pages from PDF page 1, each opening with its own heading.
+    const bodyPages = Array.from({ length: BODY_PAGES }, (_, index) => [
+      `Heading ${index + 1} opens here`,
+      marker(index + 1),
+      `Filler sentence for page ${index + 1}: the reading continues on this page.`,
+    ]);
+    const trailing = [
+      ...bodyPages,
+      ...Array.from({ length: TRAILING_BLANK }, () => []),
+    ];
+    // A journal article: no chapter map, so its page map is what it offers.
+    const fixture = await importPdf(
+      `Trailing blank pages ${Date.now()}`,
+      await createPdfWithOutline({
+        pages: trailing,
+        outline: bodyPages.map((lines, page) => ({ title: lines[0], page })),
+      }),
+      "journalArticle",
+    );
+    const extracted = await Zotero.PDFWorker.getFullText(
+      fixture.paper.contextItemId,
+    );
+    assert.equal(extracted.totalPages, trailing.length);
+    assert.isBelow(
+      String(extracted.text).split("\f").length,
+      trailing.length,
+      "Zotero dropped the trailing blank pages",
+    );
+    const context = await new PdfService().ensurePaperContext(fixture.paper);
+    assert.isUndefined(context?.documentStructure);
+    assert.equal(context?.textPageOffset?.pageOffset, 0);
+    assert.lengthOf(context?.textPages || [], trailing.length);
+
+    clearPageTextCache();
+    for (let pageIndex = 0; pageIndex < trailing.length; pageIndex += 1) {
+      const result = await pageService().readPageTexts({
+        paperContext: fixture.paper,
+        request: request(fixture),
+        pages: [pageIndex],
+      });
+      const text = result.pages[0].text;
+      const pdfPage = pageIndex + 1;
+      if (pdfPage > bodyPages.length) {
+        assert.equal(text.trim(), "", `trailing blank page ${pdfPage}`);
+        continue;
+      }
+      assert.include(text, marker(pdfPage), `page ${pdfPage} own text`);
+    }
   });
 });

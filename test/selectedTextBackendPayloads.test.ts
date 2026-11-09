@@ -173,6 +173,29 @@ describe("highlight-aware backend payloads", function () {
     );
   });
 
+  it("names no paper_read call in a raw-PDF Codex native turn", function () {
+    const block = buildCodexNativeVisibleTurnContextBlockForTests({
+      scope: {
+        conversationKey: 30304,
+        libraryID: 1,
+        libraryName: "My Library",
+        kind: "global",
+      },
+      skillContext: {
+        selectedTextContexts: [selectedTextContext],
+        resolvedSelectedTextAnchors: [resolvedAnchor],
+        selectedTexts: [selectedTextContext.text],
+        selectedTextSources: ["pdf"],
+        selectedTextPaperContexts: [selectedTextContext.paperContext],
+      },
+      rawPdfMode: true,
+    });
+
+    assert.include(block, "The highlighted claim and its explanation.");
+    assert.include(block, "read PDF page 588 for attachment");
+    assert.notInclude(block, "paper_read");
+  });
+
   describe("a chip's question", function () {
     const questionContext: SelectedTextContext = {
       ...selectedTextContext,

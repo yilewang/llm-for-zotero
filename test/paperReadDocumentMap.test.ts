@@ -9,6 +9,8 @@ import {
   chunkPlainPdfText,
 } from "../src/services/paperContent/pdfContext";
 import type { PdfContext } from "../src/services/paperContent/types";
+import { estimateTextTokens } from "../src/utils/modelInputCap";
+import { resolveOutputReserve } from "../src/utils/outputTokenPolicy";
 import { DISSERTATION_PAGES, joinPages } from "./fixtures/longdoc/pageTexts";
 import { headingMatchReader } from "./helpers/sectionPickerFixtures";
 import {
@@ -203,6 +205,99 @@ describe("paper_read on a document with chapters", function () {
     assert.isUndefined(row.map);
   });
 
+  it("reads exactly a leaf section's text, at the size the map lists, though a chunk crosses its start", async function () {
+    // 1.2 starts mid-page 6, inside the chunk that holds the end of 1.1.
+    const before = ctxOutlineSection("s2");
+    const after = ctxOutlineSection("s3");
+    const tokensOf = (row: any) =>
+      row.passages.reduce(
+        (sum: number, passage: any) => sum + estimateTextTokens(passage.text),
+        0,
+      );
+    const first = (await run({ mode: "targeted", sectionIds: ["s2"] }))
+      .papers[0];
+    const firstText = first.passages.map((p: any) => p.text).join("\n");
+    assert.include(firstText, "Figure 1.1");
+    assert.notInclude(firstText, "1.2Hierarchical");
+    assert.notInclude(firstText, "Page 6 body");
+    assert.closeTo(tokensOf(first), before.tokens, before.tokens * 0.05);
+    const second = (await run({ mode: "targeted", sectionIds: ["s3"] }))
+      .papers[0];
+    assert.match(second.passages[0].text, /^1\.2Hierarchical/);
+    const secondText = second.passages.map((p: any) => p.text).join("\n");
+    assert.notInclude(secondText, "Figure 1.1");
+    assert.notInclude(secondText, "Page 5 body");
+    assert.closeTo(tokensOf(second), after.tokens, after.tokens * 0.05);
+    for (const passage of second.passages)
+      assert.equal(passage.sectionId, "s3");
+    // A leaf over the context left lists only its own text per page.
+    const over = await run({ mode: "targeted", sectionIds: ["s2"] }, 1_500);
+    const lines: string[] = over.papers[0].map[0].lines;
+    const listed = lines.reduce(
+      (sum, line) => sum + Number(/~(\d+) tokens/.exec(line)![1]),
+      0,
+    );
+    assert.closeTo(listed, before.tokens, before.tokens * 0.05);
+  });
+
+  it("finds text at a section's start when a query is scoped to it", async function () {
+    const output = await run({
+      mode: "targeted",
+      sectionIds: ["s3"],
+      query: "Hierarchical architecture of the visual cortex",
+      topK: 2,
+    });
+    const text = output.papers[0].passages
+      .map((passage: any) => passage.text)
+      .join("\n");
+    assert.include(text, "1.2Hierarchical architecture of the visual cortex");
+  });
+
+  it("bounds a section read by the reading share of the input limit when the host reports no live context", async function () {
+    // An MCP host (Codex native, Claude bridge) sends no live context.
+    const part = ctxOutlineSection("s1");
+    const reserve = resolveOutputReserve(undefined, "deepseek-chat", {});
+    const readWithCap = async (inputTokenCap: number) => {
+      const definition = tool();
+      const validated = definition.validate({
+        targets: [{ itemId: paper.itemId, contextItemId: paper.contextItemId }],
+        mode: "targeted",
+        sectionIds: ["s1"],
+        whole: true,
+      });
+      if (!validated.ok) throw new Error(validated.error);
+      const base = context();
+      return (await definition.execute(validated.value, {
+        ...base,
+        request: { ...base.request, advanced: { inputTokenCap } },
+      })) as any;
+    };
+    const tight = await readWithCap(reserve + Math.ceil(part.tokens * 1.1));
+    assert.equal(tight.papers[0].status, "map");
+    assert.equal(tight.papers[0].map[0].reason, "does_not_fit");
+    const roomy = await readWithCap(
+      reserve + Math.ceil((part.tokens * 3) / 0.8),
+    );
+    assert.equal(roomy.papers[0].status, "complete");
+  });
+
+  it("returns the map when the result the model would see does not fit the reading share, though the text does", async function () {
+    const leaf = ctxOutlineSection("s8");
+    const reserve = resolveOutputReserve(undefined, "deepseek-chat", {});
+    const share = Math.ceil(leaf.tokens * 1.02);
+    const tight = await run(
+      { mode: "targeted", sectionIds: ["s8"] },
+      reserve + Math.ceil(share / 0.8),
+    );
+    assert.equal(tight.papers[0].status, "map");
+    assert.isEmpty(tight.quoteCitations);
+    const roomy = await run(
+      { mode: "targeted", sectionIds: ["s8"] },
+      reserve + Math.ceil((leaf.tokens * 2) / 0.8),
+    );
+    assert.equal(roomy.papers[0].status, "complete");
+  });
+
   it("answers a part with sections by its sections and sizes", async function () {
     const output = await run({ mode: "targeted", sectionIds: ["s1"] });
     const row = output.papers[0];
@@ -394,6 +489,64 @@ describe("paper_read on a document with chapters", function () {
         result.passages[0].text.replace(/\s+/g, " "),
         citation.quoteText.slice(0, 40),
       );
+    } finally {
+      ctx = chaptered;
+    }
+  });
+
+  it("returns the overview's map alone when the built result the model sees does not fit, though the passages alone do", async function () {
+    const entry = (title: string, pageIndex: number) => ({
+      depth: 0,
+      title,
+      pageIndex,
+      top: null,
+      fitsPage: false,
+    });
+    const parts = chunkPlainPdfText(TEXT, "zotero-worker", {
+      layout: { totalPages: DISSERTATION_PAGES.length },
+      structure: {
+        bookmarks: [
+          entry("Abstract", 0),
+          entry("Preface", 1),
+          entry("Chapter 1:Introduction", 2),
+          entry("Chapter 2:Philosophical and historical background", 6),
+        ],
+      },
+    });
+    const chaptered = ctx;
+    ctx = {
+      title: paper.title,
+      ...parts,
+      ...buildChunkIndex(parts.chunks),
+      fullLength: TEXT.length,
+      sourceType: "zotero-worker",
+    };
+    try {
+      const roomy = await run({ mode: "overview" });
+      const read = roomy.results[0];
+      assert.isNotEmpty(read.passages);
+      // The model sees `text` and `passages`, both holding the picked text.
+      const seen = estimateTextTokens(JSON.stringify(read));
+      const passagesOnly = estimateTextTokens(
+        JSON.stringify({ passages: read.passages }),
+      );
+      const room = Math.floor(seen * 0.9);
+      assert.isBelow(passagesOnly * 1.2, room, "the passages alone fit");
+      const reserve = resolveOutputReserve(undefined, "deepseek-chat", {});
+      const tight = await run(
+        { mode: "overview" },
+        reserve + Math.ceil(room / 0.8),
+      );
+      const result = tight.results[0];
+      assert.equal(result.text, "");
+      assert.isEmpty(result.passages);
+      assert.include(result.map, "Chapter 1:Introduction");
+      assert.isTrue(result.parts.every((part: any) => part.read === "map"));
+      assert.isEmpty(tight.quoteCitations);
+      // The records stay out of the model's view of an overview of this kind.
+      const view = tool().modelContent?.(roomy, {} as never) as any;
+      assert.notProperty(view, "quoteCitations");
+      assert.isNotEmpty(roomy.quoteCitations);
     } finally {
       ctx = chaptered;
     }

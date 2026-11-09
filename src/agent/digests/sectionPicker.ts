@@ -27,6 +27,7 @@ import type { ManifestSection } from "../../services/mineru/mineruCache";
 import {
   buildDocumentOutline,
   buildSyntheticManifestSections,
+  sectionTextPieces,
 } from "../../services/paperContent/pdfContext";
 import type { PdfContext } from "../../services/paperContent/types";
 import {
@@ -1109,13 +1110,19 @@ export async function readPickedSections(params: {
               level: section.level,
               chars: section.chars,
               firstLine: outlineFirstLine(
-                chunks[section.chunkIndexes[0]] || "",
+                sectionTextPieces(context, section)[0]?.text || "",
               ),
             })),
           },
+          // The section list's titles and starts: two structures of one
+          // text with as many sections do not share a pick.
           fingerprint: `pdfmap:${
             context.chunkMeta?.[0]?.sourceFingerprint || hash(chunks.join("\n"))
-          }:${outline.sections.length}`,
+          }:${outline.sections.length}:${hash(
+            context.documentStructure.sections
+              .map((section) => `${section.title}\u0000${section.charStart}`)
+              .join("\u0001"),
+          )}`,
           ...(params.title ? { title: params.title } : {}),
         }),
         (part) => part.indexes.length,
@@ -1136,20 +1143,22 @@ export async function readPickedSections(params: {
     for (const index of [...roots].sort((a, b) => a - b)) {
       if (inside(index, roots)) continue;
       const section = outline.sections[index];
-      const [from, to] = section.chunkIndexes;
-      const indexes = Array.from(
-        { length: to - from + 1 },
-        (_, offset) => from + offset,
-      );
+      // Only the section's own text, as a section read gives it; the
+      // pieces of one chunk stay under one label.
+      const byChunk = new Map<number, string[]>();
+      for (const piece of sectionTextPieces(context, section))
+        byChunk.set(piece.chunkIndex, [
+          ...(byChunk.get(piece.chunkIndex) || []),
+          piece.text,
+        ]);
       const block: PickedBlock = {
         label: plainLine(section.title),
         for: [],
-        text: indexes
-          .filter((at) => (chunks[at] || "").trim())
-          .map((at) => `[chunk ${at}]\n${chunks[at].trim()}`)
+        text: [...byChunk]
+          .map(([at, texts]) => `[chunk ${at}]\n${texts.join("\n")}`)
           .join("\n\n"),
         sectionIndexes: [index],
-        chunkIndexes: indexes,
+        chunkIndexes: [...byChunk.keys()],
       };
       for (const part of pick.parts)
         if (

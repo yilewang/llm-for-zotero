@@ -2068,7 +2068,7 @@ export function splitPdfWorkerFullTextIntoPages(
     if (totalPages && ffPages.length > totalPages) return null;
     const extractedPages = positivePageCount(result?.extractedPages);
     const shift = options?.textPageOffset;
-    if (shift && shift.pageOffset > 0 && ffPages.length === shift.textParts) {
+    if (shift && shift.pageOffset >= 0 && ffPages.length === shift.textParts) {
       const textEnd = shift.pageOffset + ffPages.length;
       if (!totalPages || textEnd > totalPages) return null;
       if (extractedPages !== undefined && textEnd > extractedPages) return null;
@@ -2810,7 +2810,7 @@ export async function warmPageTextCacheForAttachment(
       layout: { totalPages },
       bookmarks: await bookmarks,
     });
-    return pageOffset
+    return pageOffset !== null
       ? {
           pageOffset,
           textParts,

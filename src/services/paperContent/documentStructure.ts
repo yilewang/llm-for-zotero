@@ -350,27 +350,27 @@ function alignBookmarks(
 }
 
 /**
- * The PDF page of the text's first page: 0 when the text has every page;
- * when it has fewer, the shift its bookmarks show (`alignBookmarks`), only
- * when that shift puts more titles on their page than any other. Null when
- * no shift can be shown: no bookmarks, none on its page, two shifts that
- * place equally many, or more text pages than the PDF has.
+ * The PDF page of the text's first page, from its page split: 0 when the
+ * text has every page or `pageChars` places it (as is, never shifted); when
+ * it has fewer, the shift its bookmarks show (`alignBookmarks`), only when
+ * that shift puts more titles on their page than any other. Null when no
+ * shift can be shown: no bookmarks, none on its page, two shifts that place
+ * equally many, or more text pages than the PDF has.
  */
-export function textPageOffset(params: {
-  text: string;
-  layout?: PdfPageLayout;
-  bookmarks?: PdfOutlineEntry[] | null;
-}): number | null {
-  const pages = splitPdfTextPages(params.text, params.layout);
-  if (!pages?.length) return null;
-  const pageCount = params.layout?.totalPages ?? pages.length;
+function provenPageOffset(
+  text: string,
+  pages: TextPageSpan[],
+  layout: PdfPageLayout | undefined,
+  bookmarks: PdfOutlineEntry[] | null | undefined,
+): number | null {
+  const pageCount = layout?.totalPages ?? pages.length;
   if (pageCount < pages.length) return null;
-  if (pageCount === pages.length) return 0;
-  const entries = usableBookmarks(params.bookmarks || [], pageCount);
+  if (pageCount === pages.length || layout?.pageChars?.length) return 0;
+  const entries = usableBookmarks(bookmarks || [], pageCount);
   if (!entries.length) return null;
   const { pageOffset, score, unique } = alignBookmarks(
     pages.map((page) =>
-      normalizeForStructureMatch(params.text.slice(page.start, page.end)),
+      normalizeForStructureMatch(text.slice(page.start, page.end)),
     ),
     pageCount,
     entries,
@@ -378,17 +378,28 @@ export function textPageOffset(params: {
   return score > 0 && unique ? pageOffset : null;
 }
 
+/** The PDF page of the text's first page (`provenPageOffset`). */
+export function textPageOffset(params: {
+  text: string;
+  layout?: PdfPageLayout;
+  bookmarks?: PdfOutlineEntry[] | null;
+}): number | null {
+  const pages = splitPdfTextPages(params.text, params.layout);
+  if (!pages?.length) return null;
+  return provenPageOffset(params.text, pages, params.layout, params.bookmarks);
+}
+
 function structureFromBookmarks(
   text: string,
   pages: TextPageSpan[],
   pageCount: number,
   bookmarks: PdfOutlineEntry[],
+  pageOffset: number,
 ): DetectedDocumentStructure | null {
   const entries = usableBookmarks(bookmarks, pageCount);
   const normalizedPages = pages.map((page) =>
     normalizeForStructureMatch(text.slice(page.start, page.end)),
   );
-  const { pageOffset } = alignBookmarks(normalizedPages, pageCount, entries);
   const located = entries.filter(
     (entry) =>
       entry.pageIndex - pageOffset >= 0 &&
@@ -492,8 +503,8 @@ function bookmarkDrafts(
  * lists when its whole text does not fit. Each section starts at the line
  * that carries its title on its page, or at the page start when no line
  * does. Null without usable bookmarks: at least two top-level entries on
- * the text's pages, on at least two pages, in page order (and, when the
- * text lacks pages, placed by titles found on their pages).
+ * the text's pages, on at least two pages, in page order, placed by a
+ * proven shift (`provenPageOffset`).
  */
 export function bookmarkSectionTree(params: {
   text: string;
@@ -510,15 +521,14 @@ export function bookmarkSectionTree(params: {
       index === 0 || entry.pageIndex >= entries[index - 1].pageIndex,
   );
   if (!inPageOrder) return null;
-  const { pageOffset, score } = alignBookmarks(
-    pages.map((page) =>
-      normalizeForStructureMatch(params.text.slice(page.start, page.end)),
-    ),
-    pageCount,
-    entries,
+  // Placed only by a proven shift, as page reads are.
+  const pageOffset = provenPageOffset(
+    params.text,
+    pages,
+    params.layout,
+    params.bookmarks,
   );
-  // Text that lacks pages is placed only by titles found on their pages.
-  if (pageCount > pages.length && !score) return null;
+  if (pageOffset === null) return null;
   const located = entries.filter(
     (entry) =>
       entry.pageIndex - pageOffset >= 0 &&
@@ -685,7 +695,9 @@ function structureFromHeadings(
  * allowed before it), when its title less that label is whole lines at the
  * page's start or end, or when the destinations carry position (two
  * heights or more) and its own is the highest. A whole-page destination
- * alone never counts. Without usable
+ * alone never counts. Text that lacks pages takes bookmarks only with a
+ * proven shift (`provenPageOffset`); without one it has no structure.
+ * Without usable
  * bookmarks, a chapter is a page whose first line is a numbered heading
  * ("Chapter 4: Title", "4 Title"), numbered one after another, with the
  * numbering not going on mid-page; numbered
@@ -707,8 +719,23 @@ export function detectDocumentStructure(params: {
     (entry, index) =>
       index === 0 || entry.pageIndex >= bookmarks[index - 1].pageIndex,
   );
-  if (bookmarks.length > 1 && inPageOrder)
-    return structureFromBookmarks(params.text, pages, pageCount, bookmarks);
+  if (bookmarks.length > 1 && inPageOrder) {
+    // Placed only by a proven shift, as page reads are.
+    const pageOffset = provenPageOffset(
+      params.text,
+      pages,
+      params.layout,
+      bookmarks,
+    );
+    if (pageOffset === null) return null;
+    return structureFromBookmarks(
+      params.text,
+      pages,
+      pageCount,
+      bookmarks,
+      pageOffset,
+    );
+  }
   if (pageCount !== pages.length) return null;
   return structureFromHeadings(params.text, pages, pageCount);
 }

@@ -578,6 +578,32 @@ describe("page text of a PDF whose text lost blank leading pages", function () {
     assert.equal(limited?.pageCount, 9);
   });
 
+  it("places text that lost only trailing pages by a proven shift of 0", function () {
+    const zero = { pageOffset: 0, textParts: 2 };
+    const split = splitPdfWorkerFullTextIntoPages(
+      { text: TRIMMED, totalPages: 4, extractedPages: 4 },
+      { textPageOffset: zero },
+    );
+    assert.deepEqual(
+      split?.pages.map((page) => [page.pageIndex, page.text]),
+      [
+        [0, PAGE_ONE],
+        [1, PAGE_THREE],
+        [2, ""],
+        [3, ""],
+      ],
+    );
+    assert.equal(split?.pageCount, 4);
+    assert.isTrue(
+      isPageCompleteZoteroFulltextCache({
+        text: TRIMMED,
+        indexedPages: 4,
+        totalPages: 4,
+        textPageOffset: zero,
+      }),
+    );
+  });
+
   it("ignores the offset and refuses the split when the part count differs from the text it was proven on", function () {
     assert.isNull(
       splitPdfWorkerFullTextIntoPages(
@@ -891,6 +917,29 @@ describe("page text of a PDF whose text lost blank leading pages", function () {
       // The placed pages serve the next read.
       await warmPageTextCacheForAttachment(1010);
       assert.deepEqual(zotero.workerCalls, [1010]);
+    });
+
+    it("proves a shift of 0 for PDFWorker text that lost only trailing pages", async function () {
+      const zotero = installZotero({
+        pdfFiles: { 1030: FILE },
+        worker: async () => ({
+          text: TRIMMED,
+          totalPages: 4,
+          extractedPages: 4,
+        }),
+      });
+      restore = zotero.restore;
+      await seedBookmarks(1030, FILE, [
+        bookmark("Representational drift", 0),
+        bookmark("Population geometry", 1),
+      ]);
+
+      const warmed = await warmPageTextCacheForAttachment(1030);
+
+      assert.equal(warmed?.pageCount, 4);
+      assert.equal(warmed?.pages[0]?.text, PAGE_ONE);
+      assert.equal(warmed?.pages[1]?.text, PAGE_THREE);
+      assert.equal(warmed?.pages[3]?.text, "");
     });
 
     it("places a Zotero full-text cache that lost leading pages without PDFWorker", async function () {

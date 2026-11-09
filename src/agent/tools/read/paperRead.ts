@@ -30,10 +30,12 @@ import type { MineruManifest } from "../../../services/mineru/mineruCache";
 import {
   buildBookmarkOutline,
   buildDocumentOutline,
+  sectionTextPieces,
   sectionIdForIndex,
 } from "../../../services/paperContent/pdfContext";
 import type {
   DocumentOutline,
+  DocumentOutlineSection,
   PdfContext,
 } from "../../../services/paperContent/types";
 import {
@@ -46,6 +48,7 @@ import {
   formatPageMapLine,
   outlineLevel,
   withDescendants,
+  type SectionReadDecision,
 } from "./documentSectionReads";
 import { estimateTextTokens } from "../../../utils/modelInputCap";
 import { tokenizeRetrievalText } from "../../../services/retrieval/retrievalTokenizer";
@@ -1716,6 +1719,20 @@ function readOutlineSections(params: {
   const map: SectionMapEntry[] = [];
   let remaining = params.remaining;
   let remainingChars = params.maxChars;
+  const pushMap = (
+    section: DocumentOutlineSection,
+    decision: Extract<SectionReadDecision, { kind: "map" }>,
+  ) => {
+    const pages = formatSectionPages(section);
+    map.push({
+      sectionId: section.sectionId,
+      title: section.title,
+      ...(pages ? { pages } : {}),
+      tokens: section.tokens,
+      reason: decision.reason,
+      lines: decision.lines,
+    });
+  };
   for (const id of ordered) {
     if (read.has(id)) continue;
     const section = outline.sections[position.get(id)!];
@@ -1728,31 +1745,28 @@ function readOutlineSections(params: {
       ...(remainingChars !== undefined ? { remainingChars } : {}),
     });
     if (decision.kind === "map") {
-      const pages = formatSectionPages(section);
-      map.push({
-        sectionId: section.sectionId,
-        title: section.title,
-        ...(pages ? { pages } : {}),
-        tokens: section.tokens,
-        reason: decision.reason,
-        lines: decision.lines,
-      });
+      pushMap(section, decision);
       continue;
     }
-    for (const covered of withDescendants(outline, [section.sectionId]))
-      read.add(covered);
     let characters = 0;
-    const [from, to] = section.chunkIndexes;
-    for (let chunkIndex = from; chunkIndex <= to; chunkIndex += 1) {
-      const text = (content.chunks[chunkIndex] || "").trim();
-      if (!text) continue;
+    const sectionPassages: Array<Record<string, unknown>> = [];
+    const sectionCitations: QuoteCitation[] = [];
+    // Only the section's own text: a chunk that crosses its start or end
+    // gives just the part inside it.
+    for (const piece of sectionTextPieces(content, section)) {
+      const { text, chunkIndex } = piece;
       const meta = content.chunkMeta[chunkIndex];
-      const sectionLabel = meta?.sectionLabel || section.title;
+      const pieceSection =
+        piece.sectionIndex !== undefined
+          ? content.documentStructure?.sections[piece.sectionIndex]
+          : undefined;
+      const sectionLabel =
+        pieceSection?.title || meta?.sectionLabel || section.title;
       const pages =
-        meta?.pageStart !== undefined
+        piece.pageStart !== undefined
           ? {
-              pageStart: meta.pageStart,
-              pageEnd: meta.pageEnd ?? meta.pageStart,
+              pageStart: piece.pageStart,
+              pageEnd: piece.pageEnd ?? piece.pageStart,
             }
           : {};
       const [citation] = buildChunkQuoteCitations(
@@ -1771,12 +1785,12 @@ function readOutlineSections(params: {
         },
         text,
       );
-      if (citation) params.quoteCitations.push(citation);
-      passages.push({
+      if (citation) sectionCitations.push(citation);
+      sectionPassages.push({
         text,
         sectionLabel,
-        ...(meta?.sectionIndex !== undefined
-          ? { sectionId: sectionIdForIndex(meta.sectionIndex) }
+        ...(piece.sectionIndex !== undefined
+          ? { sectionId: sectionIdForIndex(piece.sectionIndex) }
           : {}),
         chunkKind: meta?.chunkKind || "body",
         chunkIndex,
@@ -1784,17 +1798,41 @@ function readOutlineSections(params: {
         ...(citation ? { quoteCitationId: citation.id } : {}),
       });
       characters += text.length;
-      remaining -= estimateTextTokens(text);
     }
-    if (remainingChars !== undefined)
-      remainingChars = Math.max(0, remainingChars - section.chars);
-    sections.push({
+    const entry = {
       section: section.title,
       sectionId: section.sectionId,
       complete: true,
       characters,
       totalCharacters: characters,
-    } as WholeSectionsPaper["sections"][number]);
+    } as WholeSectionsPaper["sections"][number];
+    // Fit is decided by what the model will see (the passages with their
+    // ids and labels), not by the text alone.
+    const shown = estimateTextTokens(
+      JSON.stringify({ sections: [entry], passages: sectionPassages }),
+    );
+    if (shown > remaining) {
+      pushMap(
+        section,
+        decideSectionRead({
+          outline,
+          content,
+          section,
+          whole: params.whole,
+          // No section fits -1, so this is always a map decision.
+          remainingTokens: -1,
+        }) as Extract<SectionReadDecision, { kind: "map" }>,
+      );
+      continue;
+    }
+    remaining -= shown;
+    for (const covered of withDescendants(outline, [section.sectionId]))
+      read.add(covered);
+    params.quoteCitations.push(...sectionCitations);
+    passages.push(...sectionPassages);
+    if (remainingChars !== undefined)
+      remainingChars = Math.max(0, remainingChars - section.chars);
+    sections.push(entry);
   }
   return {
     sections,
@@ -2008,28 +2046,28 @@ async function readDocumentMapOverview(params: {
       `The reader could not choose the opening parts (${error.message}); the map alone follows.`,
     );
   }
-  const text = blocks.join("\n\n").trim();
-  const minted = mergeQuoteCitations(quoteCitations);
-  const passageIds = passages.flatMap((passage) =>
-    typeof passage.quoteCitationId === "string"
-      ? [passage.quoteCitationId]
-      : [],
-  );
-  return {
-    remainingTokens: remaining,
-    quoteCitations: minted,
-    result: {
+  const buildResult = (shownParts: {
+    text: string;
+    parts: Array<Record<string, unknown>>;
+    passages: Array<Record<string, unknown>>;
+  }): Record<string, unknown> => {
+    const passageIds = shownParts.passages.flatMap((passage) =>
+      typeof passage.quoteCitationId === "string"
+        ? [passage.quoteCitationId]
+        : [],
+    );
+    return {
       paperContext,
       backend: "document_map",
       coverage: "map",
       citationLabel: formatPaperCitationLabel(paperContext),
       sourceLabel: formatPaperSourceLabel(paperContext),
       map: formatDocumentMap(outline),
-      text,
-      selectedCharacters: text.length,
-      parts,
+      text: shownParts.text,
+      selectedCharacters: shownParts.text.length,
+      parts: shownParts.parts,
       // The read parts' passages, each with the id its own text was given.
-      passages,
+      passages: shownParts.passages,
       ...(passageIds.length
         ? {
             quoteCitationIds: passageIds,
@@ -2040,7 +2078,34 @@ async function readDocumentMapOverview(params: {
       guidance:
         "The map lists the document's parts with ids, pages and sizes; read the ones the answer needs with mode:'targeted' and sectionIds.",
       ...(warnings.length ? { warning: warnings.join(" ") } : {}),
-    },
+    };
+  };
+  const text = blocks.join("\n\n").trim();
+  const full = buildResult({ text, parts, passages });
+  // Fit is decided by what the model will see: the whole result, text and
+  // passages both, without the citation records (`hidesQuoteCitationRecords`).
+  const shown = estimateTextTokens(JSON.stringify(full));
+  if (text && shown > params.remainingTokens) {
+    // The picked text does not fit the room left: the map alone, whose own
+    // cost later papers' room must still lose.
+    const mapOnly = buildResult({
+      text: "",
+      parts: parts.map((part) => ({ ...part, read: "map" })),
+      passages: [],
+    });
+    return {
+      remainingTokens: Math.max(
+        0,
+        params.remainingTokens - estimateTextTokens(JSON.stringify(mapOnly)),
+      ),
+      quoteCitations: [],
+      result: mapOnly,
+    };
+  }
+  return {
+    remainingTokens: Math.min(remaining, params.remainingTokens - shown),
+    quoteCitations: mergeQuoteCitations(quoteCitations),
+    result: full,
   };
 }
 
@@ -2073,12 +2138,29 @@ function withFullReadQuoteCitations(
 
 /**
  * Whether the model reads a paper_read result's citation ids without their
- * records: a whole-sections read and a full read.
+ * records: a whole-sections read (sections by id included), a page read, a
+ * full read and an overview of documents with chapters.
  */
+function isDocumentMapOverview(result: Record<string, unknown>): boolean {
+  return (
+    result.mode === "overview" &&
+    Array.isArray(result.results) &&
+    result.results.length > 0 &&
+    result.results.every(
+      (entry) =>
+        validateObject<Record<string, unknown>>(entry) &&
+        entry.backend === "document_map",
+    )
+  );
+}
+
 function hidesQuoteCitationRecords(result: unknown): boolean {
   return (
     validateObject<Record<string, unknown>>(result) &&
-    (result.read === "whole_sections" || result.mode === "full")
+    (result.read === "whole_sections" ||
+      result.read === "pages" ||
+      result.mode === "full" ||
+      isDocumentMapOverview(result))
   );
 }
 
@@ -2937,8 +3019,9 @@ async function readExplicitPageTargets(params: {
   remainingTokens: number;
 }): Promise<Record<string, unknown>> {
   const results: Array<Record<string, unknown>> = [];
+  const papers: Array<Record<string, unknown>> = [];
   const quoteCitations: QuoteCitation[] = [];
-  const mapByPaper = new Map<string, string[]>();
+  let anyMap = false;
   let remaining = params.remainingTokens;
   for (const paperContext of params.targets) {
     const pageResult = await params.pdfPageService.readPageTexts({
@@ -2947,59 +3030,58 @@ async function readExplicitPageTargets(params: {
       pages: params.input.pages || [],
       neighborPages: params.input.neighborPages,
     });
-    const tokens = pageResult.pages.map((page) =>
-      estimateTextTokens(page.text || ""),
+    const paperResults = pageResult.pages.map((page) => ({
+      paperContext,
+      text: page.text,
+      sourceKind: "paper_page_text",
+      chunkKind: "page",
+      pageIndex: page.pageIndex,
+      pageLabel: page.pageLabel,
+      sectionLabel: `Page ${page.pageLabel}`,
+      score: 1,
+      citationLabel: formatPaperCitationLabel(paperContext),
+      sourceLabel: formatPaperSourceLabel(paperContext),
+    }));
+    const paperCitations: QuoteCitation[] = [];
+    const [group] = buildTargetedPaperGroups(
+      [paperContext],
+      paperResults,
+      paperCitations,
     );
-    const total = tokens.reduce((sum, value) => sum + value, 0);
-    if (total > remaining) {
-      mapByPaper.set(
-        paperContextKey(paperContext),
-        pageResult.pages.map((page, index) =>
+    // Fit is decided by what the model will see: the pages' results and
+    // passages without the citation records (`hidesQuoteCitationRecords`).
+    const shown = estimateTextTokens(
+      JSON.stringify({ results: paperResults, papers: [group] }),
+    );
+    if (shown > remaining) {
+      anyMap = true;
+      const [empty] = buildTargetedPaperGroups([paperContext], []);
+      papers.push({
+        ...empty,
+        status: "map",
+        reason: "does_not_fit",
+        map: pageResult.pages.map((page) =>
           formatPageMapLine({
             label: `page ${page.pageIndex + 1}`,
-            tokens: tokens[index],
+            tokens: estimateTextTokens(page.text || ""),
             firstLine: outlineFirstLine(page.text || ""),
           }),
         ),
-      );
+      });
       continue;
     }
-    remaining -= total;
-    for (const page of pageResult.pages) {
-      results.push({
-        paperContext,
-        text: page.text,
-        sourceKind: "paper_page_text",
-        chunkKind: "page",
-        pageIndex: page.pageIndex,
-        pageLabel: page.pageLabel,
-        sectionLabel: `Page ${page.pageLabel}`,
-        score: 1,
-        citationLabel: formatPaperCitationLabel(paperContext),
-        sourceLabel: formatPaperSourceLabel(paperContext),
-      });
-    }
+    remaining -= shown;
+    results.push(...paperResults);
+    papers.push(group);
+    quoteCitations.push(...paperCitations);
   }
-  const papers = buildTargetedPaperGroups(
-    params.targets,
-    results,
-    quoteCitations,
-  ).map((group) => {
-    const map = mapByPaper.get(
-      paperContextKey(
-        group.paperContext as NonNullable<PdfTarget["paperContext"]>,
-      ),
-    );
-    return map
-      ? { ...group, status: "map", reason: "does_not_fit", map }
-      : group;
-  });
   return {
     mode: params.input.mode,
+    read: "pages",
     results,
     papers,
     quoteCitations: mergeQuoteCitations(quoteCitations),
-    ...(mapByPaper.size ? { warnings: [PAGE_MAP_NEXT_STEP] } : {}),
+    ...(anyMap ? { warnings: [PAGE_MAP_NEXT_STEP] } : {}),
   };
 }
 
@@ -3169,9 +3251,10 @@ export function createPaperReadTool(
       exposure: "model",
     },
     guidance: PAPER_READ_GUIDANCE,
-    // A whole-sections or full read shows the model each passage's citation
-    // id, not the citation records: they would repeat every passage's
-    // quote. The run's collector and the panel read the whole result.
+    // A whole-sections, page or full read shows the model each passage's
+    // citation id, not the citation records: they would repeat every
+    // passage's quote. The run's collector and the panel read the whole
+    // result.
     modelContent: (result) =>
       hidesQuoteCitationRecords(result)
         ? withoutDigestQuoteCitations(result)
@@ -3732,32 +3815,8 @@ export function createPaperReadTool(
         };
         return output;
       }
-      // The share of the live context a read of each paper may take.
-      const adaptiveReadingBudget = () => {
-        const runtimeBudget = context.request.runtimeContextBudget;
-        return runtimeBudget
-          ? resolveAdaptiveReadingBudget({
-              ...runtimeBudget,
-              outputReserveTokens: resolveOutputReserve(
-                context.request.advanced?.outputTokenLimit,
-                context.request.model || context.modelName,
-                {
-                  apiBase: context.request.apiBase,
-                  protocol: context.request.providerProtocol,
-                  authMode: context.request.authMode,
-                  profileOverride: context.request.advanced?.profileOverride,
-                },
-              ),
-              paperCount: targets.length,
-            })
-          : undefined;
-      };
-      // What a read may still add: the live context left after the output
-      // reserve (a long job's page share bounds it), else the model's input
-      // limit. A physical bound, not a share: the informed-choice rule, not
-      // this number, keeps unrequested text out.
-      const measuredRemainingTokens = (): number => {
-        const outputReserveTokens = resolveOutputReserve(
+      const outputReserveTokens = () =>
+        resolveOutputReserve(
           context.request.advanced?.outputTokenLimit,
           context.request.model || context.modelName,
           {
@@ -3767,20 +3826,39 @@ export function createPaperReadTool(
             profileOverride: context.request.advanced?.profileOverride,
           },
         );
+      // The share of the live context a read of each paper may take.
+      const adaptiveReadingBudget = (
+        runtimeBudget = context.request.runtimeContextBudget,
+      ) =>
+        runtimeBudget
+          ? resolveAdaptiveReadingBudget({
+              ...runtimeBudget,
+              outputReserveTokens: outputReserveTokens(),
+              paperCount: targets.length,
+            })
+          : undefined;
+      // What a read may still add: the reading share of the live context
+      // left after the output reserve (a long job's page share bounds it).
+      // A host that reports no live context (MCP: Codex native, Claude
+      // bridge) gets the share of a fresh window of the model's input
+      // limit: a ceiling, not what the host has left. A physical bound, not
+      // a share of the request: the informed-choice rule, not this number,
+      // keeps unrequested text out.
+      const measuredRemainingTokens = (): number => {
         const runtimeBudget = context.request.runtimeContextBudget;
         if (runtimeBudget) {
           const measured = resolveAdaptiveReadingBudget({
             ...runtimeBudget,
-            outputReserveTokens,
+            outputReserveTokens: outputReserveTokens(),
             paperCount: 1,
           });
           return runtimeBudget.maxTokensPerPaper &&
             runtimeBudget.maxTokensPerPaper > 0
             ? Math.min(
-                measured.remainingInputTokens,
+                measured.allocatedReadingTokens,
                 runtimeBudget.maxTokensPerPaper,
               )
-            : measured.remainingInputTokens;
+            : measured.allocatedReadingTokens;
         }
         const limit = resolveModelInputTokenLimit(
           `${context.request.model || context.modelName || ""}`,
@@ -3792,7 +3870,12 @@ export function createPaperReadTool(
             profileOverride: context.request.advanced?.profileOverride,
           },
         ).limitTokens;
-        return Math.max(0, limit - outputReserveTokens);
+        return (
+          adaptiveReadingBudget({
+            contextWindowTokens: limit,
+            usedContextTokens: 0,
+          })?.allocatedReadingTokens ?? 0
+        );
       };
       if (mode === "overview") {
         const adaptiveBudget = adaptiveReadingBudget();

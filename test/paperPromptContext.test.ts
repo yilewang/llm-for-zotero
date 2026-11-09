@@ -406,6 +406,64 @@ describe("default paper prompt context", function () {
       assert.equal(first.blocks[0], second.blocks[0]);
     });
 
+    it("spends the map's cost from the budget a second paper shares", async function () {
+      const second = {
+        ...paper,
+        itemId: 30,
+        contextItemId: 31,
+        title: "Second",
+      };
+      const twoPapers = request({ selectedPaperContexts: [second] });
+      const load = async (ref: { itemId?: number }) =>
+        ref.itemId === second.itemId ? context : chaptered;
+      const alone = await preparePaperPromptContext(request(), {
+        tokenBudget: 1_000_000,
+        load: async () => chaptered,
+      });
+      const mapTokens = Math.ceil(alone.blocks[0].length / 4);
+      const secondAlone = await preparePaperPromptContext(
+        request({ activePaperContext: second }),
+        { tokenBudget: 1_000_000, load: async () => context },
+      );
+      const secondTokens = Math.ceil(secondAlone.blocks[0].length / 4) + 200;
+      const shared = await preparePaperPromptContext(twoPapers, {
+        tokenBudget: mapTokens + secondTokens,
+        load,
+      });
+      assert.include(shared.blocks[0], "s1 | Chapter 1:Introduction");
+      assert.include(shared.blocks[1], "Complete extracted paper text");
+      // Room for the second paper alone: the map is spent first.
+      const tight = await preparePaperPromptContext(twoPapers, {
+        tokenBudget: secondTokens,
+        load,
+      });
+      assert.include(tight.blocks[0], "s1 | Chapter 1:Introduction");
+      assert.notInclude(tight.blocks[1], "Complete extracted paper text");
+    });
+
+    it("writes only the document's size when its map does not fit", async function () {
+      const alone = await preparePaperPromptContext(request(), {
+        tokenBudget: 1_000_000,
+        load: async () => chaptered,
+      });
+      const mapTokens = Math.ceil(alone.blocks[0].length / 4);
+      const prepared = await preparePaperPromptContext(request(), {
+        tokenBudget: mapTokens - 1,
+        load: async () => chaptered,
+      });
+      const block = prepared.blocks[0];
+      assert.notInclude(block, "s1 | Chapter 1:Introduction");
+      const sections = chaptered.documentStructure!.sections;
+      const total = sections
+        .filter((section) => section.parentIndex === undefined)
+        .reduce((sum, section) => sum + section.tokens, 0);
+      assert.include(
+        block,
+        `its ${DISSERTATION_PAGES.length} pages hold about ${total} tokens`,
+      );
+      assert.include(block, "paper_read");
+    });
+
     it("preloads the whole text when the user attached it as full text", async function () {
       const prepared = await preparePaperPromptContext(
         request({ fullTextPaperContexts: [paper] }),

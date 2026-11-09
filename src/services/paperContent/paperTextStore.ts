@@ -78,6 +78,9 @@ function cachedContextMatchesSourceMode(
  */
 const silentPdfTextEntries = new WeakSet<PdfContext>();
 
+/** Entries a silent load's own task produced; only these may be released. */
+const silentTaskEntries = new WeakSet<PdfContext>();
+
 function servesLoad(
   cached: PdfContext,
   options: PaperTextLoadOptions | undefined,
@@ -107,10 +110,10 @@ async function load(
   item: Zotero.Item,
   options: PaperTextLoadOptions | undefined,
   extract: PaperTextExtractor,
-): Promise<void> {
+): Promise<PdfContext | undefined> {
   const cached = pdfTextCache.get(item.id);
   if (cached && servesLoad(cached, options)) {
-    return;
+    return cached;
   }
   if (cached) {
     dropMismatchedEntry(item.id);
@@ -120,20 +123,23 @@ async function load(
     await existingTask;
     const latest = pdfTextCache.get(item.id);
     if (latest && servesLoad(latest, options)) {
-      return;
+      return latest;
     }
     if (latest) {
       dropMismatchedEntry(item.id);
     }
   }
-  if (pdfTextCache.has(item.id)) {
-    return;
+  const current = pdfTextCache.get(item.id);
+  if (current) {
+    return current;
   }
+  let loaded: PdfContext | undefined;
   const task = (async () => {
     try {
       await extract(item, options);
       // Fresh loads with text only; cache hits and waits on an existing task return before this.
-      const loaded = pdfTextCache.get(item.id);
+      loaded = pdfTextCache.get(item.id);
+      if (loaded && options?.silentLoad) silentTaskEntries.add(loaded);
       if (
         loaded &&
         options?.silentLoad &&
@@ -150,6 +156,8 @@ async function load(
   })();
   pdfTextLoadingTasks.set(item.id, task);
   await task;
+  // A waiter may drop this entry before this caller resumes; return it anyway.
+  return loaded;
 }
 
 async function loadNote(
@@ -210,10 +218,14 @@ function discardEmptyEntry(itemId: number): void {
   }
 }
 
-function borrow(itemId: number): () => void {
+function borrow(itemId: number): (loaded?: PdfContext) => void {
   const hadEntry = pdfTextCache.has(itemId);
-  return () => {
-    if (!hadEntry) pdfTextCache.delete(itemId);
+  return (loaded) => {
+    if (hadEntry) return;
+    // Release only an entry this caller's own silent task produced.
+    if (!loaded || pdfTextCache.get(itemId) !== loaded) return;
+    if (!silentTaskEntries.has(loaded)) return;
+    pdfTextCache.delete(itemId);
   };
 }
 
@@ -237,7 +249,8 @@ export const paperTextStore = {
     pdfTextCache.forEach(fn);
   },
   /**
-   * Ensures text for `item` is cached. A cached entry is reused only when it
+   * Ensures text for `item` is cached and returns the entry it found or
+   * loaded. A cached entry is reused only when it
    * matches `options.sourceMode`, and a silent load's PDF text only by
    * another silent load; any other entry is dropped and reloaded.
    * Concurrent callers share one in-progress load. Listeners hear only a
@@ -265,7 +278,8 @@ export const paperTextStore = {
   /**
    * Marks the start of a load the caller may own. The returned release evicts
    * the entry only when it was not cached at borrow time, so a paper that
-   * someone else loaded stays cached.
+   * someone else loaded stays cached. Given the entry the caller loaded, it
+   * evicts only that entry, not one a later load wrote.
    */
   borrow,
   /** Drops every entry and every in-progress load (plugin shutdown). */

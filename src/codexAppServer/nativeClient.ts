@@ -1704,6 +1704,8 @@ function formatPaperContextLine(
 function buildCodexNativeVisibleTurnContextBlock(params: {
   scope: CodexNativeConversationScope;
   skillContext?: CodexNativeSkillContext;
+  /** A raw-PDF turn has no paper_read: selection hints name no call. */
+  rawPdfMode?: boolean;
 }): string {
   const { scope, skillContext } = params;
   const visibleContext = buildVisibleTurnContextBlock({
@@ -1742,7 +1744,7 @@ function buildCodexNativeVisibleTurnContextBlock(params: {
   const anchorContext = renderSelectedTextAnchorContext({
     selectedTextContexts: skillContext?.selectedTextContexts || [],
     anchors: skillContext?.resolvedSelectedTextAnchors || [],
-    readCalls: true,
+    readCalls: !params.rawPdfMode,
   });
   return [visibleContext, anchorContext].filter(Boolean).join("\n\n");
 }
@@ -1750,6 +1752,7 @@ function buildCodexNativeVisibleTurnContextBlock(params: {
 export function buildCodexNativeVisibleTurnContextBlockForTests(params: {
   scope: CodexNativeConversationScope;
   skillContext?: CodexNativeSkillContext;
+  rawPdfMode?: boolean;
 }): string {
   return buildCodexNativeVisibleTurnContextBlock(params);
 }
@@ -3918,14 +3921,15 @@ export async function runCodexAppServerNativeTurn(input: {
         for (const skillId of activatedSkillIds) {
           params.onSkillActivated?.(skillId);
         }
+        const rawPdfMode = currentTurnHasLocalPdfs;
         const visibleTurnContextBlock = buildCodexNativeVisibleTurnContextBlock(
           {
             scope: scopeWithProfile,
             skillContext,
+            rawPdfMode,
           },
         );
         const optimisticMcpReady = mcpEnabled;
-        const rawPdfMode = currentTurnHasLocalPdfs;
         const messagesForNativeTurn = rawPdfMode
           ? ensureLatestUserNativeSkillMentions(
               params.messages,

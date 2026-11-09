@@ -331,6 +331,12 @@ describe("long document live evaluation", function () {
       credentials,
       "Configured live credentials must be available; requested evaluation cannot silently skip",
     );
+    // Live evaluation runs on Codex Direct only.
+    assert.equal(
+      credentials!.authMode,
+      "codex_auth",
+      "the long-document evaluation must run on Codex Direct",
+    );
     await IOUtils.makeDirectory(directory, {
       createAncestors: true,
       ignoreExisting: true,

@@ -15,8 +15,19 @@ import type {
   DocumentOutlineSection,
   PdfContext,
 } from "../../../services/paperContent/types";
+import { sectionTextPieces } from "../../../services/paperContent/pdfContext";
 import { outlineFirstLine } from "../../digests/sectionPicker";
 import { estimateTextTokens } from "../../../utils/modelInputCap";
+
+/** What a section read reads: chunks, and a plain PDF's structure. */
+type SectionReadContent = Pick<
+  PdfContext,
+  | "chunks"
+  | "chunkMeta"
+  | "textPages"
+  | "documentStructure"
+  | "bookmarkSections"
+>;
 
 /** What one requested section returns. */
 export type SectionReadDecision =
@@ -119,34 +130,31 @@ export function formatPageMapLine(page: {
 }
 
 /**
- * A run of chunks as pages, one line each with its size and first line
- * (a whole leaf section's, or a whole document's). Without page numbers,
- * one line per chunk.
+ * A leaf section's text as pages, one line each with its size and first
+ * line. Only the section's own text counts (`sectionTextPieces`). Without
+ * page numbers, one line per chunk.
  */
 export function pageMapLines(
-  content: Pick<PdfContext, "chunks" | "chunkMeta">,
-  section: Pick<DocumentOutlineSection, "chunkIndexes">,
+  content: SectionReadContent,
+  section: Pick<DocumentOutlineSection, "sectionId" | "title" | "chunkIndexes">,
 ): string[] {
-  const [from, to] = section.chunkIndexes;
   const pages: Array<{ label: string; tokens: number; firstLine: string }> = [];
-  for (let index = from; index <= to; index += 1) {
-    const text = content.chunks[index] || "";
-    const meta = content.chunkMeta[index];
+  for (const piece of sectionTextPieces(content, section)) {
     const label =
-      meta?.pageStart !== undefined
-        ? meta.pageEnd !== undefined && meta.pageEnd !== meta.pageStart
-          ? `pages ${meta.pageStart + 1}–${meta.pageEnd + 1}`
-          : `page ${meta.pageStart + 1}`
+      piece.pageStart !== undefined
+        ? piece.pageEnd !== undefined && piece.pageEnd !== piece.pageStart
+          ? `pages ${piece.pageStart + 1}–${piece.pageEnd + 1}`
+          : `page ${piece.pageStart + 1}`
         : "";
     const last = pages[pages.length - 1];
     if (last && label && last.label === label) {
-      last.tokens += estimateTextTokens(text);
+      last.tokens += estimateTextTokens(piece.text);
       continue;
     }
     pages.push({
       label,
-      tokens: estimateTextTokens(text),
-      firstLine: outlineFirstLine(text),
+      tokens: estimateTextTokens(piece.text),
+      firstLine: outlineFirstLine(piece.text),
     });
   }
   return pages.map(formatPageMapLine);
@@ -160,7 +168,7 @@ export function pageMapLines(
  */
 export function decideSectionRead(params: {
   outline: DocumentOutline;
-  content: Pick<PdfContext, "chunks" | "chunkMeta" | "textPages">;
+  content: SectionReadContent;
   section: DocumentOutlineSection;
   whole: boolean;
   remainingTokens: number;

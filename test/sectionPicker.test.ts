@@ -41,6 +41,12 @@ import {
 } from "../src/agent/context/taskPaperLedger";
 import { buildTaskPaperCoverage } from "../src/agent/context/taskPaperCoverage";
 import type { PdfContext } from "../src/services/paperContent/types";
+import {
+  buildChunkIndex,
+  chunkPlainPdfText,
+} from "../src/services/paperContent/pdfContext";
+import type { PdfOutlineEntry } from "../src/services/paperContent/documentStructure";
+import { DISSERTATION_PAGES, joinPages } from "./fixtures/longdoc/pageTexts";
 import { ReaderCompletionError } from "../src/shared/readerCompletion";
 import type { PaperContextRef } from "../src/shared/types";
 import { createBuiltInToolRegistry } from "../src/agent/tools";
@@ -1505,5 +1511,114 @@ describe("a picked part of a plain PDF is named by its pages", function () {
       { name: "results", indexes: [0, 4] },
     ]);
     for (const part of picked!.covered) assert.notMatch(part.label, /chunk/i);
+  });
+});
+
+describe("a pick over a chaptered PDF's sections", function () {
+  const body = (page: number) =>
+    `Page ${page} body: the argument continues with further detail here. `.repeat(
+      40,
+    );
+  const chaptered = (
+    pages: string[][],
+    bookmarks: PdfOutlineEntry[] | null = null,
+  ): PdfContext => {
+    const text = joinPages(
+      pages.map((lines, page) => [...lines, body(page + 1)]),
+    );
+    const parts = chunkPlainPdfText(text, "zotero-worker", {
+      layout: { totalPages: pages.length },
+      structure: { bookmarks },
+    });
+    return {
+      title: "Dissertation",
+      ...parts,
+      ...buildChunkIndex(parts.chunks),
+      fullLength: text.length,
+      sourceType: "zotero-worker",
+    };
+  };
+  const pickSection = async (context: PdfContext, sectionId: string) => {
+    const requests: Array<{ fingerprint: string; outline: any }> = [];
+    const picked = await readPickedSections({
+      names: ["hierarchy"],
+      markdown: async () => null,
+      pdfContext: async () => context,
+      documentSections: true,
+      picker: async (request) => {
+        requests.push(request);
+        return {
+          parts: [{ name: "hierarchy", indexes: [Number(sectionId.slice(1))] }],
+          missing: [],
+          abstractNames: [],
+        };
+      },
+    });
+    return { picked: picked!, request: requests[0] };
+  };
+  afterEach(clearSectionPickCache);
+
+  it("reads a picked section's own text, though a chunk crosses its start", async function () {
+    // 1.2 starts mid-page 6, inside the chunk that holds the end of 1.1.
+    const { picked, request } = await pickSection(
+      chaptered(DISSERTATION_PAGES),
+      "s3",
+    );
+    const listed = request.outline.sections.find(
+      (section: any) => section.id === "s3",
+    );
+    assert.match(listed.firstLine, /^1\.2Hierarchical/);
+    const text = picked.blocks[0].text;
+    assert.match(text, /^\[chunk \d+\]\n1\.2Hierarchical/);
+    assert.notInclude(text, "Figure 1.1");
+    assert.notInclude(text, "Page 5 body");
+  });
+
+  it("does not share a pick between two structures of one text with as many sections", async function () {
+    // The same text by its headings, and by bookmarks whose 1.2 title is
+    // not in the text (it starts at its page instead).
+    const bookmark = (title: string, pageIndex: number, depth: number) => ({
+      depth,
+      title,
+      pageIndex,
+      top: null,
+      fitsPage: false,
+    });
+    const bookmarks = [
+      bookmark("Chapter 1:Introduction", 2, 0),
+      bookmark("1.1Visual processing and representations in the brain", 4, 1),
+      bookmark("1.2 Layered hierarchy", 5, 1),
+      bookmark("Chapter 2:Philosophical and historical background", 6, 0),
+      bookmark("2.1The relationship between perception and reality", 6, 1),
+      bookmark("2.1.1Plato and the Allegory of the Cave", 6, 2),
+      bookmark("2.1.2Ibn Al-Haytham and subjectivity of perception", 7, 2),
+      bookmark(
+        "Chapter 3:Variational Inference & Variational Autoencoders (VAE)",
+        8,
+        0,
+      ),
+    ];
+    const byHeadings = await pickSection(chaptered(DISSERTATION_PAGES), "s3");
+    const byBookmarks = await pickSection(
+      chaptered(DISSERTATION_PAGES, bookmarks),
+      "s3",
+    );
+    assert.match(
+      byBookmarks.request.fingerprint,
+      /^pdfmap:/,
+      "the bookmarked text is chaptered",
+    );
+    assert.equal(
+      byHeadings.request.outline.sections.length,
+      byBookmarks.request.outline.sections.length,
+    );
+    assert.notEqual(
+      byHeadings.request.outline.sections[3].heading,
+      byBookmarks.request.outline.sections[3].heading,
+    );
+    assert.notEqual(
+      byHeadings.request.fingerprint,
+      byBookmarks.request.fingerprint,
+    );
   });
 });

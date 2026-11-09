@@ -29,7 +29,7 @@ describe("live workflow credential selection", function () {
     }
   });
 
-  it("prefers a keyed group over a Codex Direct group that lists the same model", async function () {
+  it("prefers a Codex Direct group over a keyed group that lists the same model", async function () {
     const saved = (globalThis as any).Zotero;
     const group = (extra: object) => ({
       apiBase: "https://example.invalid",
@@ -47,14 +47,17 @@ describe("live workflow credential selection", function () {
       return resolveLiveAgentCredentials({ requestedModel: "shared-model" });
     };
     try {
-      const both = await run([
-        group({ authMode: "codex_auth", apiKey: "" }),
-        group({ apiKey: "keyed" }),
-      ]);
-      assert.equal(both?.apiKey, "keyed");
-      assert.isUndefined((both as any)?.authMode);
-      const codexOnly = await run([group({ authMode: "codex_auth" })]);
-      assert.equal((codexOnly as any)?.authMode, "codex_auth");
+      for (const order of [
+        [group({ apiKey: "keyed" }), group({ authMode: "codex_auth" })],
+        [group({ authMode: "codex_auth" }), group({ apiKey: "keyed" })],
+      ]) {
+        const both = await run(order);
+        assert.equal(both?.authMode, "codex_auth");
+        assert.equal(both?.apiKey, "");
+      }
+      const keyedOnly = await run([group({ apiKey: "keyed" })]);
+      assert.equal(keyedOnly?.apiKey, "keyed");
+      assert.isUndefined(keyedOnly?.authMode);
     } finally {
       (globalThis as any).Zotero = saved;
     }

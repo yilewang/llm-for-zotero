@@ -4,8 +4,10 @@ import {
   buildDocumentOutline,
   allowsChapterMap,
   chunkPlainPdfText,
+  sectionTextPieces,
 } from "../src/services/paperContent/pdfContext";
 import { buildIndexDocumentFromPdfContext } from "../src/services/libraryTextIndex/indexer";
+import type { PdfOutlineEntry } from "../src/services/paperContent/documentStructure";
 import type {
   PdfChunkMeta,
   PdfContext,
@@ -118,6 +120,130 @@ describe("document structure on plain PDF chunks", function () {
       indexRows(contextOf(text, true, pages)),
       indexRows(contextOf(text, false, pages)),
     );
+  });
+
+  it("stores the same index rows for a chat load with bookmarks and a background load", function () {
+    const bookmarks: PdfOutlineEntry[] = [
+      ["Chapter 1:Introduction", 2, 0],
+      ["1.1Visual processing and representations in the brain", 4, 1],
+      ["1.2Hierarchical architecture of the visual cortex", 5, 1],
+      ["Chapter 2:Philosophical and historical background", 6, 0],
+    ].map(([title, pageIndex, depth]) => ({
+      depth: Number(depth),
+      title: String(title),
+      pageIndex: Number(pageIndex),
+      top: null,
+      fitsPage: false,
+    }));
+    const silent = chunkPlainPdfText(text, "zotero-worker", {
+      layout: { totalPages: pages },
+    });
+    for (const chapters of [true, false]) {
+      const chat = chunkPlainPdfText(text, "zotero-worker", {
+        layout: { totalPages: pages },
+        structure: { bookmarks, chapters },
+      });
+      assert.isDefined(
+        chat.documentStructure?.pieces ?? chat.bookmarkSections?.pieces,
+      );
+      const asContext = (parts: typeof chat): PdfContext => ({
+        title: "Fixture",
+        ...parts,
+        ...buildChunkIndex(parts.chunks),
+        fullLength: text.length,
+        sourceType: "zotero-worker",
+      });
+      assert.equal(
+        indexRows(asContext(chat)),
+        indexRows(asContext(silent)),
+        `chapters: ${chapters}`,
+      );
+    }
+  });
+
+  it("gives each leaf section exactly its own text, with LF or CRLF line ends", function () {
+    const squash = (value: string) => value.replace(/\s+/g, " ").trim();
+    for (const source of [text, text.replace(/\n/g, "\r\n")]) {
+      const parts = chunkPlainPdfText(source, "zotero-worker", {
+        layout: { totalPages: pages },
+        structure: { bookmarks: null },
+      });
+      const ctx: PdfContext = {
+        title: "Fixture",
+        ...parts,
+        ...buildChunkIndex(parts.chunks),
+        fullLength: source.length,
+        sourceType: "zotero-worker",
+      };
+      const sections = parts.documentStructure!.sections;
+      const outline = buildDocumentOutline(ctx);
+      for (const [index, section] of outline.sections.entries()) {
+        if (section.childIds.length) continue;
+        const own = sections[index];
+        const read = sectionTextPieces(ctx, section)
+          .map((piece) => piece.text)
+          .join("\n");
+        assert.equal(
+          squash(read),
+          squash(source.slice(own.charStart, own.charEnd)),
+          section.title,
+        );
+      }
+    }
+  });
+
+  it("keeps a heading with its section when paragraphs are joined across separators longer than a blank line", function () {
+    const squash = (value: string) => value.replace(/\s+/g, " ").trim();
+    const shortParas = Array.from(
+      { length: 20 },
+      (_, i) => `Short paragraph number ${i} has some words.`,
+    );
+    const big = "Long body sentence goes here. ".repeat(100);
+    for (const separator of ["\n\n", "\n\n\n", "\n \n"]) {
+      const page0 = ["Chapter 1 Alpha", ...shortParas].join(separator);
+      const source = `${page0}\n\f` + `Chapter 2 Beta\n\n${big}`;
+      const bookmarks = [
+        {
+          depth: 0,
+          title: "Chapter 1 Alpha",
+          pageIndex: 0,
+          top: null,
+          fitsPage: true,
+        },
+        {
+          depth: 0,
+          title: "Chapter 2 Beta",
+          pageIndex: 1,
+          top: null,
+          fitsPage: true,
+        },
+      ];
+      const parts = chunkPlainPdfText(source, "zotero-worker", {
+        layout: { totalPages: 2 },
+        structure: { bookmarks, chapters: true },
+      } as never);
+      const ctx: PdfContext = {
+        title: "Fixture",
+        ...parts,
+        ...buildChunkIndex(parts.chunks),
+        fullLength: source.length,
+        sourceType: "zotero-worker",
+      };
+      const sections = parts.documentStructure!.sections;
+      const outline = buildDocumentOutline(ctx);
+      assert.equal(outline.sections.length, 2, JSON.stringify(separator));
+      for (const [index, section] of outline.sections.entries()) {
+        const own = sections[index];
+        const read = sectionTextPieces(ctx, section)
+          .map((piece) => piece.text)
+          .join(" ");
+        assert.equal(
+          squash(read),
+          squash(source.slice(own.charStart, own.charEnd)),
+          `${section.title} with ${JSON.stringify(separator)}`,
+        );
+      }
+    }
   });
 
   it("leaves a paper's chunk metadata as it was", function () {
@@ -294,5 +420,92 @@ describe("chapter map by item type", function () {
     assert.isDefined(off.bookmarkSections);
     assert.equal(off.textPageOffset?.pageOffset, BOOK_LEADING_BLANK_PAGES);
     assert.isDefined(off.textPages);
+  });
+});
+
+describe("structure of text that lost pages", function () {
+  const chapterPages = (titles: string[]) => {
+    const text = joinPages(titles.map((title) => [title, BODY]));
+    const bookmark = (pageIndex: number, at: number): PdfOutlineEntry => ({
+      depth: 0,
+      title: titles[at],
+      pageIndex,
+      top: null,
+      fitsPage: true,
+    });
+    return { text, bookmark };
+  };
+
+  it("has no chapter map, page map or shift when the bookmarks prove no shift", function () {
+    // One blank page lost; each chapter title heads every page of its
+    // chapter, so shifts 0 and 1 tie.
+    const { text, bookmark } = chapterPages([
+      "Chapter 1 Origins",
+      "Chapter 1 Origins",
+      "Chapter 2 Methods",
+      "Chapter 2 Methods",
+    ]);
+    const parts = chunkPlainPdfText(text, "zotero-worker", {
+      layout: { totalPages: 5 },
+      structure: { bookmarks: [bookmark(1, 0), bookmark(3, 2)] },
+    });
+    const plain = chunkPlainPdfText(text, "zotero-worker", {
+      layout: { totalPages: 5 },
+    });
+    assert.isUndefined(parts.documentStructure);
+    assert.isUndefined(parts.textPages);
+    assert.isUndefined(parts.bookmarkSections);
+    assert.isUndefined(parts.textPageOffset);
+    assert.deepEqual(parts.chunkMeta, plain.chunkMeta);
+  });
+
+  it("stores a proven shift of 0 for text that lost only trailing pages", function () {
+    const { text, bookmark } = chapterPages([
+      "Chapter 1 Origins",
+      "Chapter 1 Origins",
+      "Chapter 2 Methods",
+      "Chapter 2 Methods",
+    ]);
+    const parts = chunkPlainPdfText(text, "zotero-worker", {
+      layout: { totalPages: 6 },
+      structure: {
+        bookmarks: [bookmark(0, 0), bookmark(2, 2)],
+        chapters: false,
+      },
+    });
+    assert.deepEqual(parts.textPageOffset, { pageOffset: 0, textParts: 4 });
+    assert.lengthOf(parts.textPages || [], 6);
+    assert.equal(parts.textPages?.[4]?.tokens, 0);
+  });
+
+  it("places pageChars text by its pageChars: section and chunk pages agree", function () {
+    // Fixture assumption: pageChars lists fewer pages than the PDF has.
+    const pages = BOOK_PAGES.map((lines) => [...lines, BODY].join("\n") + "\n");
+    const layout = {
+      pageChars: pages.map((page) => page.length),
+      totalPages: BOOK_PAGES.length + BOOK_LEADING_BLANK_PAGES,
+    };
+    const shifted = chunkPlainPdfText(pages.join(""), "zotero-worker", {
+      layout,
+      structure: { bookmarks: BOOK_BOOKMARKS },
+    });
+    assert.equal(shifted.textPageOffset?.pageOffset, 0, "no bookmark shift");
+    // Bookmarks that name the pageChars pages chapter the text.
+    const parts = chunkPlainPdfText(pages.join(""), "zotero-worker", {
+      layout,
+      structure: {
+        bookmarks: BOOK_BOOKMARKS.map((entry) => ({
+          ...entry,
+          pageIndex: entry.pageIndex - BOOK_LEADING_BLANK_PAGES,
+        })),
+      },
+    });
+    const sections = parts.documentStructure?.sections;
+    assert.isDefined(sections);
+    for (const meta of parts.chunkMeta) {
+      const section = sections![meta.sectionIndex!];
+      assert.isAtLeast(meta.pageStart!, section.pageStart, section.title);
+      assert.isAtMost(meta.pageStart!, section.pageEnd, section.title);
+    }
   });
 });

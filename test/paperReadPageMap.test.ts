@@ -1,6 +1,8 @@
 import { assert } from "chai";
 import { createPaperReadTool } from "../src/agent/tools/read/paperRead";
 import type { AgentToolContext, AgentToolDefinition } from "../src/agent/types";
+import { estimateTextTokens } from "../src/utils/modelInputCap";
+import { resolveOutputReserve } from "../src/utils/outputTokenPolicy";
 
 const paperContext = {
   itemId: 11,
@@ -122,6 +124,35 @@ describe("paper_read page reads by the informed-choice rule", function () {
     assert.isEmpty(output.papers[0].passages);
     assert.match(output.papers[0].map[0], /^page 4 \| ~\d+ tokens \| Results$/);
     assert.notInclude((output.warnings || []).join(" "), "maxChars");
+  });
+});
+
+describe("paper_read page reads measured as the model sees them", function () {
+  const textTokens = PAGES.reduce(
+    (sum, page) => sum + estimateTextTokens(page.text),
+    0,
+  );
+  const reserve = resolveOutputReserve(undefined, "deepseek-chat", {});
+
+  it("shows the model a page read's citation ids without their records", async function () {
+    const definition = tool();
+    const output = await run({});
+    assert.isNotEmpty(output.quoteCitations);
+    const view = (definition as any).modelContent(output, {});
+    assert.isUndefined(view.quoteCitations);
+    assert.isString(view.papers[0].passages[0].quoteCitationId);
+    assert.isNotEmpty(view.results, "the results stay");
+  });
+
+  it("returns the pages' map when the result the model would see does not fit, though the text does", async function () {
+    // The reading share (0.8 of what is left) holds the text 1.5 times
+    // over, not the result, which carries each page's text twice.
+    const share = Math.ceil(textTokens * 1.5);
+    const output = await run({}, reserve + Math.ceil(share / 0.8));
+    assert.equal(output.papers[0].status, "map");
+    assert.isEmpty(output.results);
+    const roomy = await run({}, reserve + Math.ceil((textTokens * 4) / 0.8));
+    assert.notEqual(roomy.papers[0].status, "map");
   });
 });
 

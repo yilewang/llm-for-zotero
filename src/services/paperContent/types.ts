@@ -30,12 +30,16 @@ export type PdfContext = {
    * when the whole text does not fit, and what its section ids read. Only a
    * chat's load computes it; chunkMeta stays as it was.
    */
-  bookmarkSections?: Pick<PdfDocumentStructure, "pageCount" | "sections">;
+  bookmarkSections?: Pick<
+    PdfDocumentStructure,
+    "pageCount" | "sections" | "pieces"
+  >;
   /**
-   * A plain PDF text that lost blank leading pages to Zotero's trimming:
-   * the shift its bookmarks prove (`textPageOffset`), with the number of
-   * text pages it was proven on. Only a chat's load computes it; page reads
-   * place text page `i` on PDF page `i + pageOffset` by it.
+   * A plain PDF text that lost pages to Zotero's trimming: the shift its
+   * bookmarks prove (`textPageOffset`; 0 when only trailing pages were
+   * lost), with the number of text pages it was proven on. Only a chat's
+   * load computes it; page reads place text page `i` on PDF page
+   * `i + pageOffset` by it.
    */
   textPageOffset?: TextPageOffset;
   sourceType?:
@@ -99,11 +103,36 @@ export type PdfDocumentStructure = {
     }
   >;
   /**
+   * The chunks cut at every section start, in chunk order, without the text
+   * a chunk repeats from the one before it: what a section read returns.
+   */
+  pieces?: SectionChunkPiece[];
+  /**
    * The chunk metadata as it was before the structure was applied: what the
    * library text index stores, so index rows do not depend on who loaded
    * the text first.
    */
   plainChunkMeta: PdfChunkMeta[];
+};
+
+/** The text of one chunk that lies in one section. */
+export type SectionChunkPiece = {
+  chunkIndex: number;
+  /** Chunk text `[start, end)`. */
+  start: number;
+  end: number;
+  /**
+   * Where it lies in the document text. A chunk whose text does not line
+   * up with the source is one whole piece, read with every section it
+   * touches.
+   */
+  sourceStart: number;
+  sourceEnd: number;
+  /** The deepest section that holds its start. */
+  sectionIndex: number;
+  /** 0-based PDF pages. */
+  pageStart: number;
+  pageEnd: number;
 };
 
 export type PdfChunkKind =
@@ -139,6 +168,12 @@ export type PdfChunkMeta = {
   sectionLabel?: string;
   /** Position of the enclosing section in the manifest's section list. */
   sectionIndex?: number;
+  /**
+   * Every section a chaptered PDF's chunk lies in, enclosing sections
+   * included: a chunk that crosses a section start is in both sections.
+   * The library index does not store it.
+   */
+  sectionIndexes?: number[];
   /** Heading chain down to the chunk, e.g. `2 Algorithm › 2.1 Weak form`. */
   sectionPath?: string;
   /** Markdown heading depth of the enclosing section: `#` → 1, `##` → 2. */
@@ -215,6 +250,8 @@ export type PaperContextCandidate = {
   sectionLabel?: string;
   /** Position of the enclosing section in the document's section list. */
   sectionIndex?: number;
+  /** Every section the chunk lies in; see `PdfChunkMeta`. */
+  sectionIndexes?: number[];
   /** Heading chain down to the chunk, e.g. `2 Algorithm › 2.1 Weak form`. */
   sectionPath?: string;
   /** The standard section the chunk lies in; see `PdfChunkMeta`. */

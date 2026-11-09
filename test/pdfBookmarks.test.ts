@@ -71,19 +71,8 @@ describe("PDF bookmark reads", function () {
     );
   });
 
-  it("passes the caller's signal to the read and skips an aborted one", async function () {
+  it("skips a caller already aborted", async function () {
     const controller = new AbortController();
-    let seen: AbortSignal | undefined;
-    const readOutline: PdfOutlineReader = async (_path, signal) => {
-      seen = signal;
-      return { status: "ok", pageCount: 1, entries };
-    };
-    await readPdfBookmarks(1, fileState, {
-      signal: controller.signal,
-      readOutline,
-    });
-    assert.strictEqual(seen, controller.signal);
-    clearPdfBookmarksCache();
     controller.abort();
     let called = false;
     assert.isNull(
@@ -96,5 +85,39 @@ describe("PDF bookmark reads", function () {
       }),
     );
     assert.isFalse(called);
+  });
+
+  it("one caller's cancel stops only its own wait, not a shared read", async function () {
+    let reads = 0;
+    let seen: AbortSignal | undefined;
+    const readOutline: PdfOutlineReader = (_path, signal) => {
+      reads += 1;
+      seen = signal;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => resolve({ status: "ok", pageCount: 1, entries }),
+          20,
+        );
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(new PdfSplitterCancelledError());
+        });
+      });
+    };
+    const controller = new AbortController();
+    const first = readPdfBookmarks(1, fileState, {
+      signal: controller.signal,
+      readOutline,
+    });
+    const second = readPdfBookmarks(1, fileState, { readOutline });
+    controller.abort();
+    assert.isNull(await first, "the cancelled caller stops waiting");
+    assert.deepEqual(await second, entries, "the other caller gets the read");
+    assert.isUndefined(seen, "the shared read carries no caller's signal");
+    assert.deepEqual(
+      await readPdfBookmarks(1, fileState, { readOutline }),
+      entries,
+    );
+    assert.equal(reads, 1, "the read is kept for the file state");
   });
 });

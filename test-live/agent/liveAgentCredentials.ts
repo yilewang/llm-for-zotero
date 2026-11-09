@@ -71,11 +71,12 @@ function credentialsFromProviderGroups(
         String(group.providerProtocol || "").trim()
       );
     });
-    const keyed = candidates.find((group) => String(group.apiKey || "").trim());
+    // Codex Direct first: live runs use it whenever it lists the model.
     const group =
-      keyed ?? candidates.find((entry) => entry.authMode === "codex_auth");
+      candidates.find((entry) => entry.authMode === "codex_auth") ??
+      candidates.find((entry) => String(entry.apiKey || "").trim());
     if (group) {
-      const codexAuth = !keyed;
+      const codexAuth = group.authMode === "codex_auth";
       const reasoningLevel = environmentValue("LLM_FOR_ZOTERO_LIVE_REASONING");
       return {
         model: requestedModel,

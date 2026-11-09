@@ -198,17 +198,20 @@ export async function indexAttachment(params: {
   const attachmentId = params.item.id;
   // The agent may have loaded this paper for its own reasons; only evict what indexing loaded.
   const releaseBorrowedText = paperTextStore.borrow(attachmentId);
+  let loaded: PdfContext | undefined;
   try {
     // Prefetch: cheapest source first (MinerU md → Zotero full-text cache → PDFWorker).
     // Urgent (write-through, added, invalidated): today's ladder, pages included.
     // Both lanes load silently so an index job never re-enqueues itself via the write-through hook.
-    await ensurePDFTextCached(
+    // Use what this load returns: a chat load that joins it may drop the
+    // cached entry before this resumes.
+    const ctx = await ensurePDFTextCached(
       params.item,
       params.lane === "prefetch"
         ? { preferFulltextCache: true, silentLoad: true }
         : { silentLoad: true },
     );
-    const ctx = paperTextStore.peek(attachmentId);
+    loaded = ctx;
     if (!ctx || !ctx.chunks.length) {
       const fileState = await readAttachmentFileState(params.item);
       if (!fileState) {
@@ -303,6 +306,6 @@ export async function indexAttachment(params: {
       elapsedMs: now() - started,
     };
   } finally {
-    releaseBorrowedText();
+    releaseBorrowedText(loaded);
   }
 }

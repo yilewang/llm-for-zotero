@@ -53,7 +53,7 @@ export function isPageCompleteZoteroFulltextCache(input: {
   const shift = input.textPageOffset;
   return Boolean(
     shift &&
-    shift.pageOffset > 0 &&
+    shift.pageOffset >= 0 &&
     parts === shift.textParts &&
     shift.pageOffset + parts <= totalPages,
   );

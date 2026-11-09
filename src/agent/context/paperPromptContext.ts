@@ -52,10 +52,20 @@ const BOOKMARK_MAP_PRELOAD_NOTE =
  * size, and how to read it.
  */
 function longDocumentNote(context: PdfContext): string {
+  const structure = context.documentStructure;
   const pages = context.textPages || [];
-  const tokens = pages.reduce((sum, page) => sum + page.tokens, 0);
-  const mapName = context.bookmarkSections ? "section map" : "page map";
-  return `This document is long: its ${pages.length} pages hold about ${tokens} tokens of text, more than the context left can hold, so neither its text nor its ${mapName} is preloaded. Read it with paper_read: mode:'targeted' with a query to search it, or with pages, numbered from 1 (such as pages:[4,5,6]), to read pages.`;
+  const pageCount = structure ? structure.pageCount : pages.length;
+  const tokens = structure
+    ? structure.sections
+        .filter((section) => section.parentIndex === undefined)
+        .reduce((sum, section) => sum + section.tokens, 0)
+    : pages.reduce((sum, page) => sum + page.tokens, 0);
+  const mapName = structure
+    ? "map of its parts"
+    : context.bookmarkSections
+      ? "section map"
+      : "page map";
+  return `This document is long: its ${pageCount} pages hold about ${tokens} tokens of text, more than the context left can hold, so neither its text nor its ${mapName} is preloaded. Read it with paper_read: mode:'targeted' with a query to search it, or with pages, numbered from 1 (such as pages:[4,5,6]), to read pages.`;
 }
 
 /** The citation rule for a turn whose passages come from reads. */
@@ -287,14 +297,18 @@ export async function preparePaperPromptContext(
     // full-text attach still preloads its whole text.
     if (context.documentStructure && !roles.includes("full_text")) {
       const outline = buildDocumentOutline(context);
-      result.blocks.push(
-        `${header}${DOCUMENT_MAP_PRELOAD_NOTE}\n${PASSAGE_ID_RULE}\n\n${formatDocumentMap(
-          outline,
-        )}`,
-      );
-      selectionLocations.push(
-        ...locateSelections(request, paper, context, outline),
-      );
+      let block = `${header}${DOCUMENT_MAP_PRELOAD_NOTE}\n${PASSAGE_ID_RULE}\n\n${formatDocumentMap(
+        outline,
+      )}`;
+      // A map that does not fit what is left: only the document's size.
+      if (estimateTextTokens(block) > remaining)
+        block = `${header}${longDocumentNote(context)}\n${PASSAGE_ID_RULE}`;
+      else
+        selectionLocations.push(
+          ...locateSelections(request, paper, context, outline),
+        );
+      result.blocks.push(block);
+      remaining = Math.max(0, remaining - estimateTextTokens(block));
       continue;
     }
     // Every chunk as the passage block would carry it, with its IDs and its

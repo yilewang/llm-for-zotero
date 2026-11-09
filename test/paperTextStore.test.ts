@@ -235,6 +235,36 @@ describe("paper text store", function () {
       assert.deepEqual(calls, [true, undefined]);
     });
 
+    it("a silent load returns the text it loaded although a chat load replaced it, and its release keeps the chat's entry", async function () {
+      const extract = async (target: Zotero.Item) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        paperTextStore.write(target.id, fakeContext("zotero-worker"));
+      };
+      // The indexer: borrow, load silently, use what the load returns.
+      const indexer = (async () => {
+        const release = paperTextStore.borrow(9542);
+        const loaded = await paperTextStore.load(
+          item(9542),
+          { silentLoad: true },
+          extract,
+        );
+        release(loaded);
+        return loaded;
+      })();
+      // A chat load arrives while the index load runs.
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      const chat = paperTextStore.load(item(9542), undefined, extract);
+      const [indexed, chatLoaded] = await Promise.all([indexer, chat]);
+      assert.deepEqual(indexed?.chunks, ["seeded text"]);
+      assert.exists(chatLoaded);
+      assert.notStrictEqual(chatLoaded, indexed);
+      assert.strictEqual(
+        paperTextStore.peek(9542),
+        chatLoaded,
+        "the chat's entry stays cached",
+      );
+    });
+
     it("a chat load reuses a silent entry whose source carries no structure", async function () {
       let loads = 0;
       const extract = async (target: Zotero.Item) => {
@@ -289,10 +319,17 @@ describe("paper text store", function () {
       }
     });
 
-    it("borrow evicts on release only an entry that was absent when borrowed", function () {
+    it("borrow evicts on release only an entry that was absent when borrowed", async function () {
+      const writeFake = async (target: Zotero.Item) => {
+        paperTextStore.write(target.id, fakeContext("mineru"));
+      };
       const releaseFresh = paperTextStore.borrow(9540);
-      pdfTextCache.set(9540, fakeContext("mineru"));
-      releaseFresh();
+      const fresh = await paperTextStore.load(
+        item(9540),
+        { silentLoad: true },
+        writeFake,
+      );
+      releaseFresh(fresh);
       assert.isFalse(
         pdfTextCache.has(9540),
         "the borrower's own load is evicted",
@@ -307,6 +344,76 @@ describe("paper text store", function () {
         held,
         "someone else's load stays",
       );
+
+      // Given the entry it loaded, release evicts only that entry.
+      const releaseOwn = paperTextStore.borrow(9543);
+      const own = await paperTextStore.load(
+        item(9543),
+        { silentLoad: true },
+        writeFake,
+      );
+      const other = fakeContext("mineru");
+      pdfTextCache.set(9543, other);
+      releaseOwn(own);
+      assert.strictEqual(
+        pdfTextCache.get(9543),
+        other,
+        "an entry another load wrote stays",
+      );
+      pdfTextCache.set(9543, own!);
+      releaseOwn(own);
+      assert.isFalse(pdfTextCache.has(9543), "the borrower's own entry goes");
+    });
+
+    it("borrow release keeps a chat's entry when the silent load joined the chat's load", async function () {
+      const extract = async (target: Zotero.Item) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        paperTextStore.write(target.id, fakeContext("zotero-worker"));
+      };
+      const chat = paperTextStore.load(item(9560), undefined, extract);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      const release = paperTextStore.borrow(9560);
+      const loaded = await paperTextStore.load(
+        item(9560),
+        { silentLoad: true },
+        extract,
+      );
+      await chat;
+      release(loaded);
+      assert.strictEqual(
+        paperTextStore.peek(9560),
+        loaded,
+        "the chat's entry stays cached",
+      );
+    });
+
+    it("borrow release of a load that found no text keeps an entry a chat wrote meanwhile", async function () {
+      const release = paperTextStore.borrow(9561);
+      const loaded = await paperTextStore.load(
+        item(9561),
+        { silentLoad: true },
+        async () => {},
+      );
+      assert.isUndefined(loaded);
+      await paperTextStore.load(item(9561), undefined, async (target) => {
+        paperTextStore.write(target.id, fakeContext("zotero-worker"));
+      });
+      release(loaded);
+      assert.exists(paperTextStore.peek(9561), "the chat's entry stays");
+    });
+
+    it("borrow release evicts an entry its own silent load wrote", async function () {
+      const release = paperTextStore.borrow(9562);
+      const loaded = await paperTextStore.load(
+        item(9562),
+        { silentLoad: true },
+        async (target) => {
+          paperTextStore.write(target.id, fakeContext("zotero-worker"));
+        },
+      );
+      assert.exists(loaded);
+      release(loaded);
+      assert.isFalse(pdfTextCache.has(9562));
     });
 
     it("discardEmptyEntry drops only an entry without text and leaves its load alone", function () {

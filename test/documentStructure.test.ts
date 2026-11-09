@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import {
   BEFORE_FIRST_SECTION_TITLE,
+  bookmarkSectionTree,
   detectDocumentStructure,
   splitPdfTextPages,
   textPageOffset,
@@ -51,6 +52,32 @@ const PAPER_PAGES: string[][] = [
     "The scheme extends to three dimensions.",
     "References",
   ],
+];
+
+/** Chapters whose title heads every page of the chapter. */
+const TIED_SHIFT_PAGES: string[][] = [
+  ["Chapter 1 Origins", "The first part of the opening chapter."],
+  ["Chapter 1 Origins", "The second part of the opening chapter."],
+  ["Chapter 2 Methods", "The first part of the methods chapter."],
+  ["Chapter 2 Methods", "The second part of the methods chapter."],
+];
+
+/** Their bookmarks in a PDF with one blank page before them. */
+const TIED_SHIFT_BOOKMARKS: PdfOutlineEntry[] = [
+  {
+    depth: 0,
+    title: "Chapter 1 Origins",
+    pageIndex: 1,
+    top: null,
+    fitsPage: true,
+  },
+  {
+    depth: 0,
+    title: "Chapter 2 Methods",
+    pageIndex: 3,
+    top: null,
+    fitsPage: true,
+  },
 ];
 
 describe("document structure of plain PDF text", function () {
@@ -1070,6 +1097,36 @@ describe("document structure of plain PDF text", function () {
       );
     });
 
+    it("is 0 for text that lost only trailing pages", function () {
+      assert.equal(
+        textPageOffset({
+          text: joinPages(TIED_SHIFT_PAGES),
+          layout: { totalPages: TIED_SHIFT_PAGES.length + 2 },
+          bookmarks: TIED_SHIFT_BOOKMARKS.map((entry) => ({
+            ...entry,
+            pageIndex: entry.pageIndex - 1,
+          })),
+        }),
+        0,
+      );
+    });
+
+    it("is 0 for text that pageChars places, never a bookmark shift", function () {
+      // Fixture assumption: pageChars lists fewer pages than the PDF has.
+      const pages = BOOK_PAGES.map((lines) => `${lines.join("\n")}\n`);
+      assert.equal(
+        textPageOffset({
+          text: pages.join(""),
+          layout: {
+            pageChars: pages.map((page) => page.length),
+            totalPages: BOOK_PAGES.length + BOOK_LEADING_BLANK_PAGES,
+          },
+          bookmarks: BOOK_BOOKMARKS,
+        }),
+        0,
+      );
+    });
+
     it("is unknown when no title is on its page under any shift", function () {
       assert.isNull(
         textPageOffset({
@@ -1087,6 +1144,44 @@ describe("document structure of plain PDF text", function () {
         }),
       );
     });
+  });
+
+  it("takes no bookmark structure when the text lost a page and two shifts place equally many titles", function () {
+    // One blank page lost; each chapter title heads every page of its
+    // chapter, so shift 0 and shift 1 both put every title on its page.
+    const text = joinPages(TIED_SHIFT_PAGES);
+    const layout = { totalPages: TIED_SHIFT_PAGES.length + 1 };
+    assert.isNull(
+      textPageOffset({ text, layout, bookmarks: TIED_SHIFT_BOOKMARKS }),
+    );
+    assert.isNull(
+      detectDocumentStructure({
+        text,
+        layout,
+        bookmarks: TIED_SHIFT_BOOKMARKS,
+      }),
+    );
+    assert.isNull(
+      bookmarkSectionTree({ text, layout, bookmarks: TIED_SHIFT_BOOKMARKS }),
+    );
+    // With every page, the same bookmarks place the chapters.
+    const whole = detectDocumentStructure({
+      text: joinPages([["Cover"], ...TIED_SHIFT_PAGES]),
+      layout: { totalPages: TIED_SHIFT_PAGES.length + 1 },
+      bookmarks: TIED_SHIFT_BOOKMARKS,
+    });
+    assert.deepEqual(
+      whole?.sections.map((section) => [
+        section.title,
+        section.pageStart,
+        section.pageEnd,
+      ]),
+      [
+        [BEFORE_FIRST_SECTION_TITLE, 0, 0],
+        ["Chapter 1 Origins", 1, 2],
+        ["Chapter 2 Methods", 3, 4],
+      ],
+    );
   });
 
   it("returns nothing when the page split does not match the PDF without bookmarks", function () {
