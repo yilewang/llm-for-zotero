@@ -486,6 +486,43 @@ describe("workflow: html preview, move buttons, and the Miscellaneous tab", func
       win.getComputedStyle(codeEl)!.color,
       "a keyword is coloured differently from plain code",
     );
+    // A code tab reads like a document tab: text size − and + in the title
+    // row, no second Copy (the block's hover bar has one), and code larger
+    // than in the chat.
+    const codeActions = Array.from(
+      codeRoot.querySelectorAll(".llm-standalone-side-panel-item-action"),
+    ) as HTMLButtonElement[];
+    assert.deepEqual(
+      codeActions.map((button) => button.dataset.itemAction),
+      ["text-smaller", "text-larger", "show-in-chat"],
+      "code tab: text size - and +, and Show in chat",
+    );
+    const sizePref = "extensions.zotero.llmforzotero.sideReaderTextSize";
+    const savedSize = Zotero.Prefs.get(sizePref, true);
+    try {
+      Zotero.Prefs.clear(sizePref, true);
+      codeActions[1].click();
+      codeActions[0].click();
+      await Zotero.Promise.delay(100);
+      const fontOf = (node: Element) =>
+        Number.parseFloat(win.getComputedStyle(node)?.fontSize || "0");
+      const chatCode = mainBody().querySelector(
+        ".llm-codeblock-body pre code",
+      ) as HTMLElement;
+      const start = fontOf(codeEl);
+      assert.isAbove(
+        start,
+        fontOf(chatCode) * 1.1,
+        `code tab text is larger than chat code (${start} vs ${fontOf(chatCode)})`,
+      );
+      codeActions[1].click();
+      await Zotero.Promise.delay(100);
+      assert.closeTo(fontOf(codeEl), start * 1.1, 0.6, "+ enlarges the code");
+      await shoot(win, "tab-code-larger.png");
+    } finally {
+      if (savedSize === undefined) Zotero.Prefs.clear(sizePref, true);
+      else Zotero.Prefs.set(sizePref, savedSize as never, true);
+    }
 
     // Clicking again focuses the same tab instead of opening a second one.
     for (const kind of kinds) {

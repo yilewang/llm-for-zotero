@@ -20882,6 +20882,15 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   max-height: none;
 }
 
+/* A code tab is read like a document: larger than code in the chat, and
+ * scaled by the tab's − and + (--llm-side-reader-text-scale). */
+.llm-standalone-side-panel-item-body[data-item-kind="code"]
+  .llm-codeblock-body
+  pre
+  code {
+  font-size: calc(var(--llm-fs-13) * var(--llm-side-reader-text-scale, 1));
+}
+
 /* Diagram and drawing tabs: the rendered diagram becomes the zoom stage
  * (figureViewer.ts mountDiagramTabZoom), like a figure tab. The flex chain
  * runs from the tab body down to the preview; the caption keeps its height
