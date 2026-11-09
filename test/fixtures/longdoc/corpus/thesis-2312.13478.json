@@ -1,0 +1,738 @@
+{
+  "source": "Shervin Safavi, Brain as a Complex System (PhD thesis), arXiv:2312.13478",
+  "license": "CC BY 3.0, except the scientific papers reprinted in the thesis (Part IV), which are subject to their own copyright; the pages after Part IV's opening page hold no text here",
+  "note": "Bookmarks, and from Zotero's text of the PDF only each page's first and last line and the heading lines that carry, or start with, a title of a bookmark on that page; lines over 200 characters keep their first and last 60.",
+  "totalPages": 111,
+  "bookmarks": [
+    {
+      "depth": 0,
+      "title": "Declaration",
+      "pageIndex": 6,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Dedication",
+      "pageIndex": 8,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Contents",
+      "pageIndex": 12,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Preface",
+      "pageIndex": 12,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Summary",
+      "pageIndex": 12,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Synopsis",
+      "pageIndex": 18,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "1 Brain as a complex system",
+      "pageIndex": 20,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "1.1 Complex systems",
+      "pageIndex": 20,
+      "top": 700.557,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "1.2 Complex system tools in neuroscience",
+      "pageIndex": 21,
+      "top": 236.723,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "1.3 Novel complementary approaches",
+      "pageIndex": 23,
+      "top": 369.349,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "2 Approaching through neural data analysis",
+      "pageIndex": 25,
+      "top": 224.89,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "2.1 Necessity of investigating across scales",
+      "pageIndex": 26,
+      "top": 590.126,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "2.2 Available tools for investigating cross-scale relationships",
+      "pageIndex": 29,
+      "top": 727.008,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "2.3 Need for new tools for investigating cross-scale relationships",
+      "pageIndex": 30,
+      "top": 376.088,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "2.3.1 Tools to explore micro-meso relationsips",
+      "pageIndex": 31,
+      "top": 563.84,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "2.3.2 Tools to explore meso-macro relationsips",
+      "pageIndex": 32,
+      "top": 400.631,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "3 Approaching through neural theories",
+      "pageIndex": 33,
+      "top": 627.147,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "3.1 Criticality hypothesis of the brain",
+      "pageIndex": 34,
+      "top": 539.914,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "3.2 Signatures of criticality in neural systems",
+      "pageIndex": 35,
+      "top": 651.71,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "3.3 Seeking for a bridge: a complementary approach",
+      "pageIndex": 36,
+      "top": 572.985,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "3.3.1 Efficient coding as the computational objective",
+      "pageIndex": 37,
+      "top": 752.134,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "3.3.2 Signature of criticality in efficient coding networks",
+      "pageIndex": 37,
+      "top": 397.493,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "4 Approaching through cognition",
+      "pageIndex": 37,
+      "top": 118.19,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "4.1 Visual awareness",
+      "pageIndex": 38,
+      "top": 590.106,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "4.1.1 Binocular rivalry",
+      "pageIndex": 38,
+      "top": 175.325,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "4.1.2 Neural correlate of binocular rivalry",
+      "pageIndex": 39,
+      "top": 676.816,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "4.2 Why is appealing from a complex system perspective",
+      "pageIndex": 39,
+      "top": 146.434,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "4.3 Experimental considerations",
+      "pageIndex": 41,
+      "top": 727.028,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "4.4 Toward a meso-scale understanding",
+      "pageIndex": 42,
+      "top": 664.243,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "4.4.1 Meso-scale dynamics",
+      "pageIndex": 42,
+      "top": 535.595,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "4.4.2 Micro-Meso relationship",
+      "pageIndex": 42,
+      "top": 356.716,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Manuscripts Information",
+      "pageIndex": 44,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "5 Paper 1",
+      "pageIndex": 46,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "6 Paper 2",
+      "pageIndex": 47,
+      "top": 206.06,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "7 Paper 3",
+      "pageIndex": 49,
+      "top": 183.56,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "8 Paper 4",
+      "pageIndex": 52,
+      "top": 714.475,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "9 Paper 5",
+      "pageIndex": 55,
+      "top": 190.369,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "10 Paper 6",
+      "pageIndex": 57,
+      "top": 513.608,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "11 Paper 7",
+      "pageIndex": 59,
+      "top": 118.19,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "12 Paper 8",
+      "pageIndex": 62,
+      "top": 331.59,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Outlook",
+      "pageIndex": 66,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "13 Brain as a complex & adaptive system",
+      "pageIndex": 68,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "13.1 Complex adaptive systems",
+      "pageIndex": 68,
+      "top": 138.2,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "13.2 Brain computational objectives",
+      "pageIndex": 69,
+      "top": 262.962,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "13.3 Relating behavior to multi-scale brain dynamics",
+      "pageIndex": 70,
+      "top": 526.161,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "13.3.1 Relating neural dynamics and neural computation",
+      "pageIndex": 70,
+      "top": 334.728,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "13.3.2 Exploiting models of pivotal tasks",
+      "pageIndex": 71,
+      "top": 190.915,
+      "fitsPage": false
+    },
+    {
+      "depth": 3,
+      "title": "13.3.3 A principled framework for data fusion",
+      "pageIndex": 73,
+      "top": 614.032,
+      "fitsPage": false
+    },
+    {
+      "depth": 2,
+      "title": "13.4 Understating the neuro-principles through dysfunctions",
+      "pageIndex": 73,
+      "top": 234.867,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "List of Figures",
+      "pageIndex": 76,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "Acronyms",
+      "pageIndex": 78,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "Bibliography",
+      "pageIndex": 80,
+      "top": 777.449,
+      "fitsPage": false
+    },
+    {
+      "depth": 0,
+      "title": "Manuscripts",
+      "pageIndex": 108,
+      "top": 398.598,
+      "fitsPage": false
+    },
+    {
+      "depth": 1,
+      "title": "Colophon",
+      "pageIndex": 110,
+      "top": 252.966,
+      "fitsPage": false
+    }
+  ],
+  "pages": [
+    ["BRAIN AS A COMPLEX SYSTEM", "arXiv:2312.13478v1 [q-bio.NC] 20 Dec 2023"],
+    [],
+    ["Brain as a Complex System", "2021"],
+    [],
+    ["Tag der mündlichen Prüfung: 2021-10-20", "v"],
+    [],
+    [
+      "Erklärung / Declaration: Ich erkläre, dass ich die zur Promotion eingereichte Arbeit mit dem Titel:",
+      "Datum / Date Unterschrift / Signature"
+    ],
+    [
+      "Shervin safavi:",
+      "Content of this thesis is licensed under aCreative Commons Attribution 3.0, except the scientific papers reprinted in the thesis (see partiv), that are subject to their own copyright protection."
+    ],
+    [
+      "Dedicated to all the nurses, doctors, clinicians and scientists . . . who sacrifice their lives to save ours during the COVID-19 pandemic.",
+      "Dedicated to loving Farhad Meysami who has an important contribution in shaping my mindset."
+    ],
+    [],
+    [],
+    [
+      "Translation:",
+      "— Poem by Zhale Esfehani (Subjectively translated by Shervin Safavi)"
+    ],
+    ["CONTENTS", "Prefacexv", "Summaryxvii", "xiii"],
+    ["xiv contents", "iv Manuscripts"],
+    ["P R E FA C E", "xv"],
+    [],
+    ["SUMMARY", "xvii"],
+    [
+      "xviii contents",
+      "iments. In we elaborate on the importance of studying prefro … r to the intention of the research presented in this thesis."
+    ],
+    [
+      "Part I",
+      "SYNOPSIS",
+      "This part provides a general idea of this thesis. We suggest …  the mesoscopic neural mechanism underlying this phenomenon."
+    ],
+    [],
+    ["1", "BRAIN AS A COMPLEX SYSTEM", "1.1complex systems", "N", "i", "3"],
+    [
+      "4brain as a complex system",
+      "1.2complex system tools in neuroscience",
+      "Inspired by perspective introduced in the previous section,  … euroscientific questions can be divided into four categories"
+    ],
+    [
+      "1.2 complex system tools in neuroscience5",
+      "Figure 1.2: Kuramoto model (snapshots) Snapshots from animat … n, and the last row is the last snapshot of this simulation."
+    ],
+    [
+      "6brain as a complex system",
+      "1.3novel complementary approaches",
+      "Certainly, using the approaches mentioned in the previous se …  but still remain related to the complex system perspective."
+    ],
+    [
+      "1.3 novel complementary approaches7",
+      "can separate scales without losing our descriptive and predi … ent coding has different variants and many of them have been"
+    ],
+    [
+      "8brain as a complex system",
+      "perception, to some degree, can be explained based on princi …  complex systems perspective toward the brain and cognition."
+    ],
+    ["2", "2.1necessity of investigating across scales", "9"],
+    [
+      "10approaching through neural data analysis",
+      "whole brain [80, 81]. In some cases, the cross-scale couplin … m of multiple coupled oscillators [6, 7] (for an integrative"
+    ],
+    [
+      "2.1 necessity of investigating across scales11",
+      "Although, to the best of my knowledge, this proposal is not  … n activity across scales. In spite of the importance of this"
+    ],
+    [
+      "12approaching through neural data analysis",
+      "2.2 available tools for investigating cross-scale relation",
+      "ships",
+      "vidual neurons, field potentials generated by small or large … this was one of the examples briefly discussed inSection 2.1"
+    ],
+    [
+      "2.3 need for new tools for investigating cross-scale relationships13",
+      "2.3 need for new tools for investigating cross-scale rela",
+      "tionships",
+      "As was motivated in the previous section (Section 2.2), nove … ivity at smaller scales (neurons and population of neurons),"
+    ],
+    [
+      "14approaching through neural data analysis",
+      "2.3.1 Tools to explore micro-meso relationsips",
+      "A prominent example of the relationship between micro- and m … ections and strong local recurrent inhibition as a plausible"
+    ],
+    [
+      "2.3 need for new tools for investigating cross-scale relationships15",
+      "2.3.2 Tools to explore meso-macro relationsips",
+      "1 Marˇcenko et al. [130] in not written in English, but is the original publication. The reader can refer to Anderson et al. [131, Chapter 2] instead."
+    ],
+    [
+      "16approaching through neural data analysis",
+      "a large scale coordinated dynamics, namely a competition bet … s membrane potentials and ionic currents) of the simulation."
+    ],
+    ["3", "3.1criticality hypothesis of the brain", "17"],
+    [
+      "18approaching through neural theories",
+      "3.2signatures of criticality in neural systems",
+      "1 Indeed, scale-free neural avalanches without following scaling laws have been observed in neural models that are not operating close to a critical point [162, 163]."
+    ],
+    [
+      "3.3 seeking for a bridge: a complementary approach19",
+      "3.3seeking for a bridge : a complementary approach",
+      "2 See also Lizier [174] (in particular chapter 6) that argue … needs to be able to flexibly switch between them [156, 175]."
+    ],
+    [
+      "20approaching through neural theories",
+      "3.3.1 Efficient coding as the computational objective",
+      "3.3.2 Signature of criticality in efficient coding networks",
+      "Following our motivation for the necessity of complementary  … nd computational frameworks that complement the criticality."
+    ],
+    ["4", "4.1visual awareness", "4.1.1 Binocular rivalry", "21"],
+    [
+      "22approaching through cognition",
+      "4.1.2 Neural correlate of binocular rivalry",
+      "In order to understand the neural correlate of phenomenon of … tion is potentially available to multi-electrode recordings."
+    ],
+    [
+      "4.2 why is appealing from a complex system perspective23",
+      "1 With EEG/MEG and fMRI we can also characterize the interac … ompare to what we can get from invasive recording techniques"
+    ],
+    [
+      "24approaching through cognition",
+      "4.3experimental considerations",
+      "In the previous section (Section 4.2) we argued that meso-sc … also found that spatial structure of functional connectivity"
+    ],
+    [
+      "4.4 toward a meso-scale understanding25",
+      "4.4toward a meso -scale understanding",
+      "4.4.1 Meso-scale dynamics",
+      "4.4.2 Micro-Meso relationship",
+      "2 By generally, it is meant in presence and absence of visual stimulation, in awake and anesthetized state of the animal."
+    ],
+    [
+      "26approaching through cognition",
+      "This strong spike-LFP coupling can be a hint for an emphasiz … cation circuit and needed to be clarified in future studies."
+    ],
+    [
+      "Part II",
+      "MANUSCRIPTS INFORMATION",
+      "In this part of the thesis, information of all manuscripts a …  it possible to be more concise as we progress through them."
+    ],
+    [],
+    ["5", "PAPER 1", "29"],
+    [
+      "30paper 1",
+      "1 Referred paper [130], is not written in English, but it is the original publication. Reader can refer to Anderson et al. [131, Chapter 2] instead."
+    ],
+    ["6", "31"],
+    [
+      "32paper 2",
+      "GPLA is a multi-variate method to quantify, characterize and … iques that need computationally efficient statistical tests."
+    ],
+    ["7", "33"],
+    [
+      "34paper 3",
+      "With this method, we can find characteristic patterns of LFP … ful about cooperative and multi-scale dynamics of the brain."
+    ],
+    [
+      "paper 3 35",
+      "Such patterns are potentially very special in the sense that … ar when combined with GPLA introduced in and NET-fMRI [132]."
+    ],
+    [],
+    ["8", "37"],
+    [
+      "38paper 4",
+      "Our results suggest that coding-based optimality might co-oc … search on the computation and dynamics of the neural system."
+    ],
+    ["9", "39"],
+    [
+      "40paper 5",
+      "by Kapoor et al. [226] based on analysis of a wider range of …  processing (and understating the brain in a broader sense)."
+    ],
+    ["10", "41"],
+    [
+      "42paper 6",
+      "Our results suggest that spatial inhomogeneities in the func …  instrumental for distributed information processing in PFC."
+    ],
+    ["11", "43"],
+    [
+      "44paper 7",
+      "1 OKN reflexes are characteristic patterns of eye movements in response to moving stimuli, that consist of smooth pursuit and fast saccadic eye movements."
+    ],
+    [
+      "paper 7 45",
+      "In this study, we showed that activity of the majority of se … of consciousness research in the last few years (also see )."
+    ],
+    [],
+    ["12", "47"],
+    [
+      "48paper 8",
+      "This study adds another piece of evidence for the involvemen … of consciousness research in the last few years (also see )."
+    ],
+    [
+      "Part III",
+      "OUTLOOK",
+      "This part is dedicated to a subjective perspective on how th … o the intention of the research presented in previous parts."
+    ],
+    [],
+    ["13", "BRAIN AS A COMPLEX & ADAPTIVE SYSTEM", "51"],
+    [
+      "52brain as a complex & adaptive system",
+      "13.2brain computational objectives",
+      "\"At a very general level, one might say that computation is what a complex system does with information in order to succeed or adapt in its environment.\""
+    ],
+    [
+      "13.3 relating behavior to multi-scale brain dynamics53",
+      "13.3relating behavior to multi -scale brain dynamics",
+      "13.3.1 Relating neural dynamics and neural computation",
+      "There have been various efforts to relate neural computation to neural dynamics by introducing normative models of neural computation (e. g. based"
+    ],
+    [
+      "54brain as a complex & adaptive system",
+      "13.3.2 Exploiting models of pivotal tasks",
+      "For the purpose expressed inSection 13.3, we can also exploi … f my knowledge, not so many such tasks are identified and ex"
+    ],
+    [
+      "13.3 relating behavior to multi-scale brain dynamics55",
+      "haustively explored. Nevertheless, we believe this small num … rain and behavior (which is binocular rivalry in this case)."
+    ],
+    [
+      "56brain as a complex & adaptive system",
+      "13.3.3 A principled framework for data fusion",
+      "13.4 understating the neuro-principles through dysfunctions",
+      "Understanding the brain dysfunctions, in addition to its hum … nding the machinery behind cognitive capabilities and neural"
+    ],
+    [
+      "13.4 understating the neuro-principles through dysfunctions57",
+      "Despite this diversity, there are also potential connections … e richness and diversity of the empirical data in the field."
+    ],
+    [],
+    ["LIST OF FIGURES", "59"],
+    [
+      "60list of figures",
+      "Figure 2.2 Spatio-temporal resolution of measurement methods … re is adopted from Sejnowski et al. [97] with permission. 12"
+    ],
+    ["ACRONYMS", "61"],
+    [],
+    ["BIBLIOGRAPHY", "63"],
+    [
+      "64b i b l i o g r a p h y",
+      "[29] Eugene M. Izhikevich. Dynamical Systems in Neuroscience … Massachusetts, USA: The MIT Press, 2010 (cit. on pp. 6, 18)."
+    ],
+    [
+      "b i b l i o g r a p h y65",
+      "[44] James Sethna and Laboratory of Atomic and Solid State Physics James P. Sethna. Statistical Mechanics: Entropy, Order Parameters, and Complexity. OUP Oxford, 2006 (cit. on pp. 6, 19)."
+    ],
+    [
+      "66b i b l i o g r a p h y",
+      "[59] Cole Mathis, Tanmoy Bhattacharya, and Sara Imari Walker … 17), pp. 266–276. doi: 10.1089/ast.2016.1481 (cit. on p. 8)."
+    ],
+    [
+      "b i b l i o g r a p h y67",
+      "[74] A. Pastukhov et al. “Multi-Stable Perception Balances Stability and Sensitivity.” Frontiers in computational neuroscience 7 (2013), p. 17. doi: 10.3389/fncom.2013.00017 (cit. on pp. 8, 23, 55)."
+    ],
+    [
+      "68b i b l i o g r a p h y",
+      "[88] Michel Le Van Quyen et al. “Exploring the Nonlinear Dyn … –639. doi: 10.1016/j.jphysparis.2004.01.019 (cit. on p. 11)."
+    ],
+    [
+      "b i b l i o g r a p h y69",
+      "[102] Haiteng Jiang et al. “Measuring Directionality between …  367. doi: 10.1016/j.neuroimage.2015.05.044 (cit. on p. 13)."
+    ],
+    [
+      "70b i b l i o g r a p h y",
+      "[116] Bijan Pesaran et al. “Investigating Large-Scale Brain  … , p. 1. doi: 10.1038/s41593-018-0171-8 (cit. on pp. 13, 14)."
+    ],
+    [
+      "b i b l i o g r a p h y71",
+      "[130] V A Marcˇenko and L A Pastur. “Distribution of Eigenvalues for Some Sets of Random Matrices.” Math. USSR Sb. 1.4 (1967), pp. 457–483. doi: 10.1070/SM1967v001n04ABEH001994 (cit. on pp. 15, 30)."
+    ],
+    [
+      "72b i b l i o g r a p h y",
+      "[145] Jorge Hidalgo et al. “Cooperation, Competition and the … 3203. doi: 10.1088/1742-5468/2016/03/033203 (cit. on p. 18)."
+    ],
+    [
+      "b i b l i o g r a p h y73",
+      "[160] J. P. Sethna, K. A. Dahmen, and C. R. Myers. “Crackling Noise.” Nature 410.6825 (2001), pp. 242–50. doi: 10.1038/35065675 (cit. on p. 18)."
+    ],
+    [
+      "74b i b l i o g r a p h y",
+      "[174] Joseph T. Lizier. The Local Information Dynamics of Distributed Computation in Complex Systems. Springer Theses. Berlin: Springer, 2013 (cit. on p. 19)."
+    ],
+    [
+      "b i b l i o g r a p h y75",
+      "[190] Theofanis I. Panagiotaropoulos, Vishal Kapoor, and Nik … 4. doi: 10.1098/rstb.2013.0534 (cit. on pp. 22, 23, 44, 55)."
+    ],
+    [
+      "76b i b l i o g r a p h y",
+      "[204] T. Ditzinger and H. Haken. “Oscillations in the Percep … 9), pp. 279–287. doi: Doi10.1007/Bf00203175 (cit. on p. 23)."
+    ],
+    [
+      "b i b l i o g r a p h y77",
+      "[217] R. Rosenbaum et al. “The Spatial Structure of Correlated Neuronal Variability.” Nature neuroscience 20 (2017), pp. 107–114. doi: 10.1038/ nn.4433 (cit. on p. 24)."
+    ],
+    [
+      "78b i b l i o g r a p h y",
+      "[230]S. Safavi, N. K. Logothetis, and M. Besserve. “Multivar … earning with Temporal Point Processes. 2019 (cit. on p. 29)."
+    ],
+    [
+      "b i b l i o g r a p h y79",
+      "[244] Walter J. Freeman and Michael Breakspear. “Scale-Free Neocortical Dynamics.” Scholarpedia 2.2 (2007), p. 1357. doi: 10.4249/scholarpedia. 1357 (cit. on pp. 33, 54)."
+    ],
+    [
+      "80b i b l i o g r a p h y",
+      "[259] Chris Eliasmith. “A Unified Approach to Building and Controlling Spiking Attractor Networks.” Neural Computation 17.6 (2005), pp. 1276– 1314. doi: 10.1162/0899766053630332 (cit. on pp. 37, 53)."
+    ],
+    [
+      "b i b l i o g r a p h y81",
+      "[273]N. Zaretskaya and M. Narinyan. “Introspection, Attentio … 014), p. 527. doi: 10.3389/fnhum.2014.00527 (cit. on p. 39)."
+    ],
+    [
+      "82b i b l i o g r a p h y",
+      "[288] R. Antoniou et al. “Perceptual Modulation of Pupillary Reflex in Macaque Monkeys.” Federation of European Neuroscience Society Featured Regional Meeting (FFRM 2015). 2015 (cit. on pp. 43, 47)."
+    ],
+    [
+      "b i b l i o g r a p h y83",
+      "[303] Edward S. Reed. Encountering the World: Toward an Ecological Psychology. 1 edition. New York: Oxford University Press, 1996 (cit. on p. 51)."
+    ],
+    [
+      "84b i b l i o g r a p h y",
+      "[319] Florentin Woergoetter and Bernd Porr. “Reinforcement Learning.” Scholarpedia 3.3 (2008), p. 1448. doi: 10 . 4249 / scholarpedia . 1448 (cit. on p. 53)."
+    ],
+    [
+      "b i b l i o g r a p h y85",
+      "[334] Sean E. Cavanagh et al. “A Circuit Mechanism for Irrat … Rxiv (2019), p. 826214. doi: 10.1101/826214 (cit. on p. 55)."
+    ],
+    [
+      "86b i b l i o g r a p h y",
+      "[348] Jeff Mentch et al. “GABAergic Inhibition Gates Perceptual Awareness During Binocular Rivalry.” J. Neurosci. 39.42 (2019), pp. 8398–8407. doi: 10.1523/JNEUROSCI.0836-19.2019 (cit. on p. 55)."
+    ],
+    [
+      "b i b l i o g r a p h y87",
+      "[361] L. Li et al. “A Tensor-Product-Kernel Framework for Mu … (2014), p. 870160. doi: 10.1155/2014/870160 (cit. on p. 56)."
+    ],
+    [
+      "88b i b l i o g r a p h y",
+      "[376] Maya Schiller, Tamar L. Ben-Shaanan, and Asya Rolls. “Neuronal Regulation of Immunity: Why, How and Where?” Nat. Rev. Immunol. (2020), pp. 1–17. doi: 10.1038/s41577-020-0387-1 (cit. on p. 57)."
+    ],
+    [
+      "b i b l i o g r a p h y89",
+      "[388] Shervin Safavi et al. Signatures of Criticality in Efficient Coding Networks. 2023. doi: 10.1101/2023.02.14.528465 (cit. on p. 91)."
+    ],
+    [],
+    ["Part IV", "MANUSCRIPTS", "8.Dwarakanath et al. [ 224, Neuron 2023]"],
+    [],
+    ["colophon", "http://code.google.com/p/classicthesis/"]
+  ]
+}

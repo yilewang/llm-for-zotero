@@ -134,9 +134,13 @@ export function buildIndexDocumentFromPdfContext(params: {
   ctx: PdfContext;
 }): IndexDocumentInput {
   const { ctx } = params;
+  // A chat may have loaded the text with its chapter structure; the index
+  // stores the metadata without it, so its rows do not depend on who loaded
+  // the text first.
+  const chunkMeta = ctx.documentStructure?.plainChunkMeta || ctx.chunkMeta;
   const chunks = ctx.chunks.map((text, chunkIndex) => {
     const stat = ctx.chunkStats[chunkIndex];
-    const full = ctx.chunkMeta[chunkIndex];
+    const full = chunkMeta[chunkIndex];
     // Copied key by key from a full PdfChunkMeta, so required keys (chunkKind) are present.
     const meta = {} as StoredChunkMeta;
     for (const key of META_KEYS) {
@@ -171,11 +175,12 @@ export function buildIndexDocumentFromPdfContext(params: {
 
 /** fnv1a32 over chunk boundaries and section labels; pinned by a unit test. */
 export function computeChunkerFingerprint(ctx: PdfContext): string {
+  const chunkMeta = ctx.documentStructure?.plainChunkMeta || ctx.chunkMeta;
   return fnv1a32(
     ctx.chunks
       .map(
         (c, i) =>
-          `${c.length}:${ctx.chunkMeta[i]?.sectionLabel || ""}:${ctx.chunkMeta[i]?.chunkKind || ""}:${ctx.chunkMeta[i]?.enclosingSection || ""}`,
+          `${c.length}:${chunkMeta[i]?.sectionLabel || ""}:${chunkMeta[i]?.chunkKind || ""}:${chunkMeta[i]?.enclosingSection || ""}`,
       )
       .join("|"),
   );
@@ -193,17 +198,20 @@ export async function indexAttachment(params: {
   const attachmentId = params.item.id;
   // The agent may have loaded this paper for its own reasons; only evict what indexing loaded.
   const releaseBorrowedText = paperTextStore.borrow(attachmentId);
+  let loaded: PdfContext | undefined;
   try {
     // Prefetch: cheapest source first (MinerU md → Zotero full-text cache → PDFWorker).
     // Urgent (write-through, added, invalidated): today's ladder, pages included.
     // Both lanes load silently so an index job never re-enqueues itself via the write-through hook.
-    await ensurePDFTextCached(
+    // Use what this load returns: a chat load that joins it may drop the
+    // cached entry before this resumes.
+    const ctx = await ensurePDFTextCached(
       params.item,
       params.lane === "prefetch"
         ? { preferFulltextCache: true, silentLoad: true }
         : { silentLoad: true },
     );
-    const ctx = paperTextStore.peek(attachmentId);
+    loaded = ctx;
     if (!ctx || !ctx.chunks.length) {
       const fileState = await readAttachmentFileState(params.item);
       if (!fileState) {
@@ -298,6 +306,6 @@ export async function indexAttachment(params: {
       elapsedMs: now() - started,
     };
   } finally {
-    releaseBorrowedText();
+    releaseBorrowedText(loaded);
   }
 }

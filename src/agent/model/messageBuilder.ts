@@ -56,6 +56,7 @@ import {
   type AgentResourceContextPlan,
 } from "../context/resourceContextPlan";
 import { buildAgentCoverageContextBlock } from "../context/coverageLedger";
+import type { PaperPromptContext } from "../context/paperPromptContext";
 import { buildVisibleTurnContextBlock } from "../context/turnContextEnvelope";
 import {
   getActiveTurnPaper,
@@ -210,6 +211,8 @@ function buildFullUserMessage(
     earlierSourcesBlock?: string;
     turnGuidanceBlock?: string;
     contentInputs?: AgentContentInputCapabilities;
+    /** Where selections lie in a preloaded map (paper prompt context). */
+    selectionLocations?: PaperPromptContext["selectionLocations"];
   } = {},
 ): AgentUserMessage {
   const contextLines: string[] = [];
@@ -329,7 +332,16 @@ function buildFullUserMessage(
     );
     const anchorContext = renderSelectedTextAnchorContext({
       selectedTextContexts,
-      anchors: [...(request.resolvedSelectedTextAnchors || [])],
+      // The turn scope holds each passage's paper; the page hint's read
+      // call names it when it owns the anchor's attachment.
+      anchors: (request.resolvedSelectedTextAnchors || []).map((anchor) => {
+        const paper = selectedTextPaperContexts[anchor.contextIndex];
+        return paper?.contextItemId === anchor.contextItemId
+          ? { ...anchor, paperContext: paper }
+          : anchor;
+      }),
+      locations: options.selectionLocations,
+      readCalls: true,
     });
     if (anchorContext) contextLines.push(anchorContext);
   }
@@ -439,6 +451,7 @@ function buildUserMessage(
 ): AgentUserMessage {
   return buildFullUserMessage(request, {
     priorReadBlock: resourceContextPlan?.priorReadBlock,
+    selectionLocations: resourceContextPlan?.paperContext?.selectionLocations,
     coverageBlock: options.coverageBlock,
     earlierSourcesBlock: options.earlierSourcesBlock,
     turnGuidanceBlock: options.turnGuidanceBlock,

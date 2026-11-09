@@ -476,6 +476,7 @@ describe("paper_read outline mode and section ids", function () {
     ];
     const tool = createPaperReadTool(
       {
+        ensurePaperContext: async () => undefined,
         getOverviewExcerpt: async ({
           paperContext,
         }: {
@@ -517,8 +518,10 @@ describe("paper_read outline mode and section ids", function () {
       type: "array",
       items: { type: "string" },
       description:
-        "Section ids from an outline read; restricts a targeted read to those sections",
+        "Section ids from an outline. No query: a section without subsections is read whole, one with subsections lists them. With query: searches them.",
     });
+    assert.equal(schema.properties.sectionId.type, "string");
+    assert.equal(schema.properties.whole.type, "boolean");
   });
 
   it("summarises an outline read by its section count", async function () {

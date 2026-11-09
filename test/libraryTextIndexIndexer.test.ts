@@ -32,6 +32,7 @@ import {
   pdfTextCache,
 } from "../src/services/paperContent/contextCache";
 import { buildChunkIndex } from "../src/services/paperContent/pdfContext";
+import { paperTextStore } from "../src/services/paperContent/paperTextStore";
 import { searchLibraryTextIndex } from "../src/services/libraryTextIndex/search";
 
 describe("library text indexer", function () {
@@ -282,6 +283,43 @@ describe("library text indexer", function () {
     const row = await store.getDocument(9001);
     assert.equal(row?.sourceMtime, 2000);
     assert.equal(row?.sourceSize, 4096);
+  });
+
+  it("indexes the text its own load returned, never what the store holds afterwards", async function () {
+    const item = mockPdfAttachment(9001);
+    await buildFixturePdfContext("bioSingleHash", 9001);
+    pdfTextCache.clear();
+    const first = await indexAttachment({
+      item,
+      libraryID: 1,
+      store,
+      lane: "urgent",
+    });
+    assert.equal(first.status, "indexed");
+    // A chat load that replaced the silent entry would leave another one in
+    // the store; reading the store (`peek`) would index that one instead.
+    const realPeek = paperTextStore.peek;
+    const other = {
+      title: "other",
+      chunks: ["a chat entry"],
+      chunkMeta: [],
+      ...buildChunkIndex(["a chat entry"]),
+      fullLength: 12,
+      sourceType: "zotero-worker",
+    } as unknown as PdfContext;
+    paperTextStore.peek = () => other;
+    try {
+      const again = await indexAttachment({
+        item,
+        libraryID: 1,
+        store,
+        lane: "urgent",
+      });
+      assert.equal(again.status, "unchanged");
+      assert.equal(again.chunkCount, first.chunkCount);
+    } finally {
+      paperTextStore.peek = realPeek;
+    }
   });
 
   it("keeps a context the question path already loaded (write-through never evicts the agent's paper)", async function () {

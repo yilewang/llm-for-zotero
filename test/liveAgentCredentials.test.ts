@@ -28,4 +28,38 @@ describe("live workflow credential selection", function () {
       (globalThis as any).Zotero = saved;
     }
   });
+
+  it("prefers a Codex Direct group over a keyed group that lists the same model", async function () {
+    const saved = (globalThis as any).Zotero;
+    const group = (extra: object) => ({
+      apiBase: "https://example.invalid",
+      providerProtocol: "openai_responses",
+      models: [{ model: "shared-model" }],
+      ...extra,
+    });
+    const run = async (groups: object[]) => {
+      (globalThis as any).Zotero = {
+        Prefs: {
+          get: (key: string) =>
+            key.endsWith("modelProviderGroups") ? JSON.stringify(groups) : "",
+        },
+      };
+      return resolveLiveAgentCredentials({ requestedModel: "shared-model" });
+    };
+    try {
+      for (const order of [
+        [group({ apiKey: "keyed" }), group({ authMode: "codex_auth" })],
+        [group({ authMode: "codex_auth" }), group({ apiKey: "keyed" })],
+      ]) {
+        const both = await run(order);
+        assert.equal(both?.authMode, "codex_auth");
+        assert.equal(both?.apiKey, "");
+      }
+      const keyedOnly = await run([group({ apiKey: "keyed" })]);
+      assert.equal(keyedOnly?.apiKey, "keyed");
+      assert.isUndefined(keyedOnly?.authMode);
+    } finally {
+      (globalThis as any).Zotero = saved;
+    }
+  });
 });
