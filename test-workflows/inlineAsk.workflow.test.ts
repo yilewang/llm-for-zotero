@@ -24,6 +24,7 @@ import {
  */
 
 declare const Zotero: any;
+declare const Components: any;
 
 const PREF_PREFIX = "extensions.zotero.llmforzotero.";
 const API_BASE = "https://workflow-inline-ask.invalid/v1";
@@ -397,6 +398,218 @@ describe("workflow: Inline Ask in the reader", function () {
       rowsBefore,
       "Inline Ask writes no conversation, message, registry or usage row",
     );
+  });
+
+  /** Opens the card on a real selection and lets the model answer. */
+  async function askAndAnswer(
+    title: string,
+    answer: string,
+  ): Promise<WorkflowTestReaderInlineAskCard> {
+    const fixture = await createFixture(title);
+    const opened = await api.openReaderInlineAsk({
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText: SELECTED_TEXT,
+    });
+    assert.isTrue(opened.mounted, JSON.stringify(opened));
+    const question = `inline-ask-quote-first-${Date.now()}`;
+    await api.sendReaderInlineAsk({ text: question });
+    const stream = await provider.waitForStream(question);
+    stream.push(answer);
+    stream.finish();
+    return waitForCard(
+      (card) => card.phase === "answered" && card.answers.length === 1,
+      "the answer completes",
+    );
+  }
+
+  const ANSWER_TEXT =
+    "Drift means the cortex changes slowly across weeks of recording.\n\nA second paragraph follows here.";
+
+  it("lets a real drag select answer text, and copies it", async function () {
+    await askAndAnswer("Inline Ask answer selection", ANSWER_TEXT);
+    const picked = await api.selectReaderInlineAskAnswerText({
+      answerIndex: 0,
+      fromChar: 6,
+      toChar: 36,
+    });
+    const message = JSON.stringify(picked);
+    assert.equal(picked.expectedText, ANSWER_TEXT.slice(6, 36), message);
+    assert.isNotEmpty(picked.selectedText, message);
+    assert.include(ANSWER_TEXT, picked.selectedText.trim(), message);
+    assert.isTrue(picked.card.selectionBarShown, message);
+    assert.deepEqual(picked.card.selectionBarActions, ["copy", "quote"]);
+    const bar = picked.card.selectionBarRect!;
+    const card = picked.card.rect;
+    assert.isAtLeast(bar.left, card.left, message);
+    assert.isAtMost(bar.right, card.left + card.width, message);
+    assert.isAtLeast(bar.top, card.top, message);
+    assert.isAtMost(bar.bottom, card.top + card.height, message);
+
+    // The copy command (what Cmd/Ctrl+C runs) puts the selection on the
+    // clipboard.
+    const copied = await api.copyReaderInlineAskSelection();
+    assert.isTrue(copied.commandRan, JSON.stringify(copied));
+    assert.equal(
+      copied.clipboardText.trim(),
+      picked.selectedText.trim(),
+      JSON.stringify(copied),
+    );
+
+    // The bar's Copy button copies the same text and hides the bar.
+    const sentinel = "clipboard-before-copy-button";
+    Components.classes["@mozilla.org/widget/clipboardhelper;1"]
+      .getService(Components.interfaces.nsIClipboardHelper)
+      .copyString(sentinel);
+    assert.equal(api.readReaderInlineAskClipboard(), sentinel);
+    const after = await api.clickReaderInlineAskSelectionAction("Copy");
+    assert.isFalse(after.selectionBarShown, JSON.stringify(after));
+    assert.equal(
+      api.readReaderInlineAskClipboard().trim(),
+      picked.selectedText.trim(),
+    );
+  });
+
+  it("hides the selection bar on Escape before it closes the card", async function () {
+    await askAndAnswer("Inline Ask bar escape", ANSWER_TEXT);
+    const picked = await api.selectReaderInlineAskAnswerText({
+      answerIndex: 0,
+    });
+    assert.isTrue(picked.card.selectionBarShown, JSON.stringify(picked));
+    const first = await api.pressReaderInlineAskKey({
+      key: "Escape",
+      target: "page",
+    });
+    assert.isTrue(first.mounted, "the first Escape keeps the card");
+    assert.isFalse(first.selectionBarShown, JSON.stringify(first));
+    const second = await api.pressReaderInlineAskKey({
+      key: "Escape",
+      target: "page",
+    });
+    assert.isFalse(second.mounted, "the second Escape closes the card");
+  });
+
+  it("quotes part of an answer into the follow-up and sends it with the quote", async function () {
+    await askAndAnswer("Inline Ask quote", ANSWER_TEXT);
+    const picked = await api.selectReaderInlineAskAnswerText({
+      answerIndex: 0,
+      fromChar: 6,
+      toChar: 36,
+    });
+    const quote = picked.selectedText.replace(/\s+/g, " ").trim();
+    assert.isNotEmpty(quote, JSON.stringify(picked));
+    assert.isTrue(api.readReaderInlineAsk().sendDisabled);
+
+    const quoted = await api.clickReaderInlineAskSelectionAction("Quote");
+    const message = JSON.stringify(quoted);
+    assert.deepEqual(quoted.composerQuotes, [quote], message);
+    assert.isTrue(quoted.editorFocused, message);
+    assert.isFalse(quoted.selectionBarShown, message);
+    assert.equal(quoted.selectionText, "", "the selection is cleared");
+    assert.isFalse(quoted.sendDisabled, "a quote alone can be sent");
+    // The quote list sits above the field and leaves the control row alone.
+    assert.isAbove(quoted.sendRect!.top, quoted.composerQuotesRect!.bottom);
+    assert.closeTo(
+      (quoted.sendRect!.top + quoted.sendRect!.bottom) / 2,
+      (quoted.modelRect!.top + quoted.modelRect!.bottom) / 2,
+      2,
+      message,
+    );
+
+    // The same text again changes nothing.
+    await api.selectReaderInlineAskAnswerText({
+      answerIndex: 0,
+      fromChar: 6,
+      toChar: 36,
+    });
+    const again = await api.clickReaderInlineAskSelectionAction("Quote");
+    assert.deepEqual(again.composerQuotes, [quote], JSON.stringify(again));
+
+    // The remove button drops it, and the send arrow goes off again.
+    const removed = await api.removeReaderInlineAskComposerQuote(0);
+    assert.deepEqual(removed.composerQuotes, [], JSON.stringify(removed));
+    assert.isTrue(removed.sendDisabled);
+
+    // Two quotes, typed text, send.
+    await api.selectReaderInlineAskAnswerText({
+      answerIndex: 0,
+      fromChar: 6,
+      toChar: 36,
+    });
+    await api.clickReaderInlineAskSelectionAction("Quote");
+    const second = await api.selectReaderInlineAskAnswerText({
+      answerIndex: 0,
+      fromChar: 40,
+      toChar: 55,
+    });
+    const quote2 = second.selectedText.replace(/\s+/g, " ").trim();
+    const two = await api.clickReaderInlineAskSelectionAction("Quote");
+    assert.deepEqual(two.composerQuotes, [quote, quote2], JSON.stringify(two));
+
+    // At the narrowest card width the control row keeps its place.
+    const narrow = await api.dragReaderInlineAsk({
+      part: "resize",
+      corner: "bottom-right",
+      dx: -400,
+      dy: 0,
+    });
+    assert.equal(narrow.rect.width, 240, JSON.stringify(narrow));
+    const card = narrow.rect;
+    assert.isAtMost(narrow.sendRect!.right, card.left + card.width);
+    assert.isAtLeast(narrow.modelRect!.left, card.left);
+    assert.closeTo(
+      (narrow.sendRect!.top + narrow.sendRect!.bottom) / 2,
+      (narrow.modelRect!.top + narrow.modelRect!.bottom) / 2,
+      2,
+      JSON.stringify(narrow),
+    );
+
+    const typed = "What is X?";
+    await api.sendReaderInlineAsk({ text: typed });
+    const stream = await provider.waitForStream(typed);
+    assert.include(stream.lastUserText, "About this part of your answer:");
+    assert.include(stream.lastUserText, `> ${quote}`);
+    assert.include(stream.lastUserText, `> ${quote2}`);
+    assert.include(stream.lastUserText, typed);
+    assert.equal(
+      stream.lastUserText,
+      `About this part of your answer:\n> ${quote}\n\n> ${quote2}\n\n${typed}`,
+    );
+    stream.push("The second answer.");
+    stream.finish();
+    const done = await waitForCard(
+      (state) => state.phase === "answered" && state.answers.length === 2,
+      "the follow-up answer completes",
+    );
+    assert.deepEqual(done.questionQuotes[1], [quote, quote2]);
+    assert.equal(done.questions[1], typed, JSON.stringify(done.questions));
+    assert.deepEqual(done.composerQuotes, [], "the quotes clear after sending");
+
+    // A quote alone sends the default sentence.
+    await api.selectReaderInlineAskAnswerText({
+      answerIndex: 1,
+      fromChar: 4,
+      toChar: 10,
+    });
+    const third = await api.clickReaderInlineAskSelectionAction("Quote");
+    assert.lengthOf(third.composerQuotes, 1, JSON.stringify(third));
+    const only = third.composerQuotes[0];
+    await api.sendReaderInlineAsk({ text: "" });
+    const stream3 = await provider.waitForStream(
+      "Explain this part of your answer.",
+    );
+    assert.equal(
+      stream3.lastUserText,
+      `About this part of your answer:\n> ${only}\n\nExplain this part of your answer.`,
+    );
+    stream3.push("Explained.");
+    stream3.finish();
+    const last = await waitForCard(
+      (state) => state.phase === "answered" && state.answers.length === 3,
+      "the quote-only answer completes",
+    );
+    assert.deepEqual(last.questionQuotes[2], [only]);
+    assert.include(last.questions[2], "Explain this part of your answer.");
   });
 
   it("sends a quick prompt's full text and shows its label", async function () {

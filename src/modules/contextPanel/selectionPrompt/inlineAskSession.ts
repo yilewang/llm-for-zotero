@@ -15,6 +15,8 @@ export type InlineAskUserTurn = {
   text: string;
   /** The text the card shows (a quick prompt's label). */
   shownText: string;
+  /** Parts of an earlier answer the question quotes; shown above the text. */
+  quotes?: string[];
 };
 
 export type InlineAskAssistantTurn = {
@@ -54,8 +56,11 @@ export type InlineAskSession = {
   getState(): InlineAskState;
   /** True once a question was sent. */
   hasConversation(): boolean;
-  /** Sends `prompt`; returns false when the card cannot send now. */
-  send(prompt: string, shownText?: string): boolean;
+  /**
+   * Sends `prompt`; returns false when the card cannot send now. `quotes`
+   * are kept on the turn for display; the prompt already holds them.
+   */
+  send(prompt: string, shownText?: string, quotes?: string[]): boolean;
   /** Stops the running answer and keeps the text it streamed so far. */
   stop(): void;
   /** Stops and goes silent (the card closed). */
@@ -133,7 +138,11 @@ export function createInlineAskSession(params: {
     controller = null;
   };
 
-  const send = (prompt: string, shownText?: string): boolean => {
+  const send = (
+    prompt: string,
+    shownText?: string,
+    quotes?: string[],
+  ): boolean => {
     const text = prompt.trim();
     if (disposed || !text) return false;
     if (state.phase !== "compose" && state.phase !== "answered") return false;
@@ -142,6 +151,7 @@ export function createInlineAskSession(params: {
       role: "user",
       text,
       shownText: (shownText || "").trim() || text,
+      ...(quotes?.length ? { quotes: quotes.slice() } : {}),
     });
     state.phase = "waiting";
     const myToken = ++token;

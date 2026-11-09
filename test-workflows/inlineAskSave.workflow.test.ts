@@ -319,6 +319,43 @@ describe("workflow: Inline Ask saves a selection as an annotation", function () 
     });
   }
 
+  for (const via of ["back", "cancel", "escape"] as const) {
+    it(`shows the passage, thread and composer again after Save then ${via}`, async function () {
+      const fixture = await createFixture(`Inline Ask save ${via} passage`);
+      await askAndAnswer(fixture);
+      // Expanded state must survive the round trip too.
+      if (via === "back") await api.clickReaderInlineAskPassage();
+      const before = api.readReaderInlineAsk();
+      assert.isTrue(before.passageShown, JSON.stringify(before));
+      assert.include(before.passageText, SELECTED_TEXT);
+      assert.equal(before.passageExpanded, via === "back");
+
+      await api.openReaderInlineAskSave({ via: "click" });
+      const inSave = api.readReaderInlineAsk();
+      assert.isFalse(inSave.passageShown, JSON.stringify(inSave));
+      assert.isFalse(inSave.threadShown);
+      assert.isFalse(inSave.fieldShown);
+
+      if (via === "escape") {
+        await api.pressReaderInlineAskKey({ key: "Escape", target: "editor" });
+      } else {
+        await api.leaveReaderInlineAskSave({ via });
+      }
+      const after = await waitForCard(
+        (card) => card.passageShown,
+        "the passage line returns",
+      );
+      const message = JSON.stringify({ before, after });
+      assert.isTrue(after.mounted, message);
+      assert.equal(after.passageText, before.passageText, message);
+      assert.equal(after.passageExpanded, before.passageExpanded, message);
+      assert.isTrue(after.threadShown, message);
+      assert.isTrue(after.fieldShown, message);
+      assert.deepEqual(after.answers, before.answers, message);
+      assert.equal(after.rect.height, before.rect.height, message);
+    });
+  }
+
   it("saves with no chat panel open, filed under the paper's conversation", async function () {
     Zotero.Prefs.set(PREF_PREFIX + "originalAgentPermissionMode", "auto", true);
     const fixture = await createFixture("Inline Ask save without panel");
