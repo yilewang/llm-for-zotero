@@ -8290,6 +8290,12 @@ async function showNewReaderSelectionPopup(
 /**
  * Closes the Inline Ask reader's tab and waits until Zotero no longer lists
  * that PDF as open. The card goes with the tab; the case keeps its draft.
+ *
+ * The card's documents go with the tab too, so the harness forgets them once
+ * the tab is closed. Kept, they would be the next cleanup's to close, and
+ * once Firefox has torn the tab's documents down (when depends on the
+ * collector, which is why only a long run showed it) any use of them throws
+ * "can't access dead object".
  */
 async function closeReaderInlineAskReaderTab(): Promise<{
   readerClosed: boolean;
@@ -8307,8 +8313,10 @@ async function closeReaderInlineAskReaderTab(): Promise<{
   if (state.reader.tabID) tabs?.close?.(state.reader.tabID);
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    if (!readOpenReaderDocumentFingerprint(attachmentId))
+    if (!readOpenReaderDocumentFingerprint(attachmentId)) {
+      if (workflowInlineAsk === state) workflowInlineAsk = null;
       return { readerClosed: true };
+    }
     await Zotero.Promise.delay(50);
   }
   return { readerClosed: false };
