@@ -561,6 +561,12 @@ describe("workflow: Inline Ask in the reader", function () {
     const menu = await api.clickReaderInlineAskTextSize("toggle");
     assert.isTrue(menu.moreMenuShown, JSON.stringify(menu));
     assert.equal(menu.menuPercent, "100%");
+    // Both A glyphs sit in the middle of their buttons.
+    assert.lengthOf(menu.glyphOffsets, 2, JSON.stringify(menu.glyphOffsets));
+    for (const offset of menu.glyphOffsets) {
+      assert.isAtMost(Math.abs(offset.dx), 1, JSON.stringify(offset));
+      assert.isAtMost(Math.abs(offset.dy), 1.5, JSON.stringify(offset));
+    }
     await api.clickReaderInlineAskTextSize("larger");
     const larger = await api.clickReaderInlineAskTextSize("larger");
     assert.isTrue(larger.moreMenuShown, "the menu stays open");

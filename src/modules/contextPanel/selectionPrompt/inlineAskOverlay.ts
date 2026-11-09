@@ -2143,6 +2143,11 @@ export function openInlineAskOverlay(
     ) => {
       const button = el("button", [
         "flex:none",
+        // The glyph sits in the middle of the button, both ways.
+        "display:inline-flex",
+        "align-items:center",
+        "justify-content:center",
+        "text-align:center",
         "width:34px",
         "height:30px",
         "box-sizing:border-box",
