@@ -1,5 +1,9 @@
 import { assert } from "chai";
-import { resolveUsageContextWindow } from "../src/modules/contextPanel/chat";
+import {
+  resolveUsageContextWindow,
+  shouldPreserveContextUsageWindow,
+  updateContextUsageSnapshotFromProvider,
+} from "../src/modules/contextPanel/chat";
 
 describe("direct chat context usage denominator", function () {
   it("keeps an explicit input cap after provider usage arrives", function () {
@@ -43,6 +47,55 @@ describe("direct chat context usage denominator", function () {
         inputLimitSource: "live",
         contextWindowIsAuthoritative: true,
       },
+    );
+  });
+});
+
+describe("Codex context gauge snapshots", function () {
+  it("uses runtime input tokens and window instead of the 256k model fallback", function () {
+    const snapshot = updateContextUsageSnapshotFromProvider({
+      conversationKey: 900001,
+      usage: {
+        promptTokens: 900000,
+        completionTokens: 5000,
+        totalTokens: 905000,
+        contextTokens: 56799,
+        contextWindow: 828400,
+        contextWindowIsAuthoritative: true,
+      },
+      fallbackContextWindow: 256000,
+      fallbackInputLimitSource: "default",
+    });
+    assert.equal(snapshot?.contextTokens, 56799);
+    assert.equal(snapshot?.contextWindow, 828400);
+    assert.equal(snapshot?.source, "provider");
+    assert.isFalse(snapshot?.estimated);
+    assert.isTrue(shouldPreserveContextUsageWindow(snapshot, true, false));
+  });
+
+  it("keeps a saved Codex denominator on reopen without changing explicit caps", function () {
+    const persisted = {
+      contextTokens: 56799,
+      contextWindow: 828400,
+      source: "persisted" as const,
+      estimated: true,
+    };
+    assert.isTrue(shouldPreserveContextUsageWindow(persisted, true, false));
+    assert.isFalse(shouldPreserveContextUsageWindow(persisted, true, true));
+    assert.isFalse(shouldPreserveContextUsageWindow(persisted, false, false));
+    assert.isFalse(
+      shouldPreserveContextUsageWindow(
+        { ...persisted, contextWindow: undefined },
+        true,
+        false,
+      ),
+    );
+    assert.isFalse(
+      shouldPreserveContextUsageWindow(
+        { ...persisted, contextWindow: NaN },
+        true,
+        false,
+      ),
     );
   });
 });

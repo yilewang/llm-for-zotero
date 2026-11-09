@@ -2746,6 +2746,112 @@ describe("codexAppServerProcess", function () {
     });
   });
 
+  it("keeps absolute runtime context separate from billing deltas and compaction", async function () {
+    const proc = createProcess();
+    const usage: import("../src/shared/llm").UsageStats[] = [];
+    const dispatch = (method: string, params: Record<string, unknown>) =>
+      (
+        proc as unknown as {
+          handleMessage: (message: Record<string, unknown>) => void;
+        }
+      ).handleMessage({ method, params });
+    const snapshots = [
+      { total: 100, input: 80, window: 828400 },
+      { total: 150, input: 120, window: 828400 },
+      // Same billing total, but the runtime compacted the active context.
+      { total: 150, input: 30, window: 828400 },
+      { total: 150, input: 30, window: 828400 },
+      // Model/window changes must propagate even without extra billed tokens.
+      { total: 150, input: 30, window: 400000 },
+    ];
+    const completion = waitForCodexAppServerTurnCompletion({
+      proc,
+      turnId: "context-runtime",
+      timeoutMs: 1000,
+      onUsage: (event) => {
+        usage.push(event);
+      },
+    });
+    for (const row of snapshots) {
+      dispatch("thread/tokenUsage/updated", {
+        turnId: "context-runtime",
+        tokenUsage: {
+          total: {
+            inputTokens: row.total - 10,
+            outputTokens: 10,
+            totalTokens: row.total,
+          },
+          last: {
+            inputTokens: row.input,
+            outputTokens: 5,
+            totalTokens: row.input + 5,
+          },
+          modelContextWindow: row.window,
+        },
+      });
+    }
+    dispatch("turn/completed", {
+      turnId: "context-runtime",
+      status: "completed",
+    });
+    await completion;
+    assert.deepEqual(
+      usage.map((u) => u.contextTokens),
+      [80, 120, 30, 30],
+    );
+    assert.deepEqual(
+      usage.map((u) => u.contextWindow),
+      [828400, 828400, 828400, 400000],
+    );
+    assert.deepEqual(
+      usage.map((u) => u.totalTokens),
+      [100, 50, 0, 0],
+    );
+    assert.isTrue(usage.every((u) => u.contextWindowIsAuthoritative === true));
+  });
+
+  it("does not invent an active context from cumulative totals or invalid windows", async function () {
+    for (const sample of [
+      { modelContextWindow: null, last: { inputTokens: 20 } },
+      { modelContextWindow: -1, last: { inputTokens: 20 } },
+      { modelContextWindow: Infinity, last: { inputTokens: 20 } },
+      { modelContextWindow: "1000000", last: { inputTokens: 20 } },
+      { modelContextWindow: 828400 },
+    ]) {
+      const proc = createProcess();
+      const events: import("../src/shared/llm").UsageStats[] = [];
+      const completion = waitForCodexAppServerTurnCompletion({
+        proc,
+        turnId: "invalid-context",
+        timeoutMs: 1000,
+        onUsage: (event) => {
+          events.push(event);
+        },
+      });
+      const dispatch = (method: string, params: Record<string, unknown>) =>
+        (
+          proc as unknown as {
+            handleMessage: (message: Record<string, unknown>) => void;
+          }
+        ).handleMessage({ method, params });
+      dispatch("thread/tokenUsage/updated", {
+        turnId: "invalid-context",
+        tokenUsage: {
+          ...sample,
+          total: { inputTokens: 900, outputTokens: 100, totalTokens: 1000 },
+        },
+      });
+      dispatch("turn/completed", {
+        turnId: "invalid-context",
+        status: "completed",
+      });
+      await completion;
+      assert.lengthOf(events, 1);
+      assert.isUndefined(events[0].contextWindow);
+      assert.isUndefined(events[0].contextTokens);
+    }
+  });
+
   it("emits token usage updates for the active turn", async function () {
     const proc = createProcess();
     const usage: Array<{
