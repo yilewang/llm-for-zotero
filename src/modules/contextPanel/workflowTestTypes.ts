@@ -1432,13 +1432,21 @@ export type WorkflowTestApi = {
   }) => ReturnType<
     typeof import("./noteBatchRestartReplay").startNoteBatchUntilQuit
   >;
-  /** Real-restart scenario, second process: "continue" the note batch. */
+  /**
+   * Real-restart scenario, second process: "continue" the note batch, or
+   * with `retryPapers` send a new note_write_batch over those papers.
+   */
   resumeNoteBatchAfterRestart: (input: {
     panelId: string;
     collection: import("../../shared/types").CollectionContextRef;
     papers: Array<{ itemId: number; title: string }>;
     inputTokenCap: number;
     rewritePapers: number[];
+    /** The batch to continue, instead of the one the host names first. */
+    resumeBatchId?: string;
+    retryPapers?: number[];
+    /** Ends this process (SIGKILL) once this many new notes exist. */
+    killAfterNotes?: number;
   }) => ReturnType<
     typeof import("./noteBatchRestartReplay").resumeNoteBatchAfterRestart
   >;

@@ -1,15 +1,21 @@
 import {
+  batchLinksRowsInFlight,
   createdNoteOutcome,
   executeNoteCreation,
+  findLandedNoteStepForRow,
   findNoteHeldForRow,
+  findRelatedBatchNote,
   findUnattributedNoteStep,
   findUncertainNoteStepForRow,
   heldNoteReason,
+  journalStepsReader,
   listUnnamedNoteBatchActions,
   oldNoteStepsWithNothingAtKey,
   readReservedNote,
+  relatedNoteBatchIds,
   RESERVED_NOTE_MISMATCH,
   untiedNoteReason,
+  type RelatedBatchNote,
 } from "../noteCreation";
 import { MutationNoEffectError } from "../externalMutationCoordinator";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
@@ -39,12 +45,17 @@ import { loadPlanDocument } from "../../documents/store";
 import { documentNoteParts } from "../../documents/actions";
 import { mergeNoteCitationItems } from "../../../utils/noteCitations";
 import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
-import { advanceBatchJob, getBatchJob } from "../../store/batchJobStore";
+import {
+  advanceBatchJob,
+  getBatchJob,
+  type BatchJobRecord,
+} from "../../store/batchJobStore";
 import {
   linkBatchItemsToAction,
   listBatchItems,
   markBatchItemFailed,
   markBatchItemSaved,
+  markBatchItemSettled,
   type BatchItemRecord,
 } from "../../store/batchItemStore";
 
@@ -324,6 +335,9 @@ async function settleInterruptedNoteCreations(params: {
           collections: standalone ? collections : undefined,
           warnings: [],
         });
+        // The row is saved in the step's own transaction, not when the write
+        // loop reaches it: a process that ends in between must not leave an
+        // applied step beside a pending row.
         await inJournalTransaction(async () => {
           await registerJournalRecoveryPayloads({
             actionId: step.actionId,
@@ -338,19 +352,17 @@ async function settleInterruptedNoteCreations(params: {
             result: outcome.result,
             reversibility: "full",
           });
+          await markBatchItemSaved(binding.batchId, bound.itemKey, {
+            actionId: step.actionId,
+            stepSequence: step.sequence,
+            noteId: note.id,
+          });
         });
         scope.recordStep({
           effect: "applied",
           status: "applied",
           reversibility: "full",
           affectedCount: 1,
-        });
-        // Saved now, not when the write loop reaches the row: a process that
-        // ends in between must not find an applied step beside a pending row.
-        await markBatchItemSaved(binding.batchId, bound.itemKey, {
-          actionId: step.actionId,
-          stepSequence: step.sequence,
-          noteId: note.id,
         });
         settled.set(bound.itemKey, {
           kind: "saved",
@@ -417,6 +429,108 @@ async function settleInterruptedNoteCreations(params: {
   return settled;
 }
 
+/**
+ * What the related batches of this batch (its retry chain) hold for each
+ * row this call may write; see `findRelatedBatchNote`. Empty for a batch
+ * with no retry chain, which is the usual case.
+ */
+async function readRelatedBatchNotes(params: {
+  binding: AgentBatchBinding;
+  priorRows: ReadonlyMap<string, BatchItemRecord>;
+  job: BatchJobRecord | null;
+}): Promise<Map<string, RelatedBatchNote>> {
+  const found = new Map<string, RelatedBatchNote>();
+  if (!params.job) return found;
+  const ids = await relatedNoteBatchIds(
+    params.binding.batchId,
+    params.job.conversationKey,
+  );
+  if (!ids.length) return found;
+  const batches = await Promise.all(
+    ids.map(async (batchId) => ({
+      batchId,
+      rows: await listBatchItems(batchId),
+    })),
+  );
+  const stepsOf = journalStepsReader();
+  for (const item of params.binding.items) {
+    if (params.priorRows.get(item.itemKey)?.status === "saved") continue;
+    const note = await findRelatedBatchNote(batches, item.itemKey, stepsOf);
+    if (note) found.set(item.itemKey, note);
+  }
+  return found;
+}
+
+/**
+ * Save, before anything is written, the rows whose note already landed.
+ *
+ * A note's step is recorded applied before its row is saved, so a process
+ * that ends in between leaves an applied step beside a pending row; the
+ * settler reads only open steps, and the row would be written a second
+ * time. The step names its row (`findLandedNoteStepForRow`), so the row is
+ * saved with that step and its note, whatever state the note is in now. A
+ * related batch's live note for the paper saves the row the same way the
+ * tool settles one after a retry (`markBatchItemSettled`).
+ *
+ * The steps are read from the action this call writes under, the action
+ * the resume meant to continue, and the actions the rows name. Each saved
+ * row is updated in `priorRows` too, so the rest of the call skips it as
+ * already saved.
+ */
+async function keepLandedNoteRows(params: {
+  binding: AgentBatchBinding;
+  priorRows: Map<string, BatchItemRecord>;
+  scope: AgentJournalActionScope;
+  resumedActionId?: string;
+  related: ReadonlyMap<string, RelatedBatchNote>;
+}): Promise<void> {
+  const { binding, priorRows } = params;
+  const unsaved = binding.items.filter(
+    (item) => priorRows.get(item.itemKey)?.status !== "saved",
+  );
+  if (!unsaved.length) return;
+  const actionIds = new Set(
+    [
+      params.scope.actionId,
+      params.resumedActionId,
+      ...unsaved.map((item) => priorRows.get(item.itemKey)?.actionId),
+    ].filter((actionId): actionId is string => Boolean(actionId)),
+  );
+  const stepsOf = journalStepsReader();
+  const steps = (
+    await Promise.all([...actionIds].map((actionId) => stepsOf(actionId)))
+  ).flat();
+  for (const item of unsaved) {
+    const prior = priorRows.get(item.itemKey);
+    if (!prior) continue;
+    const landed = findLandedNoteStepForRow(steps, {
+      batchId: binding.batchId,
+      itemKey: item.itemKey,
+    });
+    if (landed) {
+      const saved = {
+        actionId: landed.step.actionId,
+        stepSequence: landed.step.sequence,
+        noteId: landed.found.note.id,
+      };
+      await markBatchItemSaved(binding.batchId, item.itemKey, saved);
+      priorRows.set(item.itemKey, { ...prior, ...saved, status: "saved" });
+      continue;
+    }
+    const related = params.related.get(item.itemKey);
+    if (related?.kind === "landed") {
+      await markBatchItemSettled(binding.batchId, item.itemKey, {
+        noteId: related.note.id,
+      });
+      priorRows.set(item.itemKey, {
+        ...prior,
+        noteId: related.note.id,
+        status: "saved",
+      });
+    }
+  }
+}
+
 /** A row refused because another action holds its reserved note. */
 type RefusedRow = {
   reason: string;
@@ -441,7 +555,12 @@ type RefusedRow = {
  * written before rows were linked at the start names no action while its
  * note is in flight), and the note-batch actions since this batch that no
  * row names (`listUnnamedNoteBatchActions`): a batch that ended during its
- * first note, or under a second action, before rows were linked.
+ * first note, or under a second action, before rows were linked. Only a
+ * batch opened before rows were linked can have such an action, so the scan
+ * runs only for one (`batchLinksRowsInFlight`).
+ *
+ * A note a related batch holds open for the paper (`readRelatedBatchNotes`)
+ * refuses the row the same way: that batch's resume settles it.
  */
 async function refuseRowsHeldElsewhere(params: {
   operation: SaveNotesBatchOperation;
@@ -450,10 +569,21 @@ async function refuseRowsHeldElsewhere(params: {
   scope: AgentJournalActionScope;
   /** The action the resume was prepared to continue, if any. */
   resumedActionId?: string;
+  job: BatchJobRecord | null;
+  related: ReadonlyMap<string, RelatedBatchNote>;
   libraryIdOf: (targetItemId: number) => number | undefined;
 }): Promise<Map<string, RefusedRow>> {
-  const { operation, binding, priorRows, scope } = params;
+  const { operation, binding, priorRows, scope, job } = params;
   const refused = new Map<string, RefusedRow>();
+  for (const [itemKey, note] of params.related)
+    if (note.kind === "held" && priorRows.get(itemKey)?.status !== "saved")
+      refused.set(itemKey, {
+        reason: note.reason,
+        journalStep: {
+          actionId: note.step.actionId,
+          sequence: note.step.sequence,
+        },
+      });
   const others = [
     ...new Set(
       [
@@ -464,17 +594,17 @@ async function refuseRowsHeldElsewhere(params: {
       ].filter((actionId) => actionId !== scope.actionId),
     ),
   ];
-  const job = await getBatchJob(binding.batchId);
-  const unnamed = job
-    ? (
-        await listUnnamedNoteBatchActions({
-          batchId: binding.batchId,
-          conversationKey: job.conversationKey,
-          createdAt: job.createdAt,
-          exclude: [scope.actionId, params.resumedActionId, ...others],
-        })
-      ).flatMap((action) => action.steps)
-    : [];
+  const unnamed =
+    job && !batchLinksRowsInFlight(job.inputJson)
+      ? (
+          await listUnnamedNoteBatchActions({
+            batchId: binding.batchId,
+            conversationKey: job.conversationKey,
+            createdAt: job.createdAt,
+            exclude: [scope.actionId, params.resumedActionId, ...others],
+          })
+        ).flatMap((action) => action.steps)
+      : [];
   if (!others.length && !unnamed.length) return refused;
   const steps = [
     ...(
@@ -492,7 +622,8 @@ async function refuseRowsHeldElsewhere(params: {
   for (const [index, entry] of operation.notes.entries()) {
     const bound = binding.items[index];
     const prior = bound ? priorRows.get(bound.itemKey) : undefined;
-    if (!bound || prior?.status === "saved") continue;
+    if (!bound || prior?.status === "saved" || refused.has(bound.itemKey))
+      continue;
     const libraryID = params.libraryIdOf(entry.targetItemId);
     const held = await findNoteHeldForRow(steps, {
       batchId: binding.batchId,
@@ -560,21 +691,39 @@ export const noteLifecycleExecutors = {
         row,
       ]),
     );
+    const scope = context.journalActionScope;
+    const creates = Boolean(binding && scope && operation.mode !== "append");
+    const job = creates && binding ? await getBatchJob(binding.batchId) : null;
+    const related =
+      creates && binding
+        ? await readRelatedBatchNotes({ binding, priorRows, job })
+        : new Map<string, RelatedBatchNote>();
+    // Rows whose note landed already are saved first, so nothing below
+    // writes them again.
+    if (creates && binding && scope)
+      await keepLandedNoteRows({
+        binding,
+        priorRows,
+        scope,
+        resumedActionId: context.resumeJournalAction?.actionId,
+        related,
+      });
     let appliedCount = [...priorRows.values()].filter(
       (row) => row.status === "saved",
     ).length;
-    const scope = context.journalActionScope;
     // Rows whose note an earlier action reserved, when that action is not
     // the one this call writes under (an undo ended it after the resume was
     // prepared, say). Read before the rows are linked to this action below.
     const refused =
-      binding && scope && operation.mode !== "append"
+      creates && binding && scope
         ? await refuseRowsHeldElsewhere({
             operation,
             binding,
             priorRows,
             scope,
             resumedActionId: context.resumeJournalAction?.actionId,
+            job,
+            related,
             libraryIdOf: (targetItemId) =>
               zoteroGateway.getItem(targetItemId)?.libraryID,
           })

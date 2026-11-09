@@ -34,6 +34,24 @@ const standaloneUndoFirst = process.argv.includes("--standalone-undo-first");
 // --standalone-moved takes the in-flight standalone note out of its folder
 // before "continue".
 const standaloneMoved = process.argv.includes("--standalone-moved");
+// --undo-first-absent undoes the interrupted batch and then erases the note
+// in flight before "continue", so the undone action's open step holds
+// nothing.
+const undoFirstAbsent = process.argv.includes("--undo-first-absent");
+// --applied-unsaved sets the last landed row back to pending, as a process
+// that ended after the note's step was applied and before its row was
+// saved leaves it; --applied-unsaved-undo also undoes the batch first.
+const appliedUnsavedUndo = process.argv.includes("--applied-unsaved-undo");
+const appliedUnsaved =
+  process.argv.includes("--applied-unsaved") || appliedUnsavedUndo;
+// --retry sends a new batch over the papers left instead of continuing.
+// --retry-crash-original kills that retry batch too (a third Zotero), then
+// continues the original batch; --retry-applied-unsaved also sets the
+// retry's last landed row back to pending before that.
+const retryAppliedUnsaved = process.argv.includes("--retry-applied-unsaved");
+const retryCrashOriginal = process.argv.includes("--retry-crash-original");
+const retryCrash = retryCrashOriginal || retryAppliedUnsaved;
+const retry = process.argv.includes("--retry") || retryCrash;
 // Pre-upgrade data: before "continue", the resume phase rewrites the journal
 // and the rows to the shape the build before the per-row resume left (no
 // `batchItem` in create_note steps; unwritten rows name no action).
@@ -116,6 +134,18 @@ await phase(
 await waitForTestZotero();
 await rm(snapshot, { recursive: true, force: true });
 await cp(".scaffold/test/data", snapshot, { recursive: true });
+if (retryCrash) {
+  // A third Zotero: the second one sends the retry batch and is killed
+  // while it writes, from the first one's data.
+  await phase(
+    "retry-crash",
+    { LLM_FOR_ZOTERO_QA_DATA_SNAPSHOT: snapshot, ...target },
+    { expectDeath: true },
+  );
+  await waitForTestZotero();
+  await rm(snapshot, { recursive: true, force: true });
+  await cp(".scaffold/test/data", snapshot, { recursive: true });
+}
 await phase("resume", {
   LLM_FOR_ZOTERO_QA_DATA_SNAPSHOT: snapshot,
   ...target,
@@ -126,6 +156,25 @@ await phase("resume", {
   ...(undoDuringCard ? { NOTE_BATCH_RESTART_TAMPER: "undo-during-card" } : {}),
   ...(changed ? { NOTE_BATCH_RESTART_TAMPER: "changed" } : {}),
   ...(standaloneMoved ? { NOTE_BATCH_RESTART_TAMPER: "moved" } : {}),
+  ...(undoFirstAbsent
+    ? { NOTE_BATCH_RESTART_TAMPER: "undo-first-absent" }
+    : {}),
+  ...(appliedUnsaved
+    ? {
+        NOTE_BATCH_RESTART_TAMPER: appliedUnsavedUndo
+          ? "applied-unsaved-undo"
+          : "applied-unsaved",
+      }
+    : {}),
+  ...(retry
+    ? {
+        NOTE_BATCH_RESTART_TAMPER: retryCrashOriginal
+          ? "retry-crash-original"
+          : retryAppliedUnsaved
+            ? "retry-applied-unsaved"
+            : "retry",
+      }
+    : {}),
   ...(legacy
     ? {
         NOTE_BATCH_RESTART_TAMPER: legacyStandaloneEdited
@@ -164,25 +213,37 @@ const tail = legacy
                     ? ", ended during its first note"
                     : ""
     }`
-  : standaloneMoved
-    ? " of standalone notes, with the in-flight note moved out of its folder"
-    : standaloneUndoFirst
-      ? " of standalone notes, undone before it continued"
-      : standalone
-        ? " of standalone notes, with a cited paper edited"
-        : undoDuringCard
-          ? ", undone while its continue card was open"
-          : undoFirst
-            ? ", undone before it continued"
-            : absent
-              ? ", with the in-flight note erased"
-              : changed
-                ? ", with the in-flight note trashed"
-                : undo
-                  ? ", then undone"
-                  : first
-                    ? ", ended during its first note"
-                    : "";
+  : retryCrashOriginal
+    ? ", retried by a new batch that was killed too, then continued"
+    : retryAppliedUnsaved
+      ? ", retried by a new batch that was killed too, with a landed note's row unsaved, then continued"
+      : retry
+        ? ", retried by a new batch"
+        : appliedUnsavedUndo
+          ? ", with a landed note's row unsaved, undone before it continued"
+          : appliedUnsaved
+            ? ", with a landed note's row unsaved"
+            : undoFirstAbsent
+              ? ", undone, with the in-flight note erased"
+              : standaloneMoved
+                ? " of standalone notes, with the in-flight note moved out of its folder"
+                : standaloneUndoFirst
+                  ? " of standalone notes, undone before it continued"
+                  : standalone
+                    ? " of standalone notes, with a cited paper edited"
+                    : undoDuringCard
+                      ? ", undone while its continue card was open"
+                      : undoFirst
+                        ? ", undone before it continued"
+                        : absent
+                          ? ", with the in-flight note erased"
+                          : changed
+                            ? ", with the in-flight note trashed"
+                            : undo
+                              ? ", then undone"
+                              : first
+                                ? ", ended during its first note"
+                                : "";
 console.log(
   `Verified a note batch across a ${quit ? "force-quit" : "killed"} Zotero${tail}.`,
 );

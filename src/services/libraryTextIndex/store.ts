@@ -287,14 +287,28 @@ export class LibraryTextIndexStore {
           byTerm.set(term, hits);
         }
       });
-      await this.q(`DELETE FROM postings WHERE attachment_id = ?`, [
-        attachmentId,
-      ]);
+      // New postings first, stale ones after. A search does not wait for
+      // this transaction: Zotero runs a plain query on the same connection
+      // in the middle of it and sees its uncommitted rows. Written in this
+      // order, every state it can see holds the document's old postings, its
+      // new ones, or both, so the document never drops out of a search.
       for (const [term, hits] of byTerm) {
         await this.q(
-          `INSERT INTO postings (term, attachment_id, hits_json, hit_count) VALUES (?,?,?,?)`,
+          `INSERT OR REPLACE INTO postings (term, attachment_id, hits_json, hit_count) VALUES (?,?,?,?)`,
           [term, attachmentId, JSON.stringify(hits), hits.length],
         );
+      }
+      const kept = (await this.q(
+        `SELECT term FROM postings WHERE attachment_id = ?`,
+        [attachmentId],
+      )) as Array<{ term: string }>;
+      for (const row of kept) {
+        const term = String(row.term);
+        if (!byTerm.has(term))
+          await this.q(
+            `DELETE FROM postings WHERE term = ? AND attachment_id = ?`,
+            [term, attachmentId],
+          );
       }
       await this.q(
         `UPDATE documents SET byte_estimate = ?, chunker_version = CASE WHEN chunker_version = ? THEN ? ELSE chunker_version END WHERE attachment_id = ?`,

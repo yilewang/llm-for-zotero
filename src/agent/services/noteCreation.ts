@@ -14,6 +14,7 @@ import {
   inJournalTransaction,
   isAgentChangeJournalAvailable,
   listJournalActions,
+  listJournalSteps,
   updateJournalStep,
   type JournalActionWithSteps,
   type JournalStep,
@@ -68,14 +69,15 @@ export const UNACCOUNTED_NOTE_REASON =
  * What native Zotero holds at the key a create_note step reserved: nothing,
  * a note in the trash, a note the user moved (to another parent, or out of
  * a collection the step filed it into), or a live note where the step put
- * it. Whether a live note's content is the intended one is for the caller.
+ * it. An item at the key that is not a note reads as moved. Whether a live
+ * note's content is the intended one is for the caller.
  */
 export type ReservedNoteState =
   | { state: "absent"; note: null }
   | { state: "live" | "trashed" | "moved"; note: Zotero.Item };
 
-// Keep in step with `readReservedNote` below: the two read the same native
-// states (absent, trashed, moved, live), so a change to one changes both.
+// The one reader of these native states; `readReservedNote` and every
+// refusal wording go through it.
 export function reservedNoteState(
   forward: CreateNoteForward,
 ): ReservedNoteState {
@@ -365,15 +367,25 @@ export async function listUnnamedNoteBatchActions(params: {
  * to the row, then an older step that could be the row's. Shared by the
  * resume's preparation and the executor's write-time refusal, so the two
  * refuse the same rows for the same reason.
+ *
+ * A step with nothing at its key holds nothing back. An `uncertain` step is
+ * never one a live run is writing (that one is `applying`), so an empty key
+ * means its creation had no effect; refusing the row for it would never
+ * end. The step itself is left for the action that holds it to settle.
  */
 export async function findNoteHeldForRow(
-  steps: readonly JournalStep[],
+  allSteps: readonly JournalStep[],
   row: BatchRowRef & {
     actionId?: string | null;
     stepSequence?: number | null;
     rebuiltHtml?: () => Promise<string | undefined>;
   },
 ): Promise<{ step: JournalStep; reason: string } | undefined> {
+  const steps = allSteps.filter((step) => {
+    if (!isOpenNoteStep(step)) return true;
+    const forward = parseForward(step);
+    return !forward || Boolean(noteAtReservedKey(forward));
+  });
   const named =
     row.actionId && row.stepSequence != null
       ? steps.find(
@@ -409,21 +421,245 @@ export async function findNoteHeldForRow(
     : undefined;
 }
 
+/** Step states in which a create_note step's note landed. */
+const LANDED_NOTE_STEP_STATUSES: ReadonlySet<string> = new Set([
+  "applied",
+  "partially_applied",
+  "irreversible",
+  // An undo moved the note to the trash; it was still written.
+  "reverted",
+]);
+
+/** Whether a step's forward records exactly this batch row. */
+function namesRow(forward: CreateNoteForward, row: BatchItemRef): boolean {
+  if (!recordsRow(forward)) return false;
+  const recorded = forward.batchItem as Partial<BatchItemRef>;
+  return recorded.batchId === row.batchId && recorded.itemKey === row.itemKey;
+}
+
+/**
+ * A create_note step among `steps` whose note landed for this batch row,
+ * with what is at its key now: the row's note was written, whatever its
+ * row says.
+ *
+ * The step is recorded applied before the row is saved, so a process that
+ * ends in between leaves an applied step beside a pending row. Writing the
+ * row again would put a second note beside the first. Any note at the key
+ * counts, also one the user (or an undo) trashed or moved: a trashed note
+ * still counts as written, as for a saved row. A step with nothing at its
+ * key does not count: the user erased the note, and the row is written
+ * again, as a saved row whose note is gone is.
+ */
+export function findLandedNoteStepForRow(
+  steps: readonly JournalStep[],
+  row: BatchItemRef,
+):
+  | {
+      step: JournalStep;
+      forward: CreateNoteForward;
+      found: Exclude<ReservedNoteState, { state: "absent" }>;
+    }
+  | undefined {
+  for (const step of steps) {
+    if (
+      step.operation !== "create_note" ||
+      !LANDED_NOTE_STEP_STATUSES.has(step.status)
+    )
+      continue;
+    const forward = parseForward(step);
+    if (!forward || !namesRow(forward, row)) continue;
+    const found = reservedNoteState(forward);
+    if (found.state !== "absent") return { step, forward, found };
+  }
+  return undefined;
+}
+
+/** What a related batch holds for a paper this batch is about to write. */
+export type RelatedBatchNote =
+  | {
+      /** An attempt of that batch is still open on a note at its key. */
+      kind: "held";
+      batchId: string;
+      step: JournalStep;
+      reason: string;
+    }
+  | {
+      /** That batch wrote the paper's note, and it is live where it was put. */
+      kind: "landed";
+      batchId: string;
+      step: JournalStep;
+      note: Zotero.Item;
+    };
+
+/**
+ * The note a related batch (a retry of this batch, or the batch it
+ * retried) holds for this row's paper, read from that batch's own steps.
+ *
+ * Saved rows of a related batch are read elsewhere (`heldNote` in the
+ * tool). This reads what the rows do not say yet: a note in flight when a
+ * process ended (`uncertain`, with a note at its key), and a note that
+ * landed before its row was saved. Rows of different batches over the same
+ * paper share the item key (`item:<paperId>`), so a step that names
+ * {that batch, this item key} is that batch's note for the same paper.
+ *
+ * Steps are looked up in the actions that batch's row for the item names,
+ * and in the newest action of that batch. A landed note counts only while
+ * it is live where it was put, as a saved row of a related batch does; an
+ * open step counts while anything is at its key. Nothing at the key holds
+ * nothing back. The other batch's step is only read here: only the action
+ * that holds it settles it.
+ */
+export async function findRelatedBatchNote(
+  batches: ReadonlyArray<{
+    batchId: string;
+    rows: ReadonlyArray<{
+      itemKey: string;
+      actionId?: string;
+      updatedAt: number;
+    }>;
+  }>,
+  itemKey: string,
+  stepsOf: (actionId: string) => Promise<readonly JournalStep[]>,
+): Promise<RelatedBatchNote | undefined> {
+  let held: RelatedBatchNote | undefined;
+  for (const batch of batches) {
+    const newest = [...batch.rows]
+      .filter((row) => row.actionId)
+      .sort((left, right) => right.updatedAt - left.updatedAt)[0]?.actionId;
+    const actionIds = new Set(
+      [
+        ...batch.rows
+          .filter((row) => row.itemKey === itemKey)
+          .map((row) => row.actionId),
+        newest,
+      ].filter((actionId): actionId is string => Boolean(actionId)),
+    );
+    const row = { batchId: batch.batchId, itemKey };
+    for (const actionId of actionIds)
+      for (const step of await stepsOf(actionId)) {
+        if (step.operation !== "create_note") continue;
+        const forward = parseForward(step);
+        if (!forward || !namesRow(forward, row)) continue;
+        const found = reservedNoteState(forward);
+        if (found.state === "absent") continue;
+        if (LANDED_NOTE_STEP_STATUSES.has(step.status)) {
+          if (found.state === "live")
+            return {
+              kind: "landed",
+              batchId: batch.batchId,
+              step,
+              note: found.note,
+            };
+        } else if (step.status === "uncertain")
+          held ||= {
+            kind: "held",
+            batchId: batch.batchId,
+            step,
+            reason: heldNoteReason(forward),
+          };
+      }
+  }
+  return held;
+}
+
+/** Reads each journal action's steps once, however often it is asked. */
+export function journalStepsReader(): (
+  actionId: string,
+) => Promise<readonly JournalStep[]> {
+  const read = new Map<string, Promise<JournalStep[]>>();
+  return (actionId) => {
+    let steps = read.get(actionId);
+    if (!steps) {
+      steps = listJournalSteps(actionId);
+      read.set(actionId, steps);
+    }
+    return steps;
+  };
+}
+
+/**
+ * The note batches in this batch's retry chain, both ways and through
+ * every link, as each job recorded when it was opened as a retry
+ * (`retryOf` in its input). This batch is not included.
+ *
+ * The relation is recorded rather than re-derived: after a retry has
+ * written, the earlier batch may no longer owe the papers that made it one,
+ * and an unrelated later request over the same papers must not join it.
+ */
+export async function relatedNoteBatchIds(
+  batchId: string,
+  conversationKey: number,
+): Promise<string[]> {
+  if (!conversationKey) return [];
+  const links = new Map<string, Set<string>>();
+  const link = (from: string, to: string) => {
+    if (!links.has(from)) links.set(from, new Set());
+    links.get(from)!.add(to);
+  };
+  for (const job of await listConversationBatchJobs(
+    conversationKey,
+    "note_write_batch",
+  ))
+    for (const id of storedRetryOf(job.inputJson)) {
+      link(job.jobId, id);
+      link(id, job.jobId);
+    }
+  const ids = new Set<string>([batchId]);
+  const queue = [batchId];
+  for (let next = queue.shift(); next !== undefined; next = queue.shift())
+    for (const id of links.get(next) || [])
+      if (!ids.has(id)) {
+        ids.add(id);
+        queue.push(id);
+      }
+  ids.delete(batchId);
+  return [...ids];
+}
+
+function storedRetryOf(inputJson: string | undefined): string[] {
+  try {
+    const parsed = JSON.parse(inputJson || "{}") as { retryOf?: unknown };
+    return Array.isArray(parsed?.retryOf)
+      ? parsed.retryOf.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether a note batch was opened by a build that names the action on
+ * every row before its first note starts (`rowsLinkedInFlight` in its job
+ * input). Only a batch without it can have its note in flight under an
+ * action no row names, so only such a batch needs the conversation-wide
+ * scan of `listUnnamedNoteBatchActions`.
+ */
+export function batchLinksRowsInFlight(inputJson: string | undefined): boolean {
+  try {
+    const parsed = JSON.parse(inputJson || "{}") as {
+      rowsLinkedInFlight?: unknown;
+    };
+    return parsed?.rowsLinkedInFlight === true;
+  } catch {
+    return false;
+  }
+}
+
 export const RESERVED_NOTE_MISMATCH =
   "The reserved note does not match the finalized content; no new note was created";
 
 /**
- * What native Zotero holds at the key a note creation reserved.
+ * What native Zotero holds at the key a note creation reserved, read by
+ * `reservedNoteState`.
  *
  * `absent` means the creation never landed. `live` is a note at that key,
  * not trashed, on the intended parent and, when `collections` is given, in
  * each of them; whether its content is the intended one is for the caller
- * to verify. Anything else at the key is `changed`: the creation landed and
- * was then removed, moved or replaced, and no replacement may be written for
- * it. A note moved to another parent, or out of a collection it was filed
- * into, was moved by the user and is left where it is.
- *
- * Keep in step with `reservedNoteState` above, which reads the same states.
+ * to verify. A note in the trash, or moved (to another parent, or out of a
+ * collection it was filed into), is `changed`: the creation landed and the
+ * user changed it since, so no replacement may be written for it, and it is
+ * left where it is. An item at the key that is not a note reads as moved.
+ * Each caller words the refusal for its own case.
  */
 export function readReservedNote(params: {
   libraryID: number;
@@ -433,27 +669,16 @@ export function readReservedNote(params: {
 }):
   | { kind: "absent"; note: null }
   | { kind: "live"; note: Zotero.Item }
-  | { kind: "changed"; note: Zotero.Item; reason: string } {
-  const found = Zotero.Items.getByLibraryAndKey(params.libraryID, params.key);
-  const note = found && found.id ? (found as Zotero.Item) : null;
-  if (!note) return { kind: "absent", note: null };
-  if (note.deleted || !note.isNote())
-    return {
-      kind: "changed",
-      note,
-      reason: `The reserved note was removed or changed; recovery cannot create a replacement (note ${note.id})`,
-    };
-  const filedInto = note.getCollections();
-  if (
-    (note.parentID || undefined) !== params.parentItemId ||
-    (params.collections || []).some((id) => !filedInto.includes(id))
-  )
-    return {
-      kind: "changed",
-      note,
-      reason: `Note ${note.id} was moved, so I did not touch it.`,
-    };
-  return { kind: "live", note };
+  | { kind: "changed"; state: "trashed" | "moved"; note: Zotero.Item } {
+  const found = reservedNoteState({
+    key: params.key,
+    libraryID: params.libraryID,
+    parentItemId: params.parentItemId,
+    collections: [...(params.collections || [])],
+  });
+  if (found.state === "absent") return { kind: "absent", note: null };
+  if (found.state === "live") return { kind: "live", note: found.note };
+  return { kind: "changed", state: found.state, note: found.note };
 }
 
 /**
@@ -593,7 +818,13 @@ async function create(params: Creation, id?: string) {
     throw new Error(
       "The previously created note is unavailable; recovery cannot recreate a removed note",
     );
-  if (reservedNote.kind === "changed") throw new Error(reservedNote.reason);
+  // A single note, not a batch row: the reason speaks of that one note.
+  if (reservedNote.kind === "changed")
+    throw new Error(
+      reservedNote.state === "trashed"
+        ? `The note from the earlier attempt (note ${reservedNote.note.id}) is in the trash, so I did not create it again.`
+        : `The note from the earlier attempt (note ${reservedNote.note.id}) was moved, so I did not create it again.`,
+    );
   if (!existed) {
     note.libraryID = libraryID;
     note.key = key;

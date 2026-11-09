@@ -152,39 +152,48 @@ function resumeBlocked(
   return visit(content);
 }
 
+/** The notes a note_write_batch result reports with status "error". */
+function failedNotes(
+  content: unknown,
+): Array<{ itemKey: string; reason: string }> {
+  const seen = new Set<unknown>();
+  const found: Array<{ itemKey: string; reason: string }> = [];
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    const notes = (value as { notes?: unknown }).notes;
+    if (Array.isArray(notes))
+      for (const note of notes as Array<Record<string, unknown>>)
+        if (note?.status === "error")
+          found.push({
+            itemKey: String(note.itemKey ?? ""),
+            reason: String(note.reason ?? ""),
+          });
+    for (const child of Object.values(value)) visit(child);
+  };
+  visit(content);
+  return found;
+}
+
 /** The conversation key this panel's chat is stored under. */
 export function panelConversationKey(panel: PanelRef): number {
   return getConversationKey(panel.item);
 }
 
 /**
- * Sends the first turn of a note job: the model reads every paper, then
- * writes all the notes in one note_write_batch. When the batch's
- * `killAfterNotes`th note exists, this Zotero process ends (a child note
- * of one of the papers, or with `target: "standalone"` a standalone note
- * filed into the collection):
+ * Ends this Zotero process once `killAfterNotes` new notes exist (a child
+ * note of one of the papers, or with `standalone` a standalone note filed
+ * into the collection):
  * - `crash`: SIGKILL aimed at this process id only; nothing runs after it.
  * - `quit`: a forced application quit.
- * The function does not return while the process ends; if it returns, the
- * process did not end.
  */
-export async function startNoteBatchUntilQuit(
-  panel: PanelRef,
-  input: JobInput & {
-    killAfterNotes: number;
-    variant: "crash" | "quit";
-    target?: "item" | "standalone";
-    notesPerPaper?: 1 | 2;
-  },
-): Promise<{ survived: true; notesSeen: number }> {
-  const { body, item } = panel;
-  body.style.left = "0";
-  body.style.width = "420px";
-  body.style.zIndex = "99999";
-  const ids = input.papers.map((paper) => paper.itemId);
-  const paperIds = new Set(ids);
-  const standalone = input.target === "standalone";
-  setOriginalAgentPermissionMode("auto");
+function endProcessAfterNotes(params: {
+  paperIds: ReadonlySet<number>;
+  standalone: boolean;
+  collectionId: number;
+  killAfterNotes: number;
+  variant: "crash" | "quit";
+}): { notesSeen: () => number } {
   let notesSeen = 0;
   let ended = false;
   Zotero.Notifier.registerObserver(
@@ -195,16 +204,16 @@ export async function startNoteBatchUntilQuit(
           const added = Zotero.Items.get(Number(id));
           if (!added?.isNote()) continue;
           if (
-            standalone
+            params.standalone
               ? !added.parentID &&
-                added.getCollections().includes(input.collection.collectionId)
-              : paperIds.has(Number(added.parentID))
+                added.getCollections().includes(params.collectionId)
+              : params.paperIds.has(Number(added.parentID))
           )
             notesSeen += 1;
         }
-        if (notesSeen < input.killAfterNotes) return;
+        if (notesSeen < params.killAfterNotes) return;
         ended = true;
-        if (input.variant === "quit") {
+        if (params.variant === "quit") {
           // eForceQuit: leave without waiting for windows or the batch.
           (
             Services as unknown as { startup: { quit: (mode: number) => void } }
@@ -225,6 +234,39 @@ export async function startNoteBatchUntilQuit(
     ["item"],
     "llm-note-batch-restart",
   );
+  return { notesSeen: () => notesSeen };
+}
+
+/**
+ * Sends the first turn of a note job: the model reads every paper, then
+ * writes all the notes in one note_write_batch. When the batch's
+ * `killAfterNotes`th note exists, this Zotero process ends
+ * (`endProcessAfterNotes`). The function does not return while the process
+ * ends; if it returns, the process did not end.
+ */
+export async function startNoteBatchUntilQuit(
+  panel: PanelRef,
+  input: JobInput & {
+    killAfterNotes: number;
+    variant: "crash" | "quit";
+    target?: "item" | "standalone";
+    notesPerPaper?: 1 | 2;
+  },
+): Promise<{ survived: true; notesSeen: number }> {
+  const { body, item } = panel;
+  body.style.left = "0";
+  body.style.width = "420px";
+  body.style.zIndex = "99999";
+  const ids = input.papers.map((paper) => paper.itemId);
+  const standalone = input.target === "standalone";
+  setOriginalAgentPermissionMode("auto");
+  const observer = endProcessAfterNotes({
+    paperIds: new Set(ids),
+    standalone,
+    collectionId: input.collection.collectionId,
+    killAfterNotes: input.killAfterNotes,
+    variant: input.variant,
+  });
   let declared = false;
   let readUpTo = 0;
   let batched = false;
@@ -282,21 +324,41 @@ export async function startNoteBatchUntilQuit(
     },
   });
   // Only reached when the process did not end.
-  return { survived: true, notesSeen };
+  return { survived: true, notesSeen: observer.notesSeen() };
 }
 
 /**
  * The "continue" turn in the new process. The model resumes the stopped
- * batch by the id the host names, then writes a note again on the papers in
- * `rewritePapers`, whose notes the user trashed meanwhile.
+ * batch by the id the host names (or by `resumeBatchId`), then writes a note
+ * again on the papers in `rewritePapers`, whose notes the user trashed
+ * meanwhile.
+ *
+ * With `retryPapers` the model does not resume: it issues a new
+ * note_write_batch over those papers, as a model that re-sends the call
+ * after a restart does. With `killAfterNotes` this process ends once that
+ * many new notes exist on the papers (`endProcessAfterNotes`), and the
+ * function does not return.
  */
 export async function resumeNoteBatchAfterRestart(
   panel: PanelRef,
-  input: JobInput & { rewritePapers: number[] },
+  input: JobInput & {
+    rewritePapers: number[];
+    resumeBatchId?: string;
+    retryPapers?: number[];
+    killAfterNotes?: number;
+  },
 ) {
   const key = getConversationKey(panel.item);
   const previousMode = getOriginalAgentPermissionMode();
   setOriginalAgentPermissionMode("auto");
+  if (input.killAfterNotes)
+    endProcessAfterNotes({
+      paperIds: new Set(input.papers.map((paper) => paper.itemId)),
+      standalone: false,
+      collectionId: input.collection.collectionId,
+      killAfterNotes: input.killAfterNotes,
+      variant: "crash",
+    });
   try {
     const priorRun = (await listAgentRunsForConversation(key)).at(-1);
     const resumable = await listResumableBatches(key);
@@ -311,12 +373,18 @@ export async function resumeNoteBatchAfterRestart(
       paperCharacters: 1_200,
       question: "continue",
       step: (messages) => {
+        if (!resumed && input.retryPapers?.length) {
+          resumed = true;
+          return toolStep([batchCall(input.retryPapers)]);
+        }
         if (!resumed) {
           resumed = true;
           resumeBatchId =
+            input.resumeBatchId ||
             /resumeBatchId=([^;\s]+)/.exec(
               messages.map(contentText).join("\n"),
-            )?.[1] || "";
+            )?.[1] ||
+            "";
           if (resumeBatchId)
             return toolStep([
               {
@@ -357,6 +425,8 @@ export async function resumeNoteBatchAfterRestart(
               applied: appliedBy(event.actionReceipts),
               // The rows a resume refused before writing, with the reason.
               blocked: resumeBlocked(event.content),
+              // The notes the call reported as not written, with the reason.
+              failedNotes: failedNotes(event.content),
             },
           ]
         : [],
