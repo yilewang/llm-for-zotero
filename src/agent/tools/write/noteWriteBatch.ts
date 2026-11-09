@@ -49,7 +49,10 @@ import {
   listJournalActions,
   type JournalActionWithSteps,
 } from "../../store/changeJournal";
-import { findNoteHeldForRow } from "../../services/noteCreation";
+import {
+  findNoteHeldForRow,
+  listUnnamedNoteBatchActions,
+} from "../../services/noteCreation";
 import { RESUMABLE_BATCH_ACTION_STATUSES } from "../../services/mutationCoordinator";
 import { describeLibraryMutationActions } from "../../contracts/actionOperationEvidence";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
@@ -686,6 +689,22 @@ export function createNoteWriteBatchTool(
         (RESUMABLE_BATCH_ACTION_STATUSES.includes(action.status) ||
           action.status === "applying"),
       );
+    // Older data can leave the note in flight under an action no row names
+    // (the batch ended during its first note, or a continue under a second
+    // action did). Nothing settles those actions; a row whose note one of
+    // them may hold is refused, never reopened. An append writes no new
+    // note, so no such step is its row's (the executor skips it too).
+    const unnamedSteps =
+      storedInput.mode === "append"
+        ? []
+        : (
+            await listUnnamedNoteBatchActions({
+              batchId,
+              conversationKey: job.conversationKey,
+              createdAt: job.createdAt,
+              exclude: [resume.actionId],
+            })
+          ).flatMap((action) => action.steps);
     for (const row of rows) {
       const descriptor = stored.get(row.itemKey);
       if (!descriptor)
@@ -735,6 +754,19 @@ export function createNoteWriteBatchTool(
             resume.blocked.push({ itemKey: row.itemKey, reason: held.reason });
             continue;
           }
+        }
+      }
+      if (unnamedSteps.length) {
+        const held = await findNoteHeldForRow(unnamedSteps, {
+          batchId,
+          itemKey: row.itemKey,
+          targetItemId: descriptor.targetItemId,
+          standalone: storedInput.target === "standalone",
+          collections: descriptor.collections || [],
+        });
+        if (held) {
+          resume.blocked.push({ itemKey: row.itemKey, reason: held.reason });
+          continue;
         }
       }
       if (row.status === "saved") {

@@ -5,8 +5,11 @@ import {
   findUnattributedNoteStep,
   findUncertainNoteStepForRow,
   heldNoteReason,
+  listUnnamedNoteBatchActions,
+  oldNoteStepsWithNothingAtKey,
   readReservedNote,
   RESERVED_NOTE_MISMATCH,
+  untiedNoteReason,
 } from "../noteCreation";
 import { MutationNoEffectError } from "../externalMutationCoordinator";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
@@ -36,7 +39,7 @@ import { loadPlanDocument } from "../../documents/store";
 import { documentNoteParts } from "../../documents/actions";
 import { mergeNoteCitationItems } from "../../../utils/noteCitations";
 import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
-import { advanceBatchJob } from "../../store/batchJobStore";
+import { advanceBatchJob, getBatchJob } from "../../store/batchJobStore";
 import {
   linkBatchItemsToAction,
   listBatchItems,
@@ -204,7 +207,9 @@ type InterruptedCreation =
  * A step written before steps recorded their row, whose body matches no row
  * (a cited work changed since), is some unwritten row's and nothing says
  * which: while a note is at its key, every row it could be is refused
- * instead of written (`findUnattributedNoteStep`).
+ * instead of written (`findUnattributedNoteStep`), and told how to end the
+ * refusal. Once nothing is at its key (the user erased the note), the step
+ * had no effect and is settled so.
  *
  * The settling is read again from native state on every resume that
  * reopens the action, so a refusal ends once the user puts the note back.
@@ -298,7 +303,8 @@ async function settleInterruptedNoteCreations(params: {
           continue;
         }
         if (reserved.kind === "changed") {
-          await block(reserved.reason);
+          // The same wording for the note's state as every other path.
+          await block(heldNoteReason(forward));
           break;
         }
         const note = reserved.note;
@@ -363,9 +369,24 @@ async function settleInterruptedNoteCreations(params: {
       }
     }
   }
-  // Older steps that matched no row by body, once every row has taken its
-  // own: while a note is at such a step's key, each row it could be is
-  // refused. The step is left as it is; it is no row's to settle.
+  // An older step that matched no row by body, with nothing at its key, had
+  // no effect, whichever row it was for. That row may not be in this call
+  // at all (the preparation refused it), so the pass goes over the steps,
+  // not the rows.
+  for (const step of oldNoteStepsWithNothingAtKey(open)) {
+    open.splice(open.indexOf(step), 1);
+    await inJournalTransaction(() =>
+      updateJournalStep({
+        stepId: step.stepId,
+        status: "no_effect",
+        reversibility: "full",
+        error: "Nothing is at the reserved key; the change did not remain.",
+      }),
+    );
+  }
+  // The other older steps that matched no row by body, once every row has
+  // taken its own: while a note is at such a step's key, each row it could
+  // be is refused. The step is left as it is; it is no row's to settle.
   for (const [index, entry] of operation.notes.entries()) {
     if (!open.length) break;
     const bound = binding.items[index];
@@ -386,7 +407,7 @@ async function settleInterruptedNoteCreations(params: {
     if (unattributed)
       settled.set(bound.itemKey, {
         kind: "blocked",
-        reason: heldNoteReason(unattributed.note),
+        reason: untiedNoteReason(unattributed.note),
         journalStep: {
           actionId: unattributed.step.actionId,
           sequence: unattributed.step.sequence,
@@ -416,9 +437,11 @@ type RefusedRow = {
  * settled from here, because this call does not hold that action.
  *
  * The candidate actions are the ones the rows named before this call linked
- * them to its own action, and the one the resume meant to continue: a row
+ * them to its own action, the one the resume meant to continue (a row
  * written before rows were linked at the start names no action while its
- * note is in flight.
+ * note is in flight), and the note-batch actions since this batch that no
+ * row names (`listUnnamedNoteBatchActions`): a batch that ended during its
+ * first note, or under a second action, before rows were linked.
  */
 async function refuseRowsHeldElsewhere(params: {
   operation: SaveNotesBatchOperation;
@@ -441,10 +464,24 @@ async function refuseRowsHeldElsewhere(params: {
       ].filter((actionId) => actionId !== scope.actionId),
     ),
   ];
-  if (!others.length) return refused;
-  const steps = (
-    await Promise.all(others.map((actionId) => listJournalSteps(actionId)))
-  ).flat();
+  const job = await getBatchJob(binding.batchId);
+  const unnamed = job
+    ? (
+        await listUnnamedNoteBatchActions({
+          batchId: binding.batchId,
+          conversationKey: job.conversationKey,
+          createdAt: job.createdAt,
+          exclude: [scope.actionId, params.resumedActionId, ...others],
+        })
+      ).flatMap((action) => action.steps)
+    : [];
+  if (!others.length && !unnamed.length) return refused;
+  const steps = [
+    ...(
+      await Promise.all(others.map((actionId) => listJournalSteps(actionId)))
+    ).flat(),
+    ...unnamed,
+  ];
   if (
     !steps.some(
       (step) => step.operation === "create_note" && step.status === "uncertain",

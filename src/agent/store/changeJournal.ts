@@ -1212,6 +1212,17 @@ export async function listJournalActions(input: {
   runId?: string;
   limit?: number;
   pendingOnly?: boolean;
+  /** Only actions recorded under this tool name. */
+  toolName?: string;
+  /** Only actions created at or after this time (ms). */
+  createdAtOrAfter?: number;
+  /** Only actions holding an `uncertain` step of this operation. */
+  withUncertainStep?: string;
+  /**
+   * Every matching action instead of the newest `limit`, for a caller that
+   * must not miss one; the other filters keep the set small.
+   */
+  unbounded?: boolean;
 }): Promise<JournalActionWithSteps[]> {
   const db = getDb();
   if (!db) return [];
@@ -1237,15 +1248,30 @@ export async function listJournalActions(input: {
   if (input.pendingOnly) {
     clauses.push("status NOT IN ('reverted','no_effect','failed')");
   }
+  if (input.toolName !== undefined) {
+    clauses.push("tool_name = ?");
+    params.push(input.toolName);
+  }
+  if (input.createdAtOrAfter !== undefined) {
+    clauses.push("created_at >= ?");
+    params.push(input.createdAtOrAfter);
+  }
+  if (input.withUncertainStep !== undefined) {
+    clauses.push(
+      `action_id IN (SELECT action_id FROM ${JOURNAL_STEPS_TABLE}
+        WHERE operation = ? AND status = 'uncertain')`,
+    );
+    params.push(input.withUncertainStep);
+  }
   const limit =
     Number.isFinite(input.limit) && Number(input.limit) > 0
       ? Math.floor(Number(input.limit))
       : 50;
-  params.push(limit);
+  if (!input.unbounded) params.push(limit);
   const rows = (await db.queryAsync(
     `SELECT * FROM ${JOURNAL_ACTIONS_TABLE}
      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-     ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+     ORDER BY created_at DESC, rowid DESC${input.unbounded ? "" : " LIMIT ?"}`,
     params,
   )) as Array<Record<string, unknown>> | null;
   const actions = Array.isArray(rows) ? rows.map(toAction) : [];

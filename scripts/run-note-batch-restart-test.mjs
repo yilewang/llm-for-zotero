@@ -40,7 +40,11 @@ const standaloneMoved = process.argv.includes("--standalone-moved");
 // paper edited before "continue", --legacy-undo-first a child batch undone
 // before "continue", and --legacy-twice a batch with two notes on each
 // paper, ended during a paper's second note, whose first note the user
-// erased.
+// erased. --legacy --first ends the first Zotero during its first note, so
+// no row names any action; --legacy-unnamed-action undoes the first
+// attempt and leaves the note in flight under a second action that no row
+// names, as a pre-upgrade "continue" left it. --legacy-standalone-edited
+// then erases the note and continues a second time.
 const legacyStandaloneEdited = process.argv.includes(
   "--legacy-standalone-edited",
 );
@@ -48,11 +52,13 @@ const legacyStandalone =
   process.argv.includes("--legacy-standalone") || legacyStandaloneEdited;
 const legacyTwice = process.argv.includes("--legacy-twice");
 const legacyUndoFirst = process.argv.includes("--legacy-undo-first");
+const legacyUnnamedAction = process.argv.includes("--legacy-unnamed-action");
 const legacy =
   process.argv.includes("--legacy") ||
   legacyStandalone ||
   legacyTwice ||
-  legacyUndoFirst;
+  legacyUndoFirst ||
+  legacyUnnamedAction;
 const standalone =
   process.argv.includes("--standalone") ||
   standaloneUndoFirst ||
@@ -123,7 +129,11 @@ await phase("resume", {
             ? "legacy-twice"
             : legacyUndoFirst
               ? "legacy-undo-first"
-              : "legacy",
+              : legacyUnnamedAction
+                ? "legacy-unnamed-action"
+                : first
+                  ? "legacy-first"
+                  : "legacy",
       }
     : {}),
   ...(undo ? { NOTE_BATCH_RESTART_UNDO: "1" } : {}),
@@ -132,14 +142,18 @@ await rm(snapshot, { recursive: true, force: true });
 const tail = legacy
   ? ` from pre-upgrade data${
       legacyStandaloneEdited
-        ? " of standalone notes, with a cited paper edited"
+        ? " of standalone notes, with a cited paper edited, then erased"
         : legacyStandalone
           ? " of standalone notes"
           : legacyTwice
             ? " with two notes on each paper, one erased"
             : legacyUndoFirst
               ? ", undone before it continued"
-              : ""
+              : legacyUnnamedAction
+                ? ", undone, with the note in flight under an action no row names"
+                : first
+                  ? ", ended during its first note"
+                  : ""
     }`
   : standaloneMoved
     ? " of standalone notes, with the in-flight note moved out of its folder"

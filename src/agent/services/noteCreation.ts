@@ -15,8 +15,11 @@ import {
   isAgentChangeJournalAvailable,
   listJournalActions,
   updateJournalStep,
+  type JournalActionWithSteps,
   type JournalStep,
 } from "../store/changeJournal";
+import { listConversationBatchJobs } from "../store/batchJobStore";
+import { listBatchItems } from "../store/batchItemStore";
 import {
   readRecoveryText,
   sha256Text,
@@ -62,16 +65,63 @@ export const UNACCOUNTED_NOTE_REASON =
   "The state of the note an earlier attempt began for this item is unknown, so it was not rewritten";
 
 /**
- * Why a batch row is refused when the note an earlier attempt reserved for
- * it is held back (an action the current attempt cannot settle holds it, or
- * an older step cannot be tied to one row), naming that note when it is in
- * the library.
+ * What native Zotero holds at the key a create_note step reserved: nothing,
+ * a note in the trash, a note the user moved (to another parent, or out of
+ * a collection the step filed it into), or a live note where the step put
+ * it. Whether a live note's content is the intended one is for the caller.
  */
-export function heldNoteReason(note: Zotero.Item | null): string {
-  if (!note) return UNACCOUNTED_NOTE_REASON;
-  return note.deleted
-    ? `A note from the interrupted attempt (note ${note.id}) is in the trash; this item was not rewritten.`
-    : `A note from the interrupted attempt (note ${note.id}) is still in the library; this item was not rewritten.`;
+export type ReservedNoteState =
+  | { state: "absent"; note: null }
+  | { state: "live" | "trashed" | "moved"; note: Zotero.Item };
+
+export function reservedNoteState(
+  forward: CreateNoteForward,
+): ReservedNoteState {
+  const note = noteAtReservedKey(forward);
+  if (!note) return { state: "absent", note: null };
+  if (note.deleted) return { state: "trashed", note };
+  const parentItemId =
+    typeof forward.parentItemId === "number" ? forward.parentItemId : undefined;
+  const collections = Array.isArray(forward.collections)
+    ? forward.collections.map(Number)
+    : [];
+  const filedInto = note.isNote() ? note.getCollections() : [];
+  if (
+    !note.isNote() ||
+    (note.parentID || undefined) !== parentItemId ||
+    collections.some((id) => !filedInto.includes(id))
+  )
+    return { state: "moved", note };
+  return { state: "live", note };
+}
+
+/**
+ * Why a batch row is refused when the note an earlier attempt reserved for
+ * it is held back, in one wording per native state of that note. The
+ * resume's preparation, the executor's write-time refusal and the settler
+ * all refuse through it, so one note reads the same on every path.
+ */
+export function heldNoteReason(forward: CreateNoteForward): string {
+  const found = reservedNoteState(forward);
+  switch (found.state) {
+    case "absent":
+      return UNACCOUNTED_NOTE_REASON;
+    case "trashed":
+      return `A note from the interrupted attempt (note ${found.note.id}) is in the trash; this item was not rewritten.`;
+    case "moved":
+      return `Note ${found.note.id} was moved, so I did not touch it.`;
+    case "live":
+      return `A note from the interrupted attempt (note ${found.note.id}) is still in the library; this item was not rewritten.`;
+  }
+}
+
+/**
+ * Why a batch row is refused when an older step's note could be this row's
+ * but cannot be tied to one row. Moving the note to the trash does not end
+ * the refusal; erasing it does, so the reason says so.
+ */
+export function untiedNoteReason(note: Zotero.Item): string {
+  return `Note ${note.id} from the interrupted attempt may be this item's note; I cannot tell which item it belongs to, so I did not write this item. If note ${note.id} is not this item's note, delete it permanently and continue.`;
 }
 
 /** The note at the key a create_note step reserved, if any is there. */
@@ -206,15 +256,88 @@ export async function findUncertainNoteStepForRow(
 export function findUnattributedNoteStep(
   steps: readonly JournalStep[],
   row: BatchRowRef,
-): { step: JournalStep; note: Zotero.Item } | undefined {
+):
+  | { step: JournalStep; forward: CreateNoteForward; note: Zotero.Item }
+  | undefined {
   for (const step of steps) {
     if (!isOpenNoteStep(step)) continue;
     const forward = parseForward(step);
     if (!forward || recordsRow(forward) || !fitsRow(forward, row)) continue;
     const note = noteAtReservedKey(forward);
-    if (note) return { step, note };
+    if (note) return { step, forward, note };
   }
   return undefined;
+}
+
+/**
+ * The `uncertain` create_note steps among `steps` written before steps
+ * recorded their row, with nothing at their reserved key: the creation
+ * never landed, or its note was erased since, so the step had no effect.
+ */
+export function oldNoteStepsWithNothingAtKey(
+  steps: readonly JournalStep[],
+): JournalStep[] {
+  return steps.filter((step) => {
+    if (!isOpenNoteStep(step)) return false;
+    const forward = parseForward(step);
+    return Boolean(
+      forward && !recordsRow(forward) && !noteAtReservedKey(forward),
+    );
+  });
+}
+
+/**
+ * Note-batch actions of this conversation that may hold the note an
+ * interrupted attempt of this batch was writing, although no row names them.
+ *
+ * Before rows named their action while a note was in flight, a row named
+ * its action only once its note landed. So a batch that ended during its
+ * first note, or a continue that ran under a new action (the first one was
+ * undone) and ended during its first note, left that note's step in an
+ * action no row of the batch names. Each note_write_batch action created at
+ * or after the batch, holding an `uncertain` create_note step that does not
+ * record its row, is such a candidate, unless a row of another note batch
+ * in this conversation names it (then it is that batch's).
+ *
+ * Callers only refuse rows through these actions (`findNoteHeldForRow`);
+ * they never reopen or settle them.
+ */
+export async function listUnnamedNoteBatchActions(params: {
+  batchId: string;
+  conversationKey: number;
+  /** When the batch was created. */
+  createdAt: number;
+  /** Actions the caller settles or reads already. */
+  exclude: ReadonlyArray<string | undefined>;
+}): Promise<JournalActionWithSteps[]> {
+  const candidates = (
+    await listJournalActions({
+      conversationKey: params.conversationKey,
+      toolName: "note_write_batch",
+      createdAtOrAfter: params.createdAt,
+      withUncertainStep: "create_note",
+      unbounded: true,
+    })
+  ).filter(
+    (action) =>
+      !params.exclude.includes(action.actionId) &&
+      action.steps.some((step) => {
+        if (!isOpenNoteStep(step)) return false;
+        const forward = parseForward(step);
+        return Boolean(forward && !recordsRow(forward));
+      }),
+  );
+  if (!candidates.length) return [];
+  const namedElsewhere = new Set<string>();
+  for (const job of await listConversationBatchJobs(
+    params.conversationKey,
+    "note_write_batch",
+  )) {
+    if (job.jobId === params.batchId) continue;
+    for (const row of await listBatchItems(job.jobId))
+      if (row.actionId) namedElsewhere.add(row.actionId);
+  }
+  return candidates.filter((action) => !namedElsewhere.has(action.actionId));
 }
 
 /**
@@ -248,22 +371,20 @@ export async function findNoteHeldForRow(
     const forward = parseForward(named);
     return {
       step: named,
-      reason: forward
-        ? heldNoteReason(noteAtReservedKey(forward))
-        : UNACCOUNTED_NOTE_REASON,
+      reason: forward ? heldNoteReason(forward) : UNACCOUNTED_NOTE_REASON,
     };
   }
   const matched = await findUncertainNoteStepForRow(steps, row);
   if (matched)
     return {
       step: matched.step,
-      reason: heldNoteReason(noteAtReservedKey(matched.forward)),
+      reason: heldNoteReason(matched.forward),
     };
   const unattributed = findUnattributedNoteStep(steps, row);
   return unattributed
     ? {
         step: unattributed.step,
-        reason: heldNoteReason(unattributed.note),
+        reason: heldNoteReason(unattributed.forward),
       }
     : undefined;
 }
