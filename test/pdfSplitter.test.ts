@@ -8,9 +8,7 @@ import {
 import {
   openPdfSplitter,
   PdfSplitterCancelledError,
-  readPdfOutlineInWorker,
 } from "../src/utils/pdfSplitter";
-import { createPdfWithOutline } from "./helpers/outlinePdfFixture";
 import {
   createPdfFixture,
   createPdfWithHiddenPageCount,
@@ -158,100 +156,4 @@ describe("bundled PDF splitter", function () {
       }
     });
   }
-});
-
-describe("bundled PDF bookmark reader", function () {
-  beforeEach(function () {
-    (globalThis as any).Zotero = {};
-    installPdfWorkerTestHost();
-  });
-  afterEach(async function () {
-    await closePdfWorkersForTests();
-    delete (globalThis as any).Zotero;
-  });
-
-  it("reads nested bookmarks with pages, depths, tops and named destinations", async function () {
-    const bytes = await createPdfWithOutline({
-      pages: [["Preface"], ["Chapter 1"], ["more"], ["Chapter 2"]],
-      outline: [
-        { title: "Preface", page: 0 },
-        {
-          title: "  Chapter 1  Basics ",
-          page: 1,
-          top: 560,
-          children: [{ title: "1.1 Start", page: 2, top: 300, named: true }],
-        },
-        { title: "Chapter 2", page: 3, top: 560, named: true },
-      ],
-    });
-    const result = await readPdfOutlineInWorker(bytes);
-    assert.deepEqual(result, {
-      status: "ok",
-      pageCount: 4,
-      entries: [
-        { depth: 0, title: "Preface", pageIndex: 0, top: null, fitsPage: true },
-        {
-          depth: 0,
-          title: "Chapter 1 Basics",
-          pageIndex: 1,
-          top: 560,
-          fitsPage: false,
-        },
-        {
-          depth: 1,
-          title: "1.1 Start",
-          pageIndex: 2,
-          top: 300,
-          fitsPage: false,
-        },
-        {
-          depth: 0,
-          title: "Chapter 2",
-          pageIndex: 3,
-          top: 560,
-          fitsPage: false,
-        },
-      ],
-    });
-  });
-
-  it("keeps bookmark titles in any script unchanged", async function () {
-    const titles = [
-      "第3章 研究方法",
-      "第三章 结果与讨论",
-      "Глава 2 Обзор литературы",
-      "Kapitel 4 Ergebnisse und Diskussion",
-      "الفصل 5 الخلاصة",
-    ];
-    const bytes = await createPdfWithOutline({
-      pages: titles.map(() => ["page"]).concat([["page"]]),
-      outline: [
-        ...titles.map((title, page) => ({ title, page, top: 560 })),
-        { title: "Kapitel 6 Überblick", page: 5, top: 560, literal: true },
-      ],
-    });
-    const result = await readPdfOutlineInWorker(bytes);
-    assert.equal(result.status, "ok");
-    assert.deepEqual(
-      result.status === "ok" ? result.entries.map((entry) => entry.title) : [],
-      [...titles, "Kapitel 6 Überblick"],
-    );
-  });
-
-  it("answers an empty list for a PDF without bookmarks", async function () {
-    const result = await readPdfOutlineInWorker(createPdfFixture(3));
-    assert.deepEqual(result, { status: "ok", pageCount: 3, entries: [] });
-  });
-
-  it("answers encrypted for an encrypted PDF", async function () {
-    const result = await readPdfOutlineInWorker(createEncryptedPdfFixture());
-    assert.deepEqual(result, { status: "encrypted" });
-  });
-
-  it("rejects bytes that are not a PDF", async function () {
-    const error = await rejected(
-      readPdfOutlineInWorker(new TextEncoder().encode("not a pdf")),
-    );
-    assert.match(error.message, /bookmarks/);
-  });
 });

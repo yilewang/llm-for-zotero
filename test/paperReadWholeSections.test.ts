@@ -535,7 +535,7 @@ describe("paper_read whole sections", function () {
     assert.equal(ruleCount(found), 0);
   });
 
-  it("ignores an explicit maxChars and cuts only at the adaptive reading budget", async function () {
+  it("caps an explicit maxChars at the adaptive reading budget", async function () {
     const tool = makeTool({
       abstractNotes: {
         10: "The Zotero record's own abstract says that drift leaves decoding intact.",
@@ -596,38 +596,16 @@ describe("paper_read whole sections", function () {
     assert.equal(rowOf(output, 20).status, "complete");
   });
 
-  it("reads named sections whole when the model gives a small maxChars", async function () {
+  it("marks a section the read budget cut as partial, with what was cut, and records only whole sections at section depth", async function () {
     const tool = makeTool({});
-    const { output } = await read(tool, {
+    const { output, input } = await read(tool, {
       mode: "targeted",
       sections: ["abstract", "results"],
       targets: [{ itemId: 10 }],
+      // The abstract (about 90 characters with its heading) fits; the
+      // results (about 190) do not.
       maxChars: 160,
     });
-    const row = rowOf(output, 10);
-    assert.equal(row.status, "complete");
-    assert.isTrue(row.sections.every((entry) => entry.complete));
-  });
-
-  it("marks a section the read budget cut as partial, with what was cut, and records only whole sections at section depth", async function () {
-    const tool = makeTool({});
-    const { output, input } = await read(
-      tool,
-      {
-        mode: "targeted",
-        sections: ["abstract", "results"],
-        targets: [{ itemId: 10 }],
-      },
-      {
-        // The abstract (about 90 characters with its heading) fits the
-        // about 160 characters of the budget; the results (about 190) do not.
-        runtimeContextBudget: {
-          contextWindowTokens: 1_000_000,
-          usedContextTokens: 0,
-          maxTokensPerPaper: 40,
-        },
-      },
-    );
     const row = rowOf(output, 10);
     assert.equal(row.status, "partial");
     const [abstract, results] = row.sections;

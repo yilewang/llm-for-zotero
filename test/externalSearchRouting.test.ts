@@ -335,10 +335,5 @@ describe("external search guidance routing", function () {
       modelDescriptions.get("paper_read") || "",
       /^Read or search the turn's papers; mode:targeted with query finds passages\./,
     );
-    // Query reads search the paper's own text, so queries follow its language.
-    assert.include(
-      modelDescriptions.get("paper_read") || "",
-      "Write query and queryVariants in the paper's language",
-    );
   });
 });

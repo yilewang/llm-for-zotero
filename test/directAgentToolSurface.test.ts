@@ -129,16 +129,10 @@ describe("direct Agent model tool surface", function () {
     // Raised on 2026-10-31 by 116 characters: library_update's item-type
     // route (kind:'metadata' with itemId and itemType, not inside
     // metadata): 31,003 and 42,527.
-    // Raised on 2026-11-05 by 57 characters: paper_read's sectionId (one
-    // level of the section tree) and whole (a part read with its sections):
-    // 31,060 and 42,584.
-    // Raised on 2026-11-05 by 217 characters: paper_read's description says
-    // query reads are written in the paper's language, with variants:
-    // 31,277 and 42,801.
-    assert.isAtMost(serializedToolCharacters, 31_277);
+    assert.isAtMost(serializedToolCharacters, 31_003);
     assert.isAtMost(
       rendered.inventory.fixedPrompt.length + serializedToolCharacters,
-      42_801,
+      42_527,
     );
     assert.includeMembers(
       tools.map((tool) => tool.name),
