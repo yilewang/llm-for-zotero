@@ -98,6 +98,15 @@ describe("providerPresets", function () {
       detectProviderPreset("https://api.siliconflow.com/v1"),
       "siliconflow",
     );
+    assert.equal(detectProviderPreset("https://llmtr.com/v1"), "llmtr");
+    assert.equal(
+      detectProviderPreset("https://llmtr.com/v1/chat/completions"),
+      "llmtr",
+    );
+    assert.equal(
+      detectProviderPreset("https://llmtr.com/v1/messages"),
+      "llmtr",
+    );
   });
 
   it("falls back to customized for unknown URLs", function () {
@@ -145,6 +154,10 @@ describe("providerPresets", function () {
     assert.equal(
       getProviderPreset("siliconflow").defaultApiBase,
       "https://api.siliconflow.cn/v1",
+    );
+    assert.equal(
+      getProviderPreset("llmtr").defaultApiBase,
+      "https://llmtr.com/v1",
     );
   });
 
@@ -196,6 +209,13 @@ describe("providerPresets", function () {
     assert.deepEqual(getProviderPreset("siliconflow").supportedProtocols, [
       "openai_chat_compat",
     ]);
+    assert.equal(
+      getProviderPreset("llmtr").defaultProtocol,
+      "openai_chat_compat",
+    );
+    assert.deepEqual(getProviderPreset("llmtr").supportedProtocols, [
+      "openai_chat_compat",
+    ]);
   });
 
   it("offers advanced protocol options beyond preset defaults", function () {
@@ -210,6 +230,11 @@ describe("providerPresets", function () {
       "anthropic_messages",
     ]);
     assert.deepEqual(getProviderPresetProtocolOptions("siliconflow"), [
+      "openai_chat_compat",
+      "responses_api",
+      "anthropic_messages",
+    ]);
+    assert.deepEqual(getProviderPresetProtocolOptions("llmtr"), [
       "openai_chat_compat",
       "responses_api",
       "anthropic_messages",
@@ -253,5 +278,9 @@ describe("providerPresets", function () {
     assert.isFalse(
       providerSupportsResponsesEndpoint("https://api.siliconflow.cn/v1"),
     );
+  });
+
+  it("does not advertise LLMTR as Responses-capable", function () {
+    assert.isFalse(providerSupportsResponsesEndpoint("https://llmtr.com/v1"));
   });
 });

@@ -8,6 +8,8 @@
  * - SiliconFlow `/v1/models?sub_type=chat` endpoint convention and chat-model
  *   filtering adapted from `siliconflow/dsh-llm-siliconflow`
  *   (MIT License, Copyright (c) 2026 SiliconFlow).
+ * - LLMTR publishes one `/v1/models` catalog. Chat rows are those whose
+ *   `supported_operations` include `CHAT_COMPLETIONS`.
  */
 
 import { detectProviderPreset } from "../utils/providerPresets";
@@ -35,6 +37,7 @@ export interface ModelDiscoveryAdapter {
 }
 
 const DEFAULT_SILICONFLOW_API_BASE = "https://api.siliconflow.cn/v1";
+const DEFAULT_LLMTR_API_BASE = "https://llmtr.com/v1";
 
 const NON_CHAT_MODEL_TYPES = new Set([
   "embedding",
@@ -89,7 +92,29 @@ export function isDiscoveredChatModel(
   if (NON_CHAT_MODEL_ID_PATTERN.test(id)) {
     return false;
   }
+  const chatOperation = rowListsChatOperation(row);
+  if (chatOperation === false) {
+    return false;
+  }
   return true;
+}
+
+/**
+ * `null` when the catalog row does not say which operations it supports.
+ * LLMTR lists `CHAT_COMPLETIONS` for chat models and omits it for embeddings,
+ * images, and responses-only rows.
+ */
+function rowListsChatOperation(row: Record<string, unknown>): boolean | null {
+  const raw = row.supported_operations ?? row.supportedOperations;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  return raw.some((entry) => {
+    if (typeof entry !== "string") return false;
+    const name = entry
+      .trim()
+      .toLowerCase()
+      .replace(/[\s.-]+/g, "_");
+    return name === "chat_completions" || name === "chat";
+  });
 }
 
 /**
@@ -145,6 +170,50 @@ export class SiliconFlowModelDiscoveryAdapter implements ModelDiscoveryAdapter {
     if (!url.searchParams.has("sub_type") && !url.searchParams.has("type")) {
       url.searchParams.set("sub_type", "chat");
     }
+    return url.toString();
+  }
+
+  filterAndSortModels(models: DiscoveredModel[]): DiscoveredModel[] {
+    const filtered = models.filter((model) => {
+      const id = typeof model.id === "string" ? model.id.trim() : "";
+      return Boolean(id) && isDiscoveredChatModel({}, id);
+    });
+    return deduplicateAndSortDiscoveredModels(filtered);
+  }
+}
+
+export class LlmtrModelDiscoveryAdapter implements ModelDiscoveryAdapter {
+  readonly providerId = "llmtr";
+
+  matches(identity: { provider?: string; apiBase?: string }): boolean {
+    if (identity.provider?.trim().toLowerCase() === "llmtr") {
+      return true;
+    }
+    return detectProviderPreset(identity.apiBase || "") === "llmtr";
+  }
+
+  buildEndpoint(apiBase: string): string {
+    const rawBase = apiBase.trim() || DEFAULT_LLMTR_API_BASE;
+    const url = new URL(rawBase);
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error(`Unsupported protocol: ${url.protocol}`);
+    }
+    let path = url.pathname.replace(/\/+$/, "");
+    if (!path) {
+      path = "/v1";
+    }
+    if (!path.endsWith("/models")) {
+      const marker = [
+        "/chat/completions",
+        "/responses",
+        "/embeddings",
+        "/messages",
+      ].find((suffix) => path.endsWith(suffix));
+      const basePath = marker ? path.slice(0, -marker.length) : path;
+      path = `${basePath || "/v1"}/models`;
+    }
+    url.pathname = path.replace(/\/\/+/g, "/");
+    url.search = "";
     return url.toString();
   }
 
@@ -216,5 +285,5 @@ export function classifyModelDiscoveryHttpError(status: number): {
   };
 }
 
-// Phase 1 registration: SiliconFlow only.
 registerModelDiscoveryAdapter(new SiliconFlowModelDiscoveryAdapter());
+registerModelDiscoveryAdapter(new LlmtrModelDiscoveryAdapter());

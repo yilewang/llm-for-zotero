@@ -18,6 +18,7 @@ export type ModelCapabilityProvider =
   | "kimi"
   | "mimo"
   | "siliconflow"
+  | "llmtr"
   | "copilot"
   /**
    * A model served by a local runtime whose name matches no hosted family.

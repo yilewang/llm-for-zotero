@@ -1482,4 +1482,102 @@ describe("llmClient prepareChatRequest", function () {
     }
     assert.isTrue(aborted, "aborted signal cancels the request");
   });
+
+  it("executes LLMTR chat, PDF context Q&A, multi-turn streaming, and cancellation via openai_chat_compat", async function () {
+    let lastUrl = "";
+    let lastHeaders: Record<string, string> = {};
+    let lastBody: Record<string, unknown> = {};
+
+    mockFetch(async (url, init) => {
+      lastUrl = url;
+      lastHeaders = (init?.headers as Record<string, string>) || {};
+      lastBody = JSON.parse(String(init?.body || "{}")) as Record<
+        string,
+        unknown
+      >;
+      if (init?.signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+      if (lastBody.stream) {
+        return {
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          body: makeSseStream([
+            'data: {"choices":[{"delta":{"content":"LLM"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"TR"},"finish_reason":"stop"}]}\n\n',
+            "data: [DONE]\n\n",
+          ]),
+          json: async () => ({}),
+          text: async () => "",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          choices: [
+            {
+              message: { content: "Answer from LLMTR" },
+              finish_reason: "stop",
+            },
+          ],
+        }),
+        text: async () => "",
+      };
+    });
+
+    const nonStream = await callLLM({
+      prompt: "Explain this paragraph.",
+      context: "Selected PDF text about transformer attention.",
+      model: "qwen/qwen3.8-27b-free",
+      apiBase: "https://llmtr.com/v1",
+      apiKey: "llmtr-test-key",
+      providerProtocol: "openai_chat_compat",
+    });
+    assert.equal(lastUrl, "https://llmtr.com/v1/chat/completions");
+    assert.equal(lastHeaders.Authorization, "Bearer llmtr-test-key");
+    assert.equal(lastBody.model, "qwen/qwen3.8-27b-free");
+    assert.notProperty(lastBody, "reasoning");
+    assert.equal(nonStream.text, "Answer from LLMTR");
+
+    const deltas: string[] = [];
+    const streamed = await callLLMStream(
+      {
+        prompt: "Follow-up question",
+        history: [
+          { role: "user", content: "First question" },
+          { role: "assistant", content: "First answer" },
+        ],
+        model: "llmtr/qwen3-8-27b",
+        apiBase: "https://llmtr.com/v1",
+        apiKey: "llmtr-test-key",
+        providerProtocol: "openai_chat_compat",
+      },
+      (delta) => deltas.push(delta),
+    );
+    assert.equal(lastUrl, "https://llmtr.com/v1/chat/completions");
+    assert.equal(lastBody.model, "llmtr/qwen3-8-27b");
+    assert.notProperty(lastBody, "reasoning");
+    assert.deepEqual(deltas, ["LLM", "TR"]);
+    assert.equal(streamed.text, "LLMTR");
+
+    const abortController = new AbortController();
+    abortController.abort();
+    let aborted = false;
+    try {
+      await callLLM({
+        prompt: "Should abort",
+        model: "qwen/qwen3.8-27b-free",
+        apiBase: "https://llmtr.com/v1",
+        apiKey: "llmtr-test-key",
+        providerProtocol: "openai_chat_compat",
+        signal: abortController.signal,
+      });
+    } catch {
+      aborted = true;
+    }
+    assert.isTrue(aborted, "aborted signal cancels the request");
+  });
 });
