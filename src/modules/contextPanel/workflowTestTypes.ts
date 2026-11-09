@@ -481,6 +481,8 @@ export type WorkflowTestReaderInlineAskTextSize = {
   moreMenuShown: boolean;
   /** The percentage shown in the menu ("" when it is closed). */
   menuPercent: string;
+  /** Each A glyph's center minus its button's center, in pixels. */
+  glyphOffsets: Array<{ step: "smaller" | "larger"; dx: number; dy: number }>;
 };
 
 /** The card's right-click menu on a pill or the empty pill row. */

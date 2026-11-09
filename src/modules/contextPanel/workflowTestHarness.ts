@@ -8446,12 +8446,29 @@ async function clickReaderInlineAskTextSize(
   target.click();
   await Zotero.Promise.delay(50);
   const menu = card.querySelector('[data-llm-inline-ask-more-menu="true"]');
+  // How far each A glyph's box sits from its button's center, in pixels.
+  const glyphOffsets = (["smaller", "larger"] as const).map((name) => {
+    const button = menu?.querySelector(
+      `[data-llm-inline-ask-text-size-step="${name}"]`,
+    );
+    if (!button) return { step: name, dx: NaN, dy: NaN };
+    const range = state.popupDoc.createRange();
+    range.selectNodeContents(button);
+    const glyph = range.getBoundingClientRect();
+    const box = button.getBoundingClientRect();
+    return {
+      step: name,
+      dx: glyph.left + glyph.width / 2 - (box.left + box.width / 2),
+      dy: glyph.top + glyph.height / 2 - (box.top + box.height / 2),
+    };
+  });
   return {
     card: readWorkflowInlineAskCard(state.popupDoc),
     moreMenuShown: Boolean(menu),
     menuPercent:
       menu?.querySelector('[data-llm-inline-ask-text-size-value="true"]')
         ?.textContent || "",
+    glyphOffsets,
   };
 }
 
