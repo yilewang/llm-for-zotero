@@ -74,6 +74,8 @@ export type ReservedNoteState =
   | { state: "absent"; note: null }
   | { state: "live" | "trashed" | "moved"; note: Zotero.Item };
 
+// Keep in step with `readReservedNote` below: the two read the same native
+// states (absent, trashed, moved, live), so a change to one changes both.
 export function reservedNoteState(
   forward: CreateNoteForward,
 ): ReservedNoteState {
@@ -299,6 +301,10 @@ export function oldNoteStepsWithNothingAtKey(
  * record its row, is such a candidate, unless a row of another note batch
  * in this conversation names it (then it is that batch's).
  *
+ * A step with nothing at its key holds no note (its creation never landed,
+ * or its note was erased), and no live run can hold a pre-upgrade action, so
+ * such a step is left out; refusing a row for it would never end.
+ *
  * Callers only refuse rows through these actions (`findNoteHeldForRow`);
  * they never reopen or settle them.
  */
@@ -324,7 +330,9 @@ export async function listUnnamedNoteBatchActions(params: {
       action.steps.some((step) => {
         if (!isOpenNoteStep(step)) return false;
         const forward = parseForward(step);
-        return Boolean(forward && !recordsRow(forward));
+        return Boolean(
+          forward && !recordsRow(forward) && noteAtReservedKey(forward),
+        );
       }),
   );
   if (!candidates.length) return [];
@@ -337,7 +345,15 @@ export async function listUnnamedNoteBatchActions(params: {
     for (const row of await listBatchItems(job.jobId))
       if (row.actionId) namedElsewhere.add(row.actionId);
   }
-  return candidates.filter((action) => !namedElsewhere.has(action.actionId));
+  const unlanded = new Set(
+    oldNoteStepsWithNothingAtKey(candidates.flatMap((action) => action.steps)),
+  );
+  return candidates
+    .filter((action) => !namedElsewhere.has(action.actionId))
+    .map((action) => ({
+      ...action,
+      steps: action.steps.filter((step) => !unlanded.has(step)),
+    }));
 }
 
 /**
@@ -384,7 +400,7 @@ export async function findNoteHeldForRow(
   return unattributed
     ? {
         step: unattributed.step,
-        reason: heldNoteReason(unattributed.forward),
+        reason: untiedNoteReason(unattributed.note),
       }
     : undefined;
 }
@@ -402,6 +418,8 @@ export const RESERVED_NOTE_MISMATCH =
  * was then removed, moved or replaced, and no replacement may be written for
  * it. A note moved to another parent, or out of a collection it was filed
  * into, was moved by the user and is left where it is.
+ *
+ * Keep in step with `reservedNoteState` above, which reads the same states.
  */
 export function readReservedNote(params: {
   libraryID: number;

@@ -13,7 +13,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 const quit = process.argv.includes("--quit");
 // --first ends the first Zotero while its first note is written, before any
 // row of the batch names a written note.
-const first = process.argv.includes("--first");
+const first =
+  process.argv.includes("--first") ||
+  process.argv.includes("--legacy-first-unlanded");
 // --absent erases and --changed trashes the note the first Zotero was writing
 // when it ended, before "continue"; --undo undoes the batch's action after
 // it finishes. Each runs on the killed-process data.
@@ -43,7 +45,8 @@ const standaloneMoved = process.argv.includes("--standalone-moved");
 // erased. --legacy --first ends the first Zotero during its first note, so
 // no row names any action; --legacy-unnamed-action undoes the first
 // attempt and leaves the note in flight under a second action that no row
-// names, as a pre-upgrade "continue" left it. --legacy-standalone-edited
+// names, as a pre-upgrade "continue" left it. --legacy-first-unlanded is
+// --legacy --first with the first note erased, so it never landed. --legacy-standalone-edited
 // then erases the note and continues a second time.
 const legacyStandaloneEdited = process.argv.includes(
   "--legacy-standalone-edited",
@@ -53,8 +56,10 @@ const legacyStandalone =
 const legacyTwice = process.argv.includes("--legacy-twice");
 const legacyUndoFirst = process.argv.includes("--legacy-undo-first");
 const legacyUnnamedAction = process.argv.includes("--legacy-unnamed-action");
+const legacyFirstUnlanded = process.argv.includes("--legacy-first-unlanded");
 const legacy =
   process.argv.includes("--legacy") ||
+  legacyFirstUnlanded ||
   legacyStandalone ||
   legacyTwice ||
   legacyUndoFirst ||
@@ -129,11 +134,13 @@ await phase("resume", {
             ? "legacy-twice"
             : legacyUndoFirst
               ? "legacy-undo-first"
-              : legacyUnnamedAction
-                ? "legacy-unnamed-action"
-                : first
-                  ? "legacy-first"
-                  : "legacy",
+              : legacyFirstUnlanded
+                ? "legacy-first-unlanded"
+                : legacyUnnamedAction
+                  ? "legacy-unnamed-action"
+                  : first
+                    ? "legacy-first"
+                    : "legacy",
       }
     : {}),
   ...(undo ? { NOTE_BATCH_RESTART_UNDO: "1" } : {}),
@@ -149,11 +156,13 @@ const tail = legacy
             ? " with two notes on each paper, one erased"
             : legacyUndoFirst
               ? ", undone before it continued"
-              : legacyUnnamedAction
-                ? ", undone, with the note in flight under an action no row names"
-                : first
-                  ? ", ended during its first note"
-                  : ""
+              : legacyFirstUnlanded
+                ? ", ended before its first note landed"
+                : legacyUnnamedAction
+                  ? ", undone, with the note in flight under an action no row names"
+                  : first
+                    ? ", ended during its first note"
+                    : ""
     }`
   : standaloneMoved
     ? " of standalone notes, with the in-flight note moved out of its folder"

@@ -34,6 +34,10 @@
  *   no action) of a child batch.
  * - `--legacy --first`: pre-upgrade data killed during the first note, so
  *   no row names any action.
+ * - `--legacy-first-unlanded`: the same, but the first note never landed
+ *   (erased before "continue"), so an old step holds nothing at its key;
+ *   row 1 is written once, none is refused, and a second continue changes
+ *   nothing.
  * - `--legacy-standalone`: pre-upgrade data of standalone notes.
  * - `--legacy-standalone-edited`: the same with a cited paper edited, so
  *   the old step matches no row; then the note is erased and a second
@@ -97,6 +101,7 @@ const TAMPER_MODES = [
   "legacy-twice",
   "legacy-undo-first",
   "legacy-first",
+  "legacy-first-unlanded",
   "legacy-unnamed-action",
 ] as const;
 type TamperMode = "" | (typeof TAMPER_MODES)[number];
@@ -1456,6 +1461,17 @@ describe("workflow: note batch across a Zotero restart", function () {
           before.every((row) => row.actionId === null),
           JSON.stringify(before),
         );
+      } else if (mode === "legacy-first-unlanded") {
+        // The process ended before the first note's save committed: the
+        // step is open and nothing is at its key. Erasing the note leaves
+        // the same state.
+        assert.equal(record.killAfterNotes, 1);
+        assert.isTrue(
+          before.every((row) => row.actionId === null),
+          JSON.stringify(before),
+        );
+        await Zotero.Items.get(reserved.id).eraseTx();
+        assert.isNotOk(Zotero.Items.getByLibraryAndKey(libraryID, open.key));
       } else if (mode === "legacy-unnamed-action") {
         // The first attempt (action X) saved its rows and is undone. A
         // pre-upgrade "continue" then wrote under a second action Y and
@@ -1510,6 +1526,36 @@ describe("workflow: note batch across a Zotero restart", function () {
       const rowText = JSON.stringify(rows);
       const step = await stepOf();
 
+      if (mode === "legacy-first-unlanded") {
+        // Nothing is at the step's key, so it holds no row: row 1 is
+        // written once, no row is refused, and a second continue changes
+        // nothing.
+        assert.isTrue(
+          rows.every((row) => row.status === "saved"),
+          `no row is refused: ${rowText}; ${report}`,
+        );
+        const noteIds = rows.map((row) => row.noteId);
+        assert.lengthOf(new Set(noteIds), ids.length, rowText);
+        for (const id of ids)
+          assert.lengthOf(
+            Zotero.Items.get(id).getNotes(true),
+            1,
+            `paper ${id}, trashed notes included: ${report}`,
+          );
+        assert.lengthOf(liveNotesOf(paper), 1, report);
+        const notesNow = () =>
+          ids.map((id) => Zotero.Items.get(id).getNotes(true).join(","));
+        const settled = JSON.stringify([await rowsOf(batchId), notesNow()]);
+        const second = await resumeFromPanel(record, panel.panelId);
+        const secondReport = JSON.stringify(second);
+        assert.equal(
+          JSON.stringify([await rowsOf(batchId), notesNow()]),
+          settled,
+          secondReport,
+        );
+        return;
+      }
+
       if (
         mode === "legacy-edited" ||
         mode === "legacy-undo-first" ||
@@ -1534,7 +1580,9 @@ describe("workflow: note batch across a Zotero restart", function () {
         if (mode !== "legacy-edited") {
           // Only the paper in flight is refused; it keeps its one note.
           assert.lengthOf(unsaved, 1, rowText);
-          assert.include(report, heldNoteReason(reserved.id), report);
+          // The old step matched no row by body, so the refusal says the
+          // note cannot be tied to one row, and how to end the refusal.
+          assert.include(report, untiedNoteReason(reserved.id), report);
           // One note on every paper, trashed notes included: the paper in
           // flight has only the reserved note, and no paper has a copy.
           for (const id of ids)
