@@ -1,13 +1,15 @@
 import {
   createdNoteOutcome,
   executeNoteCreation,
+  findUncertainNoteStepForRow,
   readReservedNote,
   RESERVED_NOTE_MISMATCH,
+  UNACCOUNTED_NOTE_REASON,
 } from "../noteCreation";
 import { MutationNoEffectError } from "../externalMutationCoordinator";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import { verifyNativeNoteHtml } from "../../../services/notePersistence";
-import { canonicalNoteHtml, noteHtmlMatches } from "../../../utils/noteHtml";
+import { canonicalNoteHtml } from "../../../utils/noteHtml";
 import {
   readRecoveryText,
   sha256Text,
@@ -18,7 +20,6 @@ import {
   listJournalSteps,
   registerJournalRecoveryPayloads,
   updateJournalStep,
-  type JournalStep,
 } from "../../store/changeJournal";
 import { executePreparedNoteChange } from "../../tools/write/preparedNoteChange";
 import type { AgentJournalActionScope, AgentToolContext } from "../../types";
@@ -178,19 +179,6 @@ type InterruptedCreation =
       journalStep: { actionId: string; sequence: number };
     };
 
-type CreateNoteForward = {
-  key?: unknown;
-  libraryID?: unknown;
-  parentItemId?: unknown;
-  collections?: unknown;
-  html?: unknown;
-};
-
-function sameCollections(left: unknown, right: readonly number[]): boolean {
-  const ids = Array.isArray(left) ? left.map(Number) : [];
-  return ids.length === right.length && ids.every((id) => right.includes(id));
-}
-
 /**
  * Settle, from native Zotero state, the note creations an interrupted
  * attempt of this batch left `uncertain`, before any note is written again.
@@ -214,6 +202,8 @@ async function settleInterruptedNoteCreations(params: {
   operation: SaveNotesBatchOperation;
   binding: AgentBatchBinding;
   priorRows: ReadonlyMap<string, BatchItemRecord>;
+  /** Rows refused before settling; their steps are not this action's. */
+  refused: ReadonlyMap<string, unknown>;
   scope: AgentJournalActionScope;
   libraryIdOf: (targetItemId: number) => number | undefined;
 }): Promise<Map<string, InterruptedCreation>> {
@@ -227,56 +217,27 @@ async function settleInterruptedNoteCreations(params: {
   for (const [index, entry] of operation.notes.entries()) {
     if (!open.length) break;
     const bound = binding.items[index];
-    if (!bound || params.priorRows.get(bound.itemKey)?.status === "saved")
+    if (
+      !bound ||
+      params.priorRows.get(bound.itemKey)?.status === "saved" ||
+      params.refused.has(bound.itemKey)
+    )
       continue;
     const libraryID = params.libraryIdOf(entry.targetItemId);
     if (libraryID === undefined) continue;
     const collections = standalone ? entry.collections || [] : [];
-    // Only a standalone note needs the rebuilt body, to tell which row a step
-    // belongs to; a child note is told apart by its parent.
-    let rebuilt: string | undefined;
-    if (standalone) {
-      try {
-        rebuilt = await noteHtmlForBatchItem({
-          bound,
-          content: entry.content,
-          libraryID,
-        });
-      } catch {
-        // The row cannot be written either; the write loop reports why.
-        continue;
-      }
-    }
-    const findMatch = async () => {
-      for (const step of open) {
-        let forward: CreateNoteForward;
-        try {
-          forward = JSON.parse(step.forwardJson) as CreateNoteForward;
-        } catch {
-          continue;
-        }
-        if (!forward || typeof forward.key !== "string") continue;
-        if (!standalone) {
-          if (forward.parentItemId === entry.targetItemId)
-            return { step, forward };
-          continue;
-        }
-        // A standalone note names no paper: its step belongs to this row when
-        // it was filed into the same collections with the same intended body.
-        if (forward.parentItemId !== undefined && forward.parentItemId !== null)
-          continue;
-        if (!sameCollections(forward.collections, collections)) continue;
-        let intended: string;
-        try {
-          intended = await readRecoveryText(forward.html as RecoveryPayload);
-        } catch {
-          continue;
-        }
-        if (noteHtmlMatches(intended, rebuilt as string))
-          return { step, forward };
-      }
-      return undefined;
-    };
+    const findMatch = () =>
+      findUncertainNoteStepForRow(open, {
+        batchId: binding.batchId,
+        itemKey: bound.itemKey,
+        targetItemId: entry.targetItemId,
+        standalone,
+        collections,
+        // Only an older standalone step, which does not record its row,
+        // needs the rebuilt body to tell which row it belongs to.
+        rebuiltHtml: () =>
+          noteHtmlForBatchItem({ bound, content: entry.content, libraryID }),
+      });
     // A row may have more than one open step (older data): a step whose note
     // never landed says nothing about the others, so matching goes on.
     for (;;) {
@@ -385,6 +346,91 @@ async function settleInterruptedNoteCreations(params: {
   return settled;
 }
 
+/** A row refused because another action holds its reserved note. */
+type RefusedRow = {
+  reason: string;
+  journalStep: { actionId: string; sequence: number };
+};
+
+/**
+ * The rows whose note an action other than this one reserved and left
+ * `uncertain`.
+ *
+ * A resume prepares against the action the rows name, but reopens it only at
+ * execution. When that action can no longer be reopened by then (an undo
+ * ended it while the confirmation card was open), this call writes under a
+ * new action, and the settler, which reads only this action's steps, would
+ * not see the note the earlier attempt left. Writing the row would put a
+ * second note beside it. Such a row is refused with the reason the resume's
+ * preparation gives for the same case; the other action's step is never
+ * settled from here, because this call does not hold that action.
+ *
+ * The candidate actions are the ones the rows named before this call linked
+ * them to its own action.
+ */
+async function refuseRowsHeldElsewhere(params: {
+  operation: SaveNotesBatchOperation;
+  binding: AgentBatchBinding;
+  priorRows: ReadonlyMap<string, BatchItemRecord>;
+  scope: AgentJournalActionScope;
+  libraryIdOf: (targetItemId: number) => number | undefined;
+}): Promise<Map<string, RefusedRow>> {
+  const { operation, binding, priorRows, scope } = params;
+  const refused = new Map<string, RefusedRow>();
+  const others = [
+    ...new Set(
+      [...priorRows.values()].flatMap((row) =>
+        row.status !== "saved" &&
+        row.actionId &&
+        row.actionId !== scope.actionId
+          ? [row.actionId]
+          : [],
+      ),
+    ),
+  ];
+  if (!others.length) return refused;
+  const steps = (
+    await Promise.all(others.map((actionId) => listJournalSteps(actionId)))
+  ).flat();
+  if (
+    !steps.some(
+      (step) => step.operation === "create_note" && step.status === "uncertain",
+    )
+  )
+    return refused;
+  const standalone = operation.target === "standalone";
+  for (const [index, entry] of operation.notes.entries()) {
+    const bound = binding.items[index];
+    if (!bound || priorRows.get(bound.itemKey)?.status === "saved") continue;
+    const libraryID = params.libraryIdOf(entry.targetItemId);
+    const match = await findUncertainNoteStepForRow(steps, {
+      batchId: binding.batchId,
+      itemKey: bound.itemKey,
+      targetItemId: entry.targetItemId,
+      standalone,
+      collections: standalone ? entry.collections || [] : [],
+      rebuiltHtml:
+        libraryID === undefined
+          ? undefined
+          : () =>
+              noteHtmlForBatchItem({
+                bound,
+                content: entry.content,
+                libraryID,
+              }),
+    });
+    if (match)
+      refused.set(bound.itemKey, {
+        reason: UNACCOUNTED_NOTE_REASON,
+        journalStep: {
+          actionId: match.step.actionId,
+          sequence: match.step.sequence,
+        },
+      });
+  }
+  return refused;
+}
+
 type DomainOperation =
   | "save_notes_batch"
   | "create_items"
@@ -425,12 +471,29 @@ export const noteLifecycleExecutors = {
       (row) => row.status === "saved",
     ).length;
     const scope = context.journalActionScope;
+    // Rows whose note an earlier action reserved, when that action is not
+    // the one this call writes under (an undo ended it after the resume was
+    // prepared, say). Read before the rows are linked to this action below.
+    const refused =
+      binding && scope && operation.mode !== "append"
+        ? await refuseRowsHeldElsewhere({
+            operation,
+            binding,
+            priorRows,
+            scope,
+            libraryIdOf: (targetItemId) =>
+              zoteroGateway.getItem(targetItemId)?.libraryID,
+          })
+        : new Map<string, RefusedRow>();
     // Every row this call may write names the action before the first note
-    // starts, so a resume after a crash during that note finds its step.
+    // starts, so a resume after a crash during that note finds its step. A
+    // refused row keeps pointing at the step that holds its note.
     if (binding && scope)
       await linkBatchItemsToAction(
         binding.batchId,
-        binding.items.map((item) => item.itemKey),
+        binding.items
+          .map((item) => item.itemKey)
+          .filter((itemKey) => !refused.has(itemKey)),
         scope.actionId,
       );
     const interrupted =
@@ -439,6 +502,7 @@ export const noteLifecycleExecutors = {
             operation,
             binding,
             priorRows,
+            refused,
             scope,
             libraryIdOf: (targetItemId) =>
               zoteroGateway.getItem(targetItemId)?.libraryID,
@@ -452,6 +516,10 @@ export const noteLifecycleExecutors = {
       itemKey?: string;
       position: number;
       journalStep?: { actionId: string; sequence: number };
+      // The action a failure belongs to when no step sequence is known.
+      actionId?: string;
+      // Keeps a row's own update time, so a refusal cannot become the newest.
+      keepUpdatedAt?: number;
       noteId?: number;
       error?: string;
       alreadySaved?: boolean;
@@ -471,10 +539,10 @@ export const noteLifecycleExecutors = {
         });
       } else {
         await markBatchItemFailed(batchId, params.itemKey, {
-          actionId: params.journalStep?.actionId,
+          actionId: params.journalStep?.actionId ?? params.actionId,
           stepSequence: params.journalStep?.sequence,
           error: params.error || "The note was not written",
-          now,
+          now: params.keepUpdatedAt ?? now,
         });
       }
       await advanceBatchJob({
@@ -517,6 +585,27 @@ export const noteLifecycleExecutors = {
           itemKey: bound?.itemKey,
           position,
           alreadySaved: true,
+        });
+        continue;
+      }
+      const held = bound ? refused.get(bound.itemKey) : undefined;
+      if (held) {
+        // No status change on the other action's step: only the action that
+        // holds a step may settle it. The row points at that step, so every
+        // later resume refuses it too.
+        rows.push({
+          targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
+          title,
+          status: "error",
+          reason: held.reason,
+        });
+        await recordProgress({
+          itemKey: bound?.itemKey,
+          position,
+          journalStep: held.journalStep,
+          keepUpdatedAt: prior?.updatedAt,
+          error: held.reason,
         });
         continue;
       }
@@ -626,6 +715,14 @@ export const noteLifecycleExecutors = {
             operation.target === "standalone" ? undefined : target.id,
           collections:
             operation.target === "standalone" ? entry.collections : undefined,
+          ...(binding && bound
+            ? {
+                batchItem: {
+                  batchId: binding.batchId,
+                  itemKey: bound.itemKey,
+                },
+              }
+            : {}),
           html: await noteHtmlForBatchItem({
             bound,
             content: entry.content,
@@ -681,6 +778,7 @@ export const noteLifecycleExecutors = {
         await recordProgress({
           itemKey: bound?.itemKey,
           position,
+          actionId: scope?.actionId,
           error: reason,
         });
       }

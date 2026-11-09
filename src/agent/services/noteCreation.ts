@@ -5,7 +5,7 @@ import {
   type FinalizedNoteBuildContext,
   type FinalizedNoteBuildResult,
 } from "../../services/notePersistence";
-import { canonicalNoteHtml } from "../../utils/noteHtml";
+import { canonicalNoteHtml, noteHtmlMatches } from "../../utils/noteHtml";
 import {
   executeExternalMutation,
   MutationNoEffectError,
@@ -15,11 +15,13 @@ import {
   isAgentChangeJournalAvailable,
   listJournalActions,
   updateJournalStep,
+  type JournalStep,
 } from "../store/changeJournal";
 import {
   readRecoveryText,
   sha256Text,
   storeRecoveryText,
+  type RecoveryPayload,
 } from "../store/journalRecoveryBlobStore";
 import type { AgentToolContext } from "../types";
 
@@ -35,12 +37,108 @@ type Creation = {
   libraryID: number;
   parentItemId?: number;
   collections?: number[];
+  /**
+   * The note batch row this creation writes, when a save_notes_batch action
+   * runs it. Recorded in the step so a resume can tell, after a crash, which
+   * row the reserved note belongs to without rebuilding its body.
+   */
+  batchItem?: BatchItemRef;
   html: string;
   finalize?: (
     context: FinalizedNoteBuildContext,
   ) => Promise<string | FinalizedNoteBuildResult>;
 };
 const pending = new Map<string, Promise<unknown>>();
+
+/** A row of a durable note batch: its batch and its item key. */
+export type BatchItemRef = { batchId: string; itemKey: string };
+
+/**
+ * Why a batch row is refused when a note an earlier attempt reserved for it
+ * is held by an action the current attempt cannot settle.
+ */
+export const UNACCOUNTED_NOTE_REASON =
+  "The state of the note an earlier attempt began for this item is unknown, so it was not rewritten";
+
+/** The forward payload a create_note step reserved. */
+export type CreateNoteForward = {
+  key?: unknown;
+  libraryID?: unknown;
+  parentItemId?: unknown;
+  collections?: unknown;
+  html?: unknown;
+  batchItem?: unknown;
+};
+
+function sameCollections(left: unknown, right: readonly number[]): boolean {
+  const ids = Array.isArray(left) ? left.map(Number) : [];
+  return ids.length === right.length && ids.every((id) => right.includes(id));
+}
+
+/**
+ * The first `uncertain` create_note step among `steps` that reserved the note
+ * of this batch row, with its forward payload.
+ *
+ * A step that records its row (`batchItem`) matches on that alone, so the
+ * match does not depend on the parent, the collections or the body. A step
+ * written before steps recorded their row is matched as before: a child note
+ * by its parent, a standalone note by its collections and its reserved body
+ * against `rebuiltHtml`. That body is rebuilt from current metadata, so an
+ * older standalone step can fail to match after a cited work changed; with
+ * no `rebuiltHtml`, no older standalone step matches.
+ *
+ * Shared by the resume's preparation, the executor's write-time refusal and
+ * the settler, so the three cannot disagree on which step is whose.
+ */
+export async function findUncertainNoteStepForRow(
+  steps: readonly JournalStep[],
+  row: {
+    batchId: string;
+    itemKey: string;
+    targetItemId: number;
+    standalone: boolean;
+    collections?: readonly number[];
+    rebuiltHtml?: () => Promise<string | undefined>;
+  },
+): Promise<{ step: JournalStep; forward: CreateNoteForward } | undefined> {
+  let rebuilt: Promise<string | undefined> | undefined;
+  for (const step of steps) {
+    if (step.operation !== "create_note" || step.status !== "uncertain")
+      continue;
+    let forward: CreateNoteForward;
+    try {
+      forward = JSON.parse(step.forwardJson) as CreateNoteForward;
+    } catch {
+      continue;
+    }
+    if (!forward || typeof forward.key !== "string") continue;
+    const recorded = forward.batchItem as Partial<BatchItemRef> | undefined;
+    if (recorded && typeof recorded === "object") {
+      if (recorded.batchId === row.batchId && recorded.itemKey === row.itemKey)
+        return { step, forward };
+      continue;
+    }
+    if (!row.standalone) {
+      if (forward.parentItemId === row.targetItemId) return { step, forward };
+      continue;
+    }
+    if (forward.parentItemId !== undefined && forward.parentItemId !== null)
+      continue;
+    if (!sameCollections(forward.collections, row.collections || [])) continue;
+    if (!row.rebuiltHtml) continue;
+    rebuilt ||= row.rebuiltHtml().catch(() => undefined);
+    const current = await rebuilt;
+    if (current === undefined) continue;
+    let intended: string;
+    try {
+      intended = await readRecoveryText(forward.html as RecoveryPayload);
+    } catch {
+      continue;
+    }
+    if (noteHtmlMatches(intended, current)) return { step, forward };
+  }
+  return undefined;
+}
 
 export const RESERVED_NOTE_MISMATCH =
   "The reserved note does not match the finalized content; no new note was created";
@@ -207,6 +305,7 @@ async function create(params: Creation, id?: string) {
     collections: params.collections || [],
     html: payload,
     finalized: !params.finalize,
+    ...(params.batchItem ? { batchItem: params.batchItem } : {}),
   };
   const reservedNote = readReservedNote({ libraryID, key, parentItemId });
   const note = reservedNote.note || new Zotero.Item("note");

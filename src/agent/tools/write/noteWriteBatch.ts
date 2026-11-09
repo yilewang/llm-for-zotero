@@ -49,6 +49,10 @@ import {
   listJournalActions,
   listJournalSteps,
 } from "../../store/changeJournal";
+import {
+  findUncertainNoteStepForRow,
+  UNACCOUNTED_NOTE_REASON,
+} from "../../services/noteCreation";
 import { describeLibraryMutationActions } from "../../contracts/actionOperationEvidence";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
@@ -714,26 +718,20 @@ export function createNoteWriteBatchTool(
             action.status,
           )
         ) {
-          const open = action.steps.find(
-            (step) =>
-              step.operation === "create_note" &&
-              step.status === "uncertain" &&
-              (() => {
-                try {
-                  return (
-                    JSON.parse(step.forwardJson).parentItemId ===
-                    descriptor.targetItemId
-                  );
-                } catch {
-                  return false;
-                }
-              })(),
-          );
+          // An older standalone step, which does not record its row, is not
+          // matched here: that needs the body rebuilt, and the executor
+          // refuses the row at write time instead.
+          const open = await findUncertainNoteStepForRow(action.steps, {
+            batchId,
+            itemKey: row.itemKey,
+            targetItemId: descriptor.targetItemId,
+            standalone: storedInput.target === "standalone",
+            collections: descriptor.collections || [],
+          });
           if (open) {
             resume.blocked.push({
               itemKey: row.itemKey,
-              reason:
-                "The state of the note an earlier attempt began for this item is unknown, so it was not rewritten",
+              reason: UNACCOUNTED_NOTE_REASON,
             });
             continue;
           }

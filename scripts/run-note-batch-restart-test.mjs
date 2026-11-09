@@ -22,6 +22,15 @@ const changed = process.argv.includes("--changed");
 const undo = process.argv.includes("--undo");
 // --undo-first undoes the interrupted batch before "continue".
 const undoFirst = process.argv.includes("--undo-first");
+// --undo-during-card continues in Safe mode and undoes the interrupted batch
+// while the confirmation card is pending.
+const undoDuringCard = process.argv.includes("--undo-during-card");
+// --standalone writes standalone notes that cite their papers, and edits
+// the in-flight note's cited paper before "continue";
+// --standalone-undo-first undoes that batch before "continue" instead.
+const standaloneUndoFirst = process.argv.includes("--standalone-undo-first");
+const standalone = process.argv.includes("--standalone") || standaloneUndoFirst;
+const target = standalone ? { NOTE_BATCH_RESTART_TARGET: "standalone" } : {};
 const file = "test-workflows/noteBatchRestart.workflow.test.ts";
 const snapshot = ".scaffold/note-batch-restart/data-snapshot";
 
@@ -59,7 +68,7 @@ function phase(name, env = {}, { expectDeath = false } = {}) {
 
 await phase(
   quit ? "quit" : "crash",
-  first ? { NOTE_BATCH_RESTART_KILL_AFTER: "1" } : {},
+  { ...target, ...(first ? { NOTE_BATCH_RESTART_KILL_AFTER: "1" } : {}) },
   { expectDeath: true },
 );
 await waitForTestZotero();
@@ -67,23 +76,33 @@ await rm(snapshot, { recursive: true, force: true });
 await cp(".scaffold/test/data", snapshot, { recursive: true });
 await phase("resume", {
   LLM_FOR_ZOTERO_QA_DATA_SNAPSHOT: snapshot,
+  ...target,
   ...(absent ? { NOTE_BATCH_RESTART_TAMPER: "absent" } : {}),
-  ...(undoFirst ? { NOTE_BATCH_RESTART_TAMPER: "undo-first" } : {}),
+  ...(undoFirst || standaloneUndoFirst
+    ? { NOTE_BATCH_RESTART_TAMPER: "undo-first" }
+    : {}),
+  ...(undoDuringCard ? { NOTE_BATCH_RESTART_TAMPER: "undo-during-card" } : {}),
   ...(changed ? { NOTE_BATCH_RESTART_TAMPER: "changed" } : {}),
   ...(undo ? { NOTE_BATCH_RESTART_UNDO: "1" } : {}),
 });
 await rm(snapshot, { recursive: true, force: true });
-const tail = undoFirst
-  ? ", undone before it continued"
-  : absent
-    ? ", with the in-flight note erased"
-    : changed
-      ? ", with the in-flight note trashed"
-      : undo
-        ? ", then undone"
-        : first
-          ? ", ended during its first note"
-          : "";
+const tail = standaloneUndoFirst
+  ? " of standalone notes, undone before it continued"
+  : standalone
+    ? " of standalone notes, with a cited paper edited"
+    : undoDuringCard
+      ? ", undone while its continue card was open"
+      : undoFirst
+        ? ", undone before it continued"
+        : absent
+          ? ", with the in-flight note erased"
+          : changed
+            ? ", with the in-flight note trashed"
+            : undo
+              ? ", then undone"
+              : first
+                ? ", ended during its first note"
+                : "";
 console.log(
   `Verified a note batch across a ${quit ? "force-quit" : "killed"} Zotero${tail}.`,
 );

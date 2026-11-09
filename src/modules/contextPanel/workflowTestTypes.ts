@@ -1426,6 +1426,7 @@ export type WorkflowTestApi = {
     inputTokenCap: number;
     killAfterNotes: number;
     variant: "crash" | "quit";
+    target?: "item" | "standalone";
   }) => ReturnType<
     typeof import("./noteBatchRestartReplay").startNoteBatchUntilQuit
   >;

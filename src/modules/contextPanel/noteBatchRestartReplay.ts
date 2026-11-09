@@ -79,16 +79,33 @@ function readCall(itemId: number, libraryID: number): AgentToolCall {
     arguments: { target: { itemId, contextItemId: itemId, libraryID } },
   };
 }
-function batchCall(papers: number[]): AgentToolCall {
+/**
+ * One note_write_batch over `papers`. A child note is written onto each
+ * paper. A standalone note is filed into `collectionId` and cites its paper,
+ * so its body is built from that paper's current metadata.
+ */
+function batchCall(
+  papers: number[],
+  target: "item" | "standalone" = "item",
+  collectionId?: number,
+): AgentToolCall {
   return {
     id: `batch-${(callCounter += 1)}`,
     name: "note_write_batch",
     arguments: {
-      target: "item",
-      notes: papers.map((itemId) => ({
-        targetItemId: itemId,
-        content: `# Paper ${itemId}\n\nReading note on the finding of paper ${itemId}.`,
-      })),
+      target,
+      notes: papers.map((itemId) =>
+        target === "standalone"
+          ? {
+              targetItemId: itemId,
+              collections: collectionId ? [collectionId] : [],
+              content: `# Paper ${itemId}\n\nReading note on the finding of {{cite item=${itemId}}}.`,
+            }
+          : {
+              targetItemId: itemId,
+              content: `# Paper ${itemId}\n\nReading note on the finding of paper ${itemId}.`,
+            },
+      ),
     },
   };
 }
@@ -101,7 +118,9 @@ export function panelConversationKey(panel: PanelRef): number {
 /**
  * Sends the first turn of a note job: the model reads every paper, then
  * writes all the notes in one note_write_batch. When the batch's
- * `killAfterNotes`th note exists, this Zotero process ends:
+ * `killAfterNotes`th note exists, this Zotero process ends (a child note
+ * of one of the papers, or with `target: "standalone"` a standalone note
+ * filed into the collection):
  * - `crash`: SIGKILL aimed at this process id only; nothing runs after it.
  * - `quit`: a forced application quit.
  * The function does not return while the process ends; if it returns, the
@@ -109,7 +128,11 @@ export function panelConversationKey(panel: PanelRef): number {
  */
 export async function startNoteBatchUntilQuit(
   panel: PanelRef,
-  input: JobInput & { killAfterNotes: number; variant: "crash" | "quit" },
+  input: JobInput & {
+    killAfterNotes: number;
+    variant: "crash" | "quit";
+    target?: "item" | "standalone";
+  },
 ): Promise<{ survived: true; notesSeen: number }> {
   const { body, item } = panel;
   body.style.left = "0";
@@ -117,6 +140,7 @@ export async function startNoteBatchUntilQuit(
   body.style.zIndex = "99999";
   const ids = input.papers.map((paper) => paper.itemId);
   const paperIds = new Set(ids);
+  const standalone = input.target === "standalone";
   setOriginalAgentPermissionMode("auto");
   let notesSeen = 0;
   let ended = false;
@@ -126,7 +150,13 @@ export async function startNoteBatchUntilQuit(
         if (event !== "add" || type !== "item" || ended) return;
         for (const id of addedIds) {
           const added = Zotero.Items.get(Number(id));
-          if (added?.isNote() && paperIds.has(Number(added.parentID)))
+          if (!added?.isNote()) continue;
+          if (
+            standalone
+              ? !added.parentID &&
+                added.getCollections().includes(input.collection.collectionId)
+              : paperIds.has(Number(added.parentID))
+          )
             notesSeen += 1;
         }
         if (notesSeen < input.killAfterNotes) return;
@@ -196,7 +226,13 @@ export async function startNoteBatchUntilQuit(
       }
       if (!batched) {
         batched = true;
-        return toolStep([batchCall(ids)]);
+        return toolStep([
+          batchCall(
+            ids,
+            standalone ? "standalone" : "item",
+            input.collection.collectionId,
+          ),
+        ]);
       }
       return final("Every paper has its note.");
     },
@@ -297,6 +333,9 @@ export async function resumeNoteBatchAfterRestart(
           ? (event.actionReceipts || []).map((receipt) => [
               receipt.id,
               {
+                status: receipt.status,
+                verification: receipt.verification,
+                reasons: [...(receipt.reasons || [])],
                 appliedTargets: [...receipt.appliedTargets],
                 alreadySatisfiedTargets: [...receipt.alreadySatisfiedTargets],
               },
