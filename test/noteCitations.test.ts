@@ -83,7 +83,7 @@ describe("citation labels, as Zotero's note editor writes them", function () {
     );
   });
 
-  it("builds a chip that carries only the item URI and page", function () {
+  it("builds a chip that carries the item URI and page, as the editor does", function () {
     const html = buildCitationChipHtml([
       {
         uri: "http://zotero.org/users/1/items/AB12CD34",
@@ -97,7 +97,11 @@ describe("citation labels, as Zotero's note editor writes them", function () {
     const data = /data-citation="([^"]*)"/.exec(html)![1];
     assert.deepEqual(JSON.parse(decodeURIComponent(data)), {
       citationItems: [
-        { uris: ["http://zotero.org/users/1/items/AB12CD34"], locator: "42" },
+        {
+          uris: ["http://zotero.org/users/1/items/AB12CD34"],
+          locator: "42",
+          label: "page",
+        },
       ],
       properties: {},
     });
@@ -106,6 +110,19 @@ describe("citation labels, as Zotero's note editor writes them", function () {
       '>(<span class="citation-item">Smith, 2020, p. 42</span>)</span>',
     );
     assert.equal(collectNoteEmbeds(html)[0].kind, "citation");
+  });
+
+  it("builds a chip with no page and no label for a whole-work citation", function () {
+    const html = buildCitationChipHtml([
+      {
+        uri: "http://zotero.org/users/1/items/AB12CD34",
+        itemData: { title: "A report" },
+      },
+    ]);
+    const data = /data-citation="([^"]*)"/.exec(html)![1];
+    assert.deepEqual(JSON.parse(decodeURIComponent(data)).citationItems, [
+      { uris: ["http://zotero.org/users/1/items/AB12CD34"] },
+    ]);
   });
 });
 
