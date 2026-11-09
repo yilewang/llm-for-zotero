@@ -347,7 +347,7 @@ describe("workflow: task progress button", function () {
           return held >= 4;
         }, `Stacked at ${stackedWidth}: the row settles on a stage`);
         const fit = navRow.dataset.fit;
-        const folded = fit !== "full";
+        const folded = fit === "menu" || fit === "tight";
         const tight = fit === "tight";
         assert.equal(
           width() > 0,

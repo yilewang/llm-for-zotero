@@ -48,7 +48,8 @@ function foldedAway(section: HTMLElement, selector: string): boolean {
     .fit;
   return Boolean(
     fit &&
-    ((fit !== "full" && FOLDABLE_BUTTONS.includes(selector)) ||
+    (((fit === "menu" || fit === "tight") &&
+      FOLDABLE_BUTTONS.includes(selector)) ||
       (fit === "tight" && TIGHT_FOLDED_BUTTONS.includes(selector))),
   );
 }
@@ -492,7 +493,7 @@ describe("workflow: sidebar chat mode toggle", function () {
         // The tight stage folds Open in window into More too.
         ...(navRow.dataset.fit === "tight" ? [] : ["#llm-popout"]),
         // Narrow panes fold these three into More.
-        ...(navRow.dataset.fit && navRow.dataset.fit !== "full"
+        ...(navRow.dataset.fit === "menu" || navRow.dataset.fit === "tight"
           ? ["#llm-header-more"]
           : FOLDABLE_BUTTONS),
       ].map((selector) => {
@@ -517,15 +518,14 @@ describe("workflow: sidebar chat mode toggle", function () {
         );
       }
       // The chip sits inside the capsule: 2px of padding, then 2px gaps and
-      // the 1px separator with 2px either side. The capsule keeps at least
-      // 10px (8px compact or tight) from history.
+      // the 1px separator with 2px either side. The capsule sits exactly
+      // 10px (8px below full) after history.
       const [, history, chip, codex] = order.map((entry) => entry.rect);
-      const leastGap = ["compact", "tight"].includes(navRow.dataset.fit || "")
-        ? 8
-        : 10;
-      assert.isAtLeast(
+      const leastGap = navRow.dataset.fit === "full" ? 10 : 8;
+      assert.closeTo(
         capsuleRect.left - history.right,
-        leastGap - 0.6,
+        leastGap,
+        0.6,
         "history to capsule",
       );
       assert.closeTo(chip.left - capsuleRect.left, 2, 0.6, "capsule padding");
