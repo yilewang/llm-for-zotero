@@ -3,6 +3,7 @@ import { cp } from "node:fs/promises";
 import { defineConfig } from "zotero-plugin-scaffold";
 import pkg from "./package.json";
 import { writeClaudeBridgeNotices } from "./scripts/claude-bridge-notices.mjs";
+import { patchGeneratedFileTracker } from "./scripts/workflow-test-file-tracker.mjs";
 import { patchGeneratedWorkflowTestReporter } from "./scripts/workflow-test-reporter.mjs";
 import { applyWorkflowTestSelection } from "./scripts/workflow-test-selection.mjs";
 
@@ -138,9 +139,9 @@ export default defineConfig({
             : "test"),
     ...(workflowTestsEnabled
       ? {
-          // Locally the first failure stops the run, for a fast answer. CI
-          // runs every test so one failure does not hide the rest.
-          abortOnFail: !agentLiveTestsEnabled && !process.env.CI,
+          // Every selected test runs, so one failure does not hide the rest.
+          // The runner's --bail stops at the first failure instead.
+          abortOnFail: process.env.LLM_FOR_ZOTERO_WORKFLOW_BAIL === "1",
           // A live agent turn does real model round trips and real library
           // writes, so it needs far longer than a UI workflow test.
           mocha: {
@@ -178,6 +179,7 @@ export default defineConfig({
       "test:bundleTests": async () => {
         await patchGeneratedWorkflowTestReporter();
         await applyWorkflowTestSelection();
+        await patchGeneratedFileTracker();
       },
     },
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
