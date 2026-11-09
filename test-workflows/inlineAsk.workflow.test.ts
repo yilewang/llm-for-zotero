@@ -512,6 +512,95 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isTrue(closed.cardRemoved);
   });
 
+  it("resizes the card from each corner and keeps the opposite edges fixed", async function () {
+    const fixture = await createFixture("Inline Ask corner resize");
+    const opened = await api.openReaderInlineAsk({
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText: SELECTED_TEXT,
+    });
+    assert.isTrue(opened.mounted, JSON.stringify(opened));
+    const near = (actual: number, expected: number, label: string) =>
+      assert.isAtMost(Math.abs(actual - expected), 2, label);
+    const right = (card: { rect: { left: number; width: number } }) =>
+      card.rect.left + card.rect.width;
+    const bottom = (card: { rect: { top: number; height: number } }) =>
+      card.rect.top + card.rect.height;
+
+    // Narrow, then move, so there is room on every side.
+    await api.dragReaderInlineAsk({ part: "resize", dx: -200, dy: 0 });
+    const start = await api.dragReaderInlineAsk({
+      part: "card",
+      dx: 40,
+      dy: 60,
+    });
+
+    // Top-left: the left edge moves, the right edge stays.
+    const topLeft = await api.dragReaderInlineAsk({
+      part: "resize",
+      corner: "top-left",
+      dx: -30,
+      dy: 0,
+    });
+    near(topLeft.rect.left - start.rect.left, -30, "top-left moved left");
+    near(topLeft.rect.width - start.rect.width, 30, "top-left widened");
+    near(right(topLeft), right(start), "top-left keeps the right edge");
+    near(topLeft.rect.top, start.rect.top, "no answer area: top stays");
+
+    // Top-right: the left edge stays; the width follows the pointer.
+    const topRight = await api.dragReaderInlineAsk({
+      part: "resize",
+      corner: "top-right",
+      dx: 25,
+      dy: 0,
+    });
+    near(topRight.rect.left, topLeft.rect.left, "top-right keeps the left");
+    near(topRight.rect.width - topLeft.rect.width, 25, "top-right widened");
+
+    // Bottom-left: the right edge stays.
+    const bottomLeft = await api.dragReaderInlineAsk({
+      part: "resize",
+      corner: "bottom-left",
+      dx: 20,
+      dy: 0,
+    });
+    near(bottomLeft.rect.left - topRight.rect.left, 20, "bottom-left moved");
+    near(right(bottomLeft), right(topRight), "bottom-left keeps the right");
+
+    // With an answer area, a top corner keeps the bottom edge.
+    const Q = "inline-ask-corner-question-marker";
+    await api.sendReaderInlineAsk({ text: Q });
+    const stream = await provider.waitForStream(Q);
+    stream.push(
+      Array.from({ length: 40 }, (_, i) => `Line ${i}.`).join("\n\n"),
+    );
+    stream.finish();
+    const answered = await waitForCard(
+      (card) => card.phase === "answered" && card.answers.length > 0,
+      "the answer completes",
+    );
+    assert.isAbove(answered.rect.top, 60, "there is room above the card");
+    const grown = await api.dragReaderInlineAsk({
+      part: "resize",
+      corner: "top-left",
+      dx: 0,
+      dy: -40,
+    });
+    near(bottom(grown), bottom(answered), "top-left keeps the bottom edge");
+    assert.isBelow(grown.rect.top, answered.rect.top - 20, "the top moved up");
+    near(grown.rect.left, answered.rect.left, "dy only: left stays");
+    const lower = await api.dragReaderInlineAsk({
+      part: "resize",
+      corner: "bottom-right",
+      dx: 0,
+      dy: 30,
+    });
+    near(lower.rect.top, grown.rect.top, "bottom-right keeps the top");
+
+    const closed = await api.endReaderInlineAsk({ via: "discard" });
+    assert.isTrue(closed.cardRemoved);
+  });
+
   it("closes a card without a conversation on a page click", async function () {
     const fixture = await createFixture("Inline Ask page click");
     const opened = await api.openReaderInlineAsk({

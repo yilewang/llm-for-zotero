@@ -1754,33 +1754,86 @@ export function openInlineAskOverlay(
     saveFooter,
   );
 
-  // The corner grip: drag to widen the card and lengthen the answer area.
-  const resizeGrip = el("div", [
-    "position:absolute",
-    "right:1px",
-    "bottom:1px",
-    "width:14px",
-    "height:14px",
-    `color:${palette.tertiary}`,
-    "opacity:0.45",
-    "cursor:nwse-resize",
-    "touch-action:none",
-    "transition:opacity 120ms ease",
-  ]);
-  resizeGrip.setAttribute("data-llm-inline-ask-resize", "true");
-  resizeGrip.append(
-    svgIcon(
-      doc,
-      14,
-      {
-        fill: "none",
-        stroke: "currentColor",
-        "stroke-width": "1.2",
-        "stroke-linecap": "round",
-      },
-      [{ tag: "path", attrs: { d: "M13 5L5 13M13 9.5L9.5 13" } }],
-    ),
-  );
+  // The corner grips: drag a corner to resize the card. Each grip is an
+  // invisible hit area that straddles its corner. While the pointer is over
+  // it (or a drag from it runs), an arc shows just outside the card's corner.
+  const RESIZE_CORNERS = [
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ] as const;
+  type ResizeCorner = (typeof RESIZE_CORNERS)[number];
+  const resizeGrips = new Map<ResizeCorner, HTMLElement>();
+  const resizeArcs = new Map<ResizeCorner, HTMLElement>();
+  const hoveredCorners = new Set<ResizeCorner>();
+  const syncResizeArcs = () => {
+    for (const [corner, arc] of resizeArcs) {
+      const on = hoveredCorners.has(corner) || drag?.corner === corner;
+      arc.style.opacity = on ? "1" : "0";
+    }
+  };
+  const resizeListeners: Array<[HTMLElement, string, () => void]> = [];
+  for (const corner of RESIZE_CORNERS) {
+    const isTop = corner.startsWith("top");
+    const isLeft = corner.endsWith("left");
+    // The box reaches 12px into the card and 6px outside it.
+    const grip = el("div", [
+      "position:absolute",
+      isTop ? "top:-7px" : "bottom:-7px",
+      isLeft ? "left:-7px" : "right:-7px",
+      "width:18px",
+      "height:18px",
+      "z-index:20",
+      isTop === isLeft ? "cursor:nwse-resize" : "cursor:nesw-resize",
+      "touch-action:none",
+    ]);
+    grip.setAttribute("data-llm-inline-ask-resize", corner);
+    // The arc is drawn for the bottom-right corner and mirrored for the rest.
+    // It is concentric with the card's 16px corner, 4.5px outside it, and its
+    // straight tails run 6px along the two edges.
+    const arc = el("div", [
+      "position:absolute",
+      "inset:0",
+      "pointer-events:none",
+      "opacity:0",
+      "transition:opacity 120ms ease",
+      `color:${palette.labelFg}`,
+    ]);
+    arc.setAttribute("data-llm-inline-ask-resize-arc", corner);
+    const svg = doc.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 18 18");
+    svg.setAttribute("width", "18");
+    svg.setAttribute("height", "18");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2.5");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute(
+      "style",
+      `display:block;overflow:visible;transform:scale(${isLeft ? -1 : 1},${isTop ? -1 : 1})`,
+    );
+    const path = doc.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", "M16.5 -10V-4A20.5 20.5 0 0 1 -4 16.5H-10");
+    svg.appendChild(path);
+    arc.append(svg);
+    grip.append(arc);
+    const onEnter = () => {
+      hoveredCorners.add(corner);
+      syncResizeArcs();
+    };
+    const onLeave = () => {
+      hoveredCorners.delete(corner);
+      syncResizeArcs();
+    };
+    grip.addEventListener("mouseenter", onEnter);
+    grip.addEventListener("mouseleave", onLeave);
+    resizeListeners.push([grip, "mouseenter", onEnter]);
+    resizeListeners.push([grip, "mouseleave", onLeave]);
+    resizeGrips.set(corner, grip);
+    resizeArcs.set(corner, arc);
+  }
 
   root.append(
     quoteSection,
@@ -1790,7 +1843,7 @@ export function openInlineAskOverlay(
     notice,
     promptEditor,
     saveView,
-    resizeGrip,
+    ...resizeGrips.values(),
   );
 
   // ── Rendering ──────────────────────────────────────────────────────────
@@ -2639,15 +2692,20 @@ export function openInlineAskOverlay(
   // ── Move and resize by dragging ────────────────────────────────────────
   type Drag = {
     kind: "move" | "resize";
+    /** The grabbed corner, for a resize. */
+    corner: ResizeCorner | null;
     pointerId: number;
     startX: number;
     startY: number;
     startLeft: number;
     startTop: number;
     startWidth: number;
+    startBottom: number;
     /** The answer area's max height at the start, and its room to grow. */
     startThreadMax: number;
     threadLimit: number;
+    /** Room to grow upward, for a top corner. */
+    topLimit: number;
   };
   let drag: Drag | null = null;
   /** The answer area's max height once the user has set it. */
@@ -2681,6 +2739,7 @@ export function openInlineAskOverlay(
     const ending = drag;
     if (!ending) return;
     drag = null;
+    syncResizeArcs();
     root.style.cursor = "";
     root.style.userSelect = "text";
     root.style.setProperty("-moz-user-select", "text");
@@ -2721,16 +2780,48 @@ export function openInlineAskOverlay(
       root.style.top = `${Math.round(top)}px`;
       return;
     }
-    const left = parseFloat(root.style.left) || current.startLeft;
-    const width = Math.max(
-      MIN_CARD_WIDTH,
-      Math.min(current.startWidth + dx, vw - READER_OVERLAY_MARGIN - left),
-    );
-    root.style.width = `${Math.round(width)}px`;
-    chosenThreadMax = Math.round(
-      Math.max(80, Math.min(current.startThreadMax + dy, current.threadLimit)),
-    );
-    thread.style.maxHeight = `${chosenThreadMax}px`;
+    const corner = current.corner ?? "bottom-right";
+    const startRight = current.startLeft + current.startWidth;
+    if (corner.endsWith("left")) {
+      // The right edge stays; the left edge follows the pointer.
+      const width = Math.max(
+        MIN_CARD_WIDTH,
+        Math.min(current.startWidth - dx, startRight - READER_OVERLAY_MARGIN),
+      );
+      root.style.width = `${Math.round(width)}px`;
+      root.style.left = `${Math.round(startRight - width)}px`;
+    } else {
+      const left = parseFloat(root.style.left) || current.startLeft;
+      const width = Math.max(
+        MIN_CARD_WIDTH,
+        Math.min(current.startWidth + dx, vw - READER_OVERLAY_MARGIN - left),
+      );
+      root.style.width = `${Math.round(width)}px`;
+    }
+    if (corner.startsWith("top")) {
+      // The bottom edge stays; the top edge follows the answer area's height.
+      // Without an answer area there is nothing to resize.
+      if (doc.defaultView?.getComputedStyle(thread)?.display === "none") {
+        syncThreadFade();
+        return;
+      }
+      chosenThreadMax = Math.round(
+        Math.max(80, Math.min(current.startThreadMax - dy, current.topLimit)),
+      );
+      thread.style.maxHeight = `${chosenThreadMax}px`;
+      const height = root.getBoundingClientRect().height;
+      root.style.top = `${Math.round(
+        Math.max(READER_OVERLAY_MARGIN, current.startBottom - height),
+      )}px`;
+    } else {
+      chosenThreadMax = Math.round(
+        Math.max(
+          80,
+          Math.min(current.startThreadMax + dy, current.threadLimit),
+        ),
+      );
+      thread.style.maxHeight = `${chosenThreadMax}px`;
+    }
     syncThreadFade();
   };
   const onDragEnd = (e: Event) => {
@@ -2741,7 +2832,11 @@ export function openInlineAskOverlay(
   const onCardPointerDown = (e: Event) => {
     const pointer = e as PointerEvent;
     if (drag || pointer.button !== 0 || pointer.isPrimary === false) return;
-    const grip = resizeGrip.contains(pointer.target as Node | null);
+    let corner: ResizeCorner | null = null;
+    for (const [name, node] of resizeGrips) {
+      if (node.contains(pointer.target as Node | null)) corner = name;
+    }
+    const grip = corner !== null;
     if (!grip && !isBlankTarget(pointer.target)) return;
     const rect = root.getBoundingClientRect();
     const { vh } = viewSize();
@@ -2753,17 +2848,27 @@ export function openInlineAskOverlay(
       threadHeight + room >= thread.scrollHeight
         ? Number.POSITIVE_INFINITY
         : threadHeight + room;
+    // Growing it upward may not push the card's top out of view.
+    const roomAbove = rect.top - READER_OVERLAY_MARGIN;
+    const topLimit =
+      threadHeight + roomAbove >= thread.scrollHeight
+        ? Number.POSITIVE_INFINITY
+        : threadHeight + roomAbove;
     drag = {
       kind: grip ? "resize" : "move",
+      corner,
       pointerId: pointer.pointerId,
       startX: pointer.clientX,
       startY: pointer.clientY,
       startLeft: rect.left,
       startTop: rect.top,
       startWidth: rect.width,
+      startBottom: rect.bottom,
       startThreadMax,
       threadLimit,
+      topLimit,
     };
+    syncResizeArcs();
     // No text selection while dragging.
     root.style.userSelect = "none";
     root.style.setProperty("-moz-user-select", "none");
@@ -2782,12 +2887,6 @@ export function openInlineAskOverlay(
   const onCardHover = (e: Event) => {
     if (drag) return;
     root.style.cursor = isNode(root, e.target) ? "grab" : "";
-  };
-  const onCardEnter = () => {
-    resizeGrip.style.opacity = "1";
-  };
-  const onCardLeave = () => {
-    resizeGrip.style.opacity = "0.45";
   };
 
   function close() {
@@ -2832,8 +2931,8 @@ export function openInlineAskOverlay(
     root.removeEventListener("pointerdown", onRootPointerDown);
     root.removeEventListener("pointerdown", onCardPointerDown);
     root.removeEventListener("pointermove", onCardHover);
-    root.removeEventListener("mouseenter", onCardEnter);
-    root.removeEventListener("mouseleave", onCardLeave);
+    for (const [node, type, listener] of resizeListeners)
+      node.removeEventListener(type, listener);
     pills.removeEventListener("click", onPillsClick);
     pills.removeEventListener("contextmenu", onPillsContextMenu);
     if (picker) {
@@ -2889,8 +2988,6 @@ export function openInlineAskOverlay(
   root.addEventListener("pointerdown", onRootPointerDown);
   root.addEventListener("pointerdown", onCardPointerDown);
   root.addEventListener("pointermove", onCardHover);
-  root.addEventListener("mouseenter", onCardEnter);
-  root.addEventListener("mouseleave", onCardLeave);
   pills.addEventListener("click", onPillsClick);
   pills.addEventListener("contextmenu", onPillsContextMenu);
   if (picker) {

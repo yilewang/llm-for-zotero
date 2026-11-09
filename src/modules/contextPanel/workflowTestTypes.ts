@@ -452,6 +452,12 @@ export type WorkflowTestReaderInlineAskCard = {
   promptEditorFloating: boolean;
   /** The composer box holds the field, the model button, and the send arrow. */
   composerHoldsControls: boolean;
+  /** Each resize corner: controls its hit area overlaps, and its arc opacity. */
+  resizeCorners: Array<{
+    corner: string;
+    coveredControls: number;
+    arcOpacity: number;
+  }>;
   /** The message actions under the latest answer, in order. */
   messageActions: string[];
   modelLabel: string;
@@ -2119,9 +2125,16 @@ export type WorkflowTestApi = {
   hoverReaderInlineAskPassage: (
     on: boolean,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Moves the pointer onto or off one corner's hit area. */
+  hoverReaderInlineAskCorner: (
+    corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+    on: boolean,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Drags a blank point of the card ("card") or its corner grip ("resize"). */
   dragReaderInlineAsk: (input: {
     part: "card" | "resize";
+    /** The corner to drag for a resize; the default is bottom-right. */
+    corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
     dx: number;
     dy: number;
   }) => Promise<WorkflowTestReaderInlineAskCard>;

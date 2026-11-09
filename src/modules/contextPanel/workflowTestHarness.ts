@@ -7593,6 +7593,35 @@ function readWorkflowInlineAskCard(
         ].every((selector) => Boolean(box.querySelector(selector)));
       })(),
     ),
+    resizeCorners: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-resize]") || [],
+    ).map((node) => {
+      const grip = node as HTMLElement;
+      const box = grip.getBoundingClientRect();
+      const arc = grip.querySelector(
+        "[data-llm-inline-ask-resize-arc]",
+      ) as HTMLElement | null;
+      // Visible controls and the passage that the grip must not cover.
+      const covered = Array.from(
+        card?.querySelectorAll(
+          'button, [data-llm-inline-ask-quote-bar="true"], [data-llm-inline-ask-quote="true"], [data-llm-inline-ask-editor="true"]',
+        ) || [],
+      ).filter((other) => {
+        const r = (other as HTMLElement).getBoundingClientRect();
+        if (!r.width || !r.height) return false;
+        return (
+          r.left < box.right &&
+          r.right > box.left &&
+          r.top < box.bottom &&
+          r.bottom > box.top
+        );
+      }).length;
+      return {
+        corner: grip.getAttribute("data-llm-inline-ask-resize") || "",
+        coveredControls: covered,
+        arcOpacity: arc ? Number(win?.getComputedStyle(arc)?.opacity) : NaN,
+      };
+    }),
     messageActions: Array.from(
       card?.querySelectorAll("[data-llm-inline-ask-footer] button") || [],
     ).map(
@@ -8491,9 +8520,27 @@ async function hoverReaderInlineAskPassage(
   return readWorkflowInlineAskCard(state.popupDoc);
 }
 
+/** Moves the pointer onto or off a corner's hit area (mouseenter or mouseleave). */
+async function hoverReaderInlineAskCorner(
+  corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+  on: boolean,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card, win } = requireWorkflowInlineAskCardElement();
+  const grip = card.querySelector(`[data-llm-inline-ask-resize="${corner}"]`);
+  if (!grip) throw new Error("The Inline Ask card has no such corner");
+  grip.dispatchEvent(
+    new win.MouseEvent(on ? "mouseenter" : "mouseleave", { bubbles: false }),
+  );
+  // The arc fades over 0.12 s.
+  await Zotero.Promise.delay(300);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
 /** Drags the card by a blank point, or its corner grip, with pointer events. */
 async function dragReaderInlineAsk(input: {
   part: "card" | "resize";
+  corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   dx: number;
   dy: number;
 }): Promise<WorkflowTestReaderInlineAskCard> {
@@ -8502,10 +8549,11 @@ async function dragReaderInlineAsk(input: {
   const target =
     input.part === "resize"
       ? (card.querySelector(
-          '[data-llm-inline-ask-resize="true"]',
+          `[data-llm-inline-ask-resize="${input.corner ?? "bottom-right"}"]`,
         ) as HTMLElement | null)
       : card;
-  if (!target) throw new Error("The Inline Ask card has no resize grip");
+  if (!target)
+    throw new Error("The Inline Ask card has no resize grip for that corner");
   const rect = target.getBoundingClientRect();
   // For the card: a point in its top padding, where the card itself is hit.
   const startX =
@@ -11804,6 +11852,7 @@ export function installWorkflowTestHarness(targetAddon: {
     clickReaderInlineAskPromptMenuItem,
     clickReaderInlineAskTextSize,
     hoverReaderInlineAskPassage,
+    hoverReaderInlineAskCorner,
     dragReaderInlineAsk,
     editReaderInlineAskPrompt,
     openReaderInlineAskModelMenu,
