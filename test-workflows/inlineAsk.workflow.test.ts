@@ -231,10 +231,12 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isFalse(opened.popupOpenAfterPress!.open, `popup after press; ${m}`);
     const popup = opened.popup!;
     const card = opened.card!;
+    // A reading width, centered on the narrower popup.
+    assert.isAtLeast(card.right - card.left, 460 - TOL, `card width; ${m}`);
     assert.isAtMost(
-      Math.abs(card.left - popup.left),
+      Math.abs((card.left + card.right) / 2 - (popup.left + popup.right) / 2),
       TOL,
-      `card left ${card.left} vs popup left ${popup.left}; ${m}`,
+      `card center vs popup center; ${m}`,
     );
     assert.isAtMost(
       Math.abs(card.top - popup.top),
@@ -433,8 +435,22 @@ describe("workflow: Inline Ask in the reader", function () {
     const near = (actual: number, expected: number, label: string) =>
       assert.isAtMost(Math.abs(actual - expected), 2, label);
 
+    // Narrow first: the default card can fill a narrow reader, which leaves
+    // no room to move it.
+    const initial = api.readReaderInlineAsk();
+    const before = await api.dragReaderInlineAsk({
+      part: "resize",
+      dx: -200,
+      dy: 0,
+    });
+    near(
+      before.rect.width,
+      Math.max(240, initial.rect.width - 200),
+      "narrowed",
+    );
+    near(before.rect.left, initial.rect.left, "narrowing keeps the left edge");
+
     // Move: the rect shifts by the drag and the card stays open and quiet.
-    const before = api.readReaderInlineAsk();
     const moved = await api.dragReaderInlineAsk({
       part: "card",
       dx: 40,

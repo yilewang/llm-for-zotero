@@ -138,13 +138,16 @@ describe("workflow: Inline Ask saves a selection as an annotation", function () 
   async function askAndAnswer(
     fixture: WorkflowTestFixture,
     draft: "native" | "native_cross_page" = "native",
+    withPanel = true,
   ): Promise<WorkflowTestReaderInlineAskOpen> {
-    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const panel = withPanel
+      ? await api.renderPanelForItem(fixture.parentItemId)
+      : null;
     const opened = await api.openReaderInlineAsk({
       attachmentItemId: fixture.pdfAttachmentId,
       pageIndex: 0,
       selectedText: SELECTED_TEXT,
-      panelId: panel.panelId,
+      ...(panel ? { panelId: panel.panelId } : {}),
       draft,
     });
     assert.isTrue(opened.mounted, JSON.stringify(opened));
@@ -315,6 +318,42 @@ describe("workflow: Inline Ask saves a selection as an annotation", function () 
       );
     });
   }
+
+  it("saves with no chat panel open, filed under the paper's conversation", async function () {
+    Zotero.Prefs.set(PREF_PREFIX + "originalAgentPermissionMode", "auto", true);
+    const fixture = await createFixture("Inline Ask save without panel");
+    const opened = await askAndAnswer(fixture, "native", false);
+    const draft = draftOf(opened);
+
+    const answered = api.readReaderInlineAskSave();
+    assert.isFalse(answered.footerSaveDisabled, JSON.stringify(answered));
+    await api.openReaderInlineAskSave({ via: "click" });
+    const comment = "Saved with the sidebar closed";
+    await api.editReaderInlineAskSave({ comment, color: "#5fb236" });
+    await api.confirmReaderInlineAskSave({ via: "click" });
+    const closed = await waitForSave(
+      (state) => !state.mounted || Boolean(state.error),
+      "the card closes after a verified save",
+    );
+    assert.isFalse(closed.mounted, JSON.stringify(closed));
+
+    const rows = await annotationRows(fixture.pdfAttachmentId);
+    assert.lengthOf(rows, 1, JSON.stringify(rows));
+    assert.equal(rows[0].comment, comment);
+    assert.equal(rows[0].color, "#5fb236");
+    assert.deepEqual(rows[0].position.rects, draft.position.rects);
+
+    const actions = await listJournalActions({
+      conversationKey: fixture.parentItemId,
+      limit: 10,
+    });
+    assert.isTrue(
+      actions.some((action) => action.toolName === "annotate_pdf"),
+      JSON.stringify(
+        actions.map(({ toolName, status }) => ({ toolName, status })),
+      ),
+    );
+  });
 
   it("keeps the payload after a failed save, and the retry writes no second row", async function () {
     Zotero.Prefs.set(PREF_PREFIX + "originalAgentPermissionMode", "auto", true);

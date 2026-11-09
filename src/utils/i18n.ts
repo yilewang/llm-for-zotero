@@ -1734,8 +1734,8 @@ const zhCN: Record<string, string> = {
     "此选区延续到下一页。请改用 Zotero 的弹出菜单添加高亮。",
   "Zotero gave no position for this selection. Select it again.":
     "Zotero 没有提供此选区的位置。请重新选择。",
-  "Open this PDF's chat panel to save annotations.":
-    "请打开此 PDF 的对话面板以保存注释。",
+  "Zotero could not find the paper for this PDF.":
+    "Zotero 找不到此 PDF 对应的文献。",
   "The annotation could not be saved.": "无法保存注释。",
   "Zotero did not confirm the saved annotation.": "Zotero 未确认已保存的注释。",
   // Inline Ask: Continue in sidebar.

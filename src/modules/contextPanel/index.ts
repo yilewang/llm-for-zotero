@@ -1505,8 +1505,11 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                 Number(
                   (item as { parentItemID?: unknown } | null)?.parentItemID,
                 ) || itemId,
+              // The open panel's conversation, else the paper's own: Save
+              // must work with the sidebar closed.
               resolveConversationKey: () =>
-                readPanelConversationKey(resolveReaderPopupPanel(event)),
+                readPanelConversationKey(resolveReaderPopupPanel(event)) ??
+                (item ? getConversationKey(item) : null),
               reachPanel: createReaderPanelReach(event),
             }),
           );

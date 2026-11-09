@@ -44,8 +44,8 @@
  * Discard, or another overlay on the same document closes it; a new text
  * selection popup leaves it open (keepsOpenOnNewSelection).
  *
- * Width: the native selection popup's measured width when the card replaces
- * the popup (at least MIN_CARD_WIDTH), otherwise DEFAULT_CARD_WIDTH.
+ * Width: DEFAULT_CARD_WIDTH, a reading measure. When the card replaces the
+ * native popup it is centered on the popup.
  *
  * Inline styles only: plugin CSS does not reach reader documents. The card
  * has its own palette (inlineAskPalette), separate from the Add Text prompt.
@@ -297,7 +297,11 @@ export const INLINE_ASK_TEXT_SIZES: readonly number[] = [
 
 const PAPER_FONT = '"STIX Two Text","Times New Roman",Times,serif';
 
-const DEFAULT_CARD_WIDTH = 330;
+/**
+ * About 65 characters per line at the default text size: a comfortable
+ * reading measure.
+ */
+const DEFAULT_CARD_WIDTH = 460;
 /** Below this the composer's model line and send arrow crowd each other. */
 const MIN_CARD_WIDTH = 240;
 /** The floating prompt editor; narrower when the card is. */
@@ -506,11 +510,19 @@ export function openInlineAskOverlay(
   };
   const hasModel = () => Boolean(currentLine());
 
-  // Over the native popup the card takes the popup's exact width, so both
-  // edges line up with it; elsewhere 330px.
-  const cardWidth = input.anchor.cover
-    ? Math.max(MIN_CARD_WIDTH, input.anchor.right - input.anchor.left)
-    : DEFAULT_CARD_WIDTH;
+  // A reading width, never the narrow native popup's: over the popup the
+  // card is centered on it (the popup is centered on the selection).
+  const cardWidth = DEFAULT_CARD_WIDTH;
+  const placementAnchor = input.anchor.cover
+    ? (() => {
+        const center = (input.anchor.left + input.anchor.right) / 2;
+        return {
+          ...input.anchor,
+          left: center - cardWidth / 2,
+          right: center + cardWidth / 2,
+        };
+      })()
+    : input.anchor;
   const editorWidth = Math.min(FLOATING_EDITOR_WIDTH, cardWidth - 16);
   const root = el("div", [
     "position:fixed",
@@ -636,7 +648,8 @@ export function openInlineAskOverlay(
     "display:none",
     "flex-direction:column",
     "gap:8px",
-    "max-height:min(330px, 46vh)",
+    // About 20 lines of answer before it scrolls.
+    "max-height:min(460px, 58vh)",
     "overflow:auto",
   ]);
   thread.setAttribute("data-llm-inline-ask-thread", "true");
@@ -2848,7 +2861,7 @@ export function openInlineAskOverlay(
   (doc.body || doc.documentElement).appendChild(root);
   registerReaderOverlay(doc, handle);
   render(session.getState());
-  positionReaderOverlay(root, doc, input.anchor);
+  positionReaderOverlay(root, doc, placementAnchor);
 
   pointerDocs = collectPointerDocuments(doc);
   for (const pointerDoc of pointerDocs) {
