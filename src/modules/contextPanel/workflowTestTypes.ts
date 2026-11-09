@@ -2156,6 +2156,8 @@ export type WorkflowTestApi = {
   endReaderInlineAsk: (input: {
     via: "discard" | "escape" | "escape_page";
   }) => Promise<{ cardRemoved: boolean }>;
+  /** Closes the reader tab under the card (the card goes with it). */
+  closeReaderInlineAskReaderTab: () => Promise<{ readerClosed: boolean }>;
   /** Clicks Continue in sidebar; resolves when the card closed or says why not. */
   continueReaderInlineAskInSidebar: () => Promise<WorkflowTestReaderInlineAskContinue>;
   /** Right-clicks a pill (or the empty pill row) and reads the menu. */

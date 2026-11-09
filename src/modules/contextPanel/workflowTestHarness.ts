@@ -72,6 +72,7 @@ import {
 } from "./paperDecisionsReplay";
 import { mountPanelShell } from "./panelMount";
 import { getAgentRuntime } from "../../agent";
+import { readOpenReaderDocumentFingerprint } from "../../services/pdf/pdfAnnotationResolver";
 import { normalizeExecutionOutput } from "../../agent/tools/execution/results";
 import {
   renderPendingActionCard,
@@ -8286,6 +8287,33 @@ async function showNewReaderSelectionPopup(
   };
 }
 
+/**
+ * Closes the Inline Ask reader's tab and waits until Zotero no longer lists
+ * that PDF as open. The card goes with the tab; the case keeps its draft.
+ */
+async function closeReaderInlineAskReaderTab(): Promise<{
+  readerClosed: boolean;
+}> {
+  assertWorkflowTestEnabled();
+  const state = requireWorkflowInlineAsk();
+  const attachmentId = Number(
+    state.reader.itemID || (state.reader as any)._item?.id,
+  );
+  const tabs = (
+    Zotero.getMainWindow() as unknown as {
+      Zotero_Tabs?: { close?: (tabId: string) => void };
+    }
+  ).Zotero_Tabs;
+  if (state.reader.tabID) tabs?.close?.(state.reader.tabID);
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (!readOpenReaderDocumentFingerprint(attachmentId))
+      return { readerClosed: true };
+    await Zotero.Promise.delay(50);
+  }
+  return { readerClosed: false };
+}
+
 async function endReaderInlineAsk(input: {
   via: "discard" | "escape" | "escape_page";
 }): Promise<{ cardRemoved: boolean }> {
@@ -11860,6 +11888,7 @@ export function installWorkflowTestHarness(targetAddon: {
     pointerDownOutsideReaderInlineAsk,
     showNewReaderSelectionPopup,
     endReaderInlineAsk,
+    closeReaderInlineAskReaderTab,
     continueReaderInlineAskInSidebar,
     openReaderInlineAskPromptMenu,
     clickReaderInlineAskPromptMenuItem,
