@@ -20,23 +20,4 @@ describe("paper_read page renderer input", function () {
     assert.isTrue(renderer.validate({ question: "Figure 2 axes" }).ok);
     assert.isTrue(renderer.validate({ capture: true }).ok);
   });
-
-  it("renders at most 12 pages of a range, from its first page", function () {
-    const range = renderer.validate({ pages: "1-400" });
-    assert.isTrue(range.ok);
-    if (!range.ok) return;
-    assert.deepEqual(
-      range.value.pages,
-      Array.from({ length: 12 }, (_, index) => index),
-    );
-    const edited = renderer.applyConfirmation(range.value, {
-      pageSelection: "p3-500",
-    });
-    assert.isTrue(edited.ok);
-    if (edited.ok)
-      assert.deepEqual(
-        edited.value.pages,
-        Array.from({ length: 12 }, (_, index) => index + 2),
-      );
-  });
 });

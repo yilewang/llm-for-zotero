@@ -136,17 +136,11 @@ import {
  * Raised on 2026-11-01 by 40 guidance characters: paper_read's guidance says
  * sections are parts as the user named them, in any language, read whole.
  * The budgets are now 45,063, 43,736 and 45,161.
- * Raised on 2026-11-05 by 57 tool characters: paper_read's sectionId and
- * whole parameters (section-tree reads of documents with chapters).
- * The budgets are now 45,120, 43,793 and 45,218.
- * Raised on 2026-11-05 by 217 tool characters: paper_read's description says
- * query reads are written in the paper's language, with variants.
- * The budgets are now 45,337, 44,010 and 45,435.
  */
 const TURN_BUDGETS: Record<string, number> = {
-  global: 45_337,
-  paper: 44_010,
-  collection: 45_435,
+  global: 45_063,
+  paper: 43_736,
+  collection: 45_161,
 };
 
 const TURNS: Record<string, Record<string, unknown>> = {
