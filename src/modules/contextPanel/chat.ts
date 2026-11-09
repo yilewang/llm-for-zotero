@@ -4050,6 +4050,26 @@ function createStreamReasoningHandler(params: {
   };
 }
 
+export function shouldPreserveContextUsageWindow(
+  snapshot: ContextUsageSnapshot | undefined,
+  isCodex: boolean,
+  userLimitIsAuthoritative: boolean,
+): boolean {
+  if (userLimitIsAuthoritative) return false;
+  if (snapshot?.source === "provider") return true;
+  // Codex owns the conversation's context, including tool results that are
+  // absent from visible chat history. Keep its saved window on reopen rather
+  // than replacing it with the model registry's generic fallback. A new usage
+  // event will refresh this last-known (still marked estimated) snapshot.
+  return Boolean(
+    isCodex &&
+    snapshot?.source === "persisted" &&
+    typeof snapshot.contextWindow === "number" &&
+    Number.isFinite(snapshot.contextWindow) &&
+    snapshot.contextWindow > 0,
+  );
+}
+
 export function resolveUsageContextWindow(params: {
   providerContextWindow?: number;
   providerContextWindowIsAuthoritative?: boolean;
@@ -10993,8 +11013,11 @@ function renderChatForPanel(
     const configuredLimitIsUserAuthoritative =
       recomputedSnapshot?.inputLimitSource === "advanced" ||
       recomputedSnapshot?.inputLimitSource === "user";
-    const providerWindowRemainsEligible =
-      snapshot?.source === "provider" && !configuredLimitIsUserAuthoritative;
+    const providerWindowRemainsEligible = shouldPreserveContextUsageWindow(
+      snapshot,
+      resolveConversationSystemForItem(item) === "codex",
+      configuredLimitIsUserAuthoritative,
+    );
     const reconciledSnapshot =
       snapshot && recomputedSnapshot && !providerWindowRemainsEligible
         ? setContextUsageSnapshot(conversationKey, {
