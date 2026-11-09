@@ -45,6 +45,10 @@ import {
   type NewBatchItem,
 } from "../../store/batchItemStore";
 import { sha256Text } from "../../store/journalRecoveryBlobStore";
+import {
+  listJournalActions,
+  listJournalSteps,
+} from "../../store/changeJournal";
 import { describeLibraryMutationActions } from "../../contracts/actionOperationEvidence";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
@@ -672,6 +676,68 @@ export function createNoteWriteBatchTool(
           settledByNoteId: elsewhere,
         });
         continue;
+      }
+      // A note creation that stays uncertain refused this row: a note was
+      // reserved for it and cannot be accounted for. That holds whatever
+      // became of the action since, so a later resume cannot write it.
+      if (row.status !== "saved" && row.actionId && row.stepSequence != null) {
+        const open = (await listJournalSteps(row.actionId)).find(
+          (step) =>
+            step.sequence === row.stepSequence &&
+            step.operation === "create_note" &&
+            step.status === "uncertain",
+        );
+        if (open) {
+          resume.blocked.push({
+            itemKey: row.itemKey,
+            reason:
+              row.error ||
+              open.error ||
+              "A note was reserved for this item and cannot be accounted for",
+          });
+          continue;
+        }
+      }
+      // An action that can no longer be reopened (an undo ended it) still
+      // holds the step of a note the process ended inside. The settler reads
+      // only the action a resume reopens, so this row would be written a
+      // second time beside that note. A reopenable action is left to the
+      // settler, which settles the step.
+      if (row.status !== "saved" && row.actionId) {
+        const [action] = await listJournalActions({
+          actionId: row.actionId,
+          limit: 1,
+        });
+        if (
+          action &&
+          !["applied", "partially_applied", "uncertain", "applying"].includes(
+            action.status,
+          )
+        ) {
+          const open = action.steps.find(
+            (step) =>
+              step.operation === "create_note" &&
+              step.status === "uncertain" &&
+              (() => {
+                try {
+                  return (
+                    JSON.parse(step.forwardJson).parentItemId ===
+                    descriptor.targetItemId
+                  );
+                } catch {
+                  return false;
+                }
+              })(),
+          );
+          if (open) {
+            resume.blocked.push({
+              itemKey: row.itemKey,
+              reason:
+                "The state of the note an earlier attempt began for this item is unknown, so it was not rewritten",
+            });
+            continue;
+          }
+        }
       }
       if (row.status === "saved") {
         // The row names a note the library no longer has. It is retryable

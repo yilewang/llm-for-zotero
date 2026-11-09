@@ -11,6 +11,17 @@ import { setTimeout as sleep } from "node:timers/promises";
 // of its own process id with the default, a forced quit with --quit), so
 // that phase is expected to exit without a pass.
 const quit = process.argv.includes("--quit");
+// --first ends the first Zotero while its first note is written, before any
+// row of the batch names a written note.
+const first = process.argv.includes("--first");
+// --absent erases and --changed trashes the note the first Zotero was writing
+// when it ended, before "continue"; --undo undoes the batch's action after
+// it finishes. Each runs on the killed-process data.
+const absent = process.argv.includes("--absent");
+const changed = process.argv.includes("--changed");
+const undo = process.argv.includes("--undo");
+// --undo-first undoes the interrupted batch before "continue".
+const undoFirst = process.argv.includes("--undo-first");
 const file = "test-workflows/noteBatchRestart.workflow.test.ts";
 const snapshot = ".scaffold/note-batch-restart/data-snapshot";
 
@@ -46,14 +57,33 @@ function phase(name, env = {}, { expectDeath = false } = {}) {
   });
 }
 
-await phase(quit ? "quit" : "crash", {}, { expectDeath: true });
+await phase(
+  quit ? "quit" : "crash",
+  first ? { NOTE_BATCH_RESTART_KILL_AFTER: "1" } : {},
+  { expectDeath: true },
+);
 await waitForTestZotero();
 await rm(snapshot, { recursive: true, force: true });
 await cp(".scaffold/test/data", snapshot, { recursive: true });
-await phase("resume", { LLM_FOR_ZOTERO_QA_DATA_SNAPSHOT: snapshot });
+await phase("resume", {
+  LLM_FOR_ZOTERO_QA_DATA_SNAPSHOT: snapshot,
+  ...(absent ? { NOTE_BATCH_RESTART_TAMPER: "absent" } : {}),
+  ...(undoFirst ? { NOTE_BATCH_RESTART_TAMPER: "undo-first" } : {}),
+  ...(changed ? { NOTE_BATCH_RESTART_TAMPER: "changed" } : {}),
+  ...(undo ? { NOTE_BATCH_RESTART_UNDO: "1" } : {}),
+});
 await rm(snapshot, { recursive: true, force: true });
+const tail = undoFirst
+  ? ", undone before it continued"
+  : absent
+    ? ", with the in-flight note erased"
+    : changed
+      ? ", with the in-flight note trashed"
+      : undo
+        ? ", then undone"
+        : first
+          ? ", ended during its first note"
+          : "";
 console.log(
-  quit
-    ? "Verified a note batch across a force-quit Zotero."
-    : "Verified a note batch across a killed Zotero.",
+  `Verified a note batch across a ${quit ? "force-quit" : "killed"} Zotero${tail}.`,
 );

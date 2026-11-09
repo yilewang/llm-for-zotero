@@ -17,6 +17,7 @@ import {
   setOriginalAgentPermissionMode,
 } from "../../agent/originalAgentPermissionMode";
 import { scriptedJobTurn } from "./longJobReplay";
+import { ExecutionCheckpointFold } from "../../agent/execution/checkpointEvents";
 import type { CollectionContextRef } from "../../shared/types";
 import type { TaskPaperScopeSet } from "../../agent/context/taskPaperScopeListing";
 import type {
@@ -278,12 +279,30 @@ export async function resumeNoteBatchAfterRestart(
           ]
         : [],
     );
-    // The ledger the resumed run published first, before any model step.
+    // The ledger the resumed run published first, before any model step,
+    // and the one it ended with.
     const firstCheckpoint = turn.events.flatMap((event) =>
       event.type === "execution_checkpoint" ? [event.checkpoint] : [],
     )[0];
-    const notePart = firstCheckpoint?.tasks.find((task) =>
-      task.taskId.endsWith(":task:note-all"),
+    const fold = new ExecutionCheckpointFold();
+    for (const event of turn.events) fold.apply(event);
+    const notePartOf = (checkpoint: typeof firstCheckpoint | undefined) =>
+      checkpoint?.tasks.find((task) => task.taskId.endsWith(":task:note-all"));
+    const notePart = notePartOf(firstCheckpoint);
+    const finalNotePart = notePartOf(fold.latest);
+    // What each receipt of this turn's note writes names, by receipt id.
+    const toolReceipts = Object.fromEntries(
+      turn.events.flatMap((event) =>
+        event.type === "tool_result" && event.name === "note_write_batch"
+          ? (event.actionReceipts || []).map((receipt) => [
+              receipt.id,
+              {
+                appliedTargets: [...receipt.appliedTargets],
+                alreadySatisfiedTargets: [...receipt.alreadySatisfiedTargets],
+              },
+            ])
+          : [],
+      ),
     );
     return {
       conversationKey: key,
@@ -306,6 +325,14 @@ export async function resumeNoteBatchAfterRestart(
             receiptIds: [...(notePart.receiptIds || [])],
           }
         : null,
+      finalNotePart: finalNotePart
+        ? {
+            status: finalNotePart.status,
+            doneTargets: [...(finalNotePart.doneTargets || [])],
+            receiptIds: [...(finalNotePart.receiptIds || [])],
+          }
+        : null,
+      toolReceipts,
     };
   } finally {
     setOriginalAgentPermissionMode(previousMode);

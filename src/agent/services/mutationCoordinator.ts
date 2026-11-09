@@ -151,6 +151,13 @@ const UNFINISHED_STEP_STATUSES: ReadonlySet<JournalStatus> = new Set([
   "uncertain",
 ]);
 
+/** Step states in which the step's own write landed. */
+const LANDED_STEP_STATUSES: ReadonlySet<JournalStatus> = new Set([
+  "applied",
+  "partially_applied",
+  "irreversible",
+]);
+
 /**
  * The status a reused action now deserves, read from every step it holds.
  *
@@ -210,6 +217,12 @@ async function reopenJournalAction(params: {
   conversationKey: number;
   /** The states it may be reopened from; applied work by default. */
   from?: JournalStatus[];
+  /**
+   * Throw instead of declining when another call holds the action. A new
+   * action would then write the same notes beside the ones that call is
+   * still writing.
+   */
+  refuseWhenBusy?: boolean;
 }): Promise<{
   actionId: string;
   /** Highest sequence already used, so resumed steps do not collide. */
@@ -222,30 +235,42 @@ async function reopenJournalAction(params: {
     limit: 1,
   });
   const from = params.from || ["applied", "partially_applied"];
-  if (
-    !action ||
-    action.conversationKey !== params.conversationKey ||
-    !from.includes(action.status)
-  )
-    return null;
+  const busy = () =>
+    new Error(
+      "This batch is still being written by another run; try continue again after it finishes.",
+    );
+  if (!action || action.conversationKey !== params.conversationKey) return null;
+  if (params.refuseWhenBusy && action.status === "applying") throw busy();
+  if (!from.includes(action.status)) return null;
   const claimed = await claimJournalAction({
     actionId: action.actionId,
     from,
     to: "applying",
   });
-  if (!claimed) return null;
+  if (!claimed) {
+    if (params.refuseWhenBusy) throw busy();
+    return null;
+  }
+  // An action the process ended inside never recorded its count; its landed
+  // steps are what it applied.
+  const affectedCount =
+    action.affectedCount ||
+    (action.status === "uncertain"
+      ? action.steps.filter((step) => LANDED_STEP_STATUSES.has(step.status))
+          .length
+      : 0);
   return {
     actionId: action.actionId,
     lastSequence: action.steps.reduce(
       (highest, step) => Math.max(highest, step.sequence),
       0,
     ),
-    prior: action.affectedCount
+    prior: affectedCount
       ? {
           effect: "applied",
           status: "applied",
           reversibility: action.reversibility,
-          affectedCount: action.affectedCount,
+          affectedCount,
         }
       : null,
   };
@@ -1001,11 +1026,16 @@ export async function executeLibraryMutationAction(params: {
         journalToolName,
       });
   }
+  // A process that ended mid-batch leaves the action `uncertain`; the batch
+  // still finishes under it, and its executor settles the step the end left
+  // open before writing anything (see `save_notes_batch`).
   const resumed =
     journalAvailable && !parentScope && context.resumeJournalAction
       ? await reopenJournalAction({
           actionId: context.resumeJournalAction.actionId,
           conversationKey: context.request.conversationKey,
+          from: ["applied", "partially_applied", "uncertain"],
+          refuseWhenBusy: true,
         })
       : null;
   const actionId =

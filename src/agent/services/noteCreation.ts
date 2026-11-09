@@ -42,6 +42,86 @@ type Creation = {
 };
 const pending = new Map<string, Promise<unknown>>();
 
+export const RESERVED_NOTE_MISMATCH =
+  "The reserved note does not match the finalized content; no new note was created";
+
+/**
+ * What native Zotero holds at the key a note creation reserved.
+ *
+ * `absent` means the creation never landed. `live` is a note at that key,
+ * not trashed, on the intended parent; whether its content is the intended
+ * one is for the caller to verify. Anything else at the key is `changed`:
+ * the creation landed and was then removed, moved or replaced, and no
+ * replacement may be written for it.
+ */
+export function readReservedNote(params: {
+  libraryID: number;
+  key: string;
+  parentItemId?: number;
+}):
+  | { kind: "absent"; note: null }
+  | { kind: "live"; note: Zotero.Item }
+  | { kind: "changed"; note: Zotero.Item; reason: string } {
+  const found = Zotero.Items.getByLibraryAndKey(params.libraryID, params.key);
+  const note = found && found.id ? (found as Zotero.Item) : null;
+  if (!note) return { kind: "absent", note: null };
+  if (
+    note.deleted ||
+    !note.isNote() ||
+    (note.parentID || undefined) !== params.parentItemId
+  )
+    return {
+      kind: "changed",
+      note,
+      reason:
+        "The reserved note was removed or changed; recovery cannot create a replacement",
+    };
+  return { kind: "live", note };
+}
+
+/**
+ * The journal record of a created note, verified against native state.
+ *
+ * Shared by a creation that just wrote the note and by a resume that found
+ * an interrupted creation's note already in Zotero, so both leave the same
+ * result, inverse and postcondition behind for undo and receipts.
+ */
+export async function createdNoteOutcome(params: {
+  note: Zotero.Item;
+  expectedHtml: string;
+  verification: Awaited<ReturnType<typeof verifyNativeNoteHtml>>;
+  parentItemId?: number;
+  collections?: number[];
+  warnings: string[];
+}) {
+  const { note } = params;
+  return {
+    result: {
+      preparedHtml: await storeRecoveryText(params.expectedHtml),
+      status: "created",
+      noteId: note.id,
+      title: note.getNoteTitle(),
+      collections: params.collections,
+      createdNoteReceipt: await readCreatedNoteReceipt(note),
+      noteVerification: params.verification,
+      warnings: params.warnings,
+    },
+    inverse: {
+      version: 1,
+      kind: "library_operations",
+      operations: [{ type: "trash_items", itemIds: [note.id] }],
+    },
+    expectedPostcondition: {
+      kind: "created_item",
+      itemId: note.id,
+      exists: true,
+      parentItemId: params.parentItemId || null,
+      htmlChecksum: await sha256Text(note.getNote()),
+      collections: params.collections || [],
+    },
+  };
+}
+
 /** Reserve native identity before creation, including before any asset finalization. */
 export async function executeNoteCreation(params: Creation) {
   const scope = params.context.runId;
@@ -128,22 +208,14 @@ async function create(params: Creation, id?: string) {
     html: payload,
     finalized: !params.finalize,
   };
-  const note =
-    Zotero.Items.getByLibraryAndKey(libraryID, key) || new Zotero.Item("note");
-  const existed = Boolean(note.id);
+  const reservedNote = readReservedNote({ libraryID, key, parentItemId });
+  const note = reservedNote.note || new Zotero.Item("note");
+  const existed = reservedNote.kind !== "absent";
   if (!existed && (checkpoint?.noteId || prior?.status === "applied"))
     throw new Error(
       "The previously created note is unavailable; recovery cannot recreate a removed note",
     );
-  if (
-    existed &&
-    (note.deleted ||
-      !note.isNote() ||
-      (note.parentID || undefined) !== parentItemId)
-  )
-    throw new Error(
-      "The reserved note was removed or changed; recovery cannot create a replacement",
-    );
+  if (reservedNote.kind === "changed") throw new Error(reservedNote.reason);
   if (!existed) {
     note.libraryID = libraryID;
     note.key = key;
@@ -208,34 +280,16 @@ async function create(params: Creation, id?: string) {
         warnings = persisted.warnings;
       }
       const verification = await verifyNativeNoteHtml(note, expected);
-      if (!verification.matches)
-        throw new Error(
-          "The reserved note does not match the finalized content; no new note was created",
-        );
+      if (!verification.matches) throw new Error(RESERVED_NOTE_MISMATCH);
       return {
-        result: {
-          preparedHtml: await storeRecoveryText(expected),
-          status: "created",
-          noteId: note.id,
-          title: note.getNoteTitle(),
+        ...(await createdNoteOutcome({
+          note,
+          expectedHtml: expected,
+          verification,
+          parentItemId,
           collections: params.collections,
-          createdNoteReceipt: await readCreatedNoteReceipt(note),
-          noteVerification: verification,
           warnings,
-        },
-        inverse: {
-          version: 1,
-          kind: "library_operations",
-          operations: [{ type: "trash_items", itemIds: [note.id] }],
-        },
-        expectedPostcondition: {
-          kind: "created_item",
-          itemId: note.id,
-          exists: true,
-          parentItemId: parentItemId || null,
-          htmlChecksum: await sha256Text(note.getNote()),
-          collections: params.collections || [],
-        },
+        })),
         effect: "applied" as const,
         affectedCount: 1,
       };

@@ -238,6 +238,36 @@ export async function markBatchItemSaved(
   );
 }
 
+/**
+ * Points each unwritten row at the journal action the batch now writes
+ * under, replacing any earlier action, without changing the row's status.
+ *
+ * A row is otherwise linked to the action only after its note lands. A
+ * process that ends while a note is being written would then leave no row
+ * naming the action that holds the step, and a resume could not find it; it
+ * would write the note a second time. A row that still names an earlier
+ * action (after an undo, say) would send the next resume to that action. The
+ * recorded step belonged to the earlier action, so it is cleared, and the
+ * update time moves so this action is the newest one the rows name.
+ * The row stays `pending` or `failed`: naming the action says nothing about
+ * whether it was written.
+ */
+export async function linkBatchItemsToAction(
+  batchId: string,
+  itemKeys: readonly string[],
+  actionId: string,
+  now: number = Date.now(),
+): Promise<void> {
+  if (!hasDb() || !itemKeys.length) return;
+  await Zotero.DB.queryAsync(
+    `UPDATE ${BATCH_ITEMS_TABLE}
+     SET action_id = ?, step_sequence = NULL, updated_at = ?
+     WHERE batch_id = ? AND status <> 'saved'
+       AND item_key IN (${itemKeys.map(() => "?").join(", ")})`,
+    [actionId, now, batchId, ...itemKeys],
+  );
+}
+
 /** Records why one item did not land, leaving its material available to retry. */
 export async function markBatchItemFailed(
   batchId: string,
