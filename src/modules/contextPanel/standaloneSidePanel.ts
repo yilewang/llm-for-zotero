@@ -369,7 +369,7 @@ type ItemTabView = TabViewBase & {
   /** The main chat and message the item came from (messageIndex -1: unknown). */
   conversationKey: number;
   messageIndex: number;
-  /** A document tab's text size buttons, kept in step with the others. */
+  /** A document or code tab's text size buttons, kept in step with the others. */
   syncReaderSize?: () => void;
 };
 
@@ -1924,7 +1924,7 @@ export function createStandaloneSidePanel(
   const HTML_SAFE_BOX_NOTE =
     "Runs in a safe box: no internet, no access to Zotero";
 
-  // A document's text size in its tab: one size for every document tab,
+  // The text size of a document or code tab: one size for every such tab,
   // remembered across restarts.
   const READER_TEXT_SIZE_VARIABLE = "--llm-side-reader-text-scale";
   const readerSizeSyncs = new Set<() => void>();
@@ -1938,7 +1938,7 @@ export function createStandaloneSidePanel(
     setSideReaderTextSizePref(percent);
     for (const target of Array.from(
       doc.querySelectorAll(
-        '.llm-standalone-side-panel-item-body[data-side-reader="true"]',
+        '.llm-standalone-side-panel-item-body[data-side-text-size="true"]',
       ),
     ) as HTMLElement[])
       applyReaderTextSize(target);
@@ -2056,11 +2056,14 @@ export function createStandaloneSidePanel(
     };
     // A document is read here: text size − and +, and its own window, like
     // the diagram and page viewers' controls. Copy and Save as note stay on
-    // the card in the chat and in the document's own window.
+    // the card in the chat and in the document's own window. A code tab gets
+    // the same − and +; its copy button is on the code block's hover bar.
     const reader = kind === "plan";
+    const sizable = reader || kind === "code";
     let syncReaderSize: (() => void) | undefined;
-    if (reader) {
-      body.dataset.sideReader = "true";
+    if (reader) body.dataset.sideReader = "true";
+    if (sizable) {
+      body.dataset.sideTextSize = "true";
       const smaller = makeAction("text-smaller", t("Smaller text"), () =>
         setReaderTextSize(
           getSideReaderTextSizePref() - SIDE_READER_TEXT_SIZE_STEP_PERCENT,
@@ -2081,7 +2084,7 @@ export function createStandaloneSidePanel(
       applyReaderTextSize(body);
       syncSizeButtons();
       actions.append(smaller, larger);
-      const openOwnWindow = request.openOwnWindow;
+      const openOwnWindow = reader ? request.openOwnWindow : undefined;
       if (openOwnWindow) {
         actions.appendChild(
           makeAction("own-window", t("Open in its own window"), () => {
@@ -2091,7 +2094,7 @@ export function createStandaloneSidePanel(
         );
       }
     }
-    if (!reader)
+    if (!sizable)
       actions.appendChild(
         makeAction("copy", t("Copy"), () => {
           void copyTextToClipboard(mainBody, request.source)
