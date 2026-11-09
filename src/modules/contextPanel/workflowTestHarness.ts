@@ -147,6 +147,7 @@ import type {
   WorkflowTestEphemeralConversationRowCounts,
   WorkflowTestConversationStoreRowTotals,
   WorkflowTestReaderInlineAskCard,
+  WorkflowTestReaderInlineAskMath,
   WorkflowTestReaderInlineAskAnswerSelection,
   WorkflowTestReaderInlineAskTextSize,
   WorkflowTestReaderInlineAskOpen,
@@ -8762,6 +8763,147 @@ function nativeMouseTarget(state: NonNullable<typeof workflowInlineAsk>): {
 }
 
 /** A real drag over the characters [fromChar, toChar) of an answer. */
+/** A native mouse drag in the reader window, in the document's coordinates. */
+async function dragReaderInlineAskNative(
+  state: ReturnType<typeof requireWorkflowInlineAskCardElement>["state"],
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+): Promise<void> {
+  const native = nativeMouseTarget(state);
+  native.send("mousemove", startX, startY);
+  native.send("mousedown", startX, startY);
+  await Zotero.Promise.delay(30);
+  const steps = 5;
+  for (let step = 1; step <= steps; step++) {
+    native.send(
+      "mousemove",
+      startX + ((endX - startX) * step) / steps,
+      startY + ((endY - startY) * step) / steps,
+    );
+    await Zotero.Promise.delay(20);
+  }
+  native.send("mouseup", endX, endY);
+  await Zotero.Promise.delay(150);
+}
+
+/**
+ * Drags from a few pixels before the inline math at `mathIndex` to a few
+ * pixels after it, so the selection holds the whole formula.
+ */
+async function selectReaderInlineAskAnswerMath(input: {
+  answerIndex: number;
+  mathIndex: number;
+}): Promise<WorkflowTestReaderInlineAskAnswerSelection> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const doc = state.popupDoc;
+  const answer = card.querySelectorAll("[data-llm-inline-ask-answer]")[
+    input.answerIndex
+  ] as HTMLElement | undefined;
+  if (!answer) throw new Error(`No Inline Ask answer ${input.answerIndex}`);
+  const math = answer.querySelectorAll(".math-inline")[input.mathIndex] as
+    | HTMLElement
+    | undefined;
+  if (!math) throw new Error(`No inline math ${input.mathIndex}`);
+  const rect = math.getBoundingClientRect();
+  const y = rect.top + rect.height / 2;
+  await dragReaderInlineAskNative(state, rect.left - 4, y, rect.right + 4, y);
+  return {
+    selectedText: doc.defaultView?.getSelection?.()?.toString() || "",
+    expectedText: math.textContent || "",
+    card: readWorkflowInlineAskCard(doc),
+  };
+}
+
+/** How the answer's math renders: nodes, classes, stylesheet, fonts, colors. */
+async function readReaderInlineAskMath(
+  answerIndex: number,
+): Promise<WorkflowTestReaderInlineAskMath> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const doc = state.popupDoc;
+  const win = doc.defaultView!;
+  const cs = (node: Element) => win.getComputedStyle(node)!;
+  const answer = card.querySelectorAll("[data-llm-inline-ask-answer]")[
+    answerIndex
+  ] as HTMLElement | undefined;
+  if (!answer) throw new Error(`No Inline Ask answer ${answerIndex}`);
+  const links = Array.from(
+    doc.querySelectorAll('link[id="llm-inline-ask-katex-css"]'),
+  ) as HTMLLinkElement[];
+  let cssRules = 0;
+  try {
+    cssRules = links[0]?.sheet?.cssRules?.length ?? 0;
+  } catch (err) {
+    cssRules = -1;
+  }
+  const katex = answer.querySelector(".katex") as HTMLElement | null;
+  const noCode = answer.cloneNode(true) as HTMLElement;
+  noCode.querySelectorAll("code, pre").forEach((node) => node.remove());
+  const answerRect = answer.getBoundingClientRect();
+  // Faces load when text first uses them; wait for the KaTeX one.
+  const fontSet = (
+    doc as unknown as {
+      fonts?: {
+        load(font: string): Promise<unknown[]>;
+        check(font: string): boolean;
+        forEach(cb: (face: { family: string; status: string }) => void): void;
+      };
+    }
+  ).fonts;
+  const faces: string[] = [];
+  try {
+    await fontSet?.load("16px KaTeX_Main");
+  } catch {
+    // The status list below shows the failure.
+  }
+  fontSet?.forEach((face) => {
+    if (face.family.includes("KaTeX"))
+      faces.push(`${face.family}:${face.status}`);
+  });
+  return {
+    katexCount: answer.querySelectorAll(".katex").length,
+    inlineCount: answer.querySelectorAll(".math-inline").length,
+    displayBlocks: (
+      Array.from(answer.querySelectorAll(".math-display")) as HTMLElement[]
+    ).map((node) => {
+      const rect = node.getBoundingClientRect();
+      const inner = node.querySelector(".katex-html") as HTMLElement | null;
+      const innerRect = inner?.getBoundingClientRect();
+      return {
+        textAlign: cs(node).textAlign,
+        overflowX: cs(node).overflowX,
+        centerOffset: innerRect
+          ? Math.abs(
+              innerRect.left +
+                innerRect.width / 2 -
+                (rect.left + rect.width / 2),
+            )
+          : -1,
+      };
+    }),
+    literalDollarOutsideCode: (noCode.textContent || "").includes("$"),
+    codeTexts: (
+      Array.from(answer.querySelectorAll("code")) as HTMLElement[]
+    ).map((node) => node.textContent || ""),
+    katexLinkCount: links.length,
+    mathStyleCount: doc.querySelectorAll(
+      'style[id="llm-inline-ask-math-style"]',
+    ).length,
+    cssRules,
+    katexFontFamily: katex ? cs(katex).fontFamily : "",
+    katexColor: katex ? cs(katex).color : "",
+    answerColor: cs(answer).color,
+    katexFontSize: katex ? parseFloat(cs(katex).fontSize) : 0,
+    answerFontSize: parseFloat(cs(answer).fontSize),
+    answerWidth: answerRect.width,
+    fontLoaded: Boolean(fontSet?.check("16px KaTeX_Main")),
+    fontFaces: faces,
+  };
+}
+
 async function selectReaderInlineAskAnswerText(input: {
   answerIndex: number;
   fromChar?: number;
@@ -8806,25 +8948,13 @@ async function selectReaderInlineAskAnswerText(input: {
   };
   const first = charRect(from);
   const last = charRect(to - 1);
-  const native = nativeMouseTarget(state);
-  const startX = first.left + 1;
-  const startY = first.top + first.height / 2;
-  const endX = last.right - 1;
-  const endY = last.top + last.height / 2;
-  native.send("mousemove", startX, startY);
-  native.send("mousedown", startX, startY);
-  await Zotero.Promise.delay(30);
-  const steps = 5;
-  for (let step = 1; step <= steps; step++) {
-    native.send(
-      "mousemove",
-      startX + ((endX - startX) * step) / steps,
-      startY + ((endY - startY) * step) / steps,
-    );
-    await Zotero.Promise.delay(20);
-  }
-  native.send("mouseup", endX, endY);
-  await Zotero.Promise.delay(150);
+  await dragReaderInlineAskNative(
+    state,
+    first.left + 1,
+    first.top + first.height / 2,
+    last.right - 1,
+    last.top + last.height / 2,
+  );
   return {
     selectedText: doc.defaultView?.getSelection?.()?.toString() || "",
     expectedText: full.slice(from, to),
@@ -12369,6 +12499,8 @@ export function installWorkflowTestHarness(targetAddon: {
     clickReaderInlineAskPromptMenuItem,
     clickReaderInlineAskTextSize,
     selectReaderInlineAskAnswerText,
+    selectReaderInlineAskAnswerMath,
+    readReaderInlineAskMath,
     clickReaderInlineAskPassage,
     leaveReaderInlineAskSave,
     clickReaderInlineAskSelectionAction,
