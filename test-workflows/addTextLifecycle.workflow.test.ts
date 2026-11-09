@@ -409,6 +409,36 @@ describe("workflow: Add Text lifecycle", function () {
     assert.strictEqual(result.sentBubbleBarCount, 0, message);
   });
 
+  it("sends the quote and question at once on Cmd/Ctrl+Enter in the Add Text box", async function () {
+    const selectedText = "MOD_ENTER_SELECTION";
+    const prompt = "Why does this matter?";
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Workflow Mod Enter Send",
+      pdfTitle: "Workflow Mod Enter Send PDF",
+      pages: [`This page contains ${selectedText} for the prompt.`],
+    });
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const result = await api.exerciseReaderPopupModEnterSend({
+      panelId: panel.panelId,
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText,
+      prompt,
+    });
+    const message = JSON.stringify(result);
+    assert.isTrue(result.overlayMounted, message);
+    assert.match(result.hint, /(⌘|Ctrl\+)Enter to send/, message);
+    assert.isTrue(result.sent, message);
+    assert.isTrue(result.overlayRemoved, message);
+    assert.include(
+      result.sentQuestion,
+      `Question about this text:\n${prompt}`,
+      message,
+    );
+    assert.equal(result.sentDisplayQuestion, prompt, message);
+    assert.include(result.sentSelectedTexts, selectedText, message);
+  });
+
   it("reopens the inline prompt for a duplicate Add Text and updates the same chip", async function () {
     const selectedText = "DUPLICATE_PROMPT_SELECTION";
     fixture = await api.createPaperWithPdfFixture({

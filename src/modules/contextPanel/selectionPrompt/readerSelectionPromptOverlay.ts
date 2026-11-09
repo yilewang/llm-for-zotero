@@ -40,9 +40,11 @@ export type ReaderSelectionPromptOverlayInput = {
     /** Shown in place of the hint when onSubmit refuses the text. */
     chipGone?: string;
   };
-  /** Receives non-empty, trimmed text. */
-  /** Return false when the text was not accepted; the box then stays open. */
-  onSubmit: (text: string) => boolean;
+  /**
+   * Receives non-empty, trimmed text. `send` is true for Cmd/Ctrl+Enter.
+   * Return false when the text was not accepted; the box then stays open.
+   */
+  onSubmit: (text: string, options: { send: boolean }) => boolean;
   /** Called exactly once on any close path. */
   onClose: () => void;
 };
@@ -171,6 +173,7 @@ export function openReaderSelectionPromptOverlay(
     "line-height:1.25",
     `color:${labelFg}`,
   ]);
+  hint.setAttribute("data-llm-reader-selection-prompt-hint", "true");
   hint.textContent = labels.hint;
   row.append(field, submitBtn);
   const quoteSection = el("div", [
@@ -190,20 +193,21 @@ export function openReaderSelectionPromptOverlay(
     close();
   };
   if (input.initialText) textBox.setText(input.initialText);
-  const submit = () => {
+  const submit = (send = false) => {
     const text = textBox.readText().trim();
     if (!text) {
       close();
       return;
     }
-    if (input.onSubmit(text)) {
+    if (input.onSubmit(text, { send })) {
       close();
       return;
     }
     if (labels.chipGone) hint.textContent = labels.chipGone;
   };
   const onKeyDown = (e: Event) => {
-    const action = classifySelectionPromptKey(e as KeyboardEvent);
+    const keyEvent = e as KeyboardEvent;
+    const action = classifySelectionPromptKey(keyEvent);
     // Keeps bubble-phase listeners above the box out. The reader's window
     // capture listeners have already run; see the editor comment above.
     e.stopPropagation();
@@ -213,7 +217,8 @@ export function openReaderSelectionPromptOverlay(
       close();
       return;
     }
-    submit();
+    // Cmd/Ctrl+Enter attaches the question and sends it; Enter only attaches.
+    submit(Boolean(keyEvent.metaKey || keyEvent.ctrlKey));
   };
   const onSubmitClick = (e: Event) => {
     e.preventDefault();
@@ -290,8 +295,9 @@ export function countOpenReaderSelectionPromptOverlays(): number {
  * Opens the reader prompt for the chip that Add Text just made, or for the
  * chip that already held this text (a duplicate add). The box starts with
  * that chip's question, if any. Enter attaches the typed text to that chip
- * as its question; it never sends. `attach` returns
- * false when no chip took the text, and the box then stays open.
+ * as its question; Cmd/Ctrl+Enter attaches it and then calls `send`.
+ * `attach` returns false when no chip took the text, and the box then stays
+ * open and nothing is sent.
  *
  * An Inline Ask card that holds a conversation keeps the document's slot:
  * the chip is already in the panel, and the box does not open (null).
@@ -306,6 +312,8 @@ export function openReaderSelectionPromptForChip(input: {
   existingQuestion?: string;
   labels: ReaderSelectionPromptOverlayInput["labels"];
   attach: (text: string) => boolean;
+  /** Sends the panel's message, with the chip that now holds the question. */
+  send: () => void;
 }): ReaderSelectionPromptOverlayHandle | null {
   if (input.outcome !== "added" && input.outcome !== "duplicate") return null;
   if (!input.selectedText.trim()) return null;
@@ -316,7 +324,11 @@ export function openReaderSelectionPromptForChip(input: {
     selectedText: input.selectedText,
     initialText: input.existingQuestion,
     labels: input.labels,
-    onSubmit: (text) => input.attach(text),
+    onSubmit: (text, { send }) => {
+      if (!input.attach(text)) return false;
+      if (send) input.send();
+      return true;
+    },
     onClose: () => {},
   });
 }

@@ -1693,6 +1693,10 @@ const zhCN: Record<string, string> = {
   "Your question": "你的问题",
   "Enter to add · Shift+Enter for a new line · Esc to close":
     "Enter 添加 · Shift+Enter 换行 · Esc 关闭",
+  "Enter to add · ⌘Enter to send · Shift+Enter for a new line · Esc to close":
+    "Enter 添加 · ⌘Enter 发送 · Shift+Enter 换行 · Esc 关闭",
+  "Enter to add · Ctrl+Enter to send · Shift+Enter for a new line · Esc to close":
+    "Enter 添加 · Ctrl+Enter 发送 · Shift+Enter 换行 · Esc 关闭",
   Add: "添加",
   "Question attached to the selected text": "问题已附加到选中文字",
   // Inline Ask card in the reader.

@@ -1427,9 +1427,13 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                     ),
                     labels: {
                       placeholder: t("Ask about this selection…"),
-                      hint: t(
-                        "Enter to add · Shift+Enter for a new line · Esc to close",
-                      ),
+                      hint: (Zotero as { isMac?: boolean }).isMac
+                        ? t(
+                            "Enter to add · ⌘Enter to send · Shift+Enter for a new line · Esc to close",
+                          )
+                        : t(
+                            "Enter to add · Ctrl+Enter to send · Shift+Enter for a new line · Esc to close",
+                          ),
                       submit: t("Add"),
                       selectedTextLabel: t("Selected text"),
                       chipGone: t("Selected text is no longer in the context"),
@@ -1444,6 +1448,15 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                         pageIndex: result.location?.pageIndex,
                         question,
                       }),
+                    // As the panel's own Send button: the chip's question is
+                    // the prompt, plus any draft already in the composer.
+                    send: () => {
+                      (
+                        targetBody.querySelector(
+                          "#llm-send",
+                        ) as HTMLButtonElement | null
+                      )?.click();
+                    },
                   });
                   // The box now sits where the popup is; close the popup
                   // (the text selection stays). Without a box, or if the
