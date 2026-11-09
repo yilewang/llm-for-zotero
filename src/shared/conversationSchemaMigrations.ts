@@ -13,6 +13,7 @@ export const CONVERSATION_INSTANCE_ID_MIGRATION_IDS = {
   upstream: "conversation-instance-id-v1:upstream",
   claudeCode: "conversation-instance-id-v1:claude-code",
   codex: "conversation-instance-id-v1:codex",
+  antigravity: "conversation-instance-id-v1:antigravity",
 } as const;
 export const CONVERSATION_KEY_LEDGER_MIGRATION_ID =
   "conversation-key-ledger-v1:permanent-non-reuse";

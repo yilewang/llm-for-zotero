@@ -59,6 +59,7 @@ const LAYERS = [
       // Conversation backends the agent layer drives and imports back.
       "src/claudeCode/",
       "src/codexAppServer/",
+      "src/antigravity/",
       "src/webchat/",
     ],
   },
@@ -216,6 +217,7 @@ const MIGRATION_OBLIGATIONS = [
   // Conversation backends reach into panel state instead of being called by it.
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/conversationIdentity.ts",
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/portalScope.ts",
+  "runtime:src/antigravity/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
   "runtime:src/claudeCode/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
   "runtime:src/codexAppServer/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
   "runtime:src/webchat/pipeline.ts -> src/modules/contextPanel/setupHandlers/controllers/pdfAttachmentPolicy.ts",
@@ -224,6 +226,7 @@ const MIGRATION_OBLIGATIONS = [
   "runtime:src/core/conversations/pendingDeletionStore.ts -> src/shared/conversationWriteFence.ts",
   "runtime:src/core/conversations/repository.ts -> src/agent/documents/store.ts",
   "runtime:src/core/conversations/repository.ts -> src/agent/mcp/server.ts",
+  "runtime:src/core/conversations/repository.ts -> src/antigravity/store.ts",
   "runtime:src/core/conversations/repository.ts -> src/claudeCode/store.ts",
   "runtime:src/core/conversations/repository.ts -> src/codexAppServer/constants.ts",
   "runtime:src/core/conversations/repository.ts -> src/codexAppServer/forkService.ts",
@@ -235,6 +238,7 @@ const MIGRATION_OBLIGATIONS = [
   "runtime:src/core/conversations/repository.ts -> src/shared/conversationWriteFence.ts",
   "runtime:src/core/conversations/repository.ts -> src/utils/chatStore.ts",
   // Note targeting resolves backend portal items directly.
+  "runtime:src/services/notes/noteTarget.ts -> src/antigravity/portal.ts",
   "runtime:src/services/notes/noteTarget.ts -> src/claudeCode/portal.ts",
   "runtime:src/services/notes/noteTarget.ts -> src/codexAppServer/portal.ts",
   // The Zotero change dispatcher writes straight into the agent change journal.

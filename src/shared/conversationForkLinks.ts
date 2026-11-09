@@ -1,3 +1,4 @@
+import { isConversationSystem } from "./conversationSystems";
 declare const Zotero: any;
 
 import { isEphemeralConversationKey } from "./conversationKeySpace";
@@ -46,9 +47,7 @@ function normalizePositiveInt(value: unknown): number {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): ConversationForkScopeKind | null {

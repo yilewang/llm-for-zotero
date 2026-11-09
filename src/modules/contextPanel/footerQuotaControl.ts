@@ -41,9 +41,10 @@ export function buildQuotaPresentation(snapshot: QuotaSnapshot): {
     );
   } else {
     if (!quota.windows.length) return null;
-    const highest = Math.max(
-      ...quota.windows.map((window) => window.usedPercent),
-    );
+    const headline = quota.windows.some((window) => !window.secondary)
+      ? quota.windows.filter((window) => !window.secondary)
+      : quota.windows;
+    const highest = Math.max(...headline.map((window) => window.usedPercent));
     text = `${Math.round(highest)}% ${t("used")}`;
     const label = {
       codex: "Codex account quota",
@@ -52,9 +53,12 @@ export function buildQuotaPresentation(snapshot: QuotaSnapshot): {
       glm: "GLM Coding Plan quota",
       minimax: "MiniMax Token Plan quota",
       opencode: "OpenCode Go quota",
+      antigravity: "Antigravity quota",
     }[quota.provider ?? "codex"];
     details.push(t(label));
-    if (quota.windows.length > 1)
+    if (headline.length < quota.windows.length)
+      details.push(t("Shows the most-used window for the selected model"));
+    else if (quota.windows.length > 1)
       details.push(t("Shows the most-used quota window"));
     for (const window of quota.windows) {
       const windowLabel = window.period
@@ -64,9 +68,10 @@ export function buildQuotaPresentation(snapshot: QuotaSnapshot): {
             ],
           )
         : duration(window.durationMins);
-      details.push(
-        `${windowLabel}: ${Math.round(window.usedPercent)}% ${t("used")}`,
-      );
+      const name = window.label
+        ? `${t(window.label)} · ${windowLabel}`
+        : windowLabel;
+      details.push(`${name}: ${Math.round(window.usedPercent)}% ${t("used")}`);
       if (window.resetsAt)
         details.push(
           `${t("Resets")}: ${new Date(window.resetsAt * 1000).toLocaleString()}`,

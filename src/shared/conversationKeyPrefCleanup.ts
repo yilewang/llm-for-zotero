@@ -126,6 +126,20 @@ export function cleanupRememberedConversationKeyPrefs(): void {
     },
   );
 
+  cleanJsonNumberMapPref("antigravityGlobalConversationMap", (_key, value) =>
+    isConversationKeyForKind("antigravity", "global", value),
+  );
+  cleanJsonNumberMapPref(
+    "antigravityLastAllocatedConversationKeyMap",
+    (key, value) => {
+      const kind = allocatedKindForMapKey(key);
+      return Boolean(
+        kind &&
+        isRuntimeAllocatedConversationKeyForKind("antigravity", kind, value),
+      );
+    },
+  );
+
   cleanJsonNumberMapPref("lastUsedGlobalConversationMap", (_key, value) =>
     isConversationKeyForKind("upstream", "global", value),
   );

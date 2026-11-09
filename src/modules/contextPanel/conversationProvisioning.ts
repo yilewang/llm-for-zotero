@@ -11,6 +11,10 @@ import {
   buildDefaultCodexPaperConversationKey,
 } from "../../codexAppServer/constants";
 import {
+  buildDefaultAntigravityGlobalConversationKey,
+  buildDefaultAntigravityPaperConversationKey,
+} from "../../antigravity/constants";
+import {
   buildDefaultUpstreamGlobalConversationKey,
   isEphemeralConversationKey,
 } from "../../shared/conversationKeySpace";
@@ -95,6 +99,8 @@ function bindSyntheticPortalItemToEntry(
     __llmClaudePaperPortalItem?: boolean;
     __llmCodexGlobalPortalItem?: boolean;
     __llmCodexPaperPortalItem?: boolean;
+    __llmAntigravityGlobalPortalItem?: boolean;
+    __llmAntigravityPaperPortalItem?: boolean;
     id: number;
   };
   if (
@@ -103,7 +109,9 @@ function bindSyntheticPortalItemToEntry(
     candidate.__llmClaudeGlobalPortalItem ||
     candidate.__llmClaudePaperPortalItem ||
     candidate.__llmCodexGlobalPortalItem ||
-    candidate.__llmCodexPaperPortalItem
+    candidate.__llmCodexPaperPortalItem ||
+    candidate.__llmAntigravityGlobalPortalItem ||
+    candidate.__llmAntigravityPaperPortalItem
   ) {
     candidate.id = entry.conversationKey;
   }
@@ -369,13 +377,35 @@ async function provisionConversationEntryUncoalesced(
   if (system === "upstream") {
     return provisionUpstreamConversation(scope);
   }
+  return provisionRuntimeConversationUncoalesced(system, scope);
+}
+
+type RuntimeProvisionSystem = Exclude<ConversationSystem, "upstream">;
+
+function buildDefaultRuntimeGlobalKey(
+  system: RuntimeProvisionSystem,
+  libraryID: number,
+): number {
   return system === "claude_code"
-    ? provisionClaudeConversation(scope)
-    : provisionCodexConversation(scope);
+    ? buildDefaultClaudeGlobalConversationKey(libraryID)
+    : system === "codex"
+      ? buildDefaultCodexGlobalConversationKey(libraryID)
+      : buildDefaultAntigravityGlobalConversationKey(libraryID);
+}
+
+function buildDefaultRuntimePaperKey(
+  system: RuntimeProvisionSystem,
+  paperItemID: number,
+): number {
+  return system === "claude_code"
+    ? buildDefaultClaudePaperConversationKey(paperItemID)
+    : system === "codex"
+      ? buildDefaultCodexPaperConversationKey(paperItemID)
+      : buildDefaultAntigravityPaperConversationKey(paperItemID);
 }
 
 async function provisionRuntimeConversationUncoalesced(
-  system: "claude_code" | "codex",
+  system: RuntimeProvisionSystem,
   scope: {
     conversationKey: number;
     kind: ConversationKind;
@@ -407,10 +437,7 @@ async function provisionRuntimeConversationUncoalesced(
     return rememberProvisionedConversation(scope, ensured) ? ensured : null;
   }
   if (scope.kind === "global") {
-    const expectedKey =
-      system === "claude_code"
-        ? buildDefaultClaudeGlobalConversationKey(scope.libraryID)
-        : buildDefaultCodexGlobalConversationKey(scope.libraryID);
+    const expectedKey = buildDefaultRuntimeGlobalKey(system, scope.libraryID);
     const rememberedKey = isRememberedScopeKey(system, scope);
     if (scope.conversationKey !== expectedKey && !rememberedKey) return null;
     if (!existing && expectedKey !== scope.conversationKey) {
@@ -465,10 +492,10 @@ async function provisionRuntimeConversationUncoalesced(
       : null;
   }
   if (!scope.paperItemID) return null;
-  const expectedPaperKey =
-    system === "claude_code"
-      ? buildDefaultClaudePaperConversationKey(scope.paperItemID)
-      : buildDefaultCodexPaperConversationKey(scope.paperItemID);
+  const expectedPaperKey = buildDefaultRuntimePaperKey(
+    system,
+    scope.paperItemID,
+  );
   const rememberedKey = isRememberedScopeKey(system, scope);
   if (scope.conversationKey !== expectedPaperKey && !rememberedKey) return null;
   if (!existing && expectedPaperKey !== scope.conversationKey) {
@@ -562,24 +589,6 @@ function rememberProvisionedConversation(
   return true;
 }
 
-async function provisionClaudeConversation(scope: {
-  conversationKey: number;
-  kind: ConversationKind;
-  libraryID: number;
-  paperItemID?: number;
-}): Promise<ConversationCatalogEntry | null> {
-  return provisionRuntimeConversationUncoalesced("claude_code", scope);
-}
-
-async function provisionCodexConversation(scope: {
-  conversationKey: number;
-  kind: ConversationKind;
-  libraryID: number;
-  paperItemID?: number;
-}): Promise<ConversationCatalogEntry | null> {
-  return provisionRuntimeConversationUncoalesced("codex", scope);
-}
-
 export async function provisionDefaultPaperConversation(params: {
   system: ConversationSystem;
   libraryID: number;
@@ -590,11 +599,9 @@ export async function provisionDefaultPaperConversation(params: {
   if (!libraryID || !paperItemID) return null;
   await initConversationKeyLedgerStore();
   const conversationKey =
-    params.system === "claude_code"
-      ? buildDefaultClaudePaperConversationKey(paperItemID)
-      : params.system === "codex"
-        ? buildDefaultCodexPaperConversationKey(paperItemID)
-        : paperItemID;
+    params.system === "upstream"
+      ? paperItemID
+      : buildDefaultRuntimePaperKey(params.system, paperItemID);
   // Paper restoration and host loading must share the complete lookup/create
   // decision, including the identity allocated for a retired default key.
   return provisionConversationEntry(params.system, {

@@ -11,6 +11,8 @@ export type RuntimeBadgeStateInput = {
   agentEnabled: boolean;
   codexEnabled: boolean;
   claudeEnabled: boolean;
+  /** Antigravity is off unless this is set, so older callers keep it off. */
+  antigravityEnabled?: boolean;
   isWebChat: boolean;
   /** The window's temporary side chat: the built-in runtime only. */
   isSideChat: boolean;
@@ -39,6 +41,7 @@ export function getRuntimeBadgeLabel(
 ): string {
   if (system === "codex") return "Codex";
   if (system === "claude_code") return "Claude";
+  if (system === "antigravity") return "Antigravity";
   return agentEnabled ? "Agent" : "Chat";
 }
 
@@ -59,13 +62,17 @@ export function resolveRuntimeBadgeState(
     if (input.claudeEnabled) {
       items.push({ system: "claude_code", label: "Claude" });
     }
+    if (input.antigravityEnabled) {
+      items.push({ system: "antigravity", label: "Antigravity" });
+    }
   }
-  // A panel already running Codex or Claude keeps its label even if that
+  // A panel already running Codex, Claude or Antigravity keeps its label even if that
   // runtime was just turned off in Preferences, as the static badge did.
   const anyRuntimeOn =
     input.agentEnabled ||
     input.codexEnabled ||
     input.claudeEnabled ||
+    input.antigravityEnabled === true ||
     input.system !== "upstream";
   const visible = !input.isWebChat && anyRuntimeOn;
   return {

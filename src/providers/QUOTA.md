@@ -20,6 +20,7 @@ Balances preserve the provider's currency; a limited key's allowance is labelled
 | OpenCode Go                   | Rolling, weekly, and monthly quota usage  | `GET https://opencode.ai/zen/go/v1/usage`; `usage.{rolling,weekly,monthly}.percent` with the existing Bearer API key                 |
 | Codex app server              | Account quota usage                       | `account/rateLimits/read`, preferring the named Codex bucket                                                                         |
 | Claude Code                   | Five-hour and seven-day account usage     | Companion bridge `GET /account-quota`, using the installed Agent SDK's structured usage control request                              |
+| Antigravity (agy CLI)         | Gemini and Claude/GPT, weekly and 5-hour  | `agy -p /usage --output-format json`, answered by agy itself without a model turn                                                    |
 
 GLM detection is limited to `/api/anthropic` and `/api/coding/paas/v4` routes, because prepaid inference and the Coding Plan have separate allowances.
 GLM's tool/MCP allowance is excluded; window durations and reset times are omitted when their contract is not established.
@@ -67,6 +68,10 @@ The probe reuses the chat's scoped working directory and configured settings sou
 It submits no user message, disables hooks and MCP servers, disables session persistence, times out after eight seconds, and closes its SDK connection on every path.
 Only normalized quota windows leave the bridge; session costs and model usage do not.
 API-key and third-party Claude configurations may report that subscription limits do not apply, in which case the indicator stays hidden.
+
+## Antigravity integration
+
+agy 1.4.2 prints `command.data.groups[]`, each `{name, buckets[]}` with buckets `{id, window: "weekly" | "5h", remaining_fraction, reset_time}`; used is `1 - remaining_fraction`. Gemini models share the "Gemini Models" group and Claude/GPT models the other, so the headline counts only the selected model's group and the tooltip lists every bucket. With agy's own default model the headline covers both. `/credits` (AI credits, 0 on a plan) is not shown.
 
 ## Remaining preset feasibility
 

@@ -67,6 +67,14 @@ import {
   toCodexConversationHistoryEntry,
 } from "../../../../codexAppServer/historyLoader";
 import {
+  loadAllAntigravityConversationHistory,
+  toAntigravityConversationHistoryEntry,
+} from "../../../../antigravity/historyLoader";
+import {
+  createAntigravityGlobalPortalItem,
+  createAntigravityPaperPortalItem,
+} from "../../../../antigravity/portal";
+import {
   isUnifiedHistoryRowListed,
   listUnifiedHistoryEntries,
 } from "../../unifiedHistorySource";
@@ -511,6 +519,12 @@ export function createHistoryLifecycleController(
   const getConversationSystem = deps.getConversationSystem;
   const isClaudeConversationSystem = deps.isClaudeConversationSystem;
   const isCodexConversationSystem = deps.isCodexConversationSystem;
+  // Antigravity keeps its history the way Codex does (its own store, both
+  // scopes, no library lock), so this follows whichever of the two is shown.
+  const isCodexLikeConversationSystem = () =>
+    isCodexConversationSystem() || getConversationSystem() === "antigravity";
+  const codexLikeSystem = (): "codex" | "antigravity" =>
+    getConversationSystem() === "antigravity" ? "antigravity" : "codex";
   const isRuntimeConversationSystem = deps.isRuntimeConversationSystem;
   const isNoteSession = deps.isNoteSession;
   const isGlobalMode = deps.isGlobalMode;
@@ -886,17 +900,26 @@ export function createHistoryLifecycleController(
       system: ConversationSystem,
     ): Promise<ConversationHistoryEntry[]> => {
       const entries: ConversationHistoryEntry[] = [];
-      if (system === "claude_code" || system === "codex") {
+      if (
+        system === "claude_code" ||
+        system === "codex" ||
+        system === "antigravity"
+      ) {
         const summaries =
           system === "claude_code"
             ? await loadAllClaudeConversationHistory({
                 libraryID: normalizedLibraryID,
                 limit: searchLimit,
               })
-            : await loadAllCodexConversationHistory({
-                libraryID: normalizedLibraryID,
-                limit: searchLimit,
-              });
+            : system === "antigravity"
+              ? await loadAllAntigravityConversationHistory({
+                  libraryID: normalizedLibraryID,
+                  limit: searchLimit,
+                })
+              : await loadAllCodexConversationHistory({
+                  libraryID: normalizedLibraryID,
+                  limit: searchLimit,
+                });
         for (const summary of summaries) {
           const entry = createHistorySearchEntry({
             system,
@@ -1810,6 +1833,8 @@ export function createHistoryLifecycleController(
       shape = toCodexConversationHistoryEntry(row);
     } else if (row.system === "claude_code") {
       shape = toClaudeConversationHistoryEntry(row);
+    } else if (row.system === "antigravity") {
+      shape = toAntigravityConversationHistoryEntry(row);
     } else {
       // An upstream paper chat without a session version cannot be opened.
       if (
@@ -1820,7 +1845,10 @@ export function createHistoryLifecycleController(
       }
       shape = toUpstreamHistoryRowShape(row);
     }
-    const isRuntime = row.system === "codex" || row.system === "claude_code";
+    const isRuntime =
+      row.system === "codex" ||
+      row.system === "claude_code" ||
+      row.system === "antigravity";
     return {
       system: row.system,
       kind,
@@ -2162,7 +2190,12 @@ export function createHistoryLifecycleController(
         ? createClaudeGlobalPortalItem(libraryID, normalizedConversationKey)
         : system === "codex"
           ? createCodexGlobalPortalItem(libraryID, normalizedConversationKey)
-          : createGlobalPortalItem(libraryID, normalizedConversationKey);
+          : system === "antigravity"
+            ? createAntigravityGlobalPortalItem(
+                libraryID,
+                normalizedConversationKey,
+              )
+            : createGlobalPortalItem(libraryID, normalizedConversationKey);
     if (
       !canCommitPanelConversation(
         body,
@@ -2354,10 +2387,11 @@ export function createHistoryLifecycleController(
       ) {
         return false;
       }
-    } else if (system === "codex") {
-      const nextItem = createCodexPaperPortalItem(
-        paperItem,
-        resolvedConversationKey,
+    } else if (system === "codex" || system === "antigravity") {
+      const nextItem = (
+        system === "codex"
+          ? createCodexPaperPortalItem(paperItem, resolvedConversationKey)
+          : createAntigravityPaperPortalItem(paperItem, resolvedConversationKey)
       ) as any;
       if (
         !canCommitPanelConversation(
@@ -2391,7 +2425,7 @@ export function createHistoryLifecycleController(
         return false;
       }
     }
-    if (system === "claude_code" || system === "codex") {
+    if (system !== "upstream") {
       remember(
         {
           system,
@@ -3560,8 +3594,8 @@ export function createHistoryLifecycleController(
           currentGlobalConversationKeyForSystem("claude_code") || activeKey()
         );
       }
-      if (system === "codex") {
-        return currentGlobalConversationKeyForSystem("codex") || activeKey();
+      if (system === "codex" || system === "antigravity") {
+        return currentGlobalConversationKeyForSystem(system) || activeKey();
       }
       return item &&
         isGlobalMode() &&
@@ -4173,9 +4207,9 @@ export function createHistoryLifecycleController(
           kind: "global",
           surface: selectionSurface(),
         })
-      : isCodexConversationSystem()
+      : isCodexLikeConversationSystem()
         ? recall({
-            system: "codex",
+            system: codexLikeSystem(),
             libraryID,
             kind: "global",
             surface: selectionSurface(),

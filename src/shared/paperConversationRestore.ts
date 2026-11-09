@@ -1,3 +1,4 @@
+import { isConversationSystem } from "./conversationSystems";
 declare const Zotero: any;
 
 import { config } from "../../package.json";
@@ -29,6 +30,7 @@ export type PaperRestoreRuntimeReadiness = {
   chatStoreReady: boolean;
   claudeStoreReady: boolean;
   codexStoreReady: boolean;
+  antigravityStoreReady?: boolean;
 };
 
 type RestoreEntry = {
@@ -75,6 +77,13 @@ const RUNTIME_CONFIG: Record<
     preference: "codexAppServerPaperConversationMap",
     migrationID: "paper-restore-selection-v1:codex",
     description: "Move Codex paper restore selections from preferences",
+  },
+  antigravity: {
+    // Antigravity never stored restore selections in preferences; the
+    // migration only marks the (empty) move as applied.
+    preference: "antigravityPaperConversationMap",
+    migrationID: "paper-restore-selection-v1:antigravity",
+    description: "Move Antigravity paper restore selections from preferences",
   },
 };
 
@@ -329,9 +338,7 @@ function normalizeEligibleRows(rows: unknown): EligibleRegistryRow[] {
     const paperItemID = normalizePositiveInt(row.paperItemID);
     const profileSignature = normalizeText(row.profileSignature);
     if (
-      (system !== "upstream" &&
-        system !== "claude_code" &&
-        system !== "codex") ||
+      !isConversationSystem(system) ||
       !conversationKey ||
       !libraryID ||
       !paperItemID ||
@@ -559,6 +566,7 @@ export async function initializePaperRestoreSelections(
   if (readiness.chatStoreReady) readySystems.push("upstream");
   if (readiness.claudeStoreReady) readySystems.push("claude_code");
   if (readiness.codexStoreReady) readySystems.push("codex");
+  if (readiness.antigravityStoreReady) readySystems.push("antigravity");
   for (const [key] of stagedStartupCandidates) {
     const system = key.split(":")[1] as ConversationSystem | undefined;
     if (system && !readySystems.includes(system)) {

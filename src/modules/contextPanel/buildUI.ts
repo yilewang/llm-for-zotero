@@ -217,6 +217,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     buttonIds: {
       codex: "llm-codex-system-toggle",
       claude_code: "llm-claude-system-toggle",
+      antigravity: "llm-antigravity-system-toggle",
     },
   });
   headerRuntimeControls.append(
