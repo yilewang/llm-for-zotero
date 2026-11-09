@@ -58,6 +58,7 @@
  */
 import { t } from "../../../utils/i18n";
 import { copyTextToClipboard } from "../clipboard";
+import { getSelectedTextWithinBubble } from "../textUtils";
 import {
   inlineAskAnswerToPlainText,
   renderInlineAskAnswer,
@@ -2605,13 +2606,17 @@ export function openInlineAskOverlay(
       return null;
     }
     const range = selection.getRangeAt(0);
-    const inAnswer = turnNodes.some(
+    const answer = turnNodes.find(
       (entry) =>
         entry?.node.getAttribute("data-llm-inline-ask-answer") === "done" &&
         entry.node.contains(range.commonAncestorContainer),
     );
-    if (!inAnswer) return null;
-    const raw = selection.toString().trim();
+    if (!answer) return null;
+    // The chat's conversion: selected math comes back as its TeX source, not
+    // as KaTeX's visible glyphs and hidden MathML text.
+    const raw = (
+      getSelectedTextWithinBubble(doc, answer.node) || selection.toString()
+    ).trim();
     const text = collapseSpaces(raw);
     return text ? { raw, text, range } : null;
   };
@@ -2669,6 +2674,15 @@ export function openInlineAskOverlay(
       return;
     }
     syncSelectionBar();
+  };
+  // Cmd/Ctrl+C on an answer selection copies the same text as the Copy
+  // button, with math as TeX.
+  const onRootCopy = (e: Event) => {
+    const info = readAnswerSelection();
+    const data = (e as ClipboardEvent).clipboardData;
+    if (!info || !data) return;
+    data.setData("text/plain", info.raw);
+    e.preventDefault();
   };
   const onThreadMouseDown = (e: Event) => {
     if ((e as MouseEvent).button !== 0) return;
@@ -3268,6 +3282,7 @@ export function openInlineAskOverlay(
       }
     }
     root.removeEventListener("keydown", onKeyDown);
+    root.removeEventListener("copy", onRootCopy);
     try {
       chromeWin?.removeEventListener("keydown", onChromeKeyDown, true);
     } catch {
@@ -3341,6 +3356,7 @@ export function openInlineAskOverlay(
     pointerDoc.addEventListener("keydown", onDocKeyDown, true);
   }
   root.addEventListener("keydown", onKeyDown);
+  root.addEventListener("copy", onRootCopy);
   chromeWin?.addEventListener("keydown", onChromeKeyDown, true);
   root.addEventListener("keyup", stop);
   root.addEventListener("keypress", stop);

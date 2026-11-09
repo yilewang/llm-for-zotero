@@ -232,12 +232,27 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isFalse(opened.popupOpenAfterPress!.open, `popup after press; ${m}`);
     const popup = opened.popup!;
     const card = opened.card!;
-    // A reading width, centered on the narrower popup.
+    // A reading width, centered on the narrower popup unless that would put
+    // it past the window's 8px margin; then it stops at the margin.
     assert.isAtLeast(card.right - card.left, 460 - TOL, `card width; ${m}`);
-    assert.isAtMost(
-      Math.abs((card.left + card.right) / 2 - (popup.left + popup.right) / 2),
-      TOL,
-      `card center vs popup center; ${m}`,
+    const centerGap = Math.abs(
+      (card.left + card.right) / 2 - (popup.left + popup.right) / 2,
+    );
+    const centered = centerGap <= TOL;
+    const pinnedLeft =
+      Math.abs(card.left - 8) <= TOL &&
+      (popup.left + popup.right) / 2 - (card.right - card.left) / 2 < 8;
+    // Pinned at the right margin: shifted left of center, never past 8px.
+    const pinnedRight =
+      (card.left + card.right) / 2 < (popup.left + popup.right) / 2 &&
+      card.left >= 8 - TOL;
+    assert.isTrue(
+      centered || pinnedLeft || pinnedRight,
+      `card centered on the popup, or pinned at a window margin; ${m}`,
+    );
+    assert.isTrue(
+      card.left <= popup.left + TOL && card.right >= popup.right - TOL,
+      `the card covers the popup's width; ${m}`,
     );
     assert.isAtMost(
       Math.abs(card.top - popup.top),
@@ -610,6 +625,82 @@ describe("workflow: Inline Ask in the reader", function () {
     );
     assert.deepEqual(last.questionQuotes[2], [only]);
     assert.include(last.questions[2], "Explain this part of your answer.");
+  });
+
+  it("renders answer math like the chat, and quotes and copies it as TeX", async function () {
+    const fixture = await createFixture("Inline Ask math");
+    const opened = await api.openReaderInlineAsk({
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText: SELECTED_TEXT,
+    });
+    assert.isTrue(opened.mounted, JSON.stringify(opened));
+    const question = `inline-ask-math-${Date.now()}`;
+    await api.sendReaderInlineAsk({ text: question });
+    const stream = await provider.waitForStream(question);
+
+    // An unclosed dollar stays literal while the answer streams.
+    stream.push("Angle $\\theta");
+    const streaming = await waitForCard(
+      (card) => card.answers.length === 1 && card.answers[0].text.length > 0,
+      "the first chunk shows",
+    );
+    assert.include(streaming.answers[0].text, "$\\theta", "literal while open");
+    assert.equal((await api.readReaderInlineAskMath(0)).katexCount, 0);
+
+    stream.push(
+      "$ sets the offset, and $s_n=D^{-1}(n)$ maps index to depth.\n\n" +
+        "**$g(s)$ (gain):** how strongly the cortex responds.\n\n" +
+        "- A list item with $a*b$ inside\n- Another item\n\n" +
+        "$$\nI(s) \\propto d(s)^2 g(s)\n$$\n\n" +
+        "Cost is `$5 and $6` as code.",
+    );
+    stream.finish();
+    await waitForCard(
+      (card) => card.phase === "answered" && card.answers.length === 1,
+      "the math answer completes",
+    );
+
+    const math = await api.readReaderInlineAskMath(0);
+    const message = JSON.stringify(math);
+    assert.isFalse(math.literalDollarOutsideCode, message);
+    assert.deepEqual(math.codeTexts, ["$5 and $6"], message);
+    assert.equal(math.katexCount, 5, message);
+    assert.equal(math.inlineCount, 4, message);
+    assert.lengthOf(math.displayBlocks, 1, message);
+    assert.equal(math.displayBlocks[0].textAlign, "center", message);
+    assert.equal(math.displayBlocks[0].overflowX, "auto", message);
+    assert.isBelow(math.displayBlocks[0].centerOffset, 2, message);
+    assert.equal(math.katexLinkCount, 1, message);
+    assert.equal(math.mathStyleCount, 1, message);
+    assert.isAbove(math.cssRules, 0, "the KaTeX stylesheet loaded");
+    assert.include(math.katexFontFamily, "KaTeX", message);
+    assert.isTrue(math.fontLoaded, `the KaTeX font loads: ${message}`);
+    assert.equal(math.katexColor, math.answerColor, message);
+    assert.closeTo(math.katexFontSize, math.answerFontSize * 1.1, 0.5, message);
+
+    // A real drag over the first formula; Quote and Copy give its TeX.
+    const picked = await api.selectReaderInlineAskAnswerMath({
+      answerIndex: 0,
+      mathIndex: 0,
+    });
+    assert.isTrue(picked.card.selectionBarShown, JSON.stringify(picked));
+    const copied = await api.copyReaderInlineAskSelection();
+    assert.include(copied.clipboardText, "$\\theta$", JSON.stringify(copied));
+    assert.notInclude(copied.clipboardText, "θ", JSON.stringify(copied));
+    const quoted = await api.clickReaderInlineAskSelectionAction("Quote");
+    assert.lengthOf(quoted.composerQuotes, 1, JSON.stringify(quoted));
+    assert.include(quoted.composerQuotes[0], "$\\theta$");
+    assert.notInclude(quoted.composerQuotes[0], "θ");
+    await api.selectReaderInlineAskAnswerMath({
+      answerIndex: 0,
+      mathIndex: 0,
+    });
+    await api.clickReaderInlineAskSelectionAction("Copy");
+    assert.include(api.readReaderInlineAskClipboard(), "$\\theta$");
+
+    const closed = await api.endReaderInlineAsk({ via: "escape" });
+    assert.isTrue(closed.cardRemoved);
   });
 
   it("sends a quick prompt's full text and shows its label", async function () {

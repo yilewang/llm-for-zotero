@@ -517,6 +517,34 @@ export type WorkflowTestReaderInlineAskAnswerSelection = {
   card: WorkflowTestReaderInlineAskCard;
 };
 
+/** How an answer's math renders in the reader document. */
+export type WorkflowTestReaderInlineAskMath = {
+  katexCount: number;
+  inlineCount: number;
+  displayBlocks: Array<{
+    textAlign: string;
+    overflowX: string;
+    /** Distance of the formula's center from its block's center, in px. */
+    centerOffset: number;
+  }>;
+  /** True when a `$` shows in the answer text outside code. */
+  literalDollarOutsideCode: boolean;
+  codeTexts: string[];
+  katexLinkCount: number;
+  mathStyleCount: number;
+  /** Rules in the KaTeX stylesheet; 0 means it did not load. */
+  cssRules: number;
+  katexFontFamily: string;
+  katexColor: string;
+  answerColor: string;
+  katexFontSize: number;
+  answerFontSize: number;
+  answerWidth: number;
+  fontLoaded: boolean;
+  /** KaTeX font faces in the document, as "family:status". */
+  fontFaces: string[];
+};
+
 /** The card after a click on the More button or a text-size menu control. */
 export type WorkflowTestReaderInlineAskTextSize = {
   card: WorkflowTestReaderInlineAskCard;
@@ -2167,6 +2195,15 @@ export type WorkflowTestApi = {
     fromChar?: number;
     toChar?: number;
   }) => Promise<WorkflowTestReaderInlineAskAnswerSelection>;
+  /** Drags over the whole inline math at `mathIndex` of an answer. */
+  selectReaderInlineAskAnswerMath: (input: {
+    answerIndex: number;
+    mathIndex: number;
+  }) => Promise<WorkflowTestReaderInlineAskAnswerSelection>;
+  /** Reads how the answer's math renders. */
+  readReaderInlineAskMath: (
+    answerIndex: number,
+  ) => Promise<WorkflowTestReaderInlineAskMath>;
   /** Clicks the passage line (it expands or collapses). */
   clickReaderInlineAskPassage: () => Promise<WorkflowTestReaderInlineAskCard>;
   /** Leaves the annotation card with its Back or Cancel button. */

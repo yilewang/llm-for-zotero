@@ -1129,6 +1129,58 @@ function renderMathPreviewToken(math: string, display: boolean): string | null {
   return `<span class="${className}">${rendered}</span>`;
 }
 
+export type DelimitedMathSpan = {
+  /** Index just after the closing delimiter. */
+  end: number;
+  /** The span with its delimiters, as written. */
+  source: string;
+  /** The LaTeX between the delimiters. */
+  math: string;
+  display: boolean;
+};
+
+/**
+ * The delimited math span that opens at `cursor`, or null. The delimiter
+ * rules (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) live here for callers outside the
+ * chat's Markdown tokenizer.
+ */
+export function matchDelimitedMathAt(
+  text: string,
+  cursor: number,
+): DelimitedMathSpan | null {
+  const span = (
+    openLength: number,
+    closeIndex: number,
+    closeLength: number,
+    display: boolean,
+  ): DelimitedMathSpan => ({
+    end: closeIndex + closeLength,
+    source: text.slice(cursor, closeIndex + closeLength),
+    math: text.slice(cursor + openLength, closeIndex),
+    display,
+  });
+  if (text.startsWith("$$", cursor) && !isEscapedDelimiter(text, cursor)) {
+    const closeIndex = findClosingDisplayDollarMath(text, cursor);
+    if (closeIndex > cursor + 2) return span(2, closeIndex, 2, true);
+  } else if (
+    text.startsWith("\\(", cursor) &&
+    !isEscapedDelimiter(text, cursor)
+  ) {
+    const closeIndex = findClosingEscapedMathDelimiter(text, cursor, "\\)");
+    if (closeIndex > cursor + 2) return span(2, closeIndex, 2, false);
+  } else if (
+    text.startsWith("\\[", cursor) &&
+    !isEscapedDelimiter(text, cursor)
+  ) {
+    const closeIndex = findClosingEscapedMathDelimiter(text, cursor, "\\]");
+    if (closeIndex > cursor + 2) return span(2, closeIndex, 2, true);
+  } else if (canOpenInlineDollarMath(text, cursor)) {
+    const closeIndex = findClosingInlineDollarMath(text, cursor);
+    if (closeIndex > cursor + 1) return span(1, closeIndex, 1, false);
+  }
+  return null;
+}
+
 /**
  * Render only delimited LaTeX for a compact quote preview.
  *
@@ -1155,53 +1207,11 @@ export function renderMathPreviewHtml(text: string): string {
       continue;
     }
 
-    let source = "";
-    let math = "";
-    let display = false;
-    let end = cursor;
-
-    if (text.startsWith("$$", cursor) && !isEscapedDelimiter(text, cursor)) {
-      const closeIndex = findClosingDisplayDollarMath(text, cursor);
-      if (closeIndex > cursor + 2) {
-        end = closeIndex + 2;
-        source = text.slice(cursor, end);
-        math = text.slice(cursor + 2, closeIndex);
-        display = true;
-      }
-    } else if (
-      text.startsWith("\\(", cursor) &&
-      !isEscapedDelimiter(text, cursor)
-    ) {
-      const closeIndex = findClosingEscapedMathDelimiter(text, cursor, "\\)");
-      if (closeIndex > cursor + 2) {
-        end = closeIndex + 2;
-        source = text.slice(cursor, end);
-        math = text.slice(cursor + 2, closeIndex);
-      }
-    } else if (
-      text.startsWith("\\[", cursor) &&
-      !isEscapedDelimiter(text, cursor)
-    ) {
-      const closeIndex = findClosingEscapedMathDelimiter(text, cursor, "\\]");
-      if (closeIndex > cursor + 2) {
-        end = closeIndex + 2;
-        source = text.slice(cursor, end);
-        math = text.slice(cursor + 2, closeIndex);
-        display = true;
-      }
-    } else if (canOpenInlineDollarMath(text, cursor)) {
-      const closeIndex = findClosingInlineDollarMath(text, cursor);
-      if (closeIndex > cursor + 1) {
-        end = closeIndex + 1;
-        source = text.slice(cursor, end);
-        math = text.slice(cursor + 1, closeIndex);
-      }
-    }
-
-    if (source) {
-      const mathHtml = renderMathPreviewToken(math, display);
-      rendered.push(mathHtml || escapeHtml(source));
-      cursor = end;
+    const span = matchDelimitedMathAt(text, cursor);
+    if (span) {
+      const mathHtml = renderMathPreviewToken(span.math, span.display);
+      rendered.push(mathHtml || escapeHtml(span.source));
+      cursor = span.end;
       continue;
     }
 
@@ -1923,30 +1933,40 @@ function renderCodeBlock(code: string, raw: string): string {
   );
 }
 
-/** Render display math block */
-function renderMathBlock(content: string): string {
-  // Remove $$ or \[...\] delimiters
-  const copySource = content.trim();
-  let math = copySource;
+/** The LaTeX inside a display block's $$…$$ or \[…\] delimiters. */
+function stripDisplayMathDelimiters(content: string): string {
+  let math = content.trim();
   if (math.startsWith("$$") && math.endsWith("$$")) {
     math = math.slice(2, -2);
   } else {
     if (math.startsWith("\\[")) math = math.slice(2);
     if (math.endsWith("\\]")) math = math.slice(0, -2);
   }
-  math = math.trim();
+  return math.trim();
+}
+
+/**
+ * A display math block as the chat renders it, without the copy bar:
+ * `<div class="math-display">…KaTeX…</div>`.
+ */
+export function renderMathDisplayBlockHtml(content: string): string {
+  return `<div class="math-display">${renderDisplayLatex(
+    stripDisplayMathDelimiters(content),
+  )}</div>`;
+}
+
+/** Render display math block */
+function renderMathBlock(content: string): string {
+  const copySource = content.trim();
 
   if (zoteroNoteMode) {
     // Zotero note-editor expects <pre class="math">$$LaTeX$$</pre>
-    return `<pre class="math">$$${escapeHtml(math)}$$</pre>`;
+    return `<pre class="math">$$${escapeHtml(
+      stripDisplayMathDelimiters(content),
+    )}$$</pre>`;
   }
 
-  const rendered = renderDisplayLatex(math);
-  return wrapCopyable(
-    `<div class="math-display">${rendered}</div>`,
-    copySource,
-    "math",
-  );
+  return wrapCopyable(renderMathDisplayBlockHtml(content), copySource, "math");
 }
 
 /** Render header */

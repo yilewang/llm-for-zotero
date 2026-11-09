@@ -16,6 +16,15 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   var manifestURI = Services.io.newURI(rootURI + "manifest.json");
   chromeHandle = aomStartup.registerChrome(manifestURI, [
     ["content", "__addonRef__", rootURI + "content/"],
+    // Reader documents have a content principal, so chrome:// fonts there
+    // load only from a content-accessible package. Expose just KaTeX's CSS
+    // and fonts, for the Inline Ask card, not the whole content folder.
+    [
+      "content",
+      "__addonRef__-katex",
+      rootURI + "content/vendor/katex/",
+      "contentaccessible=yes",
+    ],
   ]);
 
   /**

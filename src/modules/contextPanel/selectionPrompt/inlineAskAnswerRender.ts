@@ -2,7 +2,10 @@
  * Renders an Inline Ask answer in a reader document: paragraphs, soft line
  * breaks, bullet and numbered lists, bold, italic, inline code, and fenced
  * code, all with inline styles (plugin CSS does not reach reader documents).
- * Math stays as text. Text goes in through text nodes only, never as markup.
+ * Math renders through the chat's pipeline (same delimiters, KaTeX options,
+ * markup, and classes); its stylesheet and overrides are added to the reader
+ * document once. Text goes in through text nodes, and KaTeX output goes in
+ * through the chat's sanitizer, never as raw markup.
  *
  * Code sizes are relative (0.88em of the 12.5px answer text = 11px), so the
  * card scales the answer by setting one font size on the container.
@@ -10,6 +13,14 @@
  * The card asks for no citation markers; any `[[cite:…]]` or `[[quote:…]]`
  * token the model writes anyway is removed before rendering.
  */
+import {
+  matchDelimitedMathAt,
+  renderMathDisplayBlockHtml,
+  renderMathPreviewHtml,
+} from "../../../utils/markdown";
+import { config } from "../../../../package.json";
+import { pluginStylesheetHref } from "../../../utils/pluginReload";
+import { parseSanitizedRenderedHtml } from "../renderedMarkdown";
 import { XHTML_NS, type ReaderOverlayPalette } from "./readerOverlayShared";
 
 export type InlineAskInline = {
@@ -20,7 +31,8 @@ export type InlineAskInline = {
 export type InlineAskBlock =
   | { kind: "paragraph"; lines: InlineAskInline[][] }
   | { kind: "list"; ordered: boolean; items: InlineAskInline[][] }
-  | { kind: "code"; text: string };
+  | { kind: "code"; text: string }
+  | { kind: "math"; text: string };
 
 const CITATION_TOKEN = /[ \t]*\[\[(?:cite|quote):[^\]\n]*\]\]/giu;
 
@@ -57,12 +69,13 @@ export function parseInlineAskInlines(text: string): InlineAskInline[] {
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
-    if (ch === "$") {
-      // Math stays as text: no emphasis inside $…$.
-      const end = text.indexOf("$", i + 1);
-      if (end > i + 1 && !text.slice(i + 1, end).includes("\n")) {
-        buffer += text.slice(i, end + 1);
-        i = end + 1;
+    if (ch === "$" || ch === "\\") {
+      // A math span is skipped whole, by the chat's delimiter rules: no
+      // emphasis or code inside it. The renderer turns it into KaTeX.
+      const span = matchDelimitedMathAt(text, i);
+      if (span) {
+        buffer += span.source;
+        i = span.end;
         continue;
       }
     }
@@ -114,6 +127,29 @@ const NUMBERED = /^\s*\d+[.)]\s+(.*)$/u;
 const HEADING = /^\s*#{1,6}\s+(.*)$/u;
 const FENCE = /^\s*```/u;
 
+/**
+ * A display block (`$$…$$` or `\\[…\\]`, on one line or several) that fills
+ * the lines from `start` to `last` and nothing else; else null.
+ */
+function readDisplayMathBlock(
+  lines: string[],
+  start: number,
+): { text: string; last: number } | null {
+  const first = lines[start].trim();
+  if (!first.startsWith("$$") && !first.startsWith("\\[")) return null;
+  for (let last = start; last < lines.length && lines[last].trim(); last++) {
+    const joined = lines
+      .slice(start, last + 1)
+      .join("\n")
+      .trim();
+    const span = matchDelimitedMathAt(joined, 0);
+    if (span?.display && span.end === joined.length) {
+      return { text: joined, last };
+    }
+  }
+  return null;
+}
+
 export function parseInlineAskAnswer(text: string): InlineAskBlock[] {
   const lines = stripInlineAskCitationTokens(text)
     .replace(/\r\n?/gu, "\n")
@@ -139,6 +175,13 @@ export function parseInlineAskAnswer(text: string): InlineAskBlock[] {
     }
     if (!line.trim()) {
       close();
+      continue;
+    }
+    const mathBlock = readDisplayMathBlock(lines, index);
+    if (mathBlock) {
+      close();
+      blocks.push({ kind: "math", text: mathBlock.text });
+      index = mathBlock.last;
       continue;
     }
     const heading = HEADING.exec(line);
@@ -181,6 +224,73 @@ export function parseInlineAskAnswer(text: string): InlineAskBlock[] {
 const MONO =
   'ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace';
 
+const MATH_STYLE_ID = "llm-inline-ask-math-style";
+const KATEX_LINK_ID = "llm-inline-ask-katex-css";
+
+/**
+ * The chat's math rules (addon/content/zoteroPane.css, "Math Rendering
+ * Styles"), scoped to the card so nothing reaches Zotero's reader UI. Display
+ * blocks use the chat's flat look: centered, no tinted box.
+ */
+const MATH_CSS = [
+  "[data-llm-inline-ask] .math-inline{display:inline;vertical-align:baseline}",
+  "[data-llm-inline-ask] .katex{font-size:1.1em}",
+  "[data-llm-inline-ask] .katex svg{background:transparent}",
+  "[data-llm-inline-ask] .math-display .katex{font-size:1.2em}",
+  "[data-llm-inline-ask] .katex-display{margin:0 !important;width:auto;max-width:100%;min-width:0}",
+  "[data-llm-inline-ask] .math-display{display:block;width:auto;max-width:100%;min-width:0;padding:4px 0;background:transparent;text-align:center;overflow-x:auto;overflow-y:hidden;box-sizing:border-box}",
+  "[data-llm-inline-ask] .math-display>.katex-display{min-width:0}",
+  "[data-llm-inline-ask] .math-display>.katex-display>.katex{display:block;max-width:none;min-width:0;overflow:visible;text-align:center;white-space:nowrap}",
+  "[data-llm-inline-ask] .math-display .katex-display>.katex>.katex-html>.tag,[data-llm-inline-ask] .math-display-inline .katex-display>.katex>.katex-html>.tag{position:static;margin-left:1em}",
+  '[data-llm-inline-ask] .math-error{font-family:"Cambria Math","Times New Roman",Georgia,serif;font-style:italic;color:#cc0000;background:rgba(204,0,0,0.1);padding:2px 4px;border-radius:3px}',
+  "[data-llm-inline-ask] .math-display-inline{display:inline-block;vertical-align:middle;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden}",
+  "[data-llm-inline-ask] .math-display-inline>.katex-display>.katex{display:inline-block;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden}",
+].join("\n");
+
+/**
+ * Adds the KaTeX stylesheet link and the card-scoped math overrides to a
+ * reader document, once per document however many cards open there.
+ */
+export function ensureInlineAskMathStyles(doc: Document): void {
+  const parent = doc.head || doc.documentElement;
+  if (!parent) return;
+  // The content-accessible KaTeX package (addon/bootstrap.js): the reader
+  // document cannot load fonts from the main package. Same version query as
+  // the chat's link, for the same stale-cache reason.
+  const href = pluginStylesheetHref("vendor/katex/katex.min.css").replace(
+    `chrome://${config.addonRef}/content/vendor/katex/`,
+    `chrome://${config.addonRef}-katex/content/`,
+  );
+  let link = doc.getElementById(KATEX_LINK_ID) as HTMLLinkElement | null;
+  if (!link) {
+    link = doc.createElementNS(XHTML_NS, "link") as HTMLLinkElement;
+    link.id = KATEX_LINK_ID;
+    link.rel = "stylesheet";
+    link.type = "text/css";
+    link.href = href;
+    parent.appendChild(link);
+  } else if (link.getAttribute("href") !== href) {
+    link.href = href;
+  }
+  if (!doc.getElementById(MATH_STYLE_ID)) {
+    const style = doc.createElementNS(XHTML_NS, "style") as HTMLStyleElement;
+    style.id = MATH_STYLE_ID;
+    style.textContent = MATH_CSS;
+    parent.appendChild(style);
+  }
+}
+
+/** Text with its math spans rendered as the chat renders them. */
+function appendMathText(doc: Document, parent: HTMLElement, text: string) {
+  if (!text.includes("$") && !text.includes("\\")) {
+    parent.appendChild(doc.createTextNode(text));
+    return;
+  }
+  parent.appendChild(
+    parseSanitizedRenderedHtml(renderMathPreviewHtml(text), doc),
+  );
+}
+
 function appendInlines(
   doc: Document,
   parent: HTMLElement,
@@ -189,7 +299,7 @@ function appendInlines(
 ): void {
   for (const inline of inlines) {
     if (inline.kind === "text") {
-      parent.appendChild(doc.createTextNode(inline.text));
+      appendMathText(doc, parent, inline.text);
       continue;
     }
     const tag =
@@ -210,7 +320,8 @@ function appendInlines(
         "padding:0 3px",
       ].join(";");
     }
-    node.textContent = inline.text;
+    if (inline.kind === "code") node.textContent = inline.text;
+    else appendMathText(doc, node, inline.text);
     parent.appendChild(node);
   }
 }
@@ -223,6 +334,7 @@ export function renderInlineAskAnswer(
   palette: ReaderOverlayPalette,
 ): void {
   container.textContent = "";
+  ensureInlineAskMathStyles(doc);
   const blocks = parseInlineAskAnswer(text);
   blocks.forEach((block, index) => {
     const margin = index === blocks.length - 1 ? "0" : "0 0 0.5em";
@@ -247,6 +359,12 @@ export function renderInlineAskAnswer(
         appendInlines(doc, li, item, palette);
         node.appendChild(li);
       }
+    } else if (block.kind === "math") {
+      node = doc.createElementNS(XHTML_NS, "div") as HTMLElement;
+      node.style.cssText = `margin:${margin}`;
+      node.appendChild(
+        parseSanitizedRenderedHtml(renderMathDisplayBlockHtml(block.text), doc),
+      );
     } else {
       node = doc.createElementNS(XHTML_NS, "pre") as HTMLElement;
       node.style.cssText = [
@@ -272,7 +390,7 @@ function inlinesToText(inlines: InlineAskInline[]): string {
 /**
  * The answer as plain text for an annotation comment: the words the card
  * shows, without the Markdown markers it interprets (emphasis, code ticks,
- * headings, fences, citation tokens). Bullets become "•", numbered items
+ * headings, fences, citation tokens). Math keeps its TeX source. Bullets become "•", numbered items
  * keep their numbers, and blocks are separated by a blank line.
  */
 export function inlineAskAnswerToPlainText(text: string): string {
