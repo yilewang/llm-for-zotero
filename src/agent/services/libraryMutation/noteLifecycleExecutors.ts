@@ -1,10 +1,12 @@
 import {
   createdNoteOutcome,
   executeNoteCreation,
+  findNoteHeldForRow,
+  findUnattributedNoteStep,
   findUncertainNoteStepForRow,
+  heldNoteReason,
   readReservedNote,
   RESERVED_NOTE_MISMATCH,
-  UNACCOUNTED_NOTE_REASON,
 } from "../noteCreation";
 import { MutationNoEffectError } from "../externalMutationCoordinator";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
@@ -186,15 +188,26 @@ type InterruptedCreation =
  * The process can end after a note was saved and before its journal step
  * recorded that. The step reserved the note's key, so the key says what
  * happened:
- * - a live note at the key, on the intended parent, with the finalized
- *   content: the step is recorded as applied, exactly as a creation that had
- *   finished would have recorded it, and its row as saved;
- * - nothing at the key: the creation never landed; the step fails and the
- *   row is written as usual;
- * - anything else (trashed, moved, edited): the step stays `uncertain` and
- *   the row is refused with the reason. A replacement would be the second
- *   note on that paper, and a failed step would let a later resume write it.
+ * - a live note at the key, on the intended parent (a standalone note: in
+ *   each collection it was filed into), with the finalized content: the
+ *   step is recorded as applied, exactly as a creation that had finished
+ *   would have recorded it, and its row as saved;
+ * - nothing at the key: the creation never landed; the step is recorded as
+ *   having had no effect and the row is written as usual;
+ * - anything else: the step stays `uncertain` and the row is refused with
+ *   the reason. A note the user trashed or edited, moved to another parent,
+ *   or took out of a collection it was filed into was changed by the user
+ *   and is left alone: neither kept for the row nor written again. A
+ *   replacement would be the second note on that paper, and a settled step
+ *   would let a later resume write it.
  *
+ * A step written before steps recorded their row, whose body matches no row
+ * (a cited work changed since), is some unwritten row's and nothing says
+ * which: while a note is at its key, every row it could be is refused
+ * instead of written (`findUnattributedNoteStep`).
+ *
+ * The settling is read again from native state on every resume that
+ * reopens the action, so a refusal ends once the user puts the note back.
  * It runs inside the action the resume reopened, which holds the claim, so
  * no other resume can settle the same steps at the same time.
  */
@@ -233,8 +246,8 @@ async function settleInterruptedNoteCreations(params: {
         targetItemId: entry.targetItemId,
         standalone,
         collections,
-        // Only an older standalone step, which does not record its row,
-        // needs the rebuilt body to tell which row it belongs to.
+        // Only an older step, which does not record its row, needs the
+        // rebuilt body to tell which row it belongs to.
         rebuiltHtml: () =>
           noteHtmlForBatchItem({ bound, content: entry.content, libraryID }),
       });
@@ -265,12 +278,19 @@ async function settleInterruptedNoteCreations(params: {
           libraryID: Number(forward.libraryID),
           key: forward.key as string,
           parentItemId,
+          // The collections the step filed the note into: a note taken out
+          // of one was moved by the user.
+          collections: Array.isArray(forward.collections)
+            ? forward.collections.map(Number)
+            : [],
         });
         if (reserved.kind === "absent") {
+          // Nothing landed, so the step had no effect: the action can still
+          // read fully applied once the row is written.
           await inJournalTransaction(() =>
             updateJournalStep({
               stepId: step.stepId,
-              status: "failed",
+              status: "no_effect",
               reversibility: "full",
               error: "Interrupted before the change landed.",
             }),
@@ -278,7 +298,7 @@ async function settleInterruptedNoteCreations(params: {
           continue;
         }
         if (reserved.kind === "changed") {
-          await block(`${reserved.reason} (note ${reserved.note.id})`);
+          await block(reserved.reason);
           break;
         }
         const note = reserved.note;
@@ -343,6 +363,36 @@ async function settleInterruptedNoteCreations(params: {
       }
     }
   }
+  // Older steps that matched no row by body, once every row has taken its
+  // own: while a note is at such a step's key, each row it could be is
+  // refused. The step is left as it is; it is no row's to settle.
+  for (const [index, entry] of operation.notes.entries()) {
+    if (!open.length) break;
+    const bound = binding.items[index];
+    if (
+      !bound ||
+      settled.has(bound.itemKey) ||
+      params.priorRows.get(bound.itemKey)?.status === "saved" ||
+      params.refused.has(bound.itemKey)
+    )
+      continue;
+    const unattributed = findUnattributedNoteStep(open, {
+      batchId: binding.batchId,
+      itemKey: bound.itemKey,
+      targetItemId: entry.targetItemId,
+      standalone,
+      collections: standalone ? entry.collections || [] : [],
+    });
+    if (unattributed)
+      settled.set(bound.itemKey, {
+        kind: "blocked",
+        reason: heldNoteReason(unattributed.note),
+        journalStep: {
+          actionId: unattributed.step.actionId,
+          sequence: unattributed.step.sequence,
+        },
+      });
+  }
   return settled;
 }
 
@@ -366,26 +416,29 @@ type RefusedRow = {
  * settled from here, because this call does not hold that action.
  *
  * The candidate actions are the ones the rows named before this call linked
- * them to its own action.
+ * them to its own action, and the one the resume meant to continue: a row
+ * written before rows were linked at the start names no action while its
+ * note is in flight.
  */
 async function refuseRowsHeldElsewhere(params: {
   operation: SaveNotesBatchOperation;
   binding: AgentBatchBinding;
   priorRows: ReadonlyMap<string, BatchItemRecord>;
   scope: AgentJournalActionScope;
+  /** The action the resume was prepared to continue, if any. */
+  resumedActionId?: string;
   libraryIdOf: (targetItemId: number) => number | undefined;
 }): Promise<Map<string, RefusedRow>> {
   const { operation, binding, priorRows, scope } = params;
   const refused = new Map<string, RefusedRow>();
   const others = [
     ...new Set(
-      [...priorRows.values()].flatMap((row) =>
-        row.status !== "saved" &&
-        row.actionId &&
-        row.actionId !== scope.actionId
-          ? [row.actionId]
-          : [],
-      ),
+      [
+        ...[...priorRows.values()].flatMap((row) =>
+          row.status !== "saved" && row.actionId ? [row.actionId] : [],
+        ),
+        ...(params.resumedActionId ? [params.resumedActionId] : []),
+      ].filter((actionId) => actionId !== scope.actionId),
     ),
   ];
   if (!others.length) return refused;
@@ -401,14 +454,17 @@ async function refuseRowsHeldElsewhere(params: {
   const standalone = operation.target === "standalone";
   for (const [index, entry] of operation.notes.entries()) {
     const bound = binding.items[index];
-    if (!bound || priorRows.get(bound.itemKey)?.status === "saved") continue;
+    const prior = bound ? priorRows.get(bound.itemKey) : undefined;
+    if (!bound || prior?.status === "saved") continue;
     const libraryID = params.libraryIdOf(entry.targetItemId);
-    const match = await findUncertainNoteStepForRow(steps, {
+    const held = await findNoteHeldForRow(steps, {
       batchId: binding.batchId,
       itemKey: bound.itemKey,
       targetItemId: entry.targetItemId,
       standalone,
       collections: standalone ? entry.collections || [] : [],
+      actionId: prior?.actionId,
+      stepSequence: prior?.stepSequence,
       rebuiltHtml:
         libraryID === undefined
           ? undefined
@@ -419,12 +475,12 @@ async function refuseRowsHeldElsewhere(params: {
                 libraryID,
               }),
     });
-    if (match)
+    if (held)
       refused.set(bound.itemKey, {
-        reason: UNACCOUNTED_NOTE_REASON,
+        reason: held.reason,
         journalStep: {
-          actionId: match.step.actionId,
-          sequence: match.step.sequence,
+          actionId: held.step.actionId,
+          sequence: held.step.sequence,
         },
       });
   }
@@ -481,6 +537,7 @@ export const noteLifecycleExecutors = {
             binding,
             priorRows,
             scope,
+            resumedActionId: context.resumeJournalAction?.actionId,
             libraryIdOf: (targetItemId) =>
               zoteroGateway.getItem(targetItemId)?.libraryID,
           })

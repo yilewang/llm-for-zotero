@@ -55,10 +55,36 @@ export type BatchItemRef = { batchId: string; itemKey: string };
 
 /**
  * Why a batch row is refused when a note an earlier attempt reserved for it
- * is held by an action the current attempt cannot settle.
+ * is held by an action the current attempt cannot settle, and nothing is at
+ * the reserved key to name.
  */
 export const UNACCOUNTED_NOTE_REASON =
   "The state of the note an earlier attempt began for this item is unknown, so it was not rewritten";
+
+/**
+ * Why a batch row is refused when the note an earlier attempt reserved for
+ * it is held back (an action the current attempt cannot settle holds it, or
+ * an older step cannot be tied to one row), naming that note when it is in
+ * the library.
+ */
+export function heldNoteReason(note: Zotero.Item | null): string {
+  if (!note) return UNACCOUNTED_NOTE_REASON;
+  return note.deleted
+    ? `A note from the interrupted attempt (note ${note.id}) is in the trash; this item was not rewritten.`
+    : `A note from the interrupted attempt (note ${note.id}) is still in the library; this item was not rewritten.`;
+}
+
+/** The note at the key a create_note step reserved, if any is there. */
+export function noteAtReservedKey(
+  forward: CreateNoteForward,
+): Zotero.Item | null {
+  if (typeof forward.key !== "string") return null;
+  const found = Zotero.Items.getByLibraryAndKey(
+    Number(forward.libraryID),
+    forward.key,
+  );
+  return found && found.id ? (found as Zotero.Item) : null;
+}
 
 /** The forward payload a create_note step reserved. */
 export type CreateNoteForward = {
@@ -75,56 +101,82 @@ function sameCollections(left: unknown, right: readonly number[]): boolean {
   return ids.length === right.length && ids.every((id) => right.includes(id));
 }
 
+/** The row of a durable note batch a step is matched against. */
+type BatchRowRef = {
+  batchId: string;
+  itemKey: string;
+  targetItemId: number;
+  standalone: boolean;
+  collections?: readonly number[];
+};
+
+function parseForward(step: JournalStep): CreateNoteForward | undefined {
+  try {
+    const forward = JSON.parse(step.forwardJson) as CreateNoteForward;
+    return forward && typeof forward.key === "string" ? forward : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isOpenNoteStep(step: JournalStep): boolean {
+  return step.operation === "create_note" && step.status === "uncertain";
+}
+
+/** Whether a step's forward records the batch row it writes. */
+function recordsRow(forward: CreateNoteForward): boolean {
+  return Boolean(forward.batchItem && typeof forward.batchItem === "object");
+}
+
+/**
+ * Whether an older step, which does not record its row, has the shape of
+ * this row's note: a child note on the same paper, or a parentless note
+ * filed into the same collections.
+ */
+function fitsRow(forward: CreateNoteForward, row: BatchRowRef): boolean {
+  if (!row.standalone) return forward.parentItemId === row.targetItemId;
+  return (
+    (forward.parentItemId === undefined || forward.parentItemId === null) &&
+    sameCollections(forward.collections, row.collections || [])
+  );
+}
+
 /**
  * The first `uncertain` create_note step among `steps` that reserved the note
  * of this batch row, with its forward payload.
  *
  * A step that records its row (`batchItem`) matches on that alone, so the
  * match does not depend on the parent, the collections or the body. A step
- * written before steps recorded their row is matched as before: a child note
- * by its parent, a standalone note by its collections and its reserved body
- * against `rebuiltHtml`. That body is rebuilt from current metadata, so an
- * older standalone step can fail to match after a cited work changed; with
- * no `rebuiltHtml`, no older standalone step matches.
+ * written before steps recorded their row matches only when it has the
+ * row's shape (its parent, or no parent and the row's collections) and its
+ * reserved body equals the row's body rebuilt by `rebuiltHtml`. The parent
+ * alone is not enough: a batch can write two notes on one paper, and the
+ * step of the second would otherwise be taken as the first's. The body is
+ * rebuilt from current metadata, so an older step can fail to match after a
+ * cited work changed; with no `rebuiltHtml`, no older step matches. An older
+ * step that matches no row is for `findUnattributedNoteStep`.
  *
  * Shared by the resume's preparation, the executor's write-time refusal and
  * the settler, so the three cannot disagree on which step is whose.
  */
 export async function findUncertainNoteStepForRow(
   steps: readonly JournalStep[],
-  row: {
-    batchId: string;
-    itemKey: string;
-    targetItemId: number;
-    standalone: boolean;
-    collections?: readonly number[];
+  row: BatchRowRef & {
     rebuiltHtml?: () => Promise<string | undefined>;
   },
 ): Promise<{ step: JournalStep; forward: CreateNoteForward } | undefined> {
   let rebuilt: Promise<string | undefined> | undefined;
   for (const step of steps) {
-    if (step.operation !== "create_note" || step.status !== "uncertain")
-      continue;
-    let forward: CreateNoteForward;
-    try {
-      forward = JSON.parse(step.forwardJson) as CreateNoteForward;
-    } catch {
-      continue;
-    }
-    if (!forward || typeof forward.key !== "string") continue;
-    const recorded = forward.batchItem as Partial<BatchItemRef> | undefined;
-    if (recorded && typeof recorded === "object") {
+    if (!isOpenNoteStep(step)) continue;
+    const forward = parseForward(step);
+    if (!forward) continue;
+    if (recordsRow(forward)) {
+      const recorded = forward.batchItem as Partial<BatchItemRef>;
       if (recorded.batchId === row.batchId && recorded.itemKey === row.itemKey)
         return { step, forward };
       continue;
     }
-    if (!row.standalone) {
-      if (forward.parentItemId === row.targetItemId) return { step, forward };
-      continue;
-    }
-    if (forward.parentItemId !== undefined && forward.parentItemId !== null)
-      continue;
-    if (!sameCollections(forward.collections, row.collections || [])) continue;
+    if (!fitsRow(forward, row)) continue;
     if (!row.rebuiltHtml) continue;
     rebuilt ||= row.rebuiltHtml().catch(() => undefined);
     const current = await rebuilt;
@@ -140,6 +192,82 @@ export async function findUncertainNoteStepForRow(
   return undefined;
 }
 
+/**
+ * An `uncertain` create_note step among `steps` that could hold this row's
+ * note but cannot be tied to it: a step written before steps recorded their
+ * row, with the row's shape (see `findUncertainNoteStepForRow`), whose body
+ * matches no row, and with a note at its reserved key.
+ *
+ * Such a note is some unwritten row's, and nothing says which, so writing
+ * any row it could be would put a second note beside it. Callers refuse
+ * those rows instead. A step with nothing at its key had no effect and
+ * holds nothing back.
+ */
+export function findUnattributedNoteStep(
+  steps: readonly JournalStep[],
+  row: BatchRowRef,
+): { step: JournalStep; note: Zotero.Item } | undefined {
+  for (const step of steps) {
+    if (!isOpenNoteStep(step)) continue;
+    const forward = parseForward(step);
+    if (!forward || recordsRow(forward) || !fitsRow(forward, row)) continue;
+    const note = noteAtReservedKey(forward);
+    if (note) return { step, note };
+  }
+  return undefined;
+}
+
+/**
+ * The note an action the current attempt does not settle holds for this
+ * row, with the reason the row is refused; undefined when it holds none.
+ *
+ * The step the row itself names (`actionId` and `stepSequence`, set when a
+ * resume refused the row) counts while it is uncertain, then a step matched
+ * to the row, then an older step that could be the row's. Shared by the
+ * resume's preparation and the executor's write-time refusal, so the two
+ * refuse the same rows for the same reason.
+ */
+export async function findNoteHeldForRow(
+  steps: readonly JournalStep[],
+  row: BatchRowRef & {
+    actionId?: string | null;
+    stepSequence?: number | null;
+    rebuiltHtml?: () => Promise<string | undefined>;
+  },
+): Promise<{ step: JournalStep; reason: string } | undefined> {
+  const named =
+    row.actionId && row.stepSequence != null
+      ? steps.find(
+          (step) =>
+            step.actionId === row.actionId &&
+            step.sequence === row.stepSequence &&
+            isOpenNoteStep(step),
+        )
+      : undefined;
+  if (named) {
+    const forward = parseForward(named);
+    return {
+      step: named,
+      reason: forward
+        ? heldNoteReason(noteAtReservedKey(forward))
+        : UNACCOUNTED_NOTE_REASON,
+    };
+  }
+  const matched = await findUncertainNoteStepForRow(steps, row);
+  if (matched)
+    return {
+      step: matched.step,
+      reason: heldNoteReason(noteAtReservedKey(matched.forward)),
+    };
+  const unattributed = findUnattributedNoteStep(steps, row);
+  return unattributed
+    ? {
+        step: unattributed.step,
+        reason: heldNoteReason(unattributed.note),
+      }
+    : undefined;
+}
+
 export const RESERVED_NOTE_MISMATCH =
   "The reserved note does not match the finalized content; no new note was created";
 
@@ -147,15 +275,18 @@ export const RESERVED_NOTE_MISMATCH =
  * What native Zotero holds at the key a note creation reserved.
  *
  * `absent` means the creation never landed. `live` is a note at that key,
- * not trashed, on the intended parent; whether its content is the intended
- * one is for the caller to verify. Anything else at the key is `changed`:
- * the creation landed and was then removed, moved or replaced, and no
- * replacement may be written for it.
+ * not trashed, on the intended parent and, when `collections` is given, in
+ * each of them; whether its content is the intended one is for the caller
+ * to verify. Anything else at the key is `changed`: the creation landed and
+ * was then removed, moved or replaced, and no replacement may be written for
+ * it. A note moved to another parent, or out of a collection it was filed
+ * into, was moved by the user and is left where it is.
  */
 export function readReservedNote(params: {
   libraryID: number;
   key: string;
   parentItemId?: number;
+  collections?: readonly number[];
 }):
   | { kind: "absent"; note: null }
   | { kind: "live"; note: Zotero.Item }
@@ -163,16 +294,21 @@ export function readReservedNote(params: {
   const found = Zotero.Items.getByLibraryAndKey(params.libraryID, params.key);
   const note = found && found.id ? (found as Zotero.Item) : null;
   if (!note) return { kind: "absent", note: null };
+  if (note.deleted || !note.isNote())
+    return {
+      kind: "changed",
+      note,
+      reason: `The reserved note was removed or changed; recovery cannot create a replacement (note ${note.id})`,
+    };
+  const filedInto = note.getCollections();
   if (
-    note.deleted ||
-    !note.isNote() ||
-    (note.parentID || undefined) !== params.parentItemId
+    (note.parentID || undefined) !== params.parentItemId ||
+    (params.collections || []).some((id) => !filedInto.includes(id))
   )
     return {
       kind: "changed",
       note,
-      reason:
-        "The reserved note was removed or changed; recovery cannot create a replacement",
+      reason: `Note ${note.id} was moved, so I did not touch it.`,
     };
   return { kind: "live", note };
 }

@@ -41,10 +41,7 @@ import { loadPlanDocument } from "../src/agent/documents/store";
 import { documentNoteParts } from "../src/agent/documents/actions";
 import { mergeNoteCitationItems } from "../src/utils/noteCitations";
 import { noteHtmlMatches } from "../src/utils/noteHtml";
-import {
-  findUncertainNoteStepForRow,
-  UNACCOUNTED_NOTE_REASON,
-} from "../src/agent/services/noteCreation";
+import { findUncertainNoteStepForRow } from "../src/agent/services/noteCreation";
 import {
   getOriginalAgentPermissionMode,
   setOriginalAgentPermissionMode,
@@ -62,22 +59,46 @@ function restartPhase(): string {
   );
 }
 
-function tamperMode():
-  | ""
-  | "absent"
-  | "changed"
-  | "undo-first"
-  | "undo-during-card" {
+const TAMPER_MODES = [
+  "absent",
+  "changed",
+  "undo-first",
+  "undo-during-card",
+  "moved",
+  "legacy",
+  "legacy-edited",
+  "legacy-twice",
+  "legacy-undo-first",
+] as const;
+type TamperMode = "" | (typeof TAMPER_MODES)[number];
+
+function tamperMode(): TamperMode {
   const value = String(
     (globalThis as any).Services?.env?.get?.("NOTE_BATCH_RESTART_TAMPER") || "",
   );
-  return value === "absent" ||
-    value === "changed" ||
-    value === "undo-first" ||
-    value === "undo-during-card"
-    ? value
+  return (TAMPER_MODES as readonly string[]).includes(value)
+    ? (value as TamperMode)
     : "";
 }
+
+/** Modes that rewrite the data to its pre-upgrade shape before "continue". */
+function legacyMode(mode: TamperMode): boolean {
+  return mode.startsWith("legacy");
+}
+
+function notesPerPaper(): 1 | 2 {
+  return String(
+    (globalThis as any).Services?.env?.get?.(
+      "NOTE_BATCH_RESTART_NOTES_PER_PAPER",
+    ) || "",
+  ) === "2"
+    ? 2
+    : 1;
+}
+
+/** The refusal a row gets while the note an interrupted attempt left is live. */
+const heldNoteReason = (noteId: number) =>
+  `A note from the interrupted attempt (note ${noteId}) is still in the library; this item was not rewritten.`;
 
 function standaloneTarget(): boolean {
   return (
@@ -113,6 +134,7 @@ type Record = {
   variant: string;
   killAfterNotes: number;
   target?: "item" | "standalone";
+  notesPerPaper?: 1 | 2;
 };
 
 describe("workflow: note batch across a Zotero restart", function () {
@@ -303,6 +325,44 @@ describe("workflow: note batch across a Zotero restart", function () {
     }
   }
 
+  /** The batch's rows as stored, read straight from the table. */
+  async function rowsOf(batchId: string) {
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT item_key, status, action_id, step_sequence, note_id, error
+       FROM llm_for_zotero_agent_batch_items WHERE batch_id = ?`,
+      [batchId],
+    )) as any[];
+    // A result row throws on a property it does not hold (its JSON form
+    // included), so each is read into a plain object.
+    return rows.map((row) => ({
+      itemKey: String(row.item_key),
+      status: String(row.status),
+      actionId: row.action_id === null ? null : String(row.action_id),
+      stepSequence:
+        row.step_sequence === null ? null : Number(row.step_sequence),
+      noteId: row.note_id === null ? null : Number(row.note_id),
+      error: String(row.error || ""),
+    }));
+  }
+
+  /** "Continue" in the panel, the scripted model resuming the named batch. */
+  function resumeFromPanel(record: Record, panelId: string) {
+    return api().resumeNoteBatchAfterRestart({
+      panelId,
+      collection: {
+        collectionId: record.folderId,
+        name: record.folderName,
+        libraryID: Zotero.Libraries.userLibraryID,
+      },
+      papers: record.ids.map((itemId, index) => ({
+        itemId,
+        title: record.titles[index],
+      })),
+      inputTokenCap: 2_000_000,
+      rewritePapers: [],
+    });
+  }
+
   const liveNotesOf = (paperId: number): Zotero.Item[] =>
     Zotero.Items.get(paperId)
       .getNotes()
@@ -345,6 +405,7 @@ describe("workflow: note batch across a Zotero restart", function () {
       variant,
       killAfterNotes: killAfterNotes(),
       target: standaloneTarget() ? "standalone" : "item",
+      notesPerPaper: notesPerPaper(),
     };
     await IOUtils.writeUTF8(recordPath(), JSON.stringify(record));
     const survived = await api().startNoteBatchUntilQuit({
@@ -359,6 +420,7 @@ describe("workflow: note batch across a Zotero restart", function () {
       killAfterNotes: record.killAfterNotes,
       variant,
       target: record.target,
+      notesPerPaper: record.notesPerPaper,
     });
     assert.fail(`Zotero was not ended: ${JSON.stringify(survived)}`);
   }
@@ -716,9 +778,14 @@ describe("workflow: note batch across a Zotero restart", function () {
     }
   });
 
-  it("resume phase (erased or trashed note): the note in flight is finished once, or refused twice, and never written again", async function () {
+  it("resume phase (erased or trashed note): the note in flight is finished once, or refused until the user restores it, and never written again", async function () {
     const mode = tamperMode();
-    if (restartPhase() !== "resume" || !mode || standaloneTarget()) this.skip();
+    if (
+      restartPhase() !== "resume" ||
+      !["absent", "changed", "undo-first", "undo-during-card"].includes(mode) ||
+      standaloneTarget()
+    )
+      this.skip();
     await waitForStartup();
     const record = JSON.parse(await IOUtils.readUTF8(recordPath())) as Record;
     const { ids } = record;
@@ -766,38 +833,7 @@ describe("workflow: note batch across a Zotero restart", function () {
         });
         return action.steps.find((step) => step.stepId === open.stepId)!.status;
       };
-      const rowsOf = async (batchId: string) => {
-        const rows = (await Zotero.DB.queryAsync(
-          `SELECT item_key, status, action_id, step_sequence, error
-           FROM llm_for_zotero_agent_batch_items WHERE batch_id = ?`,
-          [batchId],
-        )) as any[];
-        // A result row throws on a property it does not hold (its JSON
-        // form included), so each is read into a plain object.
-        return rows.map((row) => ({
-          itemKey: String(row.item_key),
-          status: String(row.status),
-          actionId: String(row.action_id),
-          stepSequence:
-            row.step_sequence === null ? null : Number(row.step_sequence),
-          error: String(row.error || ""),
-        }));
-      };
-      const resume = () =>
-        api().resumeNoteBatchAfterRestart({
-          panelId: panel.panelId,
-          collection: {
-            collectionId: record.folderId,
-            name: record.folderName,
-            libraryID,
-          },
-          papers: ids.map((itemId, index) => ({
-            itemId,
-            title: record.titles[index],
-          })),
-          inputTokenCap: 2_000_000,
-          rewritePapers: [],
-        });
+      const resume = () => resumeFromPanel(record, panel.panelId);
       const others = ids.filter((id) => id !== open.paper);
       const inFlightAt = ids.indexOf(open.paper);
       if (mode === "undo-during-card") {
@@ -817,7 +853,8 @@ describe("workflow: note batch across a Zotero restart", function () {
           batchId,
           open.actionId,
         );
-        assert.include(report, UNACCOUNTED_NOTE_REASON, report);
+        // The refusal names the note the earlier attempt left.
+        assert.include(report, heldNoteReason(note.id), report);
         const expectRefusedAfterUndo = async (text: string) => {
           assert.equal(await stepStatus(), "uncertain", text);
           assert.lengthOf(liveNotesOf(open.paper), 1, text);
@@ -835,7 +872,7 @@ describe("workflow: note batch across a Zotero restart", function () {
           assert.equal(refused[0].status, "failed", JSON.stringify(rows));
           assert.equal(refused[0].actionId, open.actionId);
           assert.equal(refused[0].stepSequence, openSequence);
-          assert.equal(refused[0].error, UNACCOUNTED_NOTE_REASON);
+          assert.equal(refused[0].error, heldNoteReason(note.id));
           assert.lengthOf(
             rows.filter((row) => row.status === "saved"),
             ids.length - 1,
@@ -871,8 +908,14 @@ describe("workflow: note batch across a Zotero restart", function () {
           `paper ${id}: ${report}`,
         );
       if (mode === "absent") {
-        // Nothing landed: the step fails and the paper is written once.
-        assert.equal(await stepStatus(), "failed", report);
+        // Nothing landed: the step had no effect and the paper is written
+        // once. With every row saved, the action reads fully applied.
+        assert.equal(await stepStatus(), "no_effect", report);
+        const [action] = await listJournalActions({
+          actionId: open.actionId,
+          limit: 1,
+        });
+        assert.equal(action.status, "applied", report);
         assert.lengthOf(liveNotesOf(open.paper), 1, report);
         assert.lengthOf(
           Zotero.Items.get(open.paper).getNotes(true),
@@ -900,6 +943,9 @@ describe("workflow: note batch across a Zotero restart", function () {
         const rows = await rowsOf(first.resumeBatchId);
         const unsaved = rows.filter((row) => row.status !== "saved");
         assert.lengthOf(unsaved, 1, JSON.stringify(rows));
+        assert.equal(unsaved[0].itemKey, `item:${open.paper}`);
+        // The refusal names the note the earlier attempt left.
+        assert.include(report, heldNoteReason(note.id), report);
         return;
       }
       // Trashed: the reserved note was changed. The step stays open, the row
@@ -936,17 +982,48 @@ describe("workflow: note batch across a Zotero restart", function () {
         `the second continue called the batch: ${JSON.stringify(second)}`,
       );
       await expectRefused(second);
+      // The user restores the note from the trash: the next continue finds
+      // it live and matching, keeps it, and writes nothing.
+      const trashed = Zotero.Items.get(note.id);
+      trashed.deleted = false;
+      await trashed.saveTx();
+      const third = await resume();
+      const thirdReport = JSON.stringify(third);
+      assert.equal(third.resumeBatchId, first.resumeBatchId, thirdReport);
+      assert.equal(await stepStatus(), "applied", thirdReport);
+      const [action] = await listJournalActions({
+        actionId: open.actionId,
+        limit: 1,
+      });
+      assert.equal(action.status, "applied", thirdReport);
+      assert.lengthOf(
+        Zotero.Items.get(open.paper).getNotes(true),
+        1,
+        `only the restored note: ${thirdReport}`,
+      );
+      assert.equal(liveNotesOf(open.paper)[0]?.id, note.id, thirdReport);
+      const rows = await rowsOf(first.resumeBatchId);
+      assert.isTrue(
+        rows.every((row) => row.status === "saved"),
+        JSON.stringify(rows),
+      );
+      assert.equal(
+        rows.find((row) => row.itemKey === `item:${open.paper}`)?.noteId,
+        note.id,
+      );
+      for (const id of others)
+        assert.lengthOf(liveNotesOf(id), 1, `paper ${id}: ${thirdReport}`);
     } finally {
       await cleanUp(record, panel.panelId);
     }
   });
 
-  it("resume phase (standalone notes): continue keeps the note in flight after a cited paper changed, or refuses it after an undo, and never writes it twice", async function () {
+  it("resume phase (standalone notes): continue keeps the note in flight after a cited paper changed, or refuses it after an undo or a move, and never writes it twice", async function () {
     const mode = tamperMode();
     if (
       restartPhase() !== "resume" ||
       !standaloneTarget() ||
-      (mode !== "" && mode !== "undo-first")
+      (mode !== "" && mode !== "undo-first" && mode !== "moved")
     )
       this.skip();
     await waitForStartup();
@@ -1037,6 +1114,12 @@ describe("workflow: note batch across a Zotero restart", function () {
         assert.isFalse(
           Boolean(Zotero.Items.getByLibraryAndKey(libraryID, open.key).deleted),
         );
+      } else if (mode === "moved") {
+        // The user takes the note in flight out of the folder it was filed
+        // into: it was changed by the user and is left alone.
+        reserved.removeFromCollection(record.folderId);
+        await reserved.saveTx();
+        assert.notInclude(reserved.getCollections(), record.folderId);
       } else {
         // A cited paper's metadata changes before "continue": the body the
         // batch rebuilds for the in-flight row no longer equals the one its
@@ -1074,20 +1157,7 @@ describe("workflow: note batch across a Zotero restart", function () {
         assert.isUndefined(legacy, "body matching misses the changed note");
       }
 
-      const result = await api().resumeNoteBatchAfterRestart({
-        panelId: panel.panelId,
-        collection: {
-          collectionId: record.folderId,
-          name: record.folderName,
-          libraryID,
-        },
-        papers: ids.map((itemId, index) => ({
-          itemId,
-          title: record.titles[index],
-        })),
-        inputTokenCap: 2_000_000,
-        rewritePapers: [],
-      });
+      const result = await resumeFromPanel(record, panel.panelId);
       const report = JSON.stringify(result);
       assert.equal(result.resumeBatchId, batchId, report);
       assert.equal(result.priorRun?.status, "failed", report);
@@ -1113,6 +1183,43 @@ describe("workflow: note batch across a Zotero restart", function () {
         assert.isFalse(
           Boolean(Zotero.Items.getByLibraryAndKey(libraryID, open.key).deleted),
         );
+        // The refusal names the note the earlier attempt left.
+        assert.include(report, heldNoteReason(reserved.id), report);
+        return;
+      }
+
+      if (mode === "moved") {
+        // Refused, not kept and not rewritten: the step stays open, the row
+        // says the note was moved, and the note stays where the user put it.
+        const expectMoved = async (text: string) => {
+          assert.equal((await stepOf()).status, "uncertain", text);
+          const after = await listBatchItems(batchId);
+          const refused = after.filter((row) => row.status !== "saved");
+          assert.lengthOf(refused, 1, JSON.stringify(after));
+          assert.equal(refused[0].itemKey, `item:${open.paper}`);
+          assert.equal(refused[0].status, "failed", JSON.stringify(after));
+          assert.equal(
+            refused[0].error,
+            `Note ${reserved.id} was moved, so I did not touch it.`,
+          );
+          assert.notInclude(
+            after.map((row) => row.noteId),
+            reserved.id,
+            "no row claims the moved note",
+          );
+          // Every other row has its own note in the folder; the moved note
+          // is outside it, live, with no copy written beside it.
+          assert.lengthOf(folderNotes(), ids.length - 1, text);
+          assert.lengthOf(liveFolderNotes(), ids.length - 1, text);
+          const moved = Zotero.Items.getByLibraryAndKey(libraryID, open.key);
+          assert.isFalse(Boolean(moved.deleted), text);
+          assert.isFalse(Boolean(moved.parentID), text);
+          assert.notInclude(moved.getCollections(), record.folderId, text);
+        };
+        await expectMoved(report);
+        const later = await resumeFromPanel(record, panel.panelId);
+        assert.equal(later.resumeBatchId, batchId, JSON.stringify(later));
+        await expectMoved(JSON.stringify(later));
         return;
       }
 
@@ -1168,6 +1275,261 @@ describe("workflow: note batch across a Zotero restart", function () {
       // A standalone note names no paper, so the ledger takes no journal
       // receipt for it either (journalReceipts.ts).
       assert.deepEqual(result.initialNotePart?.receiptIds ?? [], [], report);
+    } finally {
+      await cleanUp(record, panel.panelId);
+    }
+  });
+
+  /**
+   * Rewrites this conversation's batch to the shape the build before the
+   * per-row resume left behind: create_note steps record no batch row, and
+   * a row names its action only once its note landed, so every unwritten
+   * row (the one in flight included) is `pending` with no action.
+   */
+  async function downgradeToPreUpgradeShape(
+    conversationKey: number,
+    batchId: string,
+  ) {
+    for (const action of await listJournalActions({
+      conversationKey,
+      limit: 500,
+    }))
+      for (const step of action.steps) {
+        if (step.operation !== "create_note") continue;
+        const forward = JSON.parse(step.forwardJson);
+        if (!("batchItem" in forward)) continue;
+        delete forward.batchItem;
+        await Zotero.DB.queryAsync(
+          `UPDATE llm_for_zotero_agent_journal_steps_v2
+           SET forward_json = ? WHERE step_id = ?`,
+          [JSON.stringify(forward), step.stepId],
+        );
+      }
+    await Zotero.DB.queryAsync(
+      `UPDATE llm_for_zotero_agent_batch_items
+       SET action_id = NULL, step_sequence = NULL
+       WHERE batch_id = ? AND status <> 'saved'`,
+      [batchId],
+    );
+  }
+
+  it("resume phase (pre-upgrade data): continue keeps, or refuses, the note in flight and never writes a note twice", async function () {
+    const mode = tamperMode();
+    if (restartPhase() !== "resume" || !legacyMode(mode)) this.skip();
+    await waitForStartup();
+    const record = JSON.parse(await IOUtils.readUTF8(recordPath())) as Record;
+    const { ids } = record;
+    const libraryID = Zotero.Libraries.userLibraryID;
+    const standalone = record.target === "standalone";
+    const twice = record.notesPerPaper === 2;
+    const panel = await api().renderPanelForItem(ids[0]);
+    const folderNotes = (): Zotero.Item[] =>
+      (
+        Zotero.Collections.get(record.folderId).getChildItems(
+          false,
+          true,
+        ) as Zotero.Item[]
+      ).filter((entry) => entry.isNote() && !entry.parentID);
+    try {
+      const resumable = await listResumableBatches(record.conversationKey);
+      assert.lengthOf(resumable, 1, JSON.stringify(resumable));
+      const batchId = resumable[0].batchId;
+      // The note in flight, read while its step still names its row.
+      const inFlight: Array<{
+        actionId: string;
+        stepId: string;
+        key: string;
+        itemKey: string;
+      }> = [];
+      for (const action of await listJournalActions({
+        conversationKey: record.conversationKey,
+        limit: 500,
+      }))
+        for (const step of action.steps)
+          if (step.operation === "create_note" && step.status === "uncertain") {
+            const forward = JSON.parse(step.forwardJson);
+            inFlight.push({
+              actionId: action.actionId,
+              stepId: step.stepId,
+              key: forward.key,
+              itemKey: forward.batchItem.itemKey,
+            });
+          }
+      assert.lengthOf(inFlight, 1, JSON.stringify(inFlight));
+      const [open] = inFlight;
+      const paper = Number(open.itemKey.replace(/^item:/, "").split("#")[0]);
+      const reserved = Zotero.Items.getByLibraryAndKey(libraryID, open.key);
+      assert.exists(reserved, "the note in flight is in Zotero");
+      assert.isFalse(Boolean(reserved.deleted));
+      const stepOf = async () => {
+        const [action] = await listJournalActions({
+          actionId: open.actionId,
+          limit: 1,
+        });
+        return action.steps.find((step) => step.stepId === open.stepId)!;
+      };
+
+      await downgradeToPreUpgradeShape(record.conversationKey, batchId);
+      for (const action of await listJournalActions({
+        conversationKey: record.conversationKey,
+        limit: 500,
+      }))
+        for (const step of action.steps)
+          if (step.operation === "create_note")
+            assert.notProperty(JSON.parse(step.forwardJson), "batchItem");
+      const before = await rowsOf(batchId);
+      const inFlightRow = before.find((row) => row.itemKey === open.itemKey)!;
+      assert.equal(inFlightRow.status, "pending", JSON.stringify(before));
+      assert.isNull(inFlightRow.actionId, JSON.stringify(before));
+      for (const row of before)
+        if (row.status === "saved") assert.isNotNull(row.actionId);
+        else assert.isNull(row.actionId, JSON.stringify(row));
+
+      let erasedNoteId: number | undefined;
+      if (mode === "legacy-twice") {
+        // The process ended in the paper's second note. The user then erases
+        // the paper's first note, so its row has to be written again.
+        assert.isTrue(twice, "the batch has two notes a paper");
+        assert.equal(open.itemKey, `item:${paper}#2`);
+        const first = before.find((row) => row.itemKey === `item:${paper}`)!;
+        assert.equal(first.status, "saved", JSON.stringify(before));
+        erasedNoteId = first.noteId!;
+        await Zotero.Items.get(erasedNoteId).eraseTx();
+        assert.lengthOf(Zotero.Items.get(paper).getNotes(true), 1);
+      } else if (mode === "legacy-edited") {
+        // The in-flight note's cited paper changes: its rebuilt body no
+        // longer equals the reserved one, so the old step matches no row.
+        const cited = Zotero.Items.get(paper);
+        cited.setField("title", `${cited.getField("title")} (revised title)`);
+        await cited.saveTx();
+      } else if (mode === "legacy-undo-first") {
+        // The user undoes the interrupted batch before continuing; the note
+        // in flight has no inverse and stays.
+        await undoAction(record, open.actionId);
+        assert.isFalse(
+          Boolean(Zotero.Items.getByLibraryAndKey(libraryID, open.key).deleted),
+        );
+      }
+
+      const result = await resumeFromPanel(record, panel.panelId);
+      const report = JSON.stringify(result);
+      assert.equal(result.resumeBatchId, batchId, report);
+      assert.isAtLeast(result.batchResults.length, 1, report);
+      const rows = await rowsOf(batchId);
+      const rowText = JSON.stringify(rows);
+      const step = await stepOf();
+
+      if (mode === "legacy-edited" || mode === "legacy-undo-first") {
+        // Refused, not rewritten: the old step stays open and no second
+        // note stands beside the one the interrupted attempt left.
+        assert.equal(step.status, "uncertain", report);
+        assert.isFalse(Boolean(Zotero.Items.get(reserved.id).deleted));
+        assert.notInclude(
+          rows.map((row) => row.noteId),
+          reserved.id,
+          `no row claims the note it cannot be matched to: ${rowText}`,
+        );
+        const unsaved = rows.filter((row) => row.status !== "saved");
+        assert.include(
+          unsaved.map((row) => row.itemKey),
+          open.itemKey,
+          rowText,
+        );
+        if (mode === "legacy-undo-first") {
+          // Only the paper in flight is refused; it keeps its one note.
+          assert.lengthOf(unsaved, 1, rowText);
+          assert.include(report, heldNoteReason(reserved.id), report);
+          assert.lengthOf(
+            Zotero.Items.get(paper).getNotes(true),
+            1,
+            `no replacement beside the reserved note: ${report}`,
+          );
+          const at = ids.indexOf(paper);
+          for (const id of ids)
+            if (id !== paper)
+              assert.lengthOf(
+                liveNotesOf(id),
+                ids.indexOf(id) < at ? 0 : 1,
+                `paper ${id}: ${report}`,
+              );
+          return;
+        }
+        // An old standalone step that matches no row could be any
+        // unwritten row's, so every one of them is refused and named.
+        for (const row of unsaved) {
+          assert.equal(row.status, "failed", rowText);
+          assert.include(row.error, `(note ${reserved.id})`, rowText);
+        }
+        // The folder holds the saved rows' notes and the reserved one.
+        assert.sameMembers(
+          folderNotes().map((note) => note.id),
+          [
+            ...rows.flatMap((row) =>
+              row.status === "saved" ? [row.noteId!] : [],
+            ),
+            reserved.id,
+          ],
+          report,
+        );
+        return;
+      }
+
+      // Kept: the old step is settled with the reserved note, every row is
+      // saved, each with its own note, and the action reads fully applied.
+      assert.equal(step.status, "applied", report);
+      assert.equal(JSON.parse(step.resultJson || "{}").noteId, reserved.id);
+      const [action] = await listJournalActions({
+        actionId: open.actionId,
+        limit: 1,
+      });
+      assert.equal(action.status, "applied", report);
+      assert.isTrue(
+        rows.every((row) => row.status === "saved"),
+        rowText,
+      );
+      assert.equal(
+        rows.find((row) => row.itemKey === open.itemKey)?.noteId,
+        reserved.id,
+        rowText,
+      );
+      const noteIds = rows.map((row) => row.noteId);
+      assert.lengthOf(new Set(noteIds), rows.length, rowText);
+      if (standalone) {
+        assert.sameMembers(
+          folderNotes().map((note) => note.id),
+          noteIds as number[],
+          report,
+        );
+        for (const note of folderNotes())
+          assert.isFalse(Boolean(note.deleted), report);
+        return;
+      }
+      const perPaper = twice ? 2 : 1;
+      for (const id of ids) {
+        assert.lengthOf(liveNotesOf(id), perPaper, `paper ${id}: ${report}`);
+        assert.lengthOf(
+          Zotero.Items.get(id).getNotes(true),
+          perPaper,
+          `paper ${id}, trashed notes included: ${report}`,
+        );
+      }
+      if (twice) {
+        // The first row has a new note with its own body; the second row
+        // kept the note in flight, which carries the second body.
+        const firstRow = rows.find((row) => row.itemKey === `item:${paper}`)!;
+        assert.notEqual(firstRow.noteId, erasedNoteId);
+        assert.notEqual(firstRow.noteId, reserved.id, rowText);
+        const firstBody = Zotero.Items.get(firstRow.noteId!).getNote();
+        assert.include(
+          firstBody,
+          `Reading note on the finding of paper ${paper}`,
+        );
+        assert.notInclude(firstBody, "second reading note");
+        assert.include(
+          Zotero.Items.get(reserved.id).getNote(),
+          `second reading note on paper ${paper}`,
+        );
+      }
     } finally {
       await cleanUp(record, panel.panelId);
     }

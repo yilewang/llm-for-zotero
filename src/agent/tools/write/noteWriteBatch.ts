@@ -47,12 +47,10 @@ import {
 import { sha256Text } from "../../store/journalRecoveryBlobStore";
 import {
   listJournalActions,
-  listJournalSteps,
+  type JournalActionWithSteps,
 } from "../../store/changeJournal";
-import {
-  findUncertainNoteStepForRow,
-  UNACCOUNTED_NOTE_REASON,
-} from "../../services/noteCreation";
+import { findNoteHeldForRow } from "../../services/noteCreation";
+import { RESUMABLE_BATCH_ACTION_STATUSES } from "../../services/mutationCoordinator";
 import { describeLibraryMutationActions } from "../../contracts/actionOperationEvidence";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
@@ -660,6 +658,34 @@ export function createNoteWriteBatchTool(
     };
     const items: PreparedBatchItem[] = [];
     const notes: SaveNotesBatchOperation["notes"] = [];
+    // Each action once per preparation, however many rows name it.
+    const actions = new Map<
+      string,
+      Promise<JournalActionWithSteps | undefined>
+    >();
+    const actionOf = (actionId: string) => {
+      let action = actions.get(actionId);
+      if (!action) {
+        action = listJournalActions({ actionId, limit: 1 }).then(
+          ([found]) => found,
+        );
+        actions.set(actionId, action);
+      }
+      return action;
+    };
+    // The action this resume reopens settles its own open note steps from
+    // native state when it runs. One that another run holds (`applying`)
+    // is refused at execution instead, before anything is written.
+    const settledByThisResume = (
+      actionId: string,
+      action: JournalActionWithSteps | undefined,
+    ) =>
+      actionId === resume.actionId &&
+      Boolean(
+        action &&
+        (RESUMABLE_BATCH_ACTION_STATUSES.includes(action.status) ||
+          action.status === "applying"),
+      );
     for (const row of rows) {
       const descriptor = stored.get(row.itemKey);
       if (!descriptor)
@@ -681,58 +707,32 @@ export function createNoteWriteBatchTool(
         });
         continue;
       }
-      // A note creation that stays uncertain refused this row: a note was
-      // reserved for it and cannot be accounted for. That holds whatever
-      // became of the action since, so a later resume cannot write it.
-      if (row.status !== "saved" && row.actionId && row.stepSequence != null) {
-        const open = (await listJournalSteps(row.actionId)).find(
-          (step) =>
-            step.sequence === row.stepSequence &&
-            step.operation === "create_note" &&
-            step.status === "uncertain",
-        );
-        if (open) {
-          resume.blocked.push({
-            itemKey: row.itemKey,
-            reason:
-              row.error ||
-              open.error ||
-              "A note was reserved for this item and cannot be accounted for",
-          });
-          continue;
-        }
-      }
-      // An action that can no longer be reopened (an undo ended it) still
-      // holds the step of a note the process ended inside. The settler reads
-      // only the action a resume reopens, so this row would be written a
-      // second time beside that note. A reopenable action is left to the
-      // settler, which settles the step.
-      if (row.status !== "saved" && row.actionId) {
-        const [action] = await listJournalActions({
-          actionId: row.actionId,
-          limit: 1,
-        });
-        if (
-          action &&
-          !["applied", "partially_applied", "uncertain", "applying"].includes(
-            action.status,
-          )
-        ) {
-          // An older standalone step, which does not record its row, is not
-          // matched here: that needs the body rebuilt, and the executor
-          // refuses the row at write time instead.
-          const open = await findUncertainNoteStepForRow(action.steps, {
+      // A note an earlier attempt reserved for this row may still be held
+      // by its action. The action this resume reopens settles it from native
+      // state (and keeps a note the user restored). Any other action -- one
+      // an undo ended, or one the resume does not continue -- is settled by
+      // nothing, so the row would be written a second time beside that
+      // note: it is refused, and named. A row written before rows named
+      // their action while in flight is held by the action the resume
+      // continues.
+      const heldBy = row.actionId || resume.actionId;
+      if (row.status !== "saved" && heldBy) {
+        const action = await actionOf(heldBy);
+        if (action && !settledByThisResume(heldBy, action)) {
+          // An older step, which does not record its row, is not matched by
+          // its body here (that needs the body rebuilt); while a note is at
+          // its key, the row is refused if it could be the row's.
+          const held = await findNoteHeldForRow(action.steps, {
             batchId,
             itemKey: row.itemKey,
             targetItemId: descriptor.targetItemId,
             standalone: storedInput.target === "standalone",
             collections: descriptor.collections || [],
+            actionId: row.actionId,
+            stepSequence: row.stepSequence,
           });
-          if (open) {
-            resume.blocked.push({
-              itemKey: row.itemKey,
-              reason: UNACCOUNTED_NOTE_REASON,
-            });
+          if (held) {
+            resume.blocked.push({ itemKey: row.itemKey, reason: held.reason });
             continue;
           }
         }

@@ -151,6 +151,18 @@ const UNFINISHED_STEP_STATUSES: ReadonlySet<JournalStatus> = new Set([
   "uncertain",
 ]);
 
+/**
+ * The states a note batch's action can be reopened from when the batch is
+ * continued. A process that ended mid-batch leaves the action `uncertain`.
+ * Shared with the resume's preparation, which has to know whether the
+ * action it names will be reopened (and its open steps settled) or not.
+ */
+export const RESUMABLE_BATCH_ACTION_STATUSES: readonly JournalStatus[] = [
+  "applied",
+  "partially_applied",
+  "uncertain",
+];
+
 /** Step states in which the step's own write landed. */
 const LANDED_STEP_STATUSES: ReadonlySet<JournalStatus> = new Set([
   "applied",
@@ -216,7 +228,7 @@ async function reopenJournalAction(params: {
   actionId: string;
   conversationKey: number;
   /** The states it may be reopened from; applied work by default. */
-  from?: JournalStatus[];
+  from?: readonly JournalStatus[];
   /**
    * Throw instead of declining when another call holds the action. A new
    * action would then write the same notes beside the ones that call is
@@ -244,7 +256,7 @@ async function reopenJournalAction(params: {
   if (!from.includes(action.status)) return null;
   const claimed = await claimJournalAction({
     actionId: action.actionId,
-    from,
+    from: [...from],
     to: "applying",
   });
   if (!claimed) {
@@ -1034,7 +1046,7 @@ export async function executeLibraryMutationAction(params: {
       ? await reopenJournalAction({
           actionId: context.resumeJournalAction.actionId,
           conversationKey: context.request.conversationKey,
-          from: ["applied", "partially_applied", "uncertain"],
+          from: RESUMABLE_BATCH_ACTION_STATUSES,
           refuseWhenBusy: true,
         })
       : null;

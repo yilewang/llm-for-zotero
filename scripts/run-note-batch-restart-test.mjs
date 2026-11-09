@@ -29,8 +29,39 @@ const undoDuringCard = process.argv.includes("--undo-during-card");
 // the in-flight note's cited paper before "continue";
 // --standalone-undo-first undoes that batch before "continue" instead.
 const standaloneUndoFirst = process.argv.includes("--standalone-undo-first");
-const standalone = process.argv.includes("--standalone") || standaloneUndoFirst;
-const target = standalone ? { NOTE_BATCH_RESTART_TARGET: "standalone" } : {};
+// --standalone-moved takes the in-flight standalone note out of its folder
+// before "continue".
+const standaloneMoved = process.argv.includes("--standalone-moved");
+// Pre-upgrade data: before "continue", the resume phase rewrites the journal
+// and the rows to the shape the build before the per-row resume left (no
+// `batchItem` in create_note steps; unwritten rows name no action).
+// --legacy continues a child batch, --legacy-standalone a standalone one,
+// --legacy-standalone-edited a standalone one whose in-flight note cites a
+// paper edited before "continue", --legacy-undo-first a child batch undone
+// before "continue", and --legacy-twice a batch with two notes on each
+// paper, ended during a paper's second note, whose first note the user
+// erased.
+const legacyStandaloneEdited = process.argv.includes(
+  "--legacy-standalone-edited",
+);
+const legacyStandalone =
+  process.argv.includes("--legacy-standalone") || legacyStandaloneEdited;
+const legacyTwice = process.argv.includes("--legacy-twice");
+const legacyUndoFirst = process.argv.includes("--legacy-undo-first");
+const legacy =
+  process.argv.includes("--legacy") ||
+  legacyStandalone ||
+  legacyTwice ||
+  legacyUndoFirst;
+const standalone =
+  process.argv.includes("--standalone") ||
+  standaloneUndoFirst ||
+  standaloneMoved ||
+  legacyStandalone;
+const target = {
+  ...(standalone ? { NOTE_BATCH_RESTART_TARGET: "standalone" } : {}),
+  ...(legacyTwice ? { NOTE_BATCH_RESTART_NOTES_PER_PAPER: "2" } : {}),
+};
 const file = "test-workflows/noteBatchRestart.workflow.test.ts";
 const snapshot = ".scaffold/note-batch-restart/data-snapshot";
 
@@ -83,26 +114,52 @@ await phase("resume", {
     : {}),
   ...(undoDuringCard ? { NOTE_BATCH_RESTART_TAMPER: "undo-during-card" } : {}),
   ...(changed ? { NOTE_BATCH_RESTART_TAMPER: "changed" } : {}),
+  ...(standaloneMoved ? { NOTE_BATCH_RESTART_TAMPER: "moved" } : {}),
+  ...(legacy
+    ? {
+        NOTE_BATCH_RESTART_TAMPER: legacyStandaloneEdited
+          ? "legacy-edited"
+          : legacyTwice
+            ? "legacy-twice"
+            : legacyUndoFirst
+              ? "legacy-undo-first"
+              : "legacy",
+      }
+    : {}),
   ...(undo ? { NOTE_BATCH_RESTART_UNDO: "1" } : {}),
 });
 await rm(snapshot, { recursive: true, force: true });
-const tail = standaloneUndoFirst
-  ? " of standalone notes, undone before it continued"
-  : standalone
-    ? " of standalone notes, with a cited paper edited"
-    : undoDuringCard
-      ? ", undone while its continue card was open"
-      : undoFirst
-        ? ", undone before it continued"
-        : absent
-          ? ", with the in-flight note erased"
-          : changed
-            ? ", with the in-flight note trashed"
-            : undo
-              ? ", then undone"
-              : first
-                ? ", ended during its first note"
-                : "";
+const tail = legacy
+  ? ` from pre-upgrade data${
+      legacyStandaloneEdited
+        ? " of standalone notes, with a cited paper edited"
+        : legacyStandalone
+          ? " of standalone notes"
+          : legacyTwice
+            ? " with two notes on each paper, one erased"
+            : legacyUndoFirst
+              ? ", undone before it continued"
+              : ""
+    }`
+  : standaloneMoved
+    ? " of standalone notes, with the in-flight note moved out of its folder"
+    : standaloneUndoFirst
+      ? " of standalone notes, undone before it continued"
+      : standalone
+        ? " of standalone notes, with a cited paper edited"
+        : undoDuringCard
+          ? ", undone while its continue card was open"
+          : undoFirst
+            ? ", undone before it continued"
+            : absent
+              ? ", with the in-flight note erased"
+              : changed
+                ? ", with the in-flight note trashed"
+                : undo
+                  ? ", then undone"
+                  : first
+                    ? ", ended during its first note"
+                    : "";
 console.log(
   `Verified a note batch across a ${quit ? "force-quit" : "killed"} Zotero${tail}.`,
 );
