@@ -147,6 +147,7 @@ import type {
   WorkflowTestEphemeralConversationRowCounts,
   WorkflowTestConversationStoreRowTotals,
   WorkflowTestReaderInlineAskCard,
+  WorkflowTestReaderInlineAskAnswerSelection,
   WorkflowTestReaderInlineAskTextSize,
   WorkflowTestReaderInlineAskOpen,
   WorkflowTestReaderInlineAskSave,
@@ -7634,9 +7635,17 @@ function readWorkflowInlineAskCard(
   return {
     mounted: Boolean(card),
     phase: card?.getAttribute("data-phase") || "",
+    // The question's own text; its quote lines are in `questionQuotes`.
     questions: Array.from(
       card?.querySelectorAll('[data-llm-inline-ask-question="true"]') || [],
-    ).map((node) => (node as Element).textContent?.trim() || ""),
+    ).map(
+      (node) =>
+        (
+          (node as Element).querySelector(
+            '[data-llm-inline-ask-question-text="true"]',
+          ) || (node as Element)
+        ).textContent?.trim() || "",
+    ),
     answers: Array.from(
       card?.querySelectorAll("[data-llm-inline-ask-answer]") || [],
     ).map((node) => ({
@@ -7685,6 +7694,35 @@ function readWorkflowInlineAskCard(
         ].every((selector) => Boolean(box.querySelector(selector)));
       })(),
     ),
+    resizeCorners: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-resize]") || [],
+    ).map((node) => {
+      const grip = node as HTMLElement;
+      const box = grip.getBoundingClientRect();
+      const arc = grip.querySelector(
+        "[data-llm-inline-ask-resize-arc]",
+      ) as HTMLElement | null;
+      // Visible controls and the passage that the grip must not cover.
+      const covered = Array.from(
+        card?.querySelectorAll(
+          'button, [data-llm-inline-ask-quote-bar="true"], [data-llm-inline-ask-quote="true"], [data-llm-inline-ask-editor="true"]',
+        ) || [],
+      ).filter((other) => {
+        const r = (other as HTMLElement).getBoundingClientRect();
+        if (!r.width || !r.height) return false;
+        return (
+          r.left < box.right &&
+          r.right > box.left &&
+          r.top < box.bottom &&
+          r.bottom > box.top
+        );
+      }).length;
+      return {
+        corner: grip.getAttribute("data-llm-inline-ask-resize") || "",
+        coveredControls: covered,
+        arcOpacity: arc ? Number(win?.getComputedStyle(arc)?.opacity) : NaN,
+      };
+    }),
     messageActions: Array.from(
       card?.querySelectorAll("[data-llm-inline-ask-footer] button") || [],
     ).map(
@@ -7762,7 +7800,90 @@ function readWorkflowInlineAskCard(
       const mask = thread?.style.getPropertyValue("mask-image") || "";
       return Boolean(mask) && mask !== "none";
     })(),
+    passageShown: (() => {
+      const section = card?.querySelector(
+        '[data-llm-inline-ask-quote-bar="true"]',
+      )?.parentElement;
+      return (
+        Boolean(section) && win?.getComputedStyle(section!)?.display !== "none"
+      );
+    })(),
+    passageText:
+      card?.querySelector('[data-llm-inline-ask-quote="true"]')?.textContent ||
+      "",
+    passageExpanded:
+      card
+        ?.querySelector('[data-llm-inline-ask-quote-bar="true"]')
+        ?.parentElement?.getAttribute("data-expanded") === "true",
+    threadShown: shown('[data-llm-inline-ask-thread="true"]'),
+    questionQuotes: Array.from(
+      card?.querySelectorAll('[data-llm-inline-ask-question="true"]') || [],
+    ).map((node) =>
+      Array.from(
+        (node as Element).querySelectorAll(
+          '[data-llm-inline-ask-question-quote="true"]',
+        ),
+      ).map((line) => (line as Element).textContent?.trim() || ""),
+    ),
+    composerQuotes: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-composer-quote]") || [],
+    ).map((node) => (node as Element).textContent?.trim() || ""),
+    editorText:
+      card
+        ?.querySelector('[data-llm-inline-ask-editor="true"]')
+        ?.textContent?.trim() || "",
+    editorFocused: (() => {
+      const editor = card?.querySelector('[data-llm-inline-ask-editor="true"]');
+      const active = popupDoc.activeElement;
+      return Boolean(editor && active && editor.isSameNode(active));
+    })(),
+    sendDisabled: Boolean(
+      (
+        card?.querySelector(
+          '[data-llm-inline-ask-send="true"]',
+        ) as HTMLButtonElement | null
+      )?.disabled,
+    ),
+    composerQuotesRect: rectOf(
+      shown('[data-llm-inline-ask-composer-quotes="true"]')
+        ? card?.querySelector('[data-llm-inline-ask-composer-quotes="true"]')
+        : null,
+    ),
+    sendRect: rectOf(
+      card?.querySelector('[data-llm-inline-ask-send="true"]') ?? null,
+    ),
+    modelRect: rectOf(
+      shown('[data-llm-inline-ask-model="true"]')
+        ? card?.querySelector('[data-llm-inline-ask-model="true"]')
+        : null,
+    ),
+    selectionBarShown: shown('[data-llm-inline-ask-selection-bar="true"]'),
+    selectionBarActions: Array.from(
+      card?.querySelectorAll("[data-llm-inline-ask-selection-action]") || [],
+    ).map(
+      (node) =>
+        (node as Element).getAttribute(
+          "data-llm-inline-ask-selection-action",
+        ) || "",
+    ),
+    selectionBarRect: rectOf(
+      shown('[data-llm-inline-ask-selection-bar="true"]')
+        ? card?.querySelector('[data-llm-inline-ask-selection-bar="true"]')
+        : null,
+    ),
+    selectionText: win?.getSelection?.()?.toString() || "",
   };
+
+  function rectOf(node: Element | null | undefined) {
+    if (!node) return null;
+    const box = node.getBoundingClientRect();
+    return {
+      left: Math.round(box.left),
+      top: Math.round(box.top),
+      right: Math.round(box.right),
+      bottom: Math.round(box.bottom),
+    };
+  }
 
   function fontPx(node: Element | null): number {
     const size = node
@@ -8599,6 +8720,245 @@ async function clickReaderInlineAskTextSize(
   };
 }
 
+/**
+ * The chrome window that holds the reader, and where the reader's document
+ * sits in it: native mouse events enter at the window's widget, so a point
+ * in the reader document needs the reader frame's offset added.
+ */
+function nativeMouseTarget(state: NonNullable<typeof workflowInlineAsk>): {
+  send: (type: string, x: number, y: number) => void;
+} {
+  const readerWin = state.popupDoc.defaultView;
+  const frame = ((state.reader as unknown as { _iframe?: HTMLElement })
+    ._iframe || readerWin?.frameElement) as HTMLElement | null;
+  const chromeWin =
+    (state.reader as unknown as { _window?: Window })._window ||
+    (Zotero.getMainWindow?.() as Window | undefined);
+  const utils = (
+    chromeWin as unknown as {
+      windowUtils?: {
+        sendMouseEvent: (
+          type: string,
+          x: number,
+          y: number,
+          button: number,
+          clickCount: number,
+          modifiers: number,
+        ) => void;
+      };
+    }
+  )?.windowUtils;
+  if (!frame || !utils) {
+    throw new Error(
+      `Native mouse events are unavailable for this reader (frame ${Boolean(frame)}, chrome window ${Boolean(chromeWin)}, windowUtils ${Boolean(utils)})`,
+    );
+  }
+  return {
+    send: (type, x, y) => {
+      const origin = frame.getBoundingClientRect();
+      utils.sendMouseEvent(type, origin.left + x, origin.top + y, 0, 1, 0);
+    },
+  };
+}
+
+/** A real drag over the characters [fromChar, toChar) of an answer. */
+async function selectReaderInlineAskAnswerText(input: {
+  answerIndex: number;
+  fromChar?: number;
+  toChar?: number;
+}): Promise<WorkflowTestReaderInlineAskAnswerSelection> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const doc = state.popupDoc;
+  const answer = card.querySelectorAll("[data-llm-inline-ask-answer]")[
+    input.answerIndex
+  ] as HTMLElement | undefined;
+  if (!answer) throw new Error(`No Inline Ask answer ${input.answerIndex}`);
+  // Text nodes in order, with their offsets in the answer's text.
+  const walker = doc.createTreeWalker(answer, 4 /* NodeFilter.SHOW_TEXT */);
+  const texts: Array<{ node: Text; start: number }> = [];
+  let total = 0;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node as Text;
+    if (!text.data) continue;
+    texts.push({ node: text, start: total });
+    total += text.data.length;
+  }
+  const full = texts.map((entry) => entry.node.data).join("");
+  const paragraph = full.search(/\n|$/u);
+  const from = Math.max(0, input.fromChar ?? 0);
+  const to = Math.min(
+    total,
+    input.toChar ?? (paragraph > 0 ? paragraph : total),
+  );
+  if (to <= from) throw new Error("The answer has no text to select");
+  const charRect = (offset: number): DOMRect => {
+    const entry = texts.find(
+      (candidate) =>
+        offset >= candidate.start &&
+        offset < candidate.start + candidate.node.data.length,
+    );
+    if (!entry) throw new Error(`No answer character at ${offset}`);
+    const range = doc.createRange();
+    range.setStart(entry.node, offset - entry.start);
+    range.setEnd(entry.node, offset - entry.start + 1);
+    return range.getBoundingClientRect();
+  };
+  const first = charRect(from);
+  const last = charRect(to - 1);
+  const native = nativeMouseTarget(state);
+  const startX = first.left + 1;
+  const startY = first.top + first.height / 2;
+  const endX = last.right - 1;
+  const endY = last.top + last.height / 2;
+  native.send("mousemove", startX, startY);
+  native.send("mousedown", startX, startY);
+  await Zotero.Promise.delay(30);
+  const steps = 5;
+  for (let step = 1; step <= steps; step++) {
+    native.send(
+      "mousemove",
+      startX + ((endX - startX) * step) / steps,
+      startY + ((endY - startY) * step) / steps,
+    );
+    await Zotero.Promise.delay(20);
+  }
+  native.send("mouseup", endX, endY);
+  await Zotero.Promise.delay(150);
+  return {
+    selectedText: doc.defaultView?.getSelection?.()?.toString() || "",
+    expectedText: full.slice(from, to),
+    card: readWorkflowInlineAskCard(doc),
+  };
+}
+
+/** Clicks a button of the Copy and Quote bar with native mouse events. */
+async function clickReaderInlineAskSelectionAction(
+  action: "Copy" | "Quote",
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const button = card.querySelector(
+    `[data-llm-inline-ask-selection-action="${action.toLowerCase()}"]`,
+  ) as HTMLElement | null;
+  if (!button) throw new Error(`No Inline Ask selection action "${action}"`);
+  const rect = button.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  const native = nativeMouseTarget(state);
+  native.send("mousemove", x, y);
+  native.send("mousedown", x, y);
+  native.send("mouseup", x, y);
+  await Zotero.Promise.delay(250);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
+/** Clicks the passage line (it expands or collapses). */
+async function clickReaderInlineAskPassage(): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const section = card.querySelector('[data-llm-inline-ask-quote-bar="true"]')
+    ?.parentElement as HTMLElement | null | undefined;
+  if (!section) throw new Error("The Inline Ask card has no passage");
+  section.click();
+  await Zotero.Promise.delay(50);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
+/** Leaves the annotation card with its Back or Cancel button. */
+async function leaveReaderInlineAskSave(input: {
+  via: "back" | "cancel";
+}): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const button = card.querySelector(
+    `[data-llm-inline-ask-save-action="${input.via}"]`,
+  ) as HTMLButtonElement | null;
+  if (!button) throw new Error(`No Inline Ask save button "${input.via}"`);
+  button.click();
+  await Zotero.Promise.delay(100);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
+async function removeReaderInlineAskComposerQuote(
+  index: number,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const remove = card.querySelectorAll(
+    "[data-llm-inline-ask-composer-quote-remove]",
+  )[index] as HTMLElement | undefined;
+  if (!remove) throw new Error(`No composer quote ${index}`);
+  const rect = remove.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  const native = nativeMouseTarget(state);
+  native.send("mousemove", x, y);
+  native.send("mousedown", x, y);
+  native.send("mouseup", x, y);
+  await Zotero.Promise.delay(150);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
+/** The clipboard's plain text. */
+function readReaderInlineAskClipboard(): string {
+  assertWorkflowTestEnabled();
+  const cc = Components as unknown as {
+    classes: Record<string, { createInstance(iface: unknown): any }>;
+    interfaces: Record<string, unknown>;
+  };
+  const transferable = cc.classes[
+    "@mozilla.org/widget/transferable;1"
+  ].createInstance(cc.interfaces.nsITransferable);
+  transferable.init(null);
+  transferable.addDataFlavor("text/plain");
+  const clipboard = Services.clipboard as unknown as {
+    getData(transferable: unknown, which: number, context?: unknown): void;
+    kGlobalClipboard: number;
+  };
+  clipboard.getData(transferable, clipboard.kGlobalClipboard, null);
+  const data: { value?: any } = {};
+  try {
+    transferable.getTransferData("text/plain", data);
+  } catch {
+    return "";
+  }
+  return String(
+    data.value?.QueryInterface(cc.interfaces.nsISupportsString).data || "",
+  );
+}
+
+async function copyReaderInlineAskSelection(): Promise<{
+  commandRan: boolean;
+  clipboardText: string;
+}> {
+  assertWorkflowTestEnabled();
+  const { state } = requireWorkflowInlineAskCardElement();
+  const commandRan = Boolean(state.popupDoc.execCommand("copy"));
+  await Zotero.Promise.delay(100);
+  return { commandRan, clipboardText: readReaderInlineAskClipboard() };
+}
+
+async function pressReaderInlineAskKey(input: {
+  key: string;
+  target: "editor" | "page";
+}): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card } = requireWorkflowInlineAskCardElement();
+  const target =
+    input.target === "editor"
+      ? (card.querySelector(
+          '[data-llm-inline-ask-editor="true"]',
+        ) as HTMLElement | null)
+      : state.popupDoc.body;
+  if (!target) throw new Error("No key target");
+  target.dispatchEvent(
+    makeReaderPromptKey(state.popupDoc, { key: input.key, code: input.key }),
+  );
+  await Zotero.Promise.delay(100);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
 /** Moves the pointer onto or off the passage (mouseenter or mouseleave). */
 async function hoverReaderInlineAskPassage(
   on: boolean,
@@ -8618,9 +8978,27 @@ async function hoverReaderInlineAskPassage(
   return readWorkflowInlineAskCard(state.popupDoc);
 }
 
+/** Moves the pointer onto or off a corner's hit area (mouseenter or mouseleave). */
+async function hoverReaderInlineAskCorner(
+  corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+  on: boolean,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card, win } = requireWorkflowInlineAskCardElement();
+  const grip = card.querySelector(`[data-llm-inline-ask-resize="${corner}"]`);
+  if (!grip) throw new Error("The Inline Ask card has no such corner");
+  grip.dispatchEvent(
+    new win.MouseEvent(on ? "mouseenter" : "mouseleave", { bubbles: false }),
+  );
+  // The arc fades over 0.12 s.
+  await Zotero.Promise.delay(300);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
 /** Drags the card by a blank point, or its corner grip, with pointer events. */
 async function dragReaderInlineAsk(input: {
   part: "card" | "resize";
+  corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   dx: number;
   dy: number;
 }): Promise<WorkflowTestReaderInlineAskCard> {
@@ -8629,10 +9007,11 @@ async function dragReaderInlineAsk(input: {
   const target =
     input.part === "resize"
       ? (card.querySelector(
-          '[data-llm-inline-ask-resize="true"]',
+          `[data-llm-inline-ask-resize="${input.corner ?? "bottom-right"}"]`,
         ) as HTMLElement | null)
       : card;
-  if (!target) throw new Error("The Inline Ask card has no resize grip");
+  if (!target)
+    throw new Error("The Inline Ask card has no resize grip for that corner");
   const rect = target.getBoundingClientRect();
   // For the card: a point in its top padding, where the card itself is hit.
   const startX =
@@ -11989,7 +12368,16 @@ export function installWorkflowTestHarness(targetAddon: {
     openReaderInlineAskPromptMenu,
     clickReaderInlineAskPromptMenuItem,
     clickReaderInlineAskTextSize,
+    selectReaderInlineAskAnswerText,
+    clickReaderInlineAskPassage,
+    leaveReaderInlineAskSave,
+    clickReaderInlineAskSelectionAction,
+    removeReaderInlineAskComposerQuote,
+    copyReaderInlineAskSelection,
+    readReaderInlineAskClipboard,
+    pressReaderInlineAskKey,
     hoverReaderInlineAskPassage,
+    hoverReaderInlineAskCorner,
     dragReaderInlineAsk,
     editReaderInlineAskPrompt,
     openReaderInlineAskModelMenu,

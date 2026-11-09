@@ -452,6 +452,12 @@ export type WorkflowTestReaderInlineAskCard = {
   promptEditorFloating: boolean;
   /** The composer box holds the field, the model button, and the send arrow. */
   composerHoldsControls: boolean;
+  /** Each resize corner: controls its hit area overlaps, and its arc opacity. */
+  resizeCorners: Array<{
+    corner: string;
+    coveredControls: number;
+    arcOpacity: number;
+  }>;
   /** The message actions under the latest answer, in order. */
   messageActions: string[];
   modelLabel: string;
@@ -473,6 +479,42 @@ export type WorkflowTestReaderInlineAskCard = {
   quoteColorAlpha: number;
   /** The answer area has its top fade (it is scrolled). */
   threadFaded: boolean;
+  /** The pinned passage line (paper label and selected text) is visible. */
+  passageShown: boolean;
+  /** The passage text, and whether the passage line is expanded. */
+  passageText: string;
+  passageExpanded: boolean;
+  /** The answer area (the thread) is visible. */
+  threadShown: boolean;
+  /** The question bubbles' quote lines, one list per question. */
+  questionQuotes: string[][];
+  /** The quotes waiting above the follow-up field, in order. */
+  composerQuotes: string[];
+  /** The follow-up field's typed text. */
+  editorText: string;
+  /** The follow-up field has the keyboard focus. */
+  editorFocused: boolean;
+  /** The send arrow is disabled. */
+  sendDisabled: boolean;
+  /** Boxes in the card's window: the quote list, send arrow and model line. */
+  composerQuotesRect: WorkflowTestRect | null;
+  sendRect: WorkflowTestRect | null;
+  modelRect: WorkflowTestRect | null;
+  /** The Copy and Quote bar: shown, its buttons, and its box. */
+  selectionBarShown: boolean;
+  selectionBarActions: string[];
+  selectionBarRect: WorkflowTestRect | null;
+  /** The reader document's current text selection. */
+  selectionText: string;
+};
+
+/** What a native drag over an answer selected, and the card afterwards. */
+export type WorkflowTestReaderInlineAskAnswerSelection = {
+  /** The text the browser selected (`getSelection().toString()`). */
+  selectedText: string;
+  /** The answer text the drag aimed at. */
+  expectedText: string;
+  card: WorkflowTestReaderInlineAskCard;
 };
 
 /** The card after a click on the More button or a text-size menu control. */
@@ -2199,13 +2241,56 @@ export type WorkflowTestApi = {
   clickReaderInlineAskTextSize: (
     step: "toggle" | "smaller" | "larger" | "reset",
   ) => Promise<WorkflowTestReaderInlineAskTextSize>;
+  /**
+   * Drags over an answer with native mouse events (mousedown, mousemove,
+   * mouseup through the window's widget path) from character `fromChar` to
+   * `toChar` of the answer's text (default: the whole first paragraph).
+   */
+  selectReaderInlineAskAnswerText: (input: {
+    answerIndex: number;
+    fromChar?: number;
+    toChar?: number;
+  }) => Promise<WorkflowTestReaderInlineAskAnswerSelection>;
+  /** Clicks the passage line (it expands or collapses). */
+  clickReaderInlineAskPassage: () => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Leaves the annotation card with its Back or Cancel button. */
+  leaveReaderInlineAskSave: (input: {
+    via: "back" | "cancel";
+  }) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Clicks Copy or Quote on the selection bar with native mouse events. */
+  clickReaderInlineAskSelectionAction: (
+    action: "Copy" | "Quote",
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Clicks the remove button of the composer quote at `index`. */
+  removeReaderInlineAskComposerQuote: (
+    index: number,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Runs the copy command on the reader document and reads the clipboard. */
+  copyReaderInlineAskSelection: () => Promise<{
+    commandRan: boolean;
+    clipboardText: string;
+  }>;
+  /** The clipboard's plain text now. */
+  readReaderInlineAskClipboard: () => string;
+  /** Presses a key in the follow-up field ("editor") or on the page. */
+  pressReaderInlineAskKey: (input: {
+    key: string;
+    target: "editor" | "page";
+  }) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Moves the pointer onto or off the passage. */
   hoverReaderInlineAskPassage: (
+    on: boolean,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Moves the pointer onto or off one corner's hit area. */
+  hoverReaderInlineAskCorner: (
+    corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
     on: boolean,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Drags a blank point of the card ("card") or its corner grip ("resize"). */
   dragReaderInlineAsk: (input: {
     part: "card" | "resize";
+    /** The corner to drag for a resize; the default is bottom-right. */
+    corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
     dx: number;
     dy: number;
   }) => Promise<WorkflowTestReaderInlineAskCard>;

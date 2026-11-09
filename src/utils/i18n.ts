@@ -1739,8 +1739,8 @@ const zhCN: Record<string, string> = {
     "此选区延续到下一页。请改用 Zotero 的弹出菜单添加高亮。",
   "Zotero gave no position for this selection. Select it again.":
     "Zotero 没有提供此选区的位置。请重新选择。",
-  "Open this PDF's chat panel to save annotations.":
-    "请打开此 PDF 的对话面板以保存注释。",
+  "Zotero could not find the paper for this PDF.":
+    "Zotero 找不到此 PDF 对应的文献。",
   "The annotation could not be saved.": "无法保存注释。",
   "Zotero did not confirm the saved annotation.": "Zotero 未确认已保存的注释。",
   // Inline Ask: Continue in sidebar.
@@ -1765,6 +1765,10 @@ const zhCN: Record<string, string> = {
   "Quote selected text in a side chat": "在侧边对话中引用选中文字",
   "Show all of the selected text": "显示全部选中文字",
   "Show less of the selected text": "收起选中文字",
+  // Inline Ask: quote part of an answer into the follow-up.
+  "About this part of your answer:": "关于你回答中的这一部分：",
+  "Explain this part of your answer.": "解释你回答中的这一部分。",
+  "Remove quote": "移除引用",
   // Side panel items, Miscellaneous tab, HTML preview.
   "Move to side panel": "移到侧边面板",
   "Wrap long lines": "长行自动换行",

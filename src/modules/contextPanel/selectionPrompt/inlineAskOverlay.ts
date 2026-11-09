@@ -15,6 +15,12 @@
  * message actions (Save as annotation, Continue in sidebar, Discard), and
  * the same composer box takes a follow-up.
  *
+ * Select text in an answer and a small bar with Copy and Quote shows above
+ * it. Quote adds the text as a quote line above the follow-up field (one
+ * line, with a remove button); the follow-up then goes out as "About this
+ * part of your answer:", the quotes, and the typed text (or a default
+ * sentence when none was typed). The question bubble shows the quote lines.
+ *
  * Save as annotation switches the card to an annotation card: the color
  * square (a click shows Zotero's eight colors), the page, the selected text
  * highlighted in that color, and the last answer as an editable plain-text
@@ -44,12 +50,14 @@
  * Discard, or another overlay on the same document closes it; a new text
  * selection popup leaves it open (keepsOpenOnNewSelection).
  *
- * Width: the native selection popup's measured width when the card replaces
- * the popup (at least MIN_CARD_WIDTH), otherwise DEFAULT_CARD_WIDTH.
+ * Width: DEFAULT_CARD_WIDTH, a reading measure. When the card replaces the
+ * native popup it is centered on the popup.
  *
  * Inline styles only: plugin CSS does not reach reader documents. The card
  * has its own palette (inlineAskPalette), separate from the Add Text prompt.
  */
+import { t } from "../../../utils/i18n";
+import { copyTextToClipboard } from "../clipboard";
 import {
   inlineAskAnswerToPlainText,
   renderInlineAskAnswer,
@@ -297,7 +305,11 @@ export const INLINE_ASK_TEXT_SIZES: readonly number[] = [
 
 const PAPER_FONT = '"STIX Two Text","Times New Roman",Times,serif';
 
-const DEFAULT_CARD_WIDTH = 330;
+/**
+ * About 65 characters per line at the default text size: a comfortable
+ * reading measure.
+ */
+const DEFAULT_CARD_WIDTH = 460;
 /** Below this the composer's model line and send arrow crowd each other. */
 const MIN_CARD_WIDTH = 240;
 /** The floating prompt editor; narrower when the card is. */
@@ -506,11 +518,19 @@ export function openInlineAskOverlay(
   };
   const hasModel = () => Boolean(currentLine());
 
-  // Over the native popup the card takes the popup's exact width, so both
-  // edges line up with it; elsewhere 330px.
-  const cardWidth = input.anchor.cover
-    ? Math.max(MIN_CARD_WIDTH, input.anchor.right - input.anchor.left)
-    : DEFAULT_CARD_WIDTH;
+  // A reading width, never the narrow native popup's: over the popup the
+  // card is centered on it (the popup is centered on the selection).
+  const cardWidth = DEFAULT_CARD_WIDTH;
+  const placementAnchor = input.anchor.cover
+    ? (() => {
+        const center = (input.anchor.left + input.anchor.right) / 2;
+        return {
+          ...input.anchor,
+          left: center - cardWidth / 2,
+          right: center + cardWidth / 2,
+        };
+      })()
+    : input.anchor;
   const editorWidth = Math.min(FLOATING_EDITOR_WIDTH, cardWidth - 16);
   const root = el("div", [
     "position:fixed",
@@ -636,7 +656,8 @@ export function openInlineAskOverlay(
     "display:none",
     "flex-direction:column",
     "gap:8px",
-    "max-height:min(330px, 46vh)",
+    // About 20 lines of answer before it scrolls.
+    "max-height:min(460px, 58vh)",
     "overflow:auto",
   ]);
   thread.setAttribute("data-llm-inline-ask-thread", "true");
@@ -669,6 +690,39 @@ export function openInlineAskOverlay(
     onChange: (state) => render(state),
     createAbortController: input.createAbortController,
   });
+  // Parts of an answer the next follow-up quotes, oldest first.
+  const composerQuotes: string[] = [];
+  // One quote line: the thin bar and one clamped line of muted text, as the
+  // passage line looks. It inherits its container's font size.
+  const quoteLine = (text: string, removable: boolean): HTMLElement => {
+    const line = el("div", [
+      "display:grid",
+      `grid-template-columns:3px minmax(0,1fr)${removable ? " auto" : ""}`,
+      "column-gap:8px",
+      "align-items:center",
+      "min-width:0",
+      "white-space:nowrap",
+    ]);
+    const bar = el("span", [
+      "border-radius:2px",
+      "align-self:stretch",
+      "margin:2px 0",
+      `background:${palette.quoteBar}`,
+    ]);
+    const body = el("span", [
+      `font-family:${PAPER_FONT}`,
+      "font-size:inherit",
+      "line-height:1.5",
+      "min-width:0",
+      "overflow:hidden",
+      "text-overflow:ellipsis",
+      `color:${palette.quoteRestFg}`,
+    ]);
+    body.textContent = text;
+    body.setAttribute("title", text);
+    line.append(bar, body);
+    return line;
+  };
   const canSendNow = () => {
     const phase = session.getState().phase;
     // While Continue in sidebar runs, the turns it moves must stay complete.
@@ -676,7 +730,10 @@ export function openInlineAskOverlay(
     return hasModel() && (phase === "compose" || phase === "answered");
   };
   const syncSend = () => {
-    setSendDisabled(!canSendNow() || !textBox.readText().trim());
+    setSendDisabled(
+      !canSendNow() ||
+        (!textBox.readText().trim() && composerQuotes.length === 0),
+    );
   };
   const textBox = createReaderOverlayEditor({
     doc,
@@ -886,6 +943,119 @@ export function openInlineAskOverlay(
     show(notice, !line);
   };
   syncModelLine();
+
+  // The quotes above the follow-up field.
+  const composerQuotesBox = scaleText(
+    el("div", [
+      "display:none",
+      "flex-direction:column",
+      "gap:3px",
+      "min-width:0",
+      "max-height:84px",
+      "overflow-y:auto",
+      "padding:0 2px",
+    ]),
+    12.5,
+  );
+  composerQuotesBox.setAttribute("data-llm-inline-ask-composer-quotes", "true");
+  const renderComposerQuotes = () => {
+    for (let child = composerQuotesBox.firstChild; child; ) {
+      composerQuotesBox.removeChild(child);
+      child = composerQuotesBox.firstChild;
+    }
+    composerQuotes.forEach((text, index) => {
+      const line = quoteLine(text, true);
+      line.setAttribute("data-llm-inline-ask-composer-quote", String(index));
+      const remove = el("button", [
+        "display:inline-flex",
+        "align-items:center",
+        "justify-content:center",
+        "width:16px",
+        "height:16px",
+        "margin:0",
+        "padding:0",
+        "border:none",
+        "border-radius:4px",
+        "background:none",
+        `color:${labelFg}`,
+        "cursor:pointer",
+      ]) as HTMLButtonElement;
+      remove.setAttribute("type", "button");
+      remove.setAttribute("data-llm-inline-ask-composer-quote-remove", "true");
+      remove.setAttribute("title", t("Remove quote"));
+      remove.setAttribute("aria-label", t("Remove quote"));
+      remove.appendChild(closeIcon(doc));
+      remove.addEventListener("mouseenter", () => {
+        remove.style.color = fg;
+        remove.style.background = palette.hover;
+      });
+      remove.addEventListener("mouseleave", () => {
+        remove.style.color = labelFg;
+        remove.style.background = "none";
+      });
+      line.append(remove);
+      composerQuotesBox.append(line);
+    });
+    const phase = session.getState().phase;
+    show(
+      composerQuotesBox,
+      composerQuotes.length > 0 &&
+        (phase === "compose" || phase === "answered"),
+      "flex",
+    );
+  };
+
+  // The Copy and Quote bar over a selection inside an answer.
+  const selectionBar = el("div", [
+    "display:none",
+    "position:absolute",
+    "z-index:6",
+    "gap:2px",
+    "padding:3px",
+    "box-sizing:border-box",
+    `background:${bg}`,
+    `border:1px solid ${palette.menuBorder}`,
+    "border-radius:8px",
+    `box-shadow:${palette.menuShadow}`,
+    "white-space:nowrap",
+  ]);
+  selectionBar.setAttribute("data-llm-inline-ask-selection-bar", "true");
+  (
+    [
+      ["copy", t("Copy")],
+      ["quote", t("Quote")],
+    ] as const
+  ).forEach(([action, text]) => {
+    const button = scaleText(
+      el("button", [
+        "display:inline-flex",
+        "align-items:center",
+        "padding:3px 8px",
+        "margin:0",
+        "border:none",
+        "border-radius:6px",
+        "background:none",
+        `color:${labelFg}`,
+        "font:inherit",
+        "line-height:1.35",
+        "white-space:nowrap",
+        "cursor:pointer",
+      ]) as HTMLButtonElement,
+      12,
+    );
+    button.setAttribute("type", "button");
+    button.setAttribute("data-llm-inline-ask-selection-action", action);
+    button.textContent = text;
+    button.addEventListener("mouseenter", () => {
+      button.style.color = fg;
+      button.style.background = palette.hover;
+    });
+    button.addEventListener("mouseleave", () => {
+      button.style.color = labelFg;
+      button.style.background = "none";
+    });
+    selectionBar.append(button);
+  });
 
   // Quick prompts: plain grey words, shifted left so the text lines up with
   // the passage.
@@ -1741,43 +1911,98 @@ export function openInlineAskOverlay(
     saveFooter,
   );
 
-  // The corner grip: drag to widen the card and lengthen the answer area.
-  const resizeGrip = el("div", [
-    "position:absolute",
-    "right:1px",
-    "bottom:1px",
-    "width:14px",
-    "height:14px",
-    `color:${palette.tertiary}`,
-    "opacity:0.45",
-    "cursor:nwse-resize",
-    "touch-action:none",
-    "transition:opacity 120ms ease",
-  ]);
-  resizeGrip.setAttribute("data-llm-inline-ask-resize", "true");
-  resizeGrip.append(
-    svgIcon(
-      doc,
-      14,
-      {
-        fill: "none",
-        stroke: "currentColor",
-        "stroke-width": "1.2",
-        "stroke-linecap": "round",
-      },
-      [{ tag: "path", attrs: { d: "M13 5L5 13M13 9.5L9.5 13" } }],
-    ),
-  );
+  // The corner grips: drag a corner to resize the card. Each grip is an
+  // invisible hit area that straddles its corner. While the pointer is over
+  // it (or a drag from it runs), an arc shows just outside the card's corner.
+  const RESIZE_CORNERS = [
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ] as const;
+  type ResizeCorner = (typeof RESIZE_CORNERS)[number];
+  const resizeGrips = new Map<ResizeCorner, HTMLElement>();
+  const resizeArcs = new Map<ResizeCorner, HTMLElement>();
+  const hoveredCorners = new Set<ResizeCorner>();
+  const syncResizeArcs = () => {
+    for (const [corner, arc] of resizeArcs) {
+      const on = hoveredCorners.has(corner) || drag?.corner === corner;
+      arc.style.opacity = on ? "1" : "0";
+    }
+  };
+  const resizeListeners: Array<[HTMLElement, string, () => void]> = [];
+  for (const corner of RESIZE_CORNERS) {
+    const isTop = corner.startsWith("top");
+    const isLeft = corner.endsWith("left");
+    // The box reaches 12px into the card and 6px outside it.
+    const grip = el("div", [
+      "position:absolute",
+      isTop ? "top:-7px" : "bottom:-7px",
+      isLeft ? "left:-7px" : "right:-7px",
+      "width:18px",
+      "height:18px",
+      "z-index:20",
+      isTop === isLeft ? "cursor:nwse-resize" : "cursor:nesw-resize",
+      "touch-action:none",
+    ]);
+    grip.setAttribute("data-llm-inline-ask-resize", corner);
+    // The arc is drawn for the bottom-right corner and mirrored for the rest.
+    // It is concentric with the card's 16px corner, 4.5px outside it, and its
+    // straight tails run 6px along the two edges.
+    const arc = el("div", [
+      "position:absolute",
+      "inset:0",
+      "pointer-events:none",
+      "opacity:0",
+      "transition:opacity 120ms ease",
+      `color:${palette.labelFg}`,
+    ]);
+    arc.setAttribute("data-llm-inline-ask-resize-arc", corner);
+    const svg = doc.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 18 18");
+    svg.setAttribute("width", "18");
+    svg.setAttribute("height", "18");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2.5");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute(
+      "style",
+      `display:block;overflow:visible;transform:scale(${isLeft ? -1 : 1},${isTop ? -1 : 1})`,
+    );
+    const path = doc.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", "M16.5 -10V-4A20.5 20.5 0 0 1 -4 16.5H-10");
+    svg.appendChild(path);
+    arc.append(svg);
+    grip.append(arc);
+    const onEnter = () => {
+      hoveredCorners.add(corner);
+      syncResizeArcs();
+    };
+    const onLeave = () => {
+      hoveredCorners.delete(corner);
+      syncResizeArcs();
+    };
+    grip.addEventListener("mouseenter", onEnter);
+    grip.addEventListener("mouseleave", onLeave);
+    resizeListeners.push([grip, "mouseenter", onEnter]);
+    resizeListeners.push([grip, "mouseleave", onLeave]);
+    resizeGrips.set(corner, grip);
+    resizeArcs.set(corner, arc);
+  }
 
   root.append(
     quoteSection,
     thread,
     pills,
+    composerQuotesBox,
     field,
     notice,
     promptEditor,
+    selectionBar,
     saveView,
-    resizeGrip,
+    ...resizeGrips.values(),
   );
 
   // ── Rendering ──────────────────────────────────────────────────────────
@@ -1815,7 +2040,26 @@ export function openInlineAskOverlay(
             ]);
       if (turn.role === "user") {
         node.setAttribute("data-llm-inline-ask-question", "true");
-        node.textContent = turn.shownText;
+        if (turn.quotes?.length) {
+          // The quoted parts of the earlier answer, then the question.
+          const lines = el("div", [
+            "display:flex",
+            "flex-direction:column",
+            "gap:3px",
+            "margin:0 0 4px",
+          ]);
+          for (const text of turn.quotes) {
+            const line = quoteLine(text, false);
+            line.setAttribute("data-llm-inline-ask-question-quote", "true");
+            lines.append(line);
+          }
+          const body = el("div", []);
+          body.setAttribute("data-llm-inline-ask-question-text", "true");
+          body.textContent = turn.shownText;
+          node.append(lines, body);
+        } else {
+          node.textContent = turn.shownText;
+        }
       }
       const base = turn.role === "user" ? 12 : 12.5;
       node.style.fontSize = sizePx(base);
@@ -1912,20 +2156,30 @@ export function openInlineAskOverlay(
     setButtonDisabled(cancelSaveBtn, saving);
     setButtonDisabled(backBtn, saving);
   };
+  // What the save view hid that render() does not set again: the passage
+  // header and the notice. The rest (thread, field, pills, editor, quotes)
+  // is shown or hidden by render() on every pass.
+  const hiddenBySaveView = new Map<HTMLElement, string>();
   const applyView = () => {
     const inSave = view === "save";
     root.setAttribute("data-view", view);
     show(saveView, inSave, "flex");
-    if (!inSave) return;
+    if (!inSave) {
+      for (const [node, display] of hiddenBySaveView) {
+        node.style.display = display;
+      }
+      hiddenBySaveView.clear();
+      return;
+    }
     closeMenus();
-    for (const node of [
-      quoteSection,
-      thread,
-      field,
-      notice,
-      pills,
-      promptEditor,
-    ])
+    hideSelectionBar();
+    for (const node of [quoteSection, notice]) {
+      if (!hiddenBySaveView.has(node)) {
+        hiddenBySaveView.set(node, node.style.display);
+      }
+      show(node, false);
+    }
+    for (const node of [thread, field, composerQuotesBox, pills, promptEditor])
       show(node, false);
   };
 
@@ -2000,6 +2254,8 @@ export function openInlineAskOverlay(
     show(reading, phase === "waiting");
     const canType = phase === "compose" || phase === "answered";
     show(field, canType, "flex");
+    show(composerQuotesBox, canType && composerQuotes.length > 0, "flex");
+    if (!canType) hideSelectionBar();
     show(pills, phase === "compose", "flex");
     if (phase !== lastPhase) {
       // A question leaves compose: the pill editor and any menu close.
@@ -2042,6 +2298,7 @@ export function openInlineAskOverlay(
       if (entry) entry.node.style.fontSize = sizePx(entry.base);
     }
     root.setAttribute("data-text-size", String(textSize));
+    hideSelectionBar();
     syncQuote();
     if (atBottom) thread.scrollTop = thread.scrollHeight;
     syncThreadFade();
@@ -2313,20 +2570,184 @@ export function openInlineAskOverlay(
   const sendTyped = () => {
     if (!canSendNow()) return;
     const text = textBox.readText().trim();
-    if (!text) return;
-    if (session.send(text)) textBox.setText("");
+    const quotes = composerQuotes.slice();
+    if (!text && quotes.length === 0) return;
+    if (quotes.length === 0) {
+      if (session.send(text)) textBox.setText("");
+      return;
+    }
+    // The model gets the quotes in the question itself, then the typed text.
+    const asked = text || t("Explain this part of your answer.");
+    const prompt = [
+      t("About this part of your answer:"),
+      quotes.map((quote) => `> ${quote}`).join("\n\n"),
+      "",
+      asked,
+    ].join("\n");
+    if (!session.send(prompt, asked, quotes)) return;
+    textBox.setText("");
+    composerQuotes.length = 0;
+    renderComposerQuotes();
+  };
+
+  // ── The Copy and Quote bar over an answer selection ────────────────────
+  /** A press is selecting: the bar waits for the mouse button to come up. */
+  let selecting = false;
+  const collapseSpaces = (text: string) => text.replace(/\s+/gu, " ").trim();
+  /** The selection when it lies inside one finished answer; else null. */
+  const readAnswerSelection = (): {
+    raw: string;
+    text: string;
+    range: Range;
+  } | null => {
+    const selection = doc.defaultView?.getSelection?.();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return null;
+    }
+    const range = selection.getRangeAt(0);
+    const inAnswer = turnNodes.some(
+      (entry) =>
+        entry?.node.getAttribute("data-llm-inline-ask-answer") === "done" &&
+        entry.node.contains(range.commonAncestorContainer),
+    );
+    if (!inAnswer) return null;
+    const raw = selection.toString().trim();
+    const text = collapseSpaces(raw);
+    return text ? { raw, text, range } : null;
+  };
+  function hideSelectionBar() {
+    show(selectionBar, false);
+  }
+  const syncSelectionBar = () => {
+    const info =
+      closed || selecting || view !== "thread" || continuing
+        ? null
+        : session.getState().phase === "answered"
+          ? readAnswerSelection()
+          : null;
+    if (!info) {
+      hideSelectionBar();
+      return;
+    }
+    const rects = Array.from(info.range.getClientRects() ?? []).filter(
+      (rect) => rect.width > 0 && rect.height > 0,
+    );
+    const first = rects[0] ?? info.range.getBoundingClientRect();
+    const last = rects[rects.length - 1] ?? first;
+    show(selectionBar, true, "flex");
+    const rootRect = root.getBoundingClientRect();
+    const barRect = selectionBar.getBoundingClientRect();
+    const originX = rootRect.left + root.clientLeft;
+    const originY = rootRect.top + root.clientTop;
+    const edge = 4;
+    // Just above the selection's first line; below its last line when the
+    // card has no room above. Always inside the card's box.
+    let top = first.top - originY - barRect.height - edge;
+    if (top < edge) top = last.bottom - originY + edge;
+    top = Math.max(
+      edge,
+      Math.min(top, root.clientHeight - barRect.height - edge),
+    );
+    const left = Math.max(
+      edge,
+      Math.min(first.left - originX, root.clientWidth - barRect.width - edge),
+    );
+    selectionBar.style.left = `${Math.round(left)}px`;
+    selectionBar.style.top = `${Math.round(top)}px`;
+  };
+  const clearSelection = () => {
+    try {
+      doc.defaultView?.getSelection?.()?.removeAllRanges();
+    } catch {
+      // Nothing selected.
+    }
+  };
+  const onSelectionChange = () => {
+    if (closed) return;
+    if (selecting) {
+      hideSelectionBar();
+      return;
+    }
+    syncSelectionBar();
+  };
+  const onThreadMouseDown = (e: Event) => {
+    if ((e as MouseEvent).button !== 0) return;
+    selecting = true;
+    hideSelectionBar();
+  };
+  const onDocMouseUp = () => {
+    if (!selecting) return;
+    selecting = false;
+    syncSelectionBar();
+  };
+  // The bar's buttons must not move the selection or the focus.
+  const onSelectionBarMouseDown = (e: Event) => e.preventDefault();
+  const onSelectionBarClick = (e: Event) => {
+    e.preventDefault();
+    e.stopPropagation();
+    let node = e.target as HTMLElement | null;
+    while (
+      node &&
+      node !== selectionBar &&
+      node.getAttribute?.("data-llm-inline-ask-selection-action") === null
+    ) {
+      node = node.parentNode as HTMLElement | null;
+    }
+    const action = node?.getAttribute?.("data-llm-inline-ask-selection-action");
+    const info = readAnswerSelection();
+    hideSelectionBar();
+    if (!info) return;
+    if (action === "copy") {
+      void copyTextToClipboard(root, info.raw);
+      return;
+    }
+    if (action !== "quote") return;
+    if (!composerQuotes.includes(info.text)) composerQuotes.push(info.text);
+    clearSelection();
+    renderComposerQuotes();
+    syncSend();
+    editor.focus({ preventScroll: true });
+    textBox.placeCaretAtEnd();
+  };
+  const onComposerQuotesClick = (e: Event) => {
+    let node = e.target as HTMLElement | null;
+    while (node && node !== composerQuotesBox) {
+      if (node.getAttribute?.("data-llm-inline-ask-composer-quote") !== null) {
+        break;
+      }
+      node = node.parentNode as HTMLElement | null;
+    }
+    const index = Number(
+      node?.getAttribute?.("data-llm-inline-ask-composer-quote"),
+    );
+    if (!node || node === composerQuotesBox || !(index >= 0)) return;
+    const removeBtn = node.querySelector(
+      "[data-llm-inline-ask-composer-quote-remove]",
+    );
+    if (!removeBtn || !removeBtn.contains(e.target as Node | null)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    composerQuotes.splice(index, 1);
+    renderComposerQuotes();
+    syncSend();
+    refocusEditor();
   };
   const onDocPointerDown = (e: Event) => {
     const target = e.target as Node | null;
     if (target && root.contains(target)) return;
     closeMenus();
+    hideSelectionBar();
     // Once a question exists, a click elsewhere keeps the conversation.
     if (session.hasConversation()) return;
     close();
   };
-  // Escape steps back one level: an open menu, then the prompt editor, then
+  // Escape steps back one level: the Copy and Quote bar, an open menu, then the prompt editor, then
   // the save view, and last the card itself.
   const handleEscape = () => {
+    if (selectionBar.style.display !== "none") {
+      hideSelectionBar();
+      return;
+    }
     if (openMenu) {
       closeMenus();
       return;
@@ -2527,6 +2948,11 @@ export function openInlineAskOverlay(
       swallowPillClick = true;
     }
   };
+  // Registered after the card's own pointerdown listeners. Zotero's reader
+  // cancels every pointerdown that bubbles up to its window (outside its own
+  // text fields), which stops the browser from starting a text selection; so
+  // a press inside the card goes no further than the card.
+  const onRootPointerDownStop = (e: Event) => e.stopPropagation();
   const findPill = (target: unknown): HTMLElement | null => {
     for (
       let node = target as HTMLElement | null;
@@ -2626,15 +3052,20 @@ export function openInlineAskOverlay(
   // ── Move and resize by dragging ────────────────────────────────────────
   type Drag = {
     kind: "move" | "resize";
+    /** The grabbed corner, for a resize. */
+    corner: ResizeCorner | null;
     pointerId: number;
     startX: number;
     startY: number;
     startLeft: number;
     startTop: number;
     startWidth: number;
+    startBottom: number;
     /** The answer area's max height at the start, and its room to grow. */
     startThreadMax: number;
     threadLimit: number;
+    /** Room to grow upward, for a top corner. */
+    topLimit: number;
   };
   let drag: Drag | null = null;
   /** The answer area's max height once the user has set it. */
@@ -2668,6 +3099,7 @@ export function openInlineAskOverlay(
     const ending = drag;
     if (!ending) return;
     drag = null;
+    syncResizeArcs();
     root.style.cursor = "";
     root.style.userSelect = "text";
     root.style.setProperty("-moz-user-select", "text");
@@ -2708,16 +3140,48 @@ export function openInlineAskOverlay(
       root.style.top = `${Math.round(top)}px`;
       return;
     }
-    const left = parseFloat(root.style.left) || current.startLeft;
-    const width = Math.max(
-      MIN_CARD_WIDTH,
-      Math.min(current.startWidth + dx, vw - READER_OVERLAY_MARGIN - left),
-    );
-    root.style.width = `${Math.round(width)}px`;
-    chosenThreadMax = Math.round(
-      Math.max(80, Math.min(current.startThreadMax + dy, current.threadLimit)),
-    );
-    thread.style.maxHeight = `${chosenThreadMax}px`;
+    const corner = current.corner ?? "bottom-right";
+    const startRight = current.startLeft + current.startWidth;
+    if (corner.endsWith("left")) {
+      // The right edge stays; the left edge follows the pointer.
+      const width = Math.max(
+        MIN_CARD_WIDTH,
+        Math.min(current.startWidth - dx, startRight - READER_OVERLAY_MARGIN),
+      );
+      root.style.width = `${Math.round(width)}px`;
+      root.style.left = `${Math.round(startRight - width)}px`;
+    } else {
+      const left = parseFloat(root.style.left) || current.startLeft;
+      const width = Math.max(
+        MIN_CARD_WIDTH,
+        Math.min(current.startWidth + dx, vw - READER_OVERLAY_MARGIN - left),
+      );
+      root.style.width = `${Math.round(width)}px`;
+    }
+    if (corner.startsWith("top")) {
+      // The bottom edge stays; the top edge follows the answer area's height.
+      // Without an answer area there is nothing to resize.
+      if (doc.defaultView?.getComputedStyle(thread)?.display === "none") {
+        syncThreadFade();
+        return;
+      }
+      chosenThreadMax = Math.round(
+        Math.max(80, Math.min(current.startThreadMax - dy, current.topLimit)),
+      );
+      thread.style.maxHeight = `${chosenThreadMax}px`;
+      const height = root.getBoundingClientRect().height;
+      root.style.top = `${Math.round(
+        Math.max(READER_OVERLAY_MARGIN, current.startBottom - height),
+      )}px`;
+    } else {
+      chosenThreadMax = Math.round(
+        Math.max(
+          80,
+          Math.min(current.startThreadMax + dy, current.threadLimit),
+        ),
+      );
+      thread.style.maxHeight = `${chosenThreadMax}px`;
+    }
     syncThreadFade();
   };
   const onDragEnd = (e: Event) => {
@@ -2728,7 +3192,11 @@ export function openInlineAskOverlay(
   const onCardPointerDown = (e: Event) => {
     const pointer = e as PointerEvent;
     if (drag || pointer.button !== 0 || pointer.isPrimary === false) return;
-    const grip = resizeGrip.contains(pointer.target as Node | null);
+    let corner: ResizeCorner | null = null;
+    for (const [name, node] of resizeGrips) {
+      if (node.contains(pointer.target as Node | null)) corner = name;
+    }
+    const grip = corner !== null;
     if (!grip && !isBlankTarget(pointer.target)) return;
     const rect = root.getBoundingClientRect();
     const { vh } = viewSize();
@@ -2740,17 +3208,28 @@ export function openInlineAskOverlay(
       threadHeight + room >= thread.scrollHeight
         ? Number.POSITIVE_INFINITY
         : threadHeight + room;
+    // Growing it upward may not push the card's top out of view.
+    const roomAbove = rect.top - READER_OVERLAY_MARGIN;
+    const topLimit =
+      threadHeight + roomAbove >= thread.scrollHeight
+        ? Number.POSITIVE_INFINITY
+        : threadHeight + roomAbove;
     drag = {
       kind: grip ? "resize" : "move",
+      corner,
       pointerId: pointer.pointerId,
       startX: pointer.clientX,
       startY: pointer.clientY,
       startLeft: rect.left,
       startTop: rect.top,
       startWidth: rect.width,
+      startBottom: rect.bottom,
       startThreadMax,
       threadLimit,
+      topLimit,
     };
+    syncResizeArcs();
+    hideSelectionBar();
     // No text selection while dragging.
     root.style.userSelect = "none";
     root.style.setProperty("-moz-user-select", "none");
@@ -2769,12 +3248,6 @@ export function openInlineAskOverlay(
   const onCardHover = (e: Event) => {
     if (drag) return;
     root.style.cursor = isNode(root, e.target) ? "grab" : "";
-  };
-  const onCardEnter = () => {
-    resizeGrip.style.opacity = "1";
-  };
-  const onCardLeave = () => {
-    resizeGrip.style.opacity = "0.45";
   };
 
   function close() {
@@ -2818,9 +3291,21 @@ export function openInlineAskOverlay(
     textBox.detach();
     root.removeEventListener("pointerdown", onRootPointerDown);
     root.removeEventListener("pointerdown", onCardPointerDown);
+    root.removeEventListener("pointerdown", onRootPointerDownStop);
     root.removeEventListener("pointermove", onCardHover);
-    root.removeEventListener("mouseenter", onCardEnter);
-    root.removeEventListener("mouseleave", onCardLeave);
+    thread.removeEventListener("mousedown", onThreadMouseDown);
+    thread.removeEventListener("scroll", hideSelectionBar);
+    selectionBar.removeEventListener("mousedown", onSelectionBarMouseDown);
+    selectionBar.removeEventListener("click", onSelectionBarClick);
+    composerQuotesBox.removeEventListener("click", onComposerQuotesClick);
+    try {
+      doc.removeEventListener("selectionchange", onSelectionChange);
+      doc.removeEventListener("mouseup", onDocMouseUp, true);
+    } catch {
+      // The reader document is gone.
+    }
+    for (const [node, type, listener] of resizeListeners)
+      node.removeEventListener(type, listener);
     pills.removeEventListener("click", onPillsClick);
     pills.removeEventListener("contextmenu", onPillsContextMenu);
     if (picker) {
@@ -2848,7 +3333,7 @@ export function openInlineAskOverlay(
   (doc.body || doc.documentElement).appendChild(root);
   registerReaderOverlay(doc, handle);
   render(session.getState());
-  positionReaderOverlay(root, doc, input.anchor);
+  positionReaderOverlay(root, doc, placementAnchor);
 
   pointerDocs = collectPointerDocuments(doc);
   for (const pointerDoc of pointerDocs) {
@@ -2875,9 +3360,15 @@ export function openInlineAskOverlay(
   textBox.attach();
   root.addEventListener("pointerdown", onRootPointerDown);
   root.addEventListener("pointerdown", onCardPointerDown);
+  root.addEventListener("pointerdown", onRootPointerDownStop);
   root.addEventListener("pointermove", onCardHover);
-  root.addEventListener("mouseenter", onCardEnter);
-  root.addEventListener("mouseleave", onCardLeave);
+  thread.addEventListener("mousedown", onThreadMouseDown);
+  thread.addEventListener("scroll", hideSelectionBar);
+  selectionBar.addEventListener("mousedown", onSelectionBarMouseDown);
+  selectionBar.addEventListener("click", onSelectionBarClick);
+  composerQuotesBox.addEventListener("click", onComposerQuotesClick);
+  doc.addEventListener("selectionchange", onSelectionChange);
+  doc.addEventListener("mouseup", onDocMouseUp, true);
   pills.addEventListener("click", onPillsClick);
   pills.addEventListener("contextmenu", onPillsContextMenu);
   if (picker) {

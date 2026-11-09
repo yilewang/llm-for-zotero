@@ -372,7 +372,7 @@ function saveBlockReason(block: InlineAskSaveBlock): string {
     case "no_position":
       return t("Zotero gave no position for this selection. Select it again.");
     case "no_conversation":
-      return t("Open this PDF's chat panel to save annotations.");
+      return t("Zotero could not find the paper for this PDF.");
   }
 }
 

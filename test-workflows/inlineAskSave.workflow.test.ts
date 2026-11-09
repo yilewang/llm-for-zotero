@@ -138,13 +138,16 @@ describe("workflow: Inline Ask saves a selection as an annotation", function () 
   async function askAndAnswer(
     fixture: WorkflowTestFixture,
     draft: "native" | "native_cross_page" = "native",
+    withPanel = true,
   ): Promise<WorkflowTestReaderInlineAskOpen> {
-    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const panel = withPanel
+      ? await api.renderPanelForItem(fixture.parentItemId)
+      : null;
     const opened = await api.openReaderInlineAsk({
       attachmentItemId: fixture.pdfAttachmentId,
       pageIndex: 0,
       selectedText: SELECTED_TEXT,
-      panelId: panel.panelId,
+      ...(panel ? { panelId: panel.panelId } : {}),
       draft,
     });
     assert.isTrue(opened.mounted, JSON.stringify(opened));
@@ -315,6 +318,79 @@ describe("workflow: Inline Ask saves a selection as an annotation", function () 
       );
     });
   }
+
+  for (const via of ["back", "cancel", "escape"] as const) {
+    it(`shows the passage, thread and composer again after Save then ${via}`, async function () {
+      const fixture = await createFixture(`Inline Ask save ${via} passage`);
+      await askAndAnswer(fixture);
+      // Expanded state must survive the round trip too.
+      if (via === "back") await api.clickReaderInlineAskPassage();
+      const before = api.readReaderInlineAsk();
+      assert.isTrue(before.passageShown, JSON.stringify(before));
+      assert.include(before.passageText, SELECTED_TEXT);
+      assert.equal(before.passageExpanded, via === "back");
+
+      await api.openReaderInlineAskSave({ via: "click" });
+      const inSave = api.readReaderInlineAsk();
+      assert.isFalse(inSave.passageShown, JSON.stringify(inSave));
+      assert.isFalse(inSave.threadShown);
+      assert.isFalse(inSave.fieldShown);
+
+      if (via === "escape") {
+        await api.pressReaderInlineAskKey({ key: "Escape", target: "editor" });
+      } else {
+        await api.leaveReaderInlineAskSave({ via });
+      }
+      const after = await waitForCard(
+        (card) => card.passageShown,
+        "the passage line returns",
+      );
+      const message = JSON.stringify({ before, after });
+      assert.isTrue(after.mounted, message);
+      assert.equal(after.passageText, before.passageText, message);
+      assert.equal(after.passageExpanded, before.passageExpanded, message);
+      assert.isTrue(after.threadShown, message);
+      assert.isTrue(after.fieldShown, message);
+      assert.deepEqual(after.answers, before.answers, message);
+      assert.equal(after.rect.height, before.rect.height, message);
+    });
+  }
+
+  it("saves with no chat panel open, filed under the paper's conversation", async function () {
+    Zotero.Prefs.set(PREF_PREFIX + "originalAgentPermissionMode", "auto", true);
+    const fixture = await createFixture("Inline Ask save without panel");
+    const opened = await askAndAnswer(fixture, "native", false);
+    const draft = draftOf(opened);
+
+    const answered = api.readReaderInlineAskSave();
+    assert.isFalse(answered.footerSaveDisabled, JSON.stringify(answered));
+    await api.openReaderInlineAskSave({ via: "click" });
+    const comment = "Saved with the sidebar closed";
+    await api.editReaderInlineAskSave({ comment, color: "#5fb236" });
+    await api.confirmReaderInlineAskSave({ via: "click" });
+    const closed = await waitForSave(
+      (state) => !state.mounted || Boolean(state.error),
+      "the card closes after a verified save",
+    );
+    assert.isFalse(closed.mounted, JSON.stringify(closed));
+
+    const rows = await annotationRows(fixture.pdfAttachmentId);
+    assert.lengthOf(rows, 1, JSON.stringify(rows));
+    assert.equal(rows[0].comment, comment);
+    assert.equal(rows[0].color, "#5fb236");
+    assert.deepEqual(rows[0].position.rects, draft.position.rects);
+
+    const actions = await listJournalActions({
+      conversationKey: fixture.parentItemId,
+      limit: 10,
+    });
+    assert.isTrue(
+      actions.some((action) => action.toolName === "annotate_pdf"),
+      JSON.stringify(
+        actions.map(({ toolName, status }) => ({ toolName, status })),
+      ),
+    );
+  });
 
   it("keeps the payload after a failed save, and the retry writes no second row", async function () {
     Zotero.Prefs.set(PREF_PREFIX + "originalAgentPermissionMode", "auto", true);
