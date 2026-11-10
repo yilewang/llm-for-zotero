@@ -1,13 +1,11 @@
 import { t } from "../../utils/i18n";
-import { stripWebSourceMarkersForDisplay } from "../../webAccess/attribution";
-import { stripQuoteCitationAnchorsFromDisplayText } from "../../services/quotes/quoteCitations";
+import { projectMarkdownToPlainLines } from "./markdownPlainText";
 import { getMessageQuoteDisplay } from "./quoteRenderPlan";
 import {
   cancelChatNavigation,
   navigateChatToMessage,
   withScrollGuard,
 } from "./chatScrollSnapshots";
-import { sanitizeText } from "../../utils/textSanitization";
 import { flushPendingChatRender } from "./progressiveChatRender";
 import type { Message } from "./types";
 
@@ -75,19 +73,7 @@ function truncatePreviewText(value: string): string {
 }
 
 function projectMarkdownToPlainText(value: unknown): string {
-  if (typeof value !== "string" || !value) return "";
-  return truncatePreviewText(
-    stripQuoteCitationAnchorsFromDisplayText(
-      stripWebSourceMarkersForDisplay(sanitizeText(value)),
-    )
-      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-      .replace(/^\s{0,3}(?:#{1,6}|>|[-+*])\s+/gm, "")
-      .replace(/^\s{0,3}\d+[.)]\s+/gm, "")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/```|~~~/g, " ")
-      .replace(/[*_~`]+/g, " "),
-  );
+  return truncatePreviewText(projectMarkdownToPlainLines(value));
 }
 
 function hasQueryContext(message: Message): boolean {

@@ -57,6 +57,18 @@ export function renderNativeNotePreview(
     /Written by LLM-for-Zotero\./.test(fragment.textContent || "")
       ? responseBody
       : fragment;
+  // Question-first notes lead with a heading that holds the user's question.
+  // It is the card title, and the answer body below it may open with its own
+  // headings that must stay in the preview.
+  const leading = fragment.firstElementChild;
+  const leadingQuestion =
+    modelLabel && leading && /^h[1-6]$/i.test(leading.tagName) ? leading : null;
+  if (leadingQuestion && source !== fragment) {
+    const questionTitle = leadingQuestion.textContent?.trim() || result.title;
+    target.classList.add("llm-rendered-markdown");
+    target.append(...(Array.from(source.childNodes) as Node[]));
+    return questionTitle;
+  }
   const title = source.querySelector("h1, h2, h3, h4, h5, h6");
   const displayTitle = title?.textContent?.trim() || result.title;
   if (title === source.firstElementChild) title?.remove();
