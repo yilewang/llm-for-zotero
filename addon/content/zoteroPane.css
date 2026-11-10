@@ -5531,8 +5531,10 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 100%;
-  max-width: clamp(280px, 85cqi, 560px);
+  /* As wide as the longest tip, capped so a wide column keeps a short,
+     centred block (440px at font scale 1.4). */
+  width: fit-content;
+  max-width: min(100%, calc(315px * var(--llm-font-scale)));
   margin: clamp(24px, calc(12px + 2.4cqi), 32px) 0 0;
   padding: 0;
   list-style: none;
