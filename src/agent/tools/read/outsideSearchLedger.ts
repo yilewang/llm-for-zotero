@@ -40,6 +40,10 @@ export function tracksOutsideSearchTurn(
 export const OPENALEX_RATE_LIMIT_MESSAGE =
   "OpenAlex is rate-limited for the rest of this turn (HTTP 429). Do not wait, sleep or retry. Search mode: use source:'europepmc' or 'arxiv'. Recommendations, references and citations need OpenAlex and are unavailable this turn; say so in the answer.";
 
+/** Added to the rate-limit message when no OpenAlex key is set. */
+export const OPENALEX_KEY_HINT =
+  "Tell the user they can add a free OpenAlex API key in the plugin settings (Agent → OpenAlex) to raise the limit.";
+
 /** The web latch message; reason is "quota exhausted" or "authentication rejected". */
 export function webSearchUnavailableMessage(
   provider: string,

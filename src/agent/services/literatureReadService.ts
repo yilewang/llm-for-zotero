@@ -1,4 +1,5 @@
 import { appLogger } from "../../core/logging";
+import { getOpenAlexApiKey } from "../../webAccess/prefs";
 import {
   htmlFragmentToText,
   parseArxivAtom,
@@ -78,7 +79,7 @@ export type LiteratureReadRecord = {
 const EPMC_BASE = "https://www.ebi.ac.uk/europepmc/webservices/rest";
 const NCBI_EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi";
 const OPENALEX_WORKS = "https://api.openalex.org/works";
-/** Fixed project contact, like literature_search's OpenAlex mailto. */
+/** Fixed project contact for NCBI. */
 const PROJECT_CONTACT = "llm-for-zotero@github.com";
 const NCBI_TOOL = "llm-for-zotero";
 const OPENALEX_SELECT =
@@ -245,14 +246,18 @@ type ZoteroHttpLike = {
   ) => Promise<{ status: number; responseText?: string | null }>;
 };
 
-async function httpGet(url: string, accept: string): Promise<HttpOutcome> {
+async function httpGet(
+  url: string,
+  accept: string,
+  extraHeaders?: Record<string, string>,
+): Promise<HttpOutcome> {
   await waitForHostSlot(url);
   const http = (globalThis as { Zotero?: { HTTP?: ZoteroHttpLike } }).Zotero
     ?.HTTP;
   if (!http?.request) return { status: 0, text: "", failure: "network_error" };
   try {
     const xhr = await http.request("GET", url, {
-      headers: { "User-Agent": USER_AGENT, Accept: accept },
+      headers: { "User-Agent": USER_AGENT, Accept: accept, ...extraHeaders },
       responseType: "text",
       timeout: REQUEST_TIMEOUT_MS,
       successCodes: false,
@@ -304,10 +309,14 @@ class RequestBudget {
     return LITERATURE_READ_MAX_REQUESTS - this.used;
   }
 
-  async get(url: string, accept: string): Promise<HttpOutcome | null> {
+  async get(
+    url: string,
+    accept: string,
+    headers?: Record<string, string>,
+  ): Promise<HttpOutcome | null> {
     if (this.remaining <= 0) return null;
     this.used += 1;
-    return httpGet(url, accept);
+    return httpGet(url, accept, headers);
   }
 }
 
@@ -620,9 +629,11 @@ async function readOpenAlex(
   budget: RequestBudget,
 ): Promise<LiteratureReadRecord> {
   const doi = draft.paper.doi!;
+  const key = getOpenAlexApiKey();
   const outcome = await budget.get(
-    `${OPENALEX_WORKS}/${encodeURIComponent(`https://doi.org/${doi}`)}?select=${OPENALEX_SELECT}&mailto=${encodeURIComponent(PROJECT_CONTACT)}`,
+    `${OPENALEX_WORKS}/${encodeURIComponent(`https://doi.org/${doi}`)}?select=${OPENALEX_SELECT}`,
     "application/json",
+    key ? { Authorization: `Bearer ${key}` } : undefined,
   );
   if (!outcome) return finish(draft, "unavailable", "request_failed");
   if (!isOk(outcome)) {

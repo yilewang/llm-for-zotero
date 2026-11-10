@@ -1398,6 +1398,51 @@
                   </html:div>
                 </html:div>
               </html:div>
+
+              <html:div class="llm-pref-section">
+                <html:span class="llm-pref-section-title">OpenAlex</html:span>
+                <html:div class="llm-pref-field">
+                  <html:label for="__addonRef__-openalex-api-key"
+                    >API key</html:label
+                  >
+                  <html:div class="llm-pref-control">
+                    <html:div class="llm-pref-line">
+                      <html:input
+                        id="__addonRef__-openalex-api-key"
+                        class="llm-pref-input"
+                        type="password"
+                        autocomplete="off"
+                      ></html:input>
+                      <html:button
+                        id="__addonRef__-openalex-test"
+                        class="llm-pref-button llm-pref-button--accent"
+                        type="button"
+                      >
+                        Test connection
+                      </html:button>
+                    </html:div>
+                    <html:a
+                      id="__addonRef__-openalex-key-link"
+                      class="llm-pref-link"
+                      href="https://openalex.org/settings/api-key"
+                    >
+                      Get a free API key
+                    </html:a>
+                    <html:span
+                      id="__addonRef__-openalex-status"
+                      class="llm-pref-hint"
+                      role="status"
+                      aria-live="polite"
+                      style="display: none; white-space: pre-line"
+                    ></html:span>
+                    <html:span class="llm-pref-hint">
+                      Optional. A free key raises OpenAlex rate limits for
+                      literature search and reading. The key stays in your local
+                      Zotero preferences.
+                    </html:span>
+                  </html:div>
+                </html:div>
+              </html:div>
             </html:div>
           </html:div>
 
