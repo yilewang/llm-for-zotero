@@ -5486,10 +5486,18 @@
   container: llm-start / inline-size;
   width: 100%;
   box-sizing: border-box;
+  /* Tip text size; the title and subtitle keep fixed ratios to it, so a
+     wide window enlarges the page without changing its proportions.
+     Unregistered, so the cqi resolves in each child against this box. */
+  --llm-start-tip-size: clamp(
+    var(--llm-fs-11),
+    calc(11px + 1.1cqi),
+    calc(12.5px * var(--llm-font-scale))
+  );
 }
 
 .llm-start-page-title {
-  font-size: clamp(22px, calc(10px + 3.6cqi), 36px);
+  font-size: max(22px, calc(1.43 * var(--llm-start-tip-size)));
   font-weight: 600;
   line-height: 1.3;
   text-wrap: balance;
@@ -5498,7 +5506,7 @@
 }
 
 .llm-start-page-subtitle {
-  font-size: clamp(14px, calc(8px + 1.8cqi), 20px);
+  font-size: max(14px, calc(0.91 * var(--llm-start-tip-size)));
   font-style: italic;
   line-height: 1.4;
   text-wrap: balance;
@@ -5554,11 +5562,7 @@
   border-radius: 10px;
   background: transparent;
   font: inherit;
-  font-size: clamp(
-    var(--llm-fs-11),
-    calc(11px + 1.1cqi),
-    calc(12.5px * var(--llm-font-scale))
-  );
+  font-size: var(--llm-start-tip-size);
   line-height: 1.35;
   text-align: start;
   color: var(--fill-secondary);
