@@ -5481,90 +5481,184 @@
   padding: 40px 20px 20px;
 }
 
+.llm-start-page,
+.llm-standalone-start-page {
+  container: llm-start / inline-size;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .llm-start-page-title {
-  font-size: 22px;
-  font-weight: 600;
+  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
+  font-size: clamp(
+    calc(17px * var(--llm-font-scale)),
+    calc(10px * var(--llm-font-scale) + 3.3cqi),
+    calc(31px * var(--llm-font-scale))
+  );
+  font-weight: 400;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
   color: var(--fill-primary);
-  margin-bottom: 4px;
 }
 
-.llm-start-page-subtitle {
-  font-size: 14px;
+.llm-start-page-credit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  font-size: var(--llm-fs-10);
   color: var(--fill-tertiary);
-  margin-bottom: 32px;
-  font-style: italic;
 }
 
-.llm-start-page-recommendations {
-  text-align: left;
-  max-width: 500px;
-  width: 100%;
+.llm-start-page-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.llm-start-page-rec-title {
-  font-size: 12px;
+.llm-start-page-logo {
+  width: 1.3em;
+  height: 1.3em;
+  transform-origin: 50% 80%;
+}
+
+.llm-start-page-brand-name {
   font-weight: 600;
   color: var(--fill-secondary);
-  margin-bottom: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
 }
 
-.llm-start-page-rec-list {
-  margin: 0;
-  padding-left: 20px;
-  font-size: 12px;
-  color: var(--fill-tertiary);
-  line-height: 1.8;
+.llm-start-page-letter {
+  display: inline-block;
 }
 
-.llm-start-page-rec-list li {
-  margin-bottom: 4px;
+@keyframes llm-start-letter-wave {
+  0% {
+    transform: translateY(0);
+    color: var(--fill-secondary);
+  }
+  40% {
+    transform: translateY(-4px);
+    color: var(--fill-primary);
+  }
+  100% {
+    transform: translateY(0);
+    color: var(--fill-secondary);
+  }
 }
 
-.llm-start-page-rec-list li strong {
-  color: var(--fill-secondary);
+@keyframes llm-start-logo-tip {
+  0%,
+  100% {
+    transform: rotate(0) translateY(0);
+  }
+  40% {
+    transform: rotate(-10deg) translateY(-2px);
+  }
 }
 
-.llm-webchat-start-page .llm-start-page-subtitle {
-  max-width: 560px;
-  margin-bottom: 20px;
-  font-style: normal;
+@media (prefers-reduced-motion: no-preference) {
+  .llm-start-page-brand:hover .llm-start-page-letter {
+    animation: llm-start-letter-wave 0.5s ease-in-out both;
+    animation-delay: calc(var(--i) * 32ms);
+  }
+
+  .llm-start-page-brand:hover .llm-start-page-logo {
+    animation: llm-start-logo-tip 0.5s ease-in-out both;
+  }
 }
 
-.llm-webchat-start-page .llm-start-page-recommendations {
-  max-width: 560px;
-}
-
-.llm-webchat-rec-title-spaced {
-  margin-top: 18px;
-}
-
-.llm-webchat-warning-title {
-  margin-top: 18px;
-  color: #b45309;
-}
-
-.llm-rec-reason {
-  opacity: 0.7;
-  font-size: 11px;
-}
-
-.llm-start-page-desc {
-  text-align: left;
-  max-width: 500px;
+.llm-start-page-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   width: 100%;
-  font-size: 12px;
-  color: var(--fill-tertiary);
-  line-height: 1.7;
+  max-width: 420px;
+  margin: 24px 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: start;
 }
 
-.llm-start-page-desc p {
-  margin: 0 0 8px;
-}
-
-.llm-start-page-desc strong {
+.llm-start-page-tip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--fill-quinary);
+  border-radius: 10px;
+  background: transparent;
+  font: inherit;
+  font-size: var(--llm-fs-11);
+  line-height: 1.35;
+  text-align: start;
   color: var(--fill-secondary);
+  cursor: default;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.llm-start-page-tip[role="button"] {
+  cursor: pointer;
+}
+
+.llm-start-page-tip[role="button"]:hover,
+.llm-start-page-tip[role="button"]:focus-visible {
+  background: var(--fill-quinary);
+  color: var(--fill-primary);
+}
+
+.llm-start-page-tip[role="button"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.llm-start-page-tip-icon {
+  flex: none;
+  width: 1.1em;
+  height: 1.1em;
+  color: var(--fill-tertiary);
+  transition: color 0.2s ease;
+}
+
+.llm-start-page-tip[role="button"]:hover .llm-start-page-tip-icon {
+  color: var(--color-accent);
+}
+
+.llm-start-page-tip-arrow {
+  flex: none;
+  width: 0.95em;
+  height: 0.95em;
+  color: var(--fill-tertiary);
+  opacity: 0;
+  transform: translateX(-4px);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.llm-start-page-tip[role="button"]:hover .llm-start-page-tip-arrow,
+.llm-start-page-tip[role="button"]:focus-visible .llm-start-page-tip-arrow {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.llm-start-page-tip-text {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .llm-start-page-tip,
+  .llm-start-page-tip-icon,
+  .llm-start-page-tip-arrow {
+    transition: none;
+  }
 }
 
 /* Transition animation: start page → chat mode */

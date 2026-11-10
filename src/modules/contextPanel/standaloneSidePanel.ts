@@ -33,7 +33,7 @@ import {
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import { appLogger } from "../../core/logging";
 import { createElement } from "../../utils/domHelpers";
-import { t } from "../../utils/i18n";
+import { getStartPageCreditHtml, t } from "../../utils/i18n";
 import type { ConversationSystem } from "../../shared/types";
 import { releaseClaudeRuntimeForBody } from "../../claudeCode/runtimeRetention";
 import { getContextSourceModeCssClassName } from "../../services/paperContent/contextSourceModes";
@@ -1029,16 +1029,14 @@ export function createStandaloneSidePanel(
     root.dataset.standalone = "true";
     const startPage = createElement(doc, "div", "llm-start-page");
     const title = createElement(doc, "div", "llm-start-page-title", {
-      textContent: "LLM-for-Zotero",
+      textContent: deps.readOnly
+        ? t("Read a past chat")
+        : t("Ask on the side, or read a past chat"),
     });
-    startPage.append(
-      title,
-      createElement(doc, "div", "llm-start-page-subtitle", {
-        textContent: deps.readOnly
-          ? t("Read a past chat")
-          : t("Ask on the side, or read a past chat"),
-      }),
-    );
+    const credit = createElement(doc, "div");
+    // Static markup from the shared start-page credit helper.
+    credit.innerHTML = getStartPageCreditHtml();
+    startPage.append(title, credit.firstElementChild as Element);
     const nav = createElement(
       doc,
       "div",

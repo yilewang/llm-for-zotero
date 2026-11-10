@@ -13,6 +13,7 @@ import {
 import { createProviderRequestScope } from "../../utils/providerTransport";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { HTML_NS } from "../../utils/domHelpers";
+import { wireStartPageTipActions } from "./startPageTipActions";
 import { appendSelectedTextSections } from "./selectedTextPreviewSections";
 import {
   t,
@@ -10954,6 +10955,7 @@ function renderChatForPanel(
   ): PaperContextRef =>
     resolvePaperContextDisplayRef(paperContext, paperContextDisplayCache);
 
+  wireStartPageTipActions(chatBox, body);
   if (!item) {
     cancelPendingChatRender(chatBox);
     setChatBoxConversation(chatBox, null);

@@ -5090,7 +5090,7 @@ function readStandaloneSidePanelDiagnostics(): WorkflowTestStandaloneSidePanelDi
             ".llm-standalone-side-panel-newtab",
           );
           const title = query(root, ".llm-start-page-title");
-          const subtitle = query(root, ".llm-start-page-subtitle");
+          const credit = query(root, ".llm-start-page-credit");
           const nav = query(root, ".llm-standalone-side-panel-newtab-nav");
           if (!win || !root || !title || !nav) return null;
           const box = root.getBoundingClientRect();
@@ -5098,9 +5098,8 @@ function readStandaloneSidePanelDiagnostics(): WorkflowTestStandaloneSidePanelDi
           const navRect = nav.getBoundingClientRect();
           return {
             title: textOf(title),
-            subtitle: textOf(subtitle),
-            subtitleFontStyle:
-              (subtitle && win.getComputedStyle(subtitle)?.fontStyle) || "",
+            credit: textOf(credit),
+            titleFontFamily: win.getComputedStyle(title)?.fontFamily || "",
             /** Content centre minus the page's centre. */
             centreDxPx:
               navRect.left + navRect.width / 2 - (box.left + box.width / 2),
@@ -5109,16 +5108,16 @@ function readStandaloneSidePanelDiagnostics(): WorkflowTestStandaloneSidePanelDi
               (row) => row.getBoundingClientRect().left,
             ),
             titleTopPx: top,
-            subtitleTopPx: subtitle?.getBoundingClientRect().top ?? null,
+            creditTopPx: credit?.getBoundingClientRect().top ?? null,
             mainTitleTopPx:
               firstVisible(
                 contentWrapper,
                 ".llm-start-page-title",
               )?.getBoundingClientRect().top ?? null,
-            mainSubtitleTopPx:
+            mainCreditTopPx:
               firstVisible(
                 contentWrapper,
-                ".llm-start-page-subtitle",
+                ".llm-start-page-credit",
               )?.getBoundingClientRect().top ?? null,
           };
         })(),
