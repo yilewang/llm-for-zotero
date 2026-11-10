@@ -133,11 +133,17 @@ describe("workflow: standalone side panel", function () {
       0.5,
       `${label}: the titles share a line`,
     );
-    assert.closeTo(
+    // The title scales with its own column's width, so the subtitles can
+    // differ by the title's line height; each must sit below its title.
+    assert.isAbove(
       page!.subtitleTopPx!,
+      page!.titleTopPx,
+      `${label}: the subtitle sits below the title`,
+    );
+    assert.isAbove(
       page!.mainSubtitleTopPx!,
-      0.5,
-      `${label}: the taglines share a line`,
+      page!.mainTitleTopPx!,
+      `${label}: the main subtitle sits below the main title`,
     );
   }
 
@@ -933,7 +939,14 @@ describe("workflow: standalone side panel", function () {
     {
       const emptyTitle = side.design.startTitle;
       assert.isOk(emptyTitle, "the empty side chat shows its start page");
-      assert.equal(newTabTitle.fontSize, emptyTitle!.fontSize, "same title");
+      // The title size follows its own column's width, so the two pages'
+      // sizes can differ by a pixel or two.
+      assert.closeTo(
+        Number.parseFloat(newTabTitle.fontSize),
+        Number.parseFloat(emptyTitle!.fontSize),
+        3,
+        "same title",
+      );
       assert.equal(newTabTitle.fontWeight, emptyTitle!.fontWeight);
     }
     assert.equal(sideChat.pill, "Temporary");

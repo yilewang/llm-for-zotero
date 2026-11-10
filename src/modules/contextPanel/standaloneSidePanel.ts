@@ -33,7 +33,7 @@ import {
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import { appLogger } from "../../core/logging";
 import { createElement } from "../../utils/domHelpers";
-import { t } from "../../utils/i18n";
+import { getStartPageTitleHtml, t } from "../../utils/i18n";
 import type { ConversationSystem } from "../../shared/types";
 import { releaseClaudeRuntimeForBody } from "../../claudeCode/runtimeRetention";
 import { getContextSourceModeCssClassName } from "../../services/paperContent/contextSourceModes";
@@ -1028,9 +1028,10 @@ export function createStandaloneSidePanel(
     // As the side bodies: the standalone start page centres in its column.
     root.dataset.standalone = "true";
     const startPage = createElement(doc, "div", "llm-start-page");
-    const title = createElement(doc, "div", "llm-start-page-title", {
-      textContent: "LLM-for-Zotero",
-    });
+    const title = createElement(doc, "div", "llm-start-page-title");
+    title.setAttribute("aria-label", "LLM-for-Zotero");
+    // Static markup: the same letter spans as the chat start pages.
+    title.innerHTML = getStartPageTitleHtml("LLM-for-Zotero");
     startPage.append(
       title,
       createElement(doc, "div", "llm-start-page-subtitle", {

@@ -6,6 +6,7 @@ import {
   SIDEBAR_LAYOUT_PREF,
 } from "./contextPanel/sidebarLayout";
 import { config } from "../../package.json";
+import { consumeRequestedPreferencesTab } from "../utils/preferencesStartTab";
 import { t } from "../utils/i18n";
 import { WEBCHAT_TARGETS } from "../webchat/types";
 import {
@@ -1642,7 +1643,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
     }
     // Activate first tab
-    switchTab("models");
+    const requestedTab = consumeRequestedPreferencesTab();
+    switchTab(
+      requestedTab && tabBar.querySelector(`[data-pref-tab="${requestedTab}"]`)
+        ? requestedTab
+        : "models",
+    );
   }
 
   const modelSections = doc.querySelector(

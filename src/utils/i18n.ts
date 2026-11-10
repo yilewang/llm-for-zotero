@@ -10,6 +10,8 @@
  * in English until a Chinese translation is added to the map.
  */
 
+import { config } from "../../package.json";
+
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
@@ -1933,6 +1935,107 @@ export function t(en: string): string {
   return en;
 }
 
+type StartPageIcon =
+  | "cursor"
+  | "frame"
+  | "mention"
+  | "note"
+  | "chip"
+  | "search"
+  | "markdown"
+  | "folder"
+  | "pen"
+  | "diff"
+  | "papers"
+  | "plug"
+  | "globe"
+  | "eye"
+  | "dot";
+
+const START_PAGE_ICON_PATHS: Record<StartPageIcon, string> = {
+  cursor: '<path d="M9 4h6M9 20h6M12 4v16"/>',
+  frame:
+    '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M4 17l5-4.5 4 3.5 3-2.5 4 3.5"/>',
+  mention:
+    '<circle cx="12" cy="12" r="3.5"/><path d="M15.5 12v1.5a2.5 2.5 0 0 0 5 0V12a8.5 8.5 0 1 0-3.4 6.8"/>',
+  note: '<path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4M9 12h6M9 16h6"/>',
+  chip: '<rect x="3" y="7.5" width="18" height="9" rx="4.5"/><path d="M8 12h8"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
+  markdown:
+    '<path d="M12 6.5c-2-1.5-4.5-2-8-2v13c3.5 0 6 .5 8 2 2-1.5 4.5-2 8-2v-13c-3.5 0-6 .5-8 2zM12 6.5v13"/>',
+  folder:
+    '<path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 17z"/>',
+  pen: '<path d="M4 20l1-4L16.5 4.5a2 2 0 0 1 3 3L8 19z"/>',
+  diff: '<path d="M6 8h12M12 4v8M6 18h12"/>',
+  papers:
+    '<rect x="5" y="3.5" width="10" height="13" rx="1.5"/><path d="M9 20.5h8a2 2 0 0 0 2-2V8"/>',
+  plug: '<path d="M9 3.5v5M15 3.5v5M6.5 8.5h11v3a5.5 5.5 0 0 1-11 0zM12 17v3.5"/>',
+  globe:
+    '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.5 3.5 5.5 3.5 8.5s-1 6-3.5 8.5c-2.5-2.5-3.5-5.5-3.5-8.5s1-6 3.5-8.5z"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/>',
+  dot: '<circle cx="12" cy="12" r="4"/>',
+};
+
+interface StartPageTip {
+  icon: StartPageIcon;
+  text: string;
+  /** Click action, run by chat.ts; a tip without one is a plain row. */
+  action?: string;
+  /** Domain for "open-site"; read by the handler as data, never as script. */
+  domain?: string;
+}
+
+function escapeStartPageHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Title markup for the start pages: one span per letter, so the title can
+ * play a hover wave. Spaces stay plain text so the title can still wrap.
+ */
+export function getStartPageTitleHtml(title: string): string {
+  return Array.from(title)
+    .map((char, index) =>
+      char === " "
+        ? " "
+        : `<span class="llm-start-page-letter" style="--i:${index}" aria-hidden="true">${escapeStartPageHtml(char)}</span>`,
+    )
+    .join("");
+}
+
+/**
+ * Builds one start page: the title, a subtitle, and the tips list. Tip text
+ * stays here so it is translated; chat.ts wires the tip actions.
+ */
+function buildStartPageHtml(
+  rootClass: string,
+  title: string,
+  subtitle: string,
+  tips: StartPageTip[],
+): string {
+  const arrow =
+    '<svg class="llm-start-page-tip-arrow" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
+  const tipItems = tips
+    .map((tip) => {
+      const icon = `<svg class="llm-start-page-tip-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${START_PAGE_ICON_PATHS[tip.icon]}</svg>`;
+      const text = `<span class="llm-start-page-tip-text">${escapeStartPageHtml(tip.text)}</span>`;
+      if (!tip.action) {
+        return `<li class="llm-start-page-tip">${icon}${text}</li>`;
+      }
+      const domain = tip.domain
+        ? ` data-start-tip-domain="${escapeStartPageHtml(tip.domain)}"`
+        : "";
+      // Not <button>: chrome innerHTML sanitizing strips form controls.
+      return `<li class="llm-start-page-tip" role="button" tabindex="0" data-start-tip-action="${escapeStartPageHtml(tip.action)}"${domain}>${icon}${text}${arrow}</li>`;
+    })
+    .join("");
+  return `<div class="${rootClass}"><div class="llm-start-page-title" aria-label="${escapeStartPageHtml(title)}">${getStartPageTitleHtml(title)}</div><div class="llm-start-page-subtitle">${escapeStartPageHtml(subtitle)}</div><ul class="llm-start-page-tips">${tipItems}</ul></div>`;
+}
+
 /** Returns the WebChat start page HTML. */
 export function getWebChatWelcomeHtml(
   targetLabel?: string,
@@ -1940,56 +2043,58 @@ export function getWebChatWelcomeHtml(
 ): string {
   const label = targetLabel || "WebChat";
   const domain = targetDomain || "the chat site";
+  const siteAction = targetDomain
+    ? { action: "open-site", domain: targetDomain }
+    : {};
   if (getEffectiveLocale().startsWith("zh")) {
-    return `
-      <div class="llm-start-page llm-webchat-start-page">
-        <div class="llm-start-page-title">LLM-for-Zotero WebChat</div>
-        <div class="llm-start-page-subtitle">通过已打开的 ${label} 浏览器标签页工作</div>
-        <div class="llm-start-page-recommendations">
-          <div class="llm-start-page-rec-title">工作方式</div>
-          <ol class="llm-start-page-rec-list">
-            <li>Zotero 会通过 Sync for Zotero 浏览器扩展，把你的问题发送到已经打开的 <strong>${domain}</strong> 标签页，然后把回答同步回这里。</li>
-          </ol>
-          <div class="llm-start-page-rec-title llm-webchat-warning-title">⚠️⚠️⚠️ 发送前必须确认</div>
-          <ol class="llm-start-page-rec-list">
-            <li>已经安装并启用 <strong>Sync for Zotero</strong> 浏览器扩展。</li>
-            <li>已经在 Chrome 或 Edge 中打开 <strong>${domain}</strong>，并且已经登录。</li>
-            <li>保持 <strong>${domain}</strong> 标签页可见；不要最小化，不要放到另一个显示器。Zotero 模型标签旁的绿点表示已连接。</li>
-          </ol>
-          <div class="llm-start-page-rec-title llm-webchat-rec-title-spaced">怎么提问</div>
-          <ol class="llm-start-page-rec-list">
-            <li>在这里输入问题并点击 <strong>Send</strong>。</li>
-            <li>论文对话中，论文标签高亮表示下一轮会附加当前 PDF；未高亮时只发送提问。发送成功后，标签会自动切换为仅发送提问；之后随时可以右键论文标签重新附加当前 PDF。</li>
-            <li>如果没有反应，请刷新 <strong>${domain}</strong> 标签页，确认扩展已启用，并让 Zotero 和浏览器保持在同一个显示器。</li>
-          </ol>
-        </div>
-      </div>
-    `;
+    return buildStartPageHtml(
+      "llm-start-page llm-webchat-start-page",
+      "LLM-for-Zotero WebChat",
+      `通过已打开的 ${label} 浏览器标签页工作`,
+      [
+        {
+          icon: "plug",
+          text: "安装并启用 Sync for Zotero 浏览器扩展。",
+          action: "open-extension",
+        },
+        {
+          icon: "globe",
+          text: `在 Chrome 或 Edge 中打开 ${domain} 并登录。`,
+          ...siteAction,
+        },
+        {
+          icon: "eye",
+          text: `保持 ${domain} 标签页可见，并与 Zotero 在同一个显示器上。`,
+        },
+        { icon: "dot", text: `顶部 ${label} 前的圆点变绿，表示已连接。` },
+      ],
+    );
   }
-  return `
-    <div class="llm-start-page llm-webchat-start-page">
-      <div class="llm-start-page-title">LLM-for-Zotero WebChat</div>
-      <div class="llm-start-page-subtitle">Use your open ${label} browser tab</div>
-      <div class="llm-start-page-recommendations">
-        <div class="llm-start-page-rec-title">How it works</div>
-        <ol class="llm-start-page-rec-list">
-          <li>Zotero sends your question to the already-open <strong>${domain}</strong> tab through the Sync for Zotero browser extension, then streams the answer back here.</li>
-        </ol>
-        <div class="llm-start-page-rec-title llm-webchat-warning-title">⚠️⚠️⚠️ Before sending</div>
-        <ol class="llm-start-page-rec-list">
-          <li>Install and enable the <strong>Sync for Zotero</strong> browser extension.</li>
-          <li>Open <strong>${domain}</strong> in Chrome or Edge, and make sure you are signed in.</li>
-          <li>Keep the <strong>${domain}</strong> tab visible; do not minimize it or put it on another monitor. A green dot in Zotero's model chip means connected.</li>
-        </ol>
-        <div class="llm-start-page-rec-title llm-webchat-rec-title-spaced">Ask from Zotero</div>
-        <ol class="llm-start-page-rec-list">
-          <li>Type your question here and press <strong>Send</strong>.</li>
-          <li>For paper chat, a highlighted paper chip means the current PDF will be attached on the next turn; an unhighlighted chip sends only the prompt. After a successful send, the chip switches to prompt-only mode, and you can right-click it at any time to attach the current PDF again.</li>
-          <li>If nothing happens, reload the <strong>${domain}</strong> tab, confirm the extension is enabled, and keep Zotero and the browser on the same monitor.</li>
-        </ol>
-      </div>
-    </div>
-  `;
+  return buildStartPageHtml(
+    "llm-start-page llm-webchat-start-page",
+    "LLM-for-Zotero WebChat",
+    `Use your open ${label} browser tab`,
+    [
+      {
+        icon: "plug",
+        text: "Install and turn on the Sync for Zotero browser extension.",
+        action: "open-extension",
+      },
+      {
+        icon: "globe",
+        text: `Open ${domain} in Chrome or Edge, signed in.`,
+        ...siteAction,
+      },
+      {
+        icon: "eye",
+        text: `Keep the ${domain} tab visible, on the same monitor as Zotero.`,
+      },
+      {
+        icon: "dot",
+        text: `The dot before ${label} at the top turns green when connected.`,
+      },
+    ],
+  );
 }
 
 export function getWelcomeHtml(): string {
@@ -2027,89 +2132,136 @@ export function getWelcomeHtml(): string {
 
 export function getPaperChatStartPageHtml(): string {
   if (getEffectiveLocale().startsWith("zh")) {
-    return `
-      <div class="llm-start-page">
-        <div class="llm-start-page-title">LLM-for-Zotero</div>
-        <div class="llm-start-page-subtitle">从这里开始，读懂这篇论文的一切</div>
-        <div class="llm-start-page-desc">
-          <p>论文对话回答关于当前活跃论文的问题。论文将在你提问前预加载到上下文中。</p>
-          <p>内联添加上下文：<strong>文本</strong>、<strong>截图</strong>或 <strong>@论文</strong>。左键点击论文标签发送 PDF；右键点击切换全文/检索模式。</p>
-          <p>使用文献库对话请通过顶部的对话模式控件切换。</p>
-        </div>
-      </div>
-    `;
+    return buildStartPageHtml(
+      "llm-start-page",
+      "LLM-for-Zotero",
+      "从这里开始，读懂这篇论文的一切",
+      [
+        { icon: "cursor", text: "在 PDF 中选中文字，然后点击“添加文本”。" },
+        {
+          icon: "frame",
+          text: "点击截图按钮，在图中拖动框选。",
+          action: "screenshot",
+        },
+        {
+          icon: "mention",
+          text: "输入 @ 引入另一篇论文。",
+          action: "insert-at",
+        },
+        { icon: "note", text: "把任意回答保存为这篇文献的笔记。" },
+      ],
+    );
   }
-  return `
-    <div class="llm-start-page">
-      <div class="llm-start-page-title">LLM-for-Zotero</div>
-      <div class="llm-start-page-subtitle">Understand everything of this paper, from here</div>
-      <div class="llm-start-page-desc">
-        <p>Paper chat answers questions about your current active paper. The paper will be pre-loaded into context before your first question.</p>
-        <p>Add context inline: <strong>text</strong>, <strong>screenshots</strong>, or <strong>@papers</strong>. Left-click a paper chip to send its PDF; right-click to toggle between full-text and retrieval mode.</p>
-        <p>For library chat, use the chat mode control at the top.</p>
-      </div>
-    </div>
-  `;
+  return buildStartPageHtml(
+    "llm-start-page",
+    "LLM-for-Zotero",
+    "Understand everything of this paper, from here",
+    [
+      { icon: "cursor", text: "Select text in the PDF, then choose Add Text." },
+      {
+        icon: "frame",
+        text: "Click the screenshot button and drag over a figure.",
+        action: "screenshot",
+      },
+      {
+        icon: "mention",
+        text: "Type @ to bring in another paper.",
+        action: "insert-at",
+      },
+      { icon: "note", text: "Save any answer as a note on this item." },
+    ],
+  );
 }
 
 export function getNoteEditingStartPageHtml(): string {
   if (getEffectiveLocale().startsWith("zh")) {
-    return `
-      <div class="llm-start-page">
-        <div class="llm-start-page-title">LLM-for-Zotero</div>
-        <div class="llm-start-page-subtitle">一起写笔记，让想法进化</div>
-        <div class="llm-start-page-desc">
-          <p>选中一段文字，我可以帮你<strong>重写润色</strong>。</p>
-          <p>如果是条目笔记，论文上下文会<strong>自动预加载</strong>；如果是独立笔记，那就自由发挥吧。</p>
-          <p>重写后的内容会以 <strong>diff 模式</strong>显示，让你清楚看到每处改动，帮助你越写越好。</p>
-        </div>
-      </div>
-    `;
+    return buildStartPageHtml(
+      "llm-start-page",
+      "LLM-for-Zotero",
+      "一起写笔记，让想法进化",
+      [
+        { icon: "pen", text: "在笔记中选中文字，然后让我改写。" },
+        { icon: "diff", text: "改写以 diff 显示，你能看到每处改动。" },
+        {
+          icon: "papers",
+          text: "条目笔记会自动加载论文；独立笔记从空白开始。",
+        },
+      ],
+    );
   }
-  return `
-    <div class="llm-start-page">
-      <div class="llm-start-page-title">LLM-for-Zotero</div>
-      <div class="llm-start-page-subtitle">Write with me, evolve your ideas</div>
-      <div class="llm-start-page-desc">
-        <p>Select a text snippet, and I can <strong>rewrite</strong> it for you.</p>
-        <p>If it's an item note, the paper context will be <strong>automatically preloaded</strong> for you; if it's a standalone note, let's freestyle.</p>
-        <p>The rewritten note will show in <strong>diff mode</strong>, so you can see exactly what changed — helping you evolve to write better.</p>
-      </div>
-    </div>
-  `;
+  return buildStartPageHtml(
+    "llm-start-page",
+    "LLM-for-Zotero",
+    "Write with me, evolve your ideas",
+    [
+      { icon: "pen", text: "Select text in the note, then ask to rewrite it." },
+      {
+        icon: "diff",
+        text: "Rewrites show as a diff, so you see every change.",
+      },
+      {
+        icon: "papers",
+        text: "Item notes load their paper for you; standalone notes start fresh.",
+      },
+    ],
+  );
 }
 
 export function getStandaloneLibraryChatStartPageHtml(): string {
   if (getEffectiveLocale().startsWith("zh")) {
-    return `
-      <div class="llm-standalone-start-page">
-        <div class="llm-start-page-title">LLM-for-Zotero Agent</div>
-        <div class="llm-start-page-subtitle">为你和你的文献库服务</div>
-        <div class="llm-start-page-recommendations">
-          <div class="llm-start-page-rec-title">推荐设置以获得最佳体验</div>
-          <ol class="llm-start-page-rec-list">
-            <li><strong>偏好设置 → MinerU</strong>：将 PDF 解析为 Markdown + 图片<span class="llm-rec-reason">（MD 是 LLM 的语言；可以利用解析出的图片写出更好的笔记；节省 token）</span></li>
-            <li>启用 <strong>Agent 模式</strong>，让助手自主完成研究任务</li>
-            <li>使用<strong>高智能模型</strong>：如 Codex、GPT-5.4 等</li>
-            <li>在偏好设置中配置<strong>笔记目录路径</strong>（设置 → Agent 标签页）</li>
-          </ol>
-        </div>
-      </div>
-    `;
+    return buildStartPageHtml(
+      "llm-standalone-start-page",
+      "LLM-for-Zotero Agent",
+      "为你和你的文献库服务",
+      [
+        {
+          icon: "search",
+          text: "用自然语言在文献库中查找论文。",
+          action: "focus-input",
+        },
+        {
+          icon: "mention",
+          text: "输入 @ 添加要比较的论文。",
+          action: "insert-at",
+        },
+        {
+          icon: "markdown",
+          text: "在偏好设置中配置 MinerU，把 PDF 读成 Markdown。",
+          action: "prefs:mineru",
+        },
+        {
+          icon: "folder",
+          text: "在偏好设置的 Agent 标签页中设置笔记目录。",
+          action: "prefs:agent",
+        },
+      ],
+    );
   }
-  return `
-    <div class="llm-standalone-start-page">
-      <div class="llm-start-page-title">LLM-for-Zotero Agent</div>
-      <div class="llm-start-page-subtitle">serve you and your library</div>
-      <div class="llm-start-page-recommendations">
-        <div class="llm-start-page-rec-title">Recommended settings for the best experience</div>
-        <ol class="llm-start-page-rec-list">
-          <li><strong>Preferences → MinerU</strong>: parse your PDFs to Markdown + images<span class="llm-rec-reason"> (MD is the language of LLMs; enables better notes with parsed images; saves tokens)</span></li>
-          <li>Activate <strong>Agent mode</strong> for autonomous research</li>
-          <li>Use an <strong>intelligent model</strong>: Codex, GPT-5.4, or similar high-intelligence models</li>
-          <li>Set up <strong>Notes directory</strong> in Preferences (Settings → Agent tab)</li>
-        </ol>
-      </div>
-    </div>
-  `;
+  return buildStartPageHtml(
+    "llm-standalone-start-page",
+    "LLM-for-Zotero Agent",
+    "serve you and your library",
+    [
+      {
+        icon: "search",
+        text: "Ask in plain words to find papers in your library.",
+        action: "focus-input",
+      },
+      {
+        icon: "mention",
+        text: "Type @ to add papers you want to compare.",
+        action: "insert-at",
+      },
+      {
+        icon: "markdown",
+        text: "Set up MinerU in Preferences to read PDFs as Markdown.",
+        action: "prefs:mineru",
+      },
+      {
+        icon: "folder",
+        text: "Set a notes directory in Preferences, Agent tab.",
+        action: "prefs:agent",
+      },
+    ],
+  );
 }
