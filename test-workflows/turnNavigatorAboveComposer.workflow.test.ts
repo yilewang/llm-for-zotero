@@ -67,6 +67,9 @@ describe("workflow: turn navigator above the composer", function () {
             (rect.bottom > viewport.top && rect.top < viewport.bottom)),
       );
     return {
+      chatBottom: Math.round(
+        main.querySelector(".llm-messages")!.getBoundingClientRect().bottom,
+      ),
       hidden: nav.hidden,
       markers: markers.length,
       navBottom: Math.round(nav.getBoundingClientRect().bottom),
@@ -78,6 +81,11 @@ describe("workflow: turn navigator above the composer", function () {
   }
 
   function check(label: string, place: ReturnType<typeof measure>) {
+    assert.isAtMost(
+      place.chatBottom,
+      place.floorTop,
+      `${label}: the entire chat scrollbar ends above the chips and composer`,
+    );
     assert.isFalse(place.hidden, `${label}: the navigator shows`);
     assert.isAtMost(
       place.navBottom,

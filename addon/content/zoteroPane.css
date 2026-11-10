@@ -197,14 +197,11 @@
   box-sizing: border-box;
   color: var(--fill-primary);
   background: var(--material-sidepane);
-  /* How far the floating chips and composer reach up over the chat
-     (chatFloatingComposer.ts sets the two heights). */
-  --llm-floating-composer: var(--llm-composer-overlay, 0px);
-  --llm-floating-shortcuts: var(--llm-shortcuts-overlay, 0px);
-  --llm-chat-floor: calc(
-    var(--llm-floating-composer) + var(--llm-floating-shortcuts) +
-      min(var(--llm-floating-shortcuts), 6px)
-  );
+  /* Keep the scroll viewport above the shortcuts and composer so its
+     native scrollbar remains reachable all the way to the bottom. */
+  --llm-floating-composer: 0px;
+  --llm-floating-shortcuts: 0px;
+  --llm-chat-floor: 0px;
 }
 
 /* The start page has no chat to run on under the composer: lay it out
@@ -5721,11 +5718,10 @@
   min-height: 320px;
   max-height: 100vh;
   overflow: hidden;
-  /* The chat runs on under the floating chips and composer: the shell adds
-     their height below its own (--llm-chat-floor) and gives it back, with
-     the panel gap, so they lay out over that added part. */
+  /* Keep the panel gap below the scroll viewport: a negative margin here
+     would let the composer cover the bottom of the native scrollbar. */
   padding-bottom: var(--llm-chat-floor, 0px);
-  margin-bottom: calc(-10px - var(--llm-chat-floor, 0px));
+  margin-bottom: 0;
 }
 
 .llm-messages {
