@@ -582,6 +582,14 @@ const zhCN: Record<string, string> = {
   "Search queries and requested URLs are sent to Tavily and are handled under Tavily's privacy, retention, and search-index policies. When displayed, favicons are loaded from public URLs supplied by Tavily. Do not include credentials or sensitive private text in web queries.":
     "搜索查询和所请求的 URL 会发送至 Tavily，并按照 Tavily 的隐私、数据保留和搜索索引政策进行处理。显示网站图标时，图标会从 Tavily 提供的公开 URL 加载。请勿在网页查询中包含登录凭据或敏感的私密文本。",
   "Enter a Tavily API key first.": "请先输入 Tavily API 密钥。",
+  "Enter an OpenAlex API key first.": "请先输入 OpenAlex API 密钥。",
+  "OpenAlex rejected this API key.": "OpenAlex 拒绝了该 API 密钥。",
+  "OpenAlex rate limit reached. Try again later.":
+    "已达到 OpenAlex 速率限制。请稍后重试。",
+  "Could not reach OpenAlex. Check the network connection.":
+    "无法连接 OpenAlex。请检查网络连接。",
+  "Optional. A free key raises OpenAlex rate limits for literature search and reading. The key stays in your local Zotero preferences.":
+    "可选。免费密钥可提高 OpenAlex 在文献搜索和阅读中的速率限制。API 密钥仅保存在本机的 Zotero 偏好设置中。",
   Connected: "已连接",
   "Could not reach Tavily. Check the network connection.":
     "无法连接 Tavily。请检查网络连接。",

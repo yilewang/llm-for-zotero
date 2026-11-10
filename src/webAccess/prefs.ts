@@ -5,6 +5,7 @@ import type { WebAccessProviderId } from "./types";
 export type { WebAccessProviderId } from "./types";
 
 export const TAVILY_API_KEY_PREF = `${config.prefsPrefix}.tavilyApiKey`;
+export const OPENALEX_API_KEY_PREF = `${config.prefsPrefix}.openalexApiKey`;
 export const ANYSEARCH_API_KEY_PREF = `${config.prefsPrefix}.anysearchApiKey`;
 export const WEB_ACCESS_PROVIDER_PREF = `${config.prefsPrefix}.webAccessProvider`;
 
@@ -74,4 +75,16 @@ export function setTavilyApiKey(value: string): void {
 
 export function hasTavilyApiKey(): boolean {
   return Boolean(getTavilyApiKey());
+}
+
+export function getOpenAlexApiKey(): string {
+  try {
+    return String(Zotero.Prefs.get(OPENALEX_API_KEY_PREF, true) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function setOpenAlexApiKey(value: string): void {
+  Zotero.Prefs.set(OPENALEX_API_KEY_PREF, value.trim(), true);
 }

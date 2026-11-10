@@ -60,6 +60,7 @@ declare namespace _ZoteroTypes {
       "originalAgentPermissionMode": string;
       "originalAgentPermissionModeMigrationDone": boolean;
       "tavilyApiKey": string;
+      "openalexApiKey": string;
       "webAccessProvider": string;
       "anysearchApiKey": string;
       "conversationSystem": string;

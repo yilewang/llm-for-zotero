@@ -335,6 +335,8 @@ import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate
 import {
   getTavilyApiKey,
   setTavilyApiKey,
+  getOpenAlexApiKey,
+  setOpenAlexApiKey,
   isWebAccessConfigured,
 } from "../webAccess/prefs";
 import { registerWebAccessPreferences } from "./preferences/webAccessPanel";
@@ -1677,6 +1679,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLSpanElement | null;
   const tavilyKeyLink = doc.querySelector(
     `#${config.addonRef}-tavily-key-link`,
+  ) as HTMLAnchorElement | null;
+  const openalexApiKeyInput = doc.querySelector(
+    `#${config.addonRef}-openalex-api-key`,
+  ) as HTMLInputElement | null;
+  const openalexTestButton = doc.querySelector(
+    `#${config.addonRef}-openalex-test`,
+  ) as HTMLButtonElement | null;
+  const openalexStatus = doc.querySelector(
+    `#${config.addonRef}-openalex-status`,
+  ) as HTMLSpanElement | null;
+  const openalexKeyLink = doc.querySelector(
+    `#${config.addonRef}-openalex-key-link`,
   ) as HTMLAnchorElement | null;
   const codexAppServerEnableToggle = doc.querySelector(
     `#${config.addonRef}-codex-app-server-enable`,
@@ -3786,6 +3800,78 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           );
         } finally {
           tavilyTestButton.disabled = false;
+        }
+      })();
+    });
+  }
+
+  if (openalexApiKeyInput) {
+    openalexApiKeyInput.value = getOpenAlexApiKey();
+    const commitOpenAlexKey = () => {
+      setOpenAlexApiKey(openalexApiKeyInput.value);
+      openalexApiKeyInput.value = getOpenAlexApiKey();
+      if (openalexStatus) {
+        openalexStatus.style.display = "none";
+        openalexStatus.textContent = "";
+      }
+    };
+    openalexApiKeyInput.addEventListener("change", commitOpenAlexKey);
+    openalexApiKeyInput.addEventListener("blur", commitOpenAlexKey);
+  }
+
+  if (openalexKeyLink) {
+    openalexKeyLink.addEventListener("click", (event) => {
+      event.preventDefault();
+      Zotero.launchURL("https://openalex.org/settings/api-key");
+    });
+  }
+
+  if (openalexTestButton && openalexStatus) {
+    openalexTestButton.addEventListener("click", () => {
+      void (async () => {
+        const key = openalexApiKeyInput?.value.trim() || getOpenAlexApiKey();
+        openalexStatus.style.display = "inline";
+        if (!key) {
+          openalexStatus.style.color = "red";
+          openalexStatus.textContent = t("Enter an OpenAlex API key first.");
+          return;
+        }
+        setOpenAlexApiKey(key);
+        if (openalexApiKeyInput) openalexApiKeyInput.value = key;
+        openalexTestButton.disabled = true;
+        openalexStatus.style.color = "var(--fill-secondary, #888)";
+        openalexStatus.textContent = t("Testing…");
+        try {
+          const response = await fetch(
+            "https://api.openalex.org/works?per_page=1&select=id",
+            {
+              headers: {
+                Accept: "application/json",
+                Authorization: `Bearer ${key}`,
+              },
+            },
+          );
+          if (response.ok) {
+            openalexStatus.style.color = "green";
+            openalexStatus.textContent = t("Connected");
+          } else {
+            openalexStatus.style.color = "red";
+            openalexStatus.textContent =
+              response.status === 401 || response.status === 403
+                ? t("OpenAlex rejected this API key.")
+                : response.status === 429
+                  ? t("OpenAlex rate limit reached. Try again later.")
+                  : t(
+                      "Could not reach OpenAlex. Check the network connection.",
+                    );
+          }
+        } catch {
+          openalexStatus.style.color = "red";
+          openalexStatus.textContent = t(
+            "Could not reach OpenAlex. Check the network connection.",
+          );
+        } finally {
+          openalexTestButton.disabled = false;
         }
       })();
     });

@@ -14,6 +14,7 @@ import {
   MAX_DISCOVERY_COUNT,
   parseDiscoveryCount,
 } from "../../services/literatureDiscovery";
+import { getOpenAlexApiKey } from "../../../webAccess/prefs";
 import { ToolInputRejection } from "../execution/failure";
 import { canShowLiteratureReview } from "./reviewLiterature";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
@@ -34,6 +35,7 @@ import {
   buildOutsideSearchNote,
   latchOutsideSearch,
   tracksOutsideSearchTurn,
+  OPENALEX_KEY_HINT,
   OPENALEX_RATE_LIMIT_MESSAGE,
   outsideSearchLatch,
   recordOutsideSearch,
@@ -513,8 +515,11 @@ export function createLiteratureSearchTool(
         results = await service.execute(input, context);
       } catch (error) {
         if (turn && isOpenAlexRateLimit(error)) {
-          latchOutsideSearch(turn, "openalex", OPENALEX_RATE_LIMIT_MESSAGE);
-          throw new Error(OPENALEX_RATE_LIMIT_MESSAGE);
+          const message = getOpenAlexApiKey()
+            ? OPENALEX_RATE_LIMIT_MESSAGE
+            : `${OPENALEX_RATE_LIMIT_MESSAGE} ${OPENALEX_KEY_HINT}`;
+          latchOutsideSearch(turn, "openalex", message);
+          throw new Error(message);
         }
         throw error;
       }
