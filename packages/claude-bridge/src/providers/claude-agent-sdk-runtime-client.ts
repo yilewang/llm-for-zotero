@@ -268,6 +268,7 @@ type RuntimeAttachment = {
 
 type RuntimeRequestShape = {
   userText?: unknown;
+  selectedTextContexts?: unknown;
   selectedTexts?: unknown;
   selectedTextContexts?: unknown;
   selectedPaperContexts?: unknown;

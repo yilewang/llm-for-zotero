@@ -167,6 +167,98 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     ]);
   });
 
+  it("pairs each selected snippet with its question in the Claude prompt", async () => {
+    let seenPrompt = "";
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        seenPrompt = typeof args.prompt === "string" ? args.prompt : "";
+        return makeStream([
+          {
+            type: "result",
+            session_id: "snippet",
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const stream = await runtime.startTurn({
+      conversationKey: "conv-snippets",
+      userMessage: "What did I send?",
+      runtimeRequest: {
+        selectedTexts: ["first", "second", "third"],
+        selectedTextContexts: [
+          { text: "first", userQuery: "First question?" },
+          { text: "second" },
+          { text: "third", userQuery: "Third question?" },
+        ],
+      },
+    });
+    for await (const _event of stream.events) {
+      /* drain */
+    }
+    expect(seenPrompt).toContain(
+      "1. first\nQuestion about this text:\nFirst question?",
+    );
+    expect(seenPrompt).toContain("2. second");
+    expect(seenPrompt).toContain(
+      "3. third\nQuestion about this text:\nThird question?",
+    );
+  });
+
+  it("preserves snippet questions with image input and supports legacy text arrays", async () => {
+    const prompts: string[] = [];
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl({ prompt }) {
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (typeof prompt === "string") {
+              prompts.push(prompt);
+            } else {
+              for await (const message of prompt) {
+                const content = message.message.content;
+                if (Array.isArray(content) && content[0]?.type === "text") {
+                  prompts.push(content[0].text);
+                }
+              }
+            }
+            yield {
+              type: "result",
+              session_id: "snippet",
+              result: "ok",
+              is_error: false,
+            };
+          },
+          close() {},
+        } as ReturnType<typeof makeStream>;
+      },
+    });
+    for (const runtimeRequest of [
+      { selectedTexts: ["legacy"] },
+      {
+        selectedTextContexts: [
+          { text: " ", userQuery: "discarded" },
+          { text: "image snippet", userQuery: "image question" },
+        ],
+        screenshots: ["data:image/png;base64,YQ=="],
+      },
+    ]) {
+      const stream = await runtime.startTurn({
+        conversationKey: "conv-snippets-compat",
+        userMessage: "",
+        runtimeRequest,
+      });
+      for await (const _event of stream.events) {
+        /* drain */
+      }
+    }
+    expect(prompts[0]).toContain("1. legacy");
+    expect(prompts[1]).toContain(
+      "1. image snippet\nQuestion about this text:\nimage question",
+    );
+    expect(prompts[1]).not.toContain("discarded");
+  });
+
   it("renders selected Zotero collection and tag scopes in the Claude prompt", async () => {
     let seenPrompt = "";
 
