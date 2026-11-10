@@ -29,7 +29,18 @@ describe("workflow: shortcut button menu offers the row actions", function () {
     });
   });
 
+  const SHORTCUT_PREFS = ["shortcutDeleted", "customShortcuts"].map(
+    (key) => `extensions.zotero.llmforzotero.${key}`,
+  );
+  let savedShortcutPrefs: unknown[] = [];
+
   afterEach(async function () {
+    SHORTCUT_PREFS.forEach((name, index) => {
+      const saved = savedShortcutPrefs[index];
+      if (saved === undefined) Zotero.Prefs.clear(name, true);
+      else Zotero.Prefs.set(name, saved as string, true);
+    });
+    savedShortcutPrefs = [];
     await api.reset();
     if (paper) await api.cleanupFixture(paper);
   });
@@ -71,5 +82,54 @@ describe("workflow: shortcut button menu offers the row actions", function () {
       "move mode on the shortcut buttons",
     );
     assert.equal(menu.style.display, "none", "the menu closes");
+  });
+
+  it("keeps Add and Reset reachable after every shortcut is deleted", async function () {
+    savedShortcutPrefs = SHORTCUT_PREFS.map((name) =>
+      Zotero.Prefs.get(name, true),
+    );
+    Zotero.Prefs.set(
+      SHORTCUT_PREFS[0],
+      JSON.stringify([
+        "summarize",
+        "key-points",
+        "methodology",
+        "limitations",
+        "mermaid-diagram",
+      ]),
+      true,
+    );
+    Zotero.Prefs.set(SHORTCUT_PREFS[1], "[]", true);
+
+    const panel = await api.renderPanelForItem(paper.parentItemId);
+    const doc = Zotero.getMainWindow().document;
+    const body = doc.querySelector<HTMLElement>(
+      `[data-workflow-panel-id="${panel.panelId}"]`,
+    )!;
+    const chip = await waitFor(
+      () => body.querySelector<HTMLButtonElement>(".llm-shortcut-empty-menu"),
+      "the empty row's menu button",
+    );
+    assert.equal(
+      body.querySelectorAll("#llm-shortcuts .llm-shortcut-btn").length,
+      1,
+      "the menu button is the row's only button",
+    );
+    assert.isFalse(chip.disabled, "the menu button is enabled");
+
+    chip.click();
+
+    const menu = body.querySelector<HTMLDivElement>("#llm-shortcut-menu")!;
+    assert.equal(menu.style.display, "grid", "a click opens the row menu");
+    assert.equal(menu.dataset.menuKind, "panel");
+    const item = (name: string) =>
+      body.querySelector<HTMLButtonElement>(`#llm-shortcut-menu-${name}`)!;
+    for (const name of ["add", "reset"]) {
+      assert.equal(item(name).style.display, "flex", `${name} is shown`);
+      assert.isFalse(item(name).disabled, `${name} is enabled`);
+    }
+    for (const name of ["edit", "delete"]) {
+      assert.equal(item(name).style.display, "none", `${name} is hidden`);
+    }
   });
 });

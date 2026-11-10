@@ -351,7 +351,7 @@ export async function renderShortcuts(
     positionShortcutMenu(event.clientX + 4, event.clientY + 4);
   };
 
-  const openMenuForPanel = (event: MouseEvent) => {
+  const openMenuForPanel = (event: { clientX: number; clientY: number }) => {
     if (
       !menu ||
       !menuEdit ||
@@ -420,6 +420,23 @@ export async function renderShortcuts(
     container.appendChild(btn);
   }
 
+  // With every shortcut deleted, the row has no button to carry the menu and
+  // its empty space lets the pointer through. A "+" button keeps Add and
+  // Reset reachable.
+  if (!editableShortcuts.length) {
+    const btn = body.ownerDocument!.createElementNS(
+      "http://www.w3.org/1999/xhtml",
+      "button",
+    ) as HTMLButtonElement;
+    btn.className = "llm-shortcut-btn llm-shortcut-empty-menu";
+    btn.type = "button";
+    btn.dataset.shortcutAction = "menu";
+    btn.textContent = "+";
+    btn.title = t("Add Shortcut");
+    btn.setAttribute("aria-label", t("Add Shortcut"));
+    container.appendChild(btn);
+  }
+
   const getShortcutButtonFromEventTarget = (
     target: EventTarget | null,
   ): HTMLButtonElement | null => {
@@ -445,6 +462,11 @@ export async function renderShortcuts(
     if (!btn) return;
     mouseEvent.preventDefault();
     mouseEvent.stopPropagation();
+    if (btn.dataset.shortcutAction === "menu") {
+      const box = btn.getBoundingClientRect();
+      openMenuForPanel({ clientX: box.left, clientY: box.top });
+      return;
+    }
     const shortcutId = btn.dataset.shortcutId || "";
     if (!shortcutId || moveMode || !item) return;
     const nextPrompt = (btn.dataset.prompt || "").trim();
@@ -463,7 +485,7 @@ export async function renderShortcuts(
     const btn = getShortcutButtonFromEventTarget(mouseEvent.target);
     mouseEvent.preventDefault();
     mouseEvent.stopPropagation();
-    if (!btn) {
+    if (!btn || btn.dataset.shortcutAction === "menu") {
       openMenuForPanel(mouseEvent);
       return;
     }
