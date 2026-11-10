@@ -12,12 +12,16 @@ import {
 import {
   getCustomShortcuts,
   getDeletedShortcutIds,
+  getShortcutLabelOverrides,
   getShortcutOrder,
   getShortcutOverrides,
+  isKnownBuiltinDefaultLabel,
+  isKnownBuiltinDefaultPrompt,
   migrateShortcutDefaultsIfNeeded,
   resetShortcutsToDefault,
   setCustomShortcuts,
   setDeletedShortcutIds,
+  setShortcutLabelOverrides,
   setShortcutOrder,
   setShortcutOverrides,
 } from "../src/modules/contextPanel/prefHelpers";
@@ -183,6 +187,60 @@ describe("shortcut defaults migration", function () {
     assert.include(order, "mermaid-diagram");
     assert.include(order, "custom-shortcut-a");
     assert.include(order, "custom-shortcut-c");
+  });
+
+  it("strips unmodified English and Chinese built-in default prompts and labels while preserving user edits", function () {
+    setShortcutOverrides({
+      summarize:
+        "Give a one-sentence overview, then summarize the paper section by section under its own headings, with 1-3 sentences per section.",
+      "key-points": "List the key points as concise bullet points.",
+      methodology: "Custom methodology prompt in English.",
+      limitations: "用中文解释这篇论文的局限性和潜在弱点。",
+      "mermaid-diagram":
+        "Generate a Mermaid flowchart to help me understand the paper's main idea, method, key findings, and conclusion.",
+    });
+    setShortcutLabelOverrides({
+      summarize: "Summarize",
+      "key-points": "要点",
+      methodology: "My Method",
+      limitations: "自定义局限",
+      "mermaid-diagram": "流程图",
+    });
+
+    migrateShortcutDefaultsIfNeeded();
+
+    assert.deepEqual(getShortcutOverrides(), {
+      methodology: "Custom methodology prompt in English.",
+    });
+    assert.deepEqual(getShortcutLabelOverrides(), {
+      methodology: "My Method",
+      limitations: "自定义局限",
+    });
+    assert.isTrue(
+      isKnownBuiltinDefaultPrompt(
+        "summarize",
+        "Give a concise narrative overview of the paper in 1-2 short paragraphs, covering the research question, approach, main findings, and significance.",
+      ),
+    );
+    assert.isFalse(
+      isKnownBuiltinDefaultPrompt(
+        "summarize",
+        "Summarize in 2 bullet points with focus on equations.",
+      ),
+    );
+    assert.isTrue(isKnownBuiltinDefaultLabel("mermaid-diagram", "Diagram"));
+    assert.isTrue(isKnownBuiltinDefaultLabel("mermaid-diagram", "流程图"));
+    assert.isFalse(isKnownBuiltinDefaultLabel("mermaid-diagram", "My Flow"));
+  });
+
+  it("safely falls back to {} when shortcuts or shortcutLabels contain non-object JSON", function () {
+    for (const rawValue of ["123", '"str"', "[1,2]", "true", "null"]) {
+      prefStore.set(prefKey("shortcuts"), rawValue);
+      prefStore.set(prefKey("shortcutLabels"), rawValue);
+
+      assert.deepEqual(getShortcutOverrides(), {});
+      assert.deepEqual(getShortcutLabelOverrides(), {});
+    }
   });
 });
 
