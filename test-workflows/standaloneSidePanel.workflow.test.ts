@@ -133,17 +133,17 @@ describe("workflow: standalone side panel", function () {
       0.5,
       `${label}: the titles share a line`,
     );
-    // The question scales with its own column's width, so the credit lines
+    // The title scales with its own column's width, so the subtitles can
     // differ by the title's line height; each must sit below its title.
     assert.isAbove(
-      page!.creditTopPx!,
+      page!.subtitleTopPx!,
       page!.titleTopPx,
-      `${label}: the credit line sits below the title`,
+      `${label}: the subtitle sits below the title`,
     );
     assert.isAbove(
-      page!.mainCreditTopPx!,
+      page!.mainSubtitleTopPx!,
       page!.mainTitleTopPx!,
-      `${label}: the main credit line sits below the main title`,
+      `${label}: the main subtitle sits below the main title`,
     );
   }
 
@@ -577,17 +577,16 @@ describe("workflow: standalone side panel", function () {
       "misc",
       "progress",
     ]);
-    // The New tab page is the chat start page: its question and credit line, and
+    // The New tab page is the chat start page: its title and tagline, and
     // the four rows (left-aligned together), centred in the panel.
     const newTabStart = side.design.newTabPage;
     assert.isOk(newTabStart, JSON.stringify(side.design));
-    assert.equal(newTabStart!.title, "Ask on the side, or read a past chat");
-    assert.include(newTabStart!.credit, "Powered by");
-    assert.match(newTabStart!.credit, /LLM\sfor\sZotero/);
-    assert.match(newTabStart!.titleFontFamily, /serif|New York|Georgia/i);
+    assert.equal(newTabStart!.title, "LLM-for-Zotero");
+    assert.equal(newTabStart!.subtitle, "Ask on the side, or read a past chat");
+    assert.equal(newTabStart!.subtitleFontStyle, "italic");
     assert.closeTo(newTabStart!.centreDxPx, 0, 1, "centred across");
-    // The main chat shows its start page, so the title and credit line sit on
-    // the main title's and credit line's lines.
+    // The main chat shows its start page, so the title and tagline sit on
+    // the main title's and tagline's lines.
     assertOnMainTitleLine(newTabStart, "fresh main chat");
     assert.lengthOf(newTabStart!.rowLefts, 4);
     assert.closeTo(newTabStart!.rowLefts[0], newTabStart!.rowLefts[1], 0.5);
@@ -940,8 +939,8 @@ describe("workflow: standalone side panel", function () {
     {
       const emptyTitle = side.design.startTitle;
       assert.isOk(emptyTitle, "the empty side chat shows its start page");
-      // The question's size follows its own column's width, so the two
-      // pages' sizes can differ by a pixel or two; both stay in range.
+      // The title size follows its own column's width, so the two pages'
+      // sizes can differ by a pixel or two.
       assert.closeTo(
         Number.parseFloat(newTabTitle.fontSize),
         Number.parseFloat(emptyTitle!.fontSize),

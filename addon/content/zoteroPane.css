@@ -5489,43 +5489,20 @@
 }
 
 .llm-start-page-title {
-  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
-  font-size: clamp(
-    calc(17px * var(--llm-font-scale)),
-    calc(10px * var(--llm-font-scale) + 3.3cqi),
-    calc(31px * var(--llm-font-scale))
-  );
-  font-weight: 400;
-  line-height: 1.15;
-  letter-spacing: -0.01em;
+  font-size: clamp(22px, calc(10px + 3.6cqi), 36px);
+  font-weight: 600;
+  line-height: 1.3;
   text-wrap: balance;
   color: var(--fill-primary);
+  margin-bottom: 4px;
 }
 
-.llm-start-page-credit {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 14px;
-  font-size: var(--llm-fs-10);
+.llm-start-page-subtitle {
+  font-size: clamp(14px, calc(8px + 1.8cqi), 20px);
+  font-style: italic;
+  line-height: 1.4;
+  text-wrap: balance;
   color: var(--fill-tertiary);
-}
-
-.llm-start-page-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.llm-start-page-logo {
-  width: 1.3em;
-  height: 1.3em;
-  transform-origin: 50% 80%;
-}
-
-.llm-start-page-brand-name {
-  font-weight: 600;
-  color: var(--fill-secondary);
 }
 
 .llm-start-page-letter {
@@ -5533,38 +5510,20 @@
 }
 
 @keyframes llm-start-letter-wave {
-  0% {
+  0%,
+  100% {
     transform: translateY(0);
-    color: var(--fill-secondary);
+    color: var(--fill-primary);
   }
   40% {
     transform: translateY(-4px);
-    color: var(--fill-primary);
-  }
-  100% {
-    transform: translateY(0);
-    color: var(--fill-secondary);
-  }
-}
-
-@keyframes llm-start-logo-tip {
-  0%,
-  100% {
-    transform: rotate(0) translateY(0);
-  }
-  40% {
-    transform: rotate(-10deg) translateY(-2px);
   }
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .llm-start-page-brand:hover .llm-start-page-letter {
+  .llm-start-page-title:hover .llm-start-page-letter {
     animation: llm-start-letter-wave 0.5s ease-in-out both;
     animation-delay: calc(var(--i) * 32ms);
-  }
-
-  .llm-start-page-brand:hover .llm-start-page-logo {
-    animation: llm-start-logo-tip 0.5s ease-in-out both;
   }
 }
 
@@ -5573,8 +5532,8 @@
   flex-direction: column;
   gap: 6px;
   width: 100%;
-  max-width: 420px;
-  margin: 24px 0 0;
+  max-width: clamp(280px, 85cqi, 560px);
+  margin: clamp(24px, calc(12px + 2.4cqi), 32px) 0 0;
   padding: 0;
   list-style: none;
   text-align: start;
@@ -5587,12 +5546,17 @@
   box-sizing: border-box;
   width: 100%;
   margin: 0;
-  padding: 8px 12px;
+  padding: clamp(8px, calc(3px + 1.2cqi), 11px)
+    clamp(12px, calc(6px + 1.4cqi), 16px);
   border: 1px solid var(--fill-quinary);
   border-radius: 10px;
   background: transparent;
   font: inherit;
-  font-size: var(--llm-fs-11);
+  font-size: clamp(
+    var(--llm-fs-11),
+    calc(11px + 1.1cqi),
+    calc(12.5px * var(--llm-font-scale))
+  );
   line-height: 1.35;
   text-align: start;
   color: var(--fill-secondary);

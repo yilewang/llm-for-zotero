@@ -215,16 +215,16 @@ export type WorkflowTestStandaloneSidePanelDiagnostics = {
     /** The New tab page: the chat start page with two nav rows. */
     newTabPage: {
       title: string;
-      credit: string;
-      titleFontFamily: string;
+      subtitle: string;
+      subtitleFontStyle: string;
       centreDxPx: number;
       centreDyPx: number;
       rowLefts: number[];
       titleTopPx: number;
-      creditTopPx: number | null;
-      /** The main chat's start-page title and credit line; null without one. */
+      subtitleTopPx: number | null;
+      /** The main chat's start-page title and tagline; null without one. */
       mainTitleTopPx: number | null;
-      mainCreditTopPx: number | null;
+      mainSubtitleTopPx: number | null;
     } | null;
     dayLabel: WorkflowTestTextMetrics | null;
     sectionLabel: WorkflowTestTextMetrics | null;

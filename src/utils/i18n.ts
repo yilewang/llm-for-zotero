@@ -1994,32 +1994,27 @@ function escapeStartPageHtml(value: string): string {
 }
 
 /**
- * The "Powered by [logo] LLM for Zotero" line shared by every start page.
- * Markup is well-formed XML so it parses in both HTML and XHTML documents.
+ * Title markup for the start pages: one span per letter, so the title can
+ * play a hover wave. Spaces stay plain text so the title can still wrap.
  */
-export function getStartPageCreditHtml(): string {
-  const name = "LLM for Zotero";
-  const letters = Array.from(name)
-    .map(
-      (char, index) =>
-        `<span class="llm-start-page-letter" style="--i:${index}" aria-hidden="true">${
-          char === " " ? "&#160;" : char
-        }</span>`,
+export function getStartPageTitleHtml(title: string): string {
+  return Array.from(title)
+    .map((char, index) =>
+      char === " "
+        ? " "
+        : `<span class="llm-start-page-letter" style="--i:${index}" aria-hidden="true">${escapeStartPageHtml(char)}</span>`,
     )
     .join("");
-  const prefix = getEffectiveLocale().startsWith("zh")
-    ? "技术支持："
-    : "Powered by";
-  return `<div class="llm-start-page-credit"><span>${prefix}</span><span class="llm-start-page-brand"><img class="llm-start-page-logo" src="chrome://${config.addonRef}/content/icons/icon.svg" alt=""/><span class="llm-start-page-brand-name" aria-label="${name}">${letters}</span></span></div>`;
 }
 
 /**
- * Builds one start page: a serif question, the credit line, and rotating
- * tips. Tip text stays here so it is translated; the page lists them.
+ * Builds one start page: the title, a subtitle, and the tips list. Tip text
+ * stays here so it is translated; chat.ts wires the tip actions.
  */
 function buildStartPageHtml(
   rootClass: string,
-  question: string,
+  title: string,
+  subtitle: string,
   tips: StartPageTip[],
 ): string {
   const arrow =
@@ -2038,7 +2033,7 @@ function buildStartPageHtml(
       return `<li class="llm-start-page-tip" role="button" tabindex="0" data-start-tip-action="${escapeStartPageHtml(tip.action)}"${domain}>${icon}${text}${arrow}</li>`;
     })
     .join("");
-  return `<div class="${rootClass}"><div class="llm-start-page-title">${escapeStartPageHtml(question)}</div>${getStartPageCreditHtml()}<ul class="llm-start-page-tips">${tipItems}</ul></div>`;
+  return `<div class="${rootClass}"><div class="llm-start-page-title" aria-label="${escapeStartPageHtml(title)}">${getStartPageTitleHtml(title)}</div><div class="llm-start-page-subtitle">${escapeStartPageHtml(subtitle)}</div><ul class="llm-start-page-tips">${tipItems}</ul></div>`;
 }
 
 /** Returns the WebChat start page HTML. */
@@ -2054,7 +2049,8 @@ export function getWebChatWelcomeHtml(
   if (getEffectiveLocale().startsWith("zh")) {
     return buildStartPageHtml(
       "llm-start-page llm-webchat-start-page",
-      `通过你的 ${label} 标签页提问`,
+      "LLM-for-Zotero WebChat",
+      `通过已打开的 ${label} 浏览器标签页工作`,
       [
         {
           icon: "plug",
@@ -2076,7 +2072,8 @@ export function getWebChatWelcomeHtml(
   }
   return buildStartPageHtml(
     "llm-start-page llm-webchat-start-page",
-    `Ask through your ${label} tab`,
+    "LLM-for-Zotero WebChat",
+    `Use your open ${label} browser tab`,
     [
       {
         icon: "plug",
@@ -2135,24 +2132,30 @@ export function getWelcomeHtml(): string {
 
 export function getPaperChatStartPageHtml(): string {
   if (getEffectiveLocale().startsWith("zh")) {
-    return buildStartPageHtml("llm-start-page", "你想读懂什么？", [
-      { icon: "cursor", text: "在 PDF 中选中文字，然后点击“添加文本”。" },
-      {
-        icon: "frame",
-        text: "点击截图按钮，在图中拖动框选。",
-        action: "screenshot",
-      },
-      {
-        icon: "mention",
-        text: "输入 @ 引入另一篇论文。",
-        action: "insert-at",
-      },
-      { icon: "note", text: "把任意回答保存为这篇文献的笔记。" },
-    ]);
+    return buildStartPageHtml(
+      "llm-start-page",
+      "LLM-for-Zotero",
+      "从这里开始，读懂这篇论文的一切",
+      [
+        { icon: "cursor", text: "在 PDF 中选中文字，然后点击“添加文本”。" },
+        {
+          icon: "frame",
+          text: "点击截图按钮，在图中拖动框选。",
+          action: "screenshot",
+        },
+        {
+          icon: "mention",
+          text: "输入 @ 引入另一篇论文。",
+          action: "insert-at",
+        },
+        { icon: "note", text: "把任意回答保存为这篇文献的笔记。" },
+      ],
+    );
   }
   return buildStartPageHtml(
     "llm-start-page",
-    "What would you like to understand?",
+    "LLM-for-Zotero",
+    "Understand everything of this paper, from here",
     [
       { icon: "cursor", text: "Select text in the PDF, then choose Add Text." },
       {
@@ -2172,53 +2175,72 @@ export function getPaperChatStartPageHtml(): string {
 
 export function getNoteEditingStartPageHtml(): string {
   if (getEffectiveLocale().startsWith("zh")) {
-    return buildStartPageHtml("llm-start-page", "你想写点什么？", [
-      { icon: "pen", text: "在笔记中选中文字，然后让我改写。" },
-      { icon: "diff", text: "改写以 diff 显示，你能看到每处改动。" },
+    return buildStartPageHtml(
+      "llm-start-page",
+      "LLM-for-Zotero",
+      "一起写笔记，让想法进化",
+      [
+        { icon: "pen", text: "在笔记中选中文字，然后让我改写。" },
+        { icon: "diff", text: "改写以 diff 显示，你能看到每处改动。" },
+        {
+          icon: "papers",
+          text: "条目笔记会自动加载论文；独立笔记从空白开始。",
+        },
+      ],
+    );
+  }
+  return buildStartPageHtml(
+    "llm-start-page",
+    "LLM-for-Zotero",
+    "Write with me, evolve your ideas",
+    [
+      { icon: "pen", text: "Select text in the note, then ask to rewrite it." },
+      {
+        icon: "diff",
+        text: "Rewrites show as a diff, so you see every change.",
+      },
       {
         icon: "papers",
-        text: "条目笔记会自动加载论文；独立笔记从空白开始。",
+        text: "Item notes load their paper for you; standalone notes start fresh.",
       },
-    ]);
-  }
-  return buildStartPageHtml("llm-start-page", "What would you like to write?", [
-    { icon: "pen", text: "Select text in the note, then ask to rewrite it." },
-    { icon: "diff", text: "Rewrites show as a diff, so you see every change." },
-    {
-      icon: "papers",
-      text: "Item notes load their paper for you; standalone notes start fresh.",
-    },
-  ]);
+    ],
+  );
 }
 
 export function getStandaloneLibraryChatStartPageHtml(): string {
   if (getEffectiveLocale().startsWith("zh")) {
-    return buildStartPageHtml("llm-standalone-start-page", "你想探索什么？", [
-      {
-        icon: "search",
-        text: "用自然语言在文献库中查找论文。",
-        action: "focus-input",
-      },
-      {
-        icon: "mention",
-        text: "输入 @ 添加要比较的论文。",
-        action: "insert-at",
-      },
-      {
-        icon: "markdown",
-        text: "在偏好设置中配置 MinerU，把 PDF 读成 Markdown。",
-        action: "prefs:mineru",
-      },
-      {
-        icon: "folder",
-        text: "在偏好设置的 Agent 标签页中设置笔记目录。",
-        action: "prefs:agent",
-      },
-    ]);
+    return buildStartPageHtml(
+      "llm-standalone-start-page",
+      "LLM-for-Zotero Agent",
+      "为你和你的文献库服务",
+      [
+        {
+          icon: "search",
+          text: "用自然语言在文献库中查找论文。",
+          action: "focus-input",
+        },
+        {
+          icon: "mention",
+          text: "输入 @ 添加要比较的论文。",
+          action: "insert-at",
+        },
+        {
+          icon: "markdown",
+          text: "在偏好设置中配置 MinerU，把 PDF 读成 Markdown。",
+          action: "prefs:mineru",
+        },
+        {
+          icon: "folder",
+          text: "在偏好设置的 Agent 标签页中设置笔记目录。",
+          action: "prefs:agent",
+        },
+      ],
+    );
   }
   return buildStartPageHtml(
     "llm-standalone-start-page",
-    "What would you like to explore?",
+    "LLM-for-Zotero Agent",
+    "serve you and your library",
     [
       {
         icon: "search",
