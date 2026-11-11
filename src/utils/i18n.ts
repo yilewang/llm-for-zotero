@@ -938,6 +938,8 @@ const zhCN: Record<string, string> = {
   "Couldn't fetch the model list.": "无法获取模型列表。",
   "The provider returned no models.": "该服务商未返回任何模型。",
   "Refresh models": "刷新模型列表",
+  "This provider did not return a model list; enter the model name manually.":
+    "该服务商未返回模型列表；请手动输入模型名称。",
   "API key is invalid or unauthorized (HTTP 401).":
     "API 密钥无效或未授权 (HTTP 401)。",
   "Access forbidden for this API key (HTTP 403).":

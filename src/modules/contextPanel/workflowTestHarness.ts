@@ -35,6 +35,7 @@ import {
   getTaskProgress,
   taskQuestionChecklist,
 } from "./taskProgress/store";
+import { configureModelCapabilityRuntime } from "../../modelCapabilities/service";
 import { resetTaskProgressDrawerHeight } from "./taskProgress/view";
 import { createCodexStreamingScrollReplay } from "./codexStreamingScrollReplay";
 import {
@@ -329,6 +330,25 @@ let resolveDelayedCodexPermissionCatalog: (() => void) | null = null;
 let resolveDelayedCodexModelCatalog: (() => void) | null = null;
 let codexModelCatalogRequests: string[] = [];
 let codexDirectCatalogRequests: string[] = [];
+let modelCatalogRequests: string[] = [];
+
+function configureModelCatalogFetch(input: {
+  status: number;
+  body?: unknown;
+}): void {
+  assertWorkflowTestEnabled();
+  modelCatalogRequests = [];
+  configureModelCapabilityRuntime({
+    fetch: (async (url: unknown) => {
+      modelCatalogRequests.push(String(url));
+      return {
+        ok: input.status >= 200 && input.status < 300,
+        status: input.status,
+        json: async () => input.body ?? {},
+      } as Response;
+    }) as typeof fetch,
+  });
+}
 
 function configureCodexDirectCatalog(input: {
   cachedClientVersion?: string;
@@ -10214,6 +10234,8 @@ async function reset(): Promise<void> {
   setCodexDirectCatalogDependenciesForTests();
   resetCodexDirectCatalogForTests();
   codexDirectCatalogRequests = [];
+  configureModelCapabilityRuntime({ fetch: undefined });
+  modelCatalogRequests = [];
   resolveDelayedCodexModelCatalog?.();
   resolveDelayedCodexModelCatalog = null;
   setCodexAppServerModelCatalogLoaderForTests();
@@ -12455,6 +12477,8 @@ export function installWorkflowTestHarness(targetAddon: {
     getDiagnostics,
     configurePermissionCatalogs,
     configureCodexDirectCatalog,
+    configureModelCatalogFetch,
+    getModelCatalogRequests: () => [...modelCatalogRequests],
     getCodexDirectCatalogRequests: () => [...codexDirectCatalogRequests],
     configureCodexModelCatalogs,
     getCodexModelCatalogRequests: () => [...codexModelCatalogRequests],

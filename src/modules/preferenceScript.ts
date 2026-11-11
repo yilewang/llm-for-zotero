@@ -596,7 +596,7 @@ export function attachProviderModelSelect(args: {
   onCatalogRefreshed?: () => void;
 }): {
   container: HTMLElement;
-  refreshBtn?: HTMLButtonElement;
+  refreshBtn: HTMLButtonElement;
   statusEl: HTMLElement;
   refresh: (options?: { force?: boolean }) => void;
   sync: () => void;
@@ -621,16 +621,15 @@ export function attachProviderModelSelect(args: {
     });
 
   const usesOnDemandDiscovery = isOnDemandDiscovery();
-  const refreshBtn = usesOnDemandDiscovery
-    ? (doc.createElementNS(HTML_NS, "button") as HTMLButtonElement)
-    : undefined;
-  if (refreshBtn) {
-    refreshBtn.className =
-      "llm-pref-button llm-pref-btn llm-pref-btn--ghost llm-pref-model-refresh";
-    refreshBtn.type = "button";
-    refreshBtn.textContent = t("Refresh");
-    refreshBtn.title = t("Refresh models");
-  }
+  const refreshBtn = doc.createElementNS(
+    HTML_NS,
+    "button",
+  ) as HTMLButtonElement;
+  refreshBtn.className =
+    "llm-pref-button llm-pref-btn llm-pref-btn--ghost llm-pref-model-refresh";
+  refreshBtn.type = "button";
+  refreshBtn.textContent = t("Refresh");
+  refreshBtn.title = t("Refresh models");
 
   const readSnapshot = () =>
     getModelCatalogStatus(buildProviderCatalogIdentity(group));
@@ -729,44 +728,25 @@ export function attachProviderModelSelect(args: {
 
   const updateStatus = () => {
     const needsKey = requiresApiKey();
-    if (refreshBtn) {
-      refreshBtn.disabled = loading || (needsKey && !group.apiKey.trim());
-    }
-    if (isOnDemandDiscovery()) {
-      const hint = formatModelDiscoveryStatusHint({
-        apiKey: group.apiKey,
-        requiresApiKey: needsKey,
-        loading,
-        snapshot: readSnapshot(),
-      });
-      if (hint) {
-        statusEl.textContent = t(hint.text);
-        statusEl.style.color = hint.isError
-          ? "var(--color-error, #d93025)"
-          : "var(--fill-secondary, #888)";
-        statusEl.dataset.error = hint.isError ? "true" : "false";
-        statusEl.style.display = "block";
-      } else {
-        delete statusEl.dataset.error;
-        statusEl.style.display = "none";
-      }
-      rebuildOptions();
-      return;
-    }
-    const status = currentStatus();
-    if (status.kind === "needs_api_key") {
-      statusEl.textContent = t(
-        "Enter the API key above to fetch this provider's models.",
-      );
-      statusEl.style.color = "var(--fill-secondary, #888)";
+    refreshBtn.disabled = loading || (needsKey && !group.apiKey.trim());
+    const hint = formatModelDiscoveryStatusHint({
+      apiKey: group.apiKey,
+      requiresApiKey: needsKey,
+      loading,
+      snapshot: readSnapshot(),
+    });
+    if (hint) {
+      statusEl.textContent = t(hint.text);
+      statusEl.style.color = hint.isError
+        ? "var(--color-error, #d93025)"
+        : "var(--fill-secondary, #888)";
+      statusEl.dataset.error = hint.isError ? "true" : "false";
       statusEl.style.display = "block";
-    } else if (status.kind === "loading") {
-      statusEl.textContent = t("Fetching models…");
-      statusEl.style.color = "var(--fill-secondary, #888)";
-      statusEl.style.display = "block";
+      if (hint.detail) statusEl.title = hint.detail;
+      else statusEl.removeAttribute("title");
     } else {
-      // "manual_entry" is deliberately silent: the row already fell back to
-      // the plain text input, so an error line would only add noise.
+      delete statusEl.dataset.error;
+      statusEl.removeAttribute("title");
       statusEl.style.display = "none";
     }
     rebuildOptions();
@@ -794,7 +774,7 @@ export function attachProviderModelSelect(args: {
     }
   };
 
-  refreshBtn?.addEventListener("click", () => {
+  refreshBtn.addEventListener("click", () => {
     void refreshCatalog({ force: true });
   });
 
@@ -2682,7 +2662,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           modelPickerSyncers.push(picker.sync);
           mainRow.append(
             picker.container,
-            ...(picker.refreshBtn ? [picker.refreshBtn] : []),
+            picker.refreshBtn,
             testBtn,
             advGearBtn,
           );

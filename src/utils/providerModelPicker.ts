@@ -155,8 +155,8 @@ export type ProviderModelFetchStatus =
   | { kind: "loading" }
   /**
    * The catalog is unavailable (fetch failed, no endpoint, or an empty list).
-   * This is deliberately silent: no error line is shown and the row falls
-   * back to the plain text input so the user simply types the model name.
+   * The row falls back to the plain text input so the user types the model
+   * name; `formatModelDiscoveryStatusHint` explains why in the status line.
    */
   | { kind: "manual_entry" }
   | { kind: "ready"; total: number; stale: boolean };
@@ -183,9 +183,23 @@ export function resolveProviderModelFetchStatus(args: {
   };
 }
 
+/** Shown when the provider gives no usable model list and no specific error applies. */
+export const MODEL_LIST_UNAVAILABLE_HINT =
+  "This provider did not return a model list; enter the model name manually.";
+
+/** Error codes whose own message tells the user what to fix. */
+const SPECIFIC_ERROR_CODES = new Set([
+  "unauthorized",
+  "forbidden",
+  "rate_limited",
+  "timeout",
+  "missing_api_key",
+]);
+
 /**
- * Status hint for on-demand ModelDiscovery providers (e.g. SiliconFlow) that
- * surfaces explicit loading and error states while preserving manual fallback.
+ * Status line for the model row of every provider with a model picker.
+ * It reports the missing API key, loading, and fetch failures, and always
+ * leaves manual entry available. `detail` carries the raw error for a tooltip.
  */
 export function formatModelDiscoveryStatusHint(args: {
   apiKey: string;
@@ -196,7 +210,7 @@ export function formatModelDiscoveryStatusHint(args: {
     error?: string;
     errorCode?: string;
   } | null;
-}): { text: string; isError: boolean } | null {
+}): { text: string; isError: boolean; detail?: string } | null {
   const keyRequired = args.requiresApiKey !== false;
   if (keyRequired && !args.apiKey.trim()) {
     return {
@@ -204,17 +218,29 @@ export function formatModelDiscoveryStatusHint(args: {
       isError: false,
     };
   }
-  if (args.loading) {
+  const snapshot = args.snapshot;
+  const hasModels = Boolean(snapshot?.models.length);
+  if (args.loading && !hasModels) {
     return {
       text: "Fetching models…",
       isError: false,
     };
   }
-  if (args.snapshot?.error) {
-    return {
-      text: args.snapshot.error,
-      isError: true,
-    };
+  if (snapshot?.error) {
+    if (snapshot.errorCode && SPECIFIC_ERROR_CODES.has(snapshot.errorCode)) {
+      return { text: snapshot.error, isError: true, detail: snapshot.error };
+    }
+    if (!hasModels) {
+      return {
+        text: MODEL_LIST_UNAVAILABLE_HINT,
+        isError: true,
+        detail: snapshot.error,
+      };
+    }
+    return null;
+  }
+  if (snapshot && !args.loading && !hasModels) {
+    return { text: MODEL_LIST_UNAVAILABLE_HINT, isError: true };
   }
   return null;
 }
