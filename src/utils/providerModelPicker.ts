@@ -10,28 +10,32 @@ import type { DiscoveredModel } from "../modelCapabilities";
 import type { ModelProviderGroup } from "./modelProviders";
 import {
   resolveProviderPresetId,
-  providerPresetRequiresApiKey,
+  providerPresetCatalogRequiresApiKey,
 } from "./providerPresets";
 
 export type ProviderModelPickerGroup = Pick<ModelProviderGroup, "authMode"> &
   Partial<Pick<ModelProviderGroup, "apiBase" | "presetIdOverride">>;
 
-/** Fetch-and-select is offered only for preset (non-customized) API-key providers. */
+/**
+ * Fetch-and-select is offered for every API-key provider, including
+ * "customized" ones (a remote Base URL that matches no preset). Other auth
+ * modes (Codex, Copilot, webchat) have their own catalog flows.
+ */
 export function canFetchProviderModels(
   group: ProviderModelPickerGroup,
 ): boolean {
-  return resolveProviderPresetId(group) !== "customized";
+  return group.authMode === "api_key";
 }
 
 /**
  * Whether this group must have an API key before its catalog can be fetched.
- * Local runtimes serve unauthenticated, so their dropdown populates with the
- * key field left blank.
+ * Local runtimes and some gateways list models unauthenticated, so their
+ * dropdown populates with the key field left blank.
  */
 export function providerGroupRequiresApiKey(
   group: ProviderModelPickerGroup,
 ): boolean {
-  return providerPresetRequiresApiKey(resolveProviderPresetId(group));
+  return providerPresetCatalogRequiresApiKey(resolveProviderPresetId(group));
 }
 
 export function sortModelOptions(models: DiscoveredModel[]): DiscoveredModel[] {

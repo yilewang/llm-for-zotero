@@ -331,6 +331,7 @@ let resolveDelayedCodexModelCatalog: (() => void) | null = null;
 let codexModelCatalogRequests: string[] = [];
 let codexDirectCatalogRequests: string[] = [];
 let modelCatalogRequests: string[] = [];
+let modelCatalogRequestHeaders: Record<string, string>[] = [];
 
 function configureModelCatalogFetch(input: {
   status: number;
@@ -338,9 +339,13 @@ function configureModelCatalogFetch(input: {
 }): void {
   assertWorkflowTestEnabled();
   modelCatalogRequests = [];
+  modelCatalogRequestHeaders = [];
   configureModelCapabilityRuntime({
-    fetch: (async (url: unknown) => {
+    fetch: (async (url: unknown, init?: { headers?: unknown }) => {
       modelCatalogRequests.push(String(url));
+      modelCatalogRequestHeaders.push({
+        ...((init?.headers as Record<string, string> | undefined) || {}),
+      });
       return {
         ok: input.status >= 200 && input.status < 300,
         status: input.status,
@@ -12479,6 +12484,8 @@ export function installWorkflowTestHarness(targetAddon: {
     configureCodexDirectCatalog,
     configureModelCatalogFetch,
     getModelCatalogRequests: () => [...modelCatalogRequests],
+    getModelCatalogRequestHeaders: () =>
+      modelCatalogRequestHeaders.map((headers) => ({ ...headers })),
     getCodexDirectCatalogRequests: () => [...codexDirectCatalogRequests],
     configureCodexModelCatalogs,
     getCodexModelCatalogRequests: () => [...codexModelCatalogRequests],

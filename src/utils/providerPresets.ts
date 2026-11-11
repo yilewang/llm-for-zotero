@@ -73,6 +73,8 @@ export type ProviderPreset = {
    * with it left blank.
    */
   requiresApiKey?: boolean;
+  /** Whether listing models needs a key; absent falls back to requiresApiKey. */
+  catalogRequiresApiKey?: boolean;
 };
 
 const GENERAL_API_KEY_PROTOCOL_OPTIONS: ProviderProtocol[] = [
@@ -483,6 +485,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       "Gateway for a curated set of models from several vendors, billed on one key.",
     matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_PATHS),
     supportsEmbeddings: false,
+    catalogRequiresApiKey: false,
   },
   {
     id: "opencode_go",
@@ -499,6 +502,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       "Subscription plan for a curated set of open coding models, billed on one key.",
     matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_GO_PATHS),
     supportsEmbeddings: false,
+    catalogRequiresApiKey: false,
   },
   {
     id: "copilot",
@@ -548,6 +552,15 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
 export function providerPresetRequiresApiKey(id: ProviderPresetId): boolean {
   if (id === "customized") return true;
   return getProviderPreset(id).requiresApiKey !== false;
+}
+
+/** True when listing the provider's models needs an API key. */
+export function providerPresetCatalogRequiresApiKey(
+  id: ProviderPresetId,
+): boolean {
+  if (id === "customized") return true;
+  const preset = getProviderPreset(id);
+  return preset.catalogRequiresApiKey ?? preset.requiresApiKey !== false;
 }
 
 export function getProviderPreset(

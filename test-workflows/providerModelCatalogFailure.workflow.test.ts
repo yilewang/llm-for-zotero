@@ -27,7 +27,10 @@ describe("workflow: model catalog failure hint in Preferences", function () {
 
   // Each test gets its own group id and apiKey so the in-memory catalog
   // cache from an earlier test cannot satisfy a later one.
-  function useProvider(suffix: string): void {
+  function useProvider(
+    suffix: string,
+    fields: Record<string, unknown> = {},
+  ): void {
     groupId = `workflow-catalog-failure-${suffix}`;
     rowSelector = `[data-llm-provider-row="${groupId}"]`;
     settings = {
@@ -41,6 +44,7 @@ describe("workflow: model catalog failure hint in Preferences", function () {
           presetIdOverride: "openai",
           apiBase: "https://api.openai.com/v1",
           apiKey: `workflow-key-${suffix}`,
+          ...fields,
           models: [{ id: `${groupId}-model`, model: "gpt-saved" }],
         },
       ]),
@@ -158,5 +162,63 @@ describe("workflow: model catalog failure hint in Preferences", function () {
     const hint = hintOf();
     assert.include(hint.title, "401");
     assert.include(hint.textContent || "", "401");
+  });
+
+  it("offers the model dropdown for a customized provider", async function () {
+    useProvider("customized", {
+      presetIdOverride: "customized",
+      apiBase: "https://llm.example.test/v1",
+    });
+    applySettings();
+    api.configureModelCatalogFetch({
+      status: 200,
+      body: { data: [{ id: "workflow-custom-a" }] },
+    });
+    const win = await openPreferences();
+    await waitFor(
+      () =>
+        Boolean(
+          part(win, ".llm-pref-model-row select")?.querySelector(
+            'option[value="workflow-custom-a"]',
+          ),
+        ),
+      "the customized provider must list the fetched model in the dropdown",
+    );
+    assert.include(
+      api.getModelCatalogRequests(),
+      "https://llm.example.test/v1/models",
+    );
+    assert.exists(part(win, ".llm-pref-model-refresh"));
+  });
+
+  it("lists OpenCode Zen models without an API key", async function () {
+    useProvider("zen", {
+      presetIdOverride: "opencode",
+      apiBase: "https://opencode.ai/zen/v1",
+      apiKey: "",
+    });
+    applySettings();
+    api.configureModelCatalogFetch({
+      status: 200,
+      body: { data: [{ id: "workflow-zen-a" }] },
+    });
+    const win = await openPreferences();
+    await waitFor(
+      () =>
+        Boolean(
+          part(win, ".llm-pref-model-row select")?.querySelector(
+            'option[value="workflow-zen-a"]',
+          ),
+        ),
+      "OpenCode Zen must list the fetched model without a key",
+    );
+    const hint = part<HTMLElement>(win, ".llm-pref-model-row .llm-pref-hint");
+    assert.notInclude(hint.textContent || "", "Enter the API key");
+    assert.include(
+      api.getModelCatalogRequests(),
+      "https://opencode.ai/zen/v1/models",
+    );
+    for (const headers of api.getModelCatalogRequestHeaders())
+      assert.notProperty(headers, "Authorization");
   });
 });

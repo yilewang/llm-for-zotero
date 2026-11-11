@@ -2020,6 +2020,8 @@ export type WorkflowTestApi = {
     body?: unknown;
   }) => void;
   getModelCatalogRequests: () => string[];
+  /** Request headers of each stubbed `/models` fetch, in call order. */
+  getModelCatalogRequestHeaders: () => Record<string, string>[];
   configureCodexModelCatalogs: (
     responses: WorkflowTestCodexModelCatalogResponse[],
   ) => void;
