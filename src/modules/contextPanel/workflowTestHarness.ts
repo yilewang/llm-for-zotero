@@ -8830,12 +8830,18 @@ async function readReaderInlineAskMath(
     answerIndex
   ] as HTMLElement | undefined;
   if (!answer) throw new Error(`No Inline Ask answer ${answerIndex}`);
-  const links = Array.from(
-    doc.querySelectorAll('link[id="llm-inline-ask-katex-css"]'),
-  ) as HTMLLinkElement[];
+  // The KaTeX style is inserted once its fonts are read; wait for it.
+  const styleSelector = 'style[id="llm-inline-ask-katex-css"]';
+  for (let i = 0; i < 100 && !doc.querySelector(styleSelector); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const styles = Array.from(
+    doc.querySelectorAll(styleSelector),
+  ) as HTMLStyleElement[];
+  const packageLinks = doc.querySelectorAll('link[href*="-katex/"]');
   let cssRules = 0;
   try {
-    cssRules = links[0]?.sheet?.cssRules?.length ?? 0;
+    cssRules = styles[0]?.sheet?.cssRules?.length ?? 0;
   } catch (err) {
     cssRules = -1;
   }
@@ -8888,7 +8894,8 @@ async function readReaderInlineAskMath(
     codeTexts: (
       Array.from(answer.querySelectorAll("code")) as HTMLElement[]
     ).map((node) => node.textContent || ""),
-    katexLinkCount: links.length,
+    katexStyleCount: styles.length,
+    katexLinkCount: packageLinks.length,
     mathStyleCount: doc.querySelectorAll(
       'style[id="llm-inline-ask-math-style"]',
     ).length,

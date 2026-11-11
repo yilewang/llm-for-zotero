@@ -671,7 +671,8 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.equal(math.displayBlocks[0].textAlign, "center", message);
     assert.equal(math.displayBlocks[0].overflowX, "auto", message);
     assert.isBelow(math.displayBlocks[0].centerOffset, 2, message);
-    assert.equal(math.katexLinkCount, 1, message);
+    assert.equal(math.katexStyleCount, 1, message);
+    assert.equal(math.katexLinkCount, 0, message);
     assert.equal(math.mathStyleCount, 1, message);
     assert.isAbove(math.cssRules, 0, "the KaTeX stylesheet loaded");
     assert.include(math.katexFontFamily, "KaTeX", message);

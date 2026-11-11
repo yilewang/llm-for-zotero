@@ -19,7 +19,6 @@ import {
   renderMathPreviewHtml,
 } from "../../../utils/markdown";
 import { config } from "../../../../package.json";
-import { pluginStylesheetHref } from "../../../utils/pluginReload";
 import { parseSanitizedRenderedHtml } from "../renderedMarkdown";
 import { XHTML_NS, type ReaderOverlayPalette } from "./readerOverlayShared";
 
@@ -225,7 +224,7 @@ const MONO =
   'ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace';
 
 const MATH_STYLE_ID = "llm-inline-ask-math-style";
-const KATEX_LINK_ID = "llm-inline-ask-katex-css";
+const KATEX_STYLE_ID = "llm-inline-ask-katex-css";
 
 /**
  * The chat's math rules (addon/content/zoteroPane.css, "Math Rendering
@@ -247,30 +246,92 @@ const MATH_CSS = [
   "[data-llm-inline-ask] .math-display-inline>.katex-display>.katex{display:inline-block;max-width:100%;min-width:0;overflow-x:auto;overflow-y:hidden}",
 ].join("\n");
 
+const KATEX_ASSET_BASE = `chrome://${config.addonRef}/content/vendor/katex/`;
+let katexCssPromise: Promise<string> | null = null;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+}
+
+async function fetchKatexAsset(name: string): Promise<Response> {
+  const response = await fetch(`${KATEX_ASSET_BASE}${name}`);
+  if (!response.ok) throw new Error(`Could not read ${name}`);
+  return response;
+}
+
 /**
- * Adds the KaTeX stylesheet link and the card-scoped math overrides to a
- * reader document, once per document however many cards open there.
+ * KaTeX's CSS with each font inlined as a woff2 data URI. Reader documents
+ * have a content principal and cannot load the plugin's chrome:// fonts, so
+ * the plugin reads them here. Built once per session; a failure is retried
+ * on the next call.
+ */
+function loadKatexCss(): Promise<string> {
+  if (!katexCssPromise) {
+    katexCssPromise = (async () => {
+      const css = await (await fetchKatexAsset("katex.min.css")).text();
+      const sourceList =
+        /src:\s*url\(fonts\/([^)]+\.woff2)\)\s*format\("woff2"\)(?:,\s*url\([^)]*\)\s*format\("[^"]*"\))*;/g;
+      const names = new Set<string>();
+      for (const match of css.matchAll(sourceList)) names.add(match[1]);
+      const uris = new Map<string, string>();
+      await Promise.all(
+        Array.from(names).map(async (name) => {
+          const buffer = await (
+            await fetchKatexAsset(`fonts/${name}`)
+          ).arrayBuffer();
+          uris.set(
+            name,
+            `data:font/woff2;base64,${bytesToBase64(new Uint8Array(buffer))}`,
+          );
+        }),
+      );
+      return css.replace(
+        sourceList,
+        (_all, name: string) => `src:url(${uris.get(name)}) format("woff2");`,
+      );
+    })().catch((err) => {
+      katexCssPromise = null;
+      throw err;
+    });
+  }
+  return katexCssPromise;
+}
+
+/**
+ * Adds the KaTeX stylesheet and the card-scoped math overrides to a reader
+ * document, once per document however many cards open there. The KaTeX
+ * stylesheet arrives when its fonts are read, so a first card may show
+ * unstyled math briefly.
  */
 export function ensureInlineAskMathStyles(doc: Document): void {
   const parent = doc.head || doc.documentElement;
   if (!parent) return;
-  // The content-accessible KaTeX package (addon/bootstrap.js): the reader
-  // document cannot load fonts from the main package. Same version query as
-  // the chat's link, for the same stale-cache reason.
-  const href = pluginStylesheetHref("vendor/katex/katex.min.css").replace(
-    `chrome://${config.addonRef}/content/vendor/katex/`,
-    `chrome://${config.addonRef}-katex/content/`,
-  );
-  let link = doc.getElementById(KATEX_LINK_ID) as HTMLLinkElement | null;
-  if (!link) {
-    link = doc.createElementNS(XHTML_NS, "link") as HTMLLinkElement;
-    link.id = KATEX_LINK_ID;
-    link.rel = "stylesheet";
-    link.type = "text/css";
-    link.href = href;
-    parent.appendChild(link);
-  } else if (link.getAttribute("href") !== href) {
-    link.href = href;
+  // A tab left open across an in-place update may hold the old <link>.
+  const staleKatex = doc.getElementById(KATEX_STYLE_ID);
+  if (staleKatex && staleKatex.localName !== "style") staleKatex.remove();
+  if (!doc.getElementById(KATEX_STYLE_ID)) {
+    loadKatexCss()
+      .then((css) => {
+        const target = doc.head || doc.documentElement;
+        if (!target) return;
+        const existing = doc.getElementById(KATEX_STYLE_ID);
+        if (existing && existing.localName === "style") return;
+        existing?.remove();
+        const style = doc.createElementNS(
+          XHTML_NS,
+          "style",
+        ) as HTMLStyleElement;
+        style.id = KATEX_STYLE_ID;
+        style.textContent = css;
+        target.appendChild(style);
+      })
+      .catch((err) => {
+        ztoolkit.log("LLM: could not load KaTeX styles for Inline Ask", err);
+      });
   }
   if (!doc.getElementById(MATH_STYLE_ID)) {
     const style = doc.createElementNS(XHTML_NS, "style") as HTMLStyleElement;
