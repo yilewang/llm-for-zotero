@@ -333,12 +333,28 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     title: t("Delete conversation"),
   });
   clearBtn.setAttribute("aria-label", t("Delete conversation"));
+  // Stacked only: when the row runs out of room, Settings, Export and Delete
+  // fold into this menu button. It stays hidden until the row is collapsed.
+  const moreBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-header-more-btn",
+    {
+      id: "llm-header-more",
+      type: "button",
+      title: t("More actions"),
+    },
+  );
+  moreBtn.setAttribute("aria-label", t("More actions"));
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", "false");
   headerActions.append(
     taskProgressBtn,
     popoutBtn,
     settingsBtn,
     exportBtn,
     clearBtn,
+    moreBtn,
   );
   headerNavRow.appendChild(headerActions);
   headerTop.append(toggleRow, headerNavRow);
@@ -573,6 +589,68 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   );
   exportMenu.append(exportMenuCopyBtn, exportMenuNoteBtn);
   container.appendChild(exportMenu);
+
+  // More menu: the actions the collapsed Stacked header folds away. It looks
+  // like the standalone window's More menu and sits in the panel, outside the
+  // header, whose size containment would anchor a fixed menu to the header.
+  const headerMoreMenu = createElement(doc, "div", "llm-header-more-menu", {
+    id: "llm-header-more-menu",
+  });
+  headerMoreMenu.setAttribute("role", "menu");
+  headerMoreMenu.style.display = "none";
+  // Icon buttons only; the glyph comes from the item's own id (CSS) and the
+  // controller copies the real button's title and aria-label when it opens.
+  const createHeaderMoreItem = (
+    id: string,
+    label: string,
+    glyph: string,
+    extraClass = "",
+  ) => {
+    const item = createElement(
+      doc,
+      "button",
+      `llm-header-more-item llm-header-more-item-${glyph}${extraClass ? ` ${extraClass}` : ""}`,
+      { id, type: "button", title: label },
+    );
+    item.setAttribute("aria-label", label);
+    item.setAttribute("role", "menuitem");
+    return item;
+  };
+  // Task progress and Open in window join the strip in the tight stage only;
+  // the controller shows these two items and their separator then.
+  const headerMoreTopSeparator = createElement(
+    doc,
+    "div",
+    "llm-header-more-separator",
+    { id: "llm-header-more-top-separator" },
+  );
+  headerMoreTopSeparator.setAttribute("role", "separator");
+  headerMoreTopSeparator.style.display = "none";
+  const headerMoreTaskItem = createHeaderMoreItem(
+    "llm-header-more-task-progress",
+    t("Show task progress"),
+    "task-progress",
+  );
+  const headerMorePopoutItem = createHeaderMoreItem(
+    "llm-header-more-popout",
+    t("Open in Window"),
+    "popout",
+  );
+  headerMoreTaskItem.style.display = "none";
+  headerMorePopoutItem.style.display = "none";
+  headerMoreMenu.append(
+    headerMoreTaskItem,
+    headerMorePopoutItem,
+    headerMoreTopSeparator,
+    createHeaderMoreItem("llm-header-more-settings", t("Settings"), "settings"),
+    createHeaderMoreItem("llm-header-more-export", t("Export"), "export"),
+    createHeaderMoreItem(
+      "llm-header-more-delete",
+      t("Delete conversation"),
+      "delete",
+    ),
+  );
+  container.appendChild(headerMoreMenu);
 
   const slashMenu = createElement(
     doc,

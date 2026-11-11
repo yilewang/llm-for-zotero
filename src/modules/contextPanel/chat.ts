@@ -13,6 +13,7 @@ import {
 import { createProviderRequestScope } from "../../utils/providerTransport";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { HTML_NS } from "../../utils/domHelpers";
+import { wireStartPageTipActions } from "./startPageTipActions";
 import { appendSelectedTextSections } from "./selectedTextPreviewSections";
 import {
   t,
@@ -2626,6 +2627,26 @@ async function persistConversationMessage(
   }
 }
 
+/**
+ * Stores finished turns, in order, in a conversation the panel is about to
+ * open (Inline Ask's Continue in sidebar), through the same store routing
+ * and upkeep as a sent message. Throws on the first row that fails.
+ */
+export async function persistSeededConversationMessages(
+  conversationKey: number,
+  messages: readonly StoredChatMessage[],
+  conversationSystem: ConversationSystem,
+): Promise<void> {
+  for (const message of messages) {
+    await persistConversationMessage(
+      conversationKey,
+      message,
+      conversationSystem,
+      { rethrow: true },
+    );
+  }
+}
+
 function normalizeStoredPaperContextRoutes(params: {
   paperContexts?: PaperContextRef[];
   pdfPaperContexts?: PaperContextRef[];
@@ -3575,6 +3596,33 @@ export function getSelectedReasoningForItem(
   /** Whose last-used level fills in (surfaceChoices.ts); the sidebar's when omitted. */
   surface?: SelectionSurface,
 ): LLMReasoningConfig | undefined {
+  const selected = peekSelectedReasoningForItem(
+    itemId,
+    modelName,
+    apiBase,
+    providerProtocol,
+    profileOverride,
+    surface,
+  );
+  const cacheKey = reasoningCacheKey(surface, itemId);
+  selectedReasoningCache.set(cacheKey, selected.level);
+  selectedReasoningProviderCache.set(cacheKey, selected.provider);
+  return selected;
+}
+
+/**
+ * The level getSelectedReasoningForItem resolves, without remembering it:
+ * for a reader of the surface's choice that is not the surface itself
+ * (Inline Ask reads the sidebar's level for its own model).
+ */
+export function peekSelectedReasoningForItem(
+  itemId: number,
+  modelName: string,
+  apiBase?: string,
+  providerProtocol?: ProviderProtocol,
+  profileOverride?: ModelProfileOverride,
+  surface?: SelectionSurface,
+): LLMReasoningConfig {
   const detectedProvider = detectReasoningProvider(modelName, apiBase);
   const capabilities = getModelCapabilities({
     provider: detectedProvider === "unsupported" ? undefined : detectedProvider,
@@ -3598,8 +3646,6 @@ export function getSelectedReasoningForItem(
     level: saved || "auto",
   });
   const level = selected.kind === "option" ? selected.option.id : "auto";
-  selectedReasoningCache.set(cacheKey, level);
-  selectedReasoningProviderCache.set(cacheKey, provider);
   return { provider, level };
 }
 
@@ -4003,6 +4049,26 @@ function createStreamReasoningHandler(params: {
     params.onReasoningCaptured?.();
     params.queueRefresh();
   };
+}
+
+export function shouldPreserveContextUsageWindow(
+  snapshot: ContextUsageSnapshot | undefined,
+  isCodex: boolean,
+  userLimitIsAuthoritative: boolean,
+): boolean {
+  if (userLimitIsAuthoritative) return false;
+  if (snapshot?.source === "provider") return true;
+  // Codex owns the conversation's context, including tool results that are
+  // absent from visible chat history. Keep its saved window on reopen rather
+  // than replacing it with the model registry's generic fallback. A new usage
+  // event will refresh this last-known (still marked estimated) snapshot.
+  return Boolean(
+    isCodex &&
+    snapshot?.source === "persisted" &&
+    typeof snapshot.contextWindow === "number" &&
+    Number.isFinite(snapshot.contextWindow) &&
+    snapshot.contextWindow > 0,
+  );
 }
 
 export function resolveUsageContextWindow(params: {
@@ -5453,6 +5519,13 @@ function buildHistoryMessageForLLM(message: Message): ChatMessage {
 
 function buildLLMHistoryMessages(history: Message[]): ChatMessage[] {
   return history.map((message) => buildHistoryMessageForLLM(message));
+}
+
+/** Stored messages as a loaded chat sends them to the model as history. */
+export function buildLLMHistoryFromStoredMessagesForTests(
+  messages: readonly StoredChatMessage[],
+): ChatMessage[] {
+  return buildLLMHistoryMessages(messages.map(toPanelMessage));
 }
 
 function normalizeModelFileAttachments(
@@ -10882,6 +10955,7 @@ function renderChatForPanel(
   ): PaperContextRef =>
     resolvePaperContextDisplayRef(paperContext, paperContextDisplayCache);
 
+  wireStartPageTipActions(chatBox, body);
   if (!item) {
     cancelPendingChatRender(chatBox);
     setChatBoxConversation(chatBox, null);
@@ -10941,8 +11015,11 @@ function renderChatForPanel(
     const configuredLimitIsUserAuthoritative =
       recomputedSnapshot?.inputLimitSource === "advanced" ||
       recomputedSnapshot?.inputLimitSource === "user";
-    const providerWindowRemainsEligible =
-      snapshot?.source === "provider" && !configuredLimitIsUserAuthoritative;
+    const providerWindowRemainsEligible = shouldPreserveContextUsageWindow(
+      snapshot,
+      resolveConversationSystemForItem(item) === "codex",
+      configuredLimitIsUserAuthoritative,
+    );
     const reconciledSnapshot =
       snapshot && recomputedSnapshot && !providerWindowRemainsEligible
         ? setContextUsageSnapshot(conversationKey, {

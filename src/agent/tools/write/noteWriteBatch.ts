@@ -33,18 +33,32 @@ import {
   createBatchJob,
   finishBatchJob,
   getBatchJob,
-  listConversationBatchJobs,
 } from "../../store/batchJobStore";
 import {
   createBatchItems,
   listBatchItems,
   listResumableBatches,
   markBatchItemFailed,
+  markBatchItemSaved,
   markBatchItemSettled,
   type BatchItemRecord,
   type NewBatchItem,
 } from "../../store/batchItemStore";
 import { sha256Text } from "../../store/journalRecoveryBlobStore";
+import {
+  listJournalActions,
+  type JournalActionWithSteps,
+} from "../../store/changeJournal";
+import {
+  batchLinksRowsInFlight,
+  findLandedNoteStepForRow,
+  findNoteHeldForRow,
+  findRelatedBatchNote,
+  journalStepsReader,
+  listUnnamedNoteBatchActions,
+  relatedNoteBatchIds,
+} from "../../services/noteCreation";
+import { RESUMABLE_BATCH_ACTION_STATUSES } from "../../services/mutationCoordinator";
 import { describeLibraryMutationActions } from "../../contracts/actionOperationEvidence";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
@@ -87,6 +101,14 @@ type ResumeRowCorrection =
       itemKey: string;
       /** A related batch already wrote this item's note; the row names it. */
       settledByNoteId: number;
+    }
+  | {
+      itemKey: string;
+      /**
+       * This batch's own note landed (its step is recorded) but the row was
+       * not saved; the row is saved with that step and note.
+       */
+      savedBy: { actionId: string; stepSequence: number; noteId: number };
     };
 
 /**
@@ -139,6 +161,23 @@ type AlreadySavedNote = {
   batchId: string;
   noteId: number;
   materialRef?: MaterialRef;
+  /**
+   * The earlier batch's step that wrote the note, when its row was not
+   * saved yet (the process ended in between); the row is saved with it.
+   */
+  step?: { actionId: string; sequence: number };
+};
+
+/**
+ * A paper of a new call left out because an earlier batch's attempt still
+ * holds a note for it (its step is open with a note at its key). Only that
+ * batch's resume can settle the note; writing here would be a second one.
+ */
+type HeldElsewhereNote = {
+  itemKey: string;
+  targetItemId: number;
+  title: string;
+  reason: string;
 };
 
 /** One item as the batch's job row remembers it, so a resume needs no model. */
@@ -173,6 +212,11 @@ type NoteWriteBatchInput = {
    * the proposal and the write never include them.
    */
   _alreadySaved?: AlreadySavedNote[];
+  /**
+   * Papers of a new call an earlier batch's open attempt holds a note for.
+   * Set during preparation; left out of `operation` and reported failed.
+   */
+  _heldElsewhere?: HeldElsewhereNote[];
   /**
    * The earlier batches this new call is a retry of, decided during
    * preparation and recorded on the job it opens.
@@ -280,13 +324,53 @@ export function createNoteWriteBatchTool(
     const retried = await batchesRetriedBy(operation, allKeys, context);
     const alreadySaved = findAlreadySavedNotes(operation, allKeys, retried);
     if (retried.length) input._retryOf = retried.map((batch) => batch.batchId);
-    const skippedKeys = new Set(alreadySaved.map((entry) => entry.itemKey));
+    // What the retried batches' own steps hold beyond their saved rows: a
+    // note that landed before its row was saved is already this paper's,
+    // and a note still in flight is held until that batch settles it.
+    const heldElsewhere: HeldElsewhereNote[] = [];
+    if (retried.length) {
+      const savedKeys = new Set(alreadySaved.map((entry) => entry.itemKey));
+      const stepsOf = journalStepsReader();
+      for (const [index, note] of operation.notes.entries()) {
+        const itemKey = allKeys[index];
+        if (savedKeys.has(itemKey)) continue;
+        const found = await findRelatedBatchNote(retried, itemKey, stepsOf);
+        if (found?.kind === "landed") {
+          const row = retried
+            .find((batch) => batch.batchId === found.batchId)
+            ?.rows.find((entry) => entry.itemKey === itemKey);
+          alreadySaved.push({
+            itemKey,
+            targetItemId: note.targetItemId,
+            title: itemTitle(note.targetItemId),
+            batchId: found.batchId,
+            noteId: found.note.id,
+            ...(row?.materialRef ? { materialRef: row.materialRef } : {}),
+            step: {
+              actionId: found.step.actionId,
+              sequence: found.step.sequence,
+            },
+          });
+        } else if (found?.kind === "held")
+          heldElsewhere.push({
+            itemKey,
+            targetItemId: note.targetItemId,
+            title: itemTitle(note.targetItemId),
+            reason: found.reason,
+          });
+      }
+    }
+    const skippedKeys = new Set([
+      ...alreadySaved.map((entry) => entry.itemKey),
+      ...heldElsewhere.map((entry) => entry.itemKey),
+    ]);
     const kept = operation.notes.flatMap((note, index) =>
       skippedKeys.has(allKeys[index]) ? [] : [{ note, key: allKeys[index] }],
     );
-    if (alreadySaved.length) {
+    if (skippedKeys.size) {
       input.operation = { ...operation, notes: kept.map(({ note }) => note) };
-      input._alreadySaved = alreadySaved;
+      if (alreadySaved.length) input._alreadySaved = alreadySaved;
+      if (heldElsewhere.length) input._heldElsewhere = heldElsewhere;
     }
     const items: PreparedBatchItem[] = [];
     for (const [index, { note, key }] of kept.entries()) {
@@ -481,12 +565,9 @@ export function createNoteWriteBatchTool(
 
   /**
    * The batches a batch is a retry of, and the batches that are retries of
-   * it, followed through every step of the chain, as their jobs recorded when
-   * each retry was opened.
-   *
-   * The relation is recorded rather than re-derived: after the retry has
-   * written, the earlier batch may no longer owe the papers that made it one,
-   * and an unrelated later request over the same papers must not join it.
+   * it, followed through every step of the chain (`relatedNoteBatchIds`).
+   * A retry of a retry holds the first batch's papers too, and an explicit
+   * resume of any link must see it.
    */
   async function relatedBatches(
     batch: StoredNoteBatch,
@@ -494,36 +575,11 @@ export function createNoteWriteBatchTool(
   ): Promise<StoredNoteBatch[]> {
     const conversationKey = context.request.conversationKey;
     if (!conversationKey || batch.stored.mode !== "create") return [];
-    // The whole chain, not one step: a retry of a retry holds the first
-    // batch's papers too, and an explicit resume of any link must see it.
-    const links = new Map<string, Set<string>>();
-    const link = (from: string, to: string) => {
-      if (!links.has(from)) links.set(from, new Set());
-      links.get(from)!.add(to);
-    };
-    for (const id of batch.stored.retryOf) {
-      link(batch.batchId, id);
-      link(id, batch.batchId);
-    }
-    for (const job of await listConversationBatchJobs(
-      conversationKey,
-      "note_write_batch",
-    ))
-      for (const id of parseStoredBatchInput(job.inputJson).retryOf) {
-        link(job.jobId, id);
-        link(id, job.jobId);
-      }
-    const ids = new Set<string>([batch.batchId]);
-    const queue = [batch.batchId];
-    for (let next = queue.shift(); next !== undefined; next = queue.shift())
-      for (const id of links.get(next) || [])
-        if (!ids.has(id)) {
-          ids.add(id);
-          queue.push(id);
-        }
-    ids.delete(batch.batchId);
     const related: StoredNoteBatch[] = [];
-    for (const id of ids) {
+    for (const id of await relatedNoteBatchIds(
+      batch.batchId,
+      conversationKey,
+    )) {
       const other = await loadNoteBatch(id);
       if (other && createsNotesLike(other, batch.stored.target))
         related.push(other);
@@ -548,24 +604,34 @@ export function createNoteWriteBatchTool(
   ): Promise<void> {
     const own = await loadNoteBatch(ownBatchId);
     if (!own) return;
-    const holders = new Map<string, number>();
-    for (const entry of alreadySaved) holders.set(entry.itemKey, entry.noteId);
+    const holders = new Map<string, AlreadySavedNote | { noteId: number }>();
+    for (const entry of alreadySaved) holders.set(entry.itemKey, entry);
     for (const row of own.rows) {
       const noteId = heldNote(own, row.itemKey);
-      if (noteId !== undefined) holders.set(row.itemKey, noteId);
+      if (noteId !== undefined) holders.set(row.itemKey, { noteId });
     }
     if (!holders.size) return;
     const now = Date.now();
     for (const batch of await relatedBatches(own, context)) {
       const settled = new Set<string>();
       for (const row of batch.rows) {
-        const noteId = holders.get(row.itemKey);
-        if (noteId === undefined) continue;
+        const holder = holders.get(row.itemKey);
+        if (!holder) continue;
         if (heldNote(batch, row.itemKey) !== undefined) continue;
-        await markBatchItemSettled(batch.batchId, row.itemKey, {
-          noteId,
-          now,
-        });
+        // The batch's own landed note, found by its step: the row is saved
+        // with that step, as if the process had not ended before it.
+        if ("step" in holder && holder.step && holder.batchId === batch.batchId)
+          await markBatchItemSaved(batch.batchId, row.itemKey, {
+            actionId: holder.step.actionId,
+            stepSequence: holder.step.sequence,
+            noteId: holder.noteId,
+            now,
+          });
+        else
+          await markBatchItemSettled(batch.batchId, row.itemKey, {
+            noteId: holder.noteId,
+            now,
+          });
         settled.add(row.itemKey);
       }
       if (
@@ -652,6 +718,51 @@ export function createNoteWriteBatchTool(
     };
     const items: PreparedBatchItem[] = [];
     const notes: SaveNotesBatchOperation["notes"] = [];
+    // Each action once per preparation, however many rows name it.
+    const actions = new Map<
+      string,
+      Promise<JournalActionWithSteps | undefined>
+    >();
+    const actionOf = (actionId: string) => {
+      let action = actions.get(actionId);
+      if (!action) {
+        action = listJournalActions({ actionId, limit: 1 }).then(
+          ([found]) => found,
+        );
+        actions.set(actionId, action);
+      }
+      return action;
+    };
+    // The action this resume reopens settles its own open note steps from
+    // native state when it runs. One that another run holds (`applying`)
+    // is refused at execution instead, before anything is written.
+    const settledByThisResume = (
+      actionId: string,
+      action: JournalActionWithSteps | undefined,
+    ) =>
+      actionId === resume.actionId &&
+      Boolean(
+        action &&
+        (RESUMABLE_BATCH_ACTION_STATUSES.includes(action.status) ||
+          action.status === "applying"),
+      );
+    // Older data can leave the note in flight under an action no row names
+    // (the batch ended during its first note, or a continue under a second
+    // action did). Nothing settles those actions; a row whose note one of
+    // them may hold is refused, never reopened. An append writes no new
+    // note, so no such step is its row's (the executor skips it too).
+    const unnamedSteps =
+      storedInput.mode === "append" || batchLinksRowsInFlight(job.inputJson)
+        ? []
+        : (
+            await listUnnamedNoteBatchActions({
+              batchId,
+              conversationKey: job.conversationKey,
+              createdAt: job.createdAt,
+              exclude: [resume.actionId],
+            })
+          ).flatMap((action) => action.steps);
+    const relatedStepsOf = journalStepsReader();
     for (const row of rows) {
       const descriptor = stored.get(row.itemKey);
       if (!descriptor)
@@ -672,6 +783,111 @@ export function createNoteWriteBatchTool(
           settledByNoteId: elsewhere,
         });
         continue;
+      }
+      // This batch's own note landed (its step is recorded) but the row was
+      // not saved: the process ended in between. The row is not offered:
+      // once the call is approved, `execute` saves it with that step and
+      // note, whichever action holds the step, the one this resume reopens
+      // included. Saving a row settles no step, so only the action that
+      // holds a step still settles it. Offered, the row would reach the
+      // write as already saved, and the batch's proof, which reads only the
+      // notes the call wrote, would fail; the ledger already has the step's
+      // own receipt. The executor keeps the same check for a row that lands
+      // while the card is open.
+      if (row.status !== "saved" && storedInput.mode === "create") {
+        let landed: ReturnType<typeof findLandedNoteStepForRow>;
+        for (const actionId of new Set(
+          [row.actionId, resume.actionId].filter((id): id is string =>
+            Boolean(id),
+          ),
+        )) {
+          const action = await actionOf(actionId);
+          landed = action
+            ? findLandedNoteStepForRow(action.steps, {
+                batchId,
+                itemKey: row.itemKey,
+              })
+            : undefined;
+          if (landed) break;
+        }
+        if (landed) {
+          resume.skippedItemKeys.push(row.itemKey);
+          resume.corrections.push({
+            itemKey: row.itemKey,
+            savedBy: {
+              actionId: landed.step.actionId,
+              stepSequence: landed.step.sequence,
+              noteId: landed.found.note.id,
+            },
+          });
+          continue;
+        }
+      }
+      // A note an earlier attempt reserved for this row may still be held
+      // by its action. The action this resume reopens settles it from native
+      // state (and keeps a note the user restored). Any other action -- one
+      // an undo ended, or one the resume does not continue -- is settled by
+      // nothing, so the row would be written a second time beside that
+      // note: it is refused, and named. A row written before rows named
+      // their action while in flight is held by the action the resume
+      // continues.
+      const heldBy = row.actionId || resume.actionId;
+      if (row.status !== "saved" && heldBy) {
+        const action = await actionOf(heldBy);
+        if (action && !settledByThisResume(heldBy, action)) {
+          // An older step, which does not record its row, is not matched by
+          // its body here (that needs the body rebuilt); while a note is at
+          // its key, the row is refused if it could be the row's.
+          const held = await findNoteHeldForRow(action.steps, {
+            batchId,
+            itemKey: row.itemKey,
+            targetItemId: descriptor.targetItemId,
+            standalone: storedInput.target === "standalone",
+            collections: descriptor.collections || [],
+            actionId: row.actionId,
+            stepSequence: row.stepSequence,
+          });
+          if (held) {
+            resume.blocked.push({ itemKey: row.itemKey, reason: held.reason });
+            continue;
+          }
+        }
+      }
+      // A related batch's attempt may hold this paper's note too: a retry
+      // that ended while it wrote the paper, or that wrote it before its row
+      // was saved. A live landed note settles the row, as a saved related
+      // row does; an open one refuses it until that batch settles it.
+      if (row.status !== "saved" && related.length) {
+        const found = await findRelatedBatchNote(
+          related,
+          row.itemKey,
+          relatedStepsOf,
+        );
+        if (found?.kind === "landed") {
+          resume.skippedItemKeys.push(row.itemKey);
+          resume.corrections.push({
+            itemKey: row.itemKey,
+            settledByNoteId: found.note.id,
+          });
+          continue;
+        }
+        if (found?.kind === "held") {
+          resume.blocked.push({ itemKey: row.itemKey, reason: found.reason });
+          continue;
+        }
+      }
+      if (unnamedSteps.length) {
+        const held = await findNoteHeldForRow(unnamedSteps, {
+          batchId,
+          itemKey: row.itemKey,
+          targetItemId: descriptor.targetItemId,
+          standalone: storedInput.target === "standalone",
+          collections: descriptor.collections || [],
+        });
+        if (held) {
+          resume.blocked.push({ itemKey: row.itemKey, reason: held.reason });
+          continue;
+        }
       }
       if (row.status === "saved") {
         // The row names a note the library no longer has. It is retryable
@@ -826,6 +1042,9 @@ export function createNoteWriteBatchTool(
             ? { mode: "append" }
             : {}),
           ...(retryOf.length ? { retryOf } : {}),
+          // Every row names the batch's action before its note starts, so no
+          // note of this batch can be in flight under an action no row names.
+          rowsLinkedInFlight: true,
           // Stored once, so continuing the batch never has to ask the model
           // which paper an item belonged to or where its note should be filed.
           notes: items.map((item, index) => ({
@@ -1119,9 +1338,11 @@ export function createNoteWriteBatchTool(
       if (!notesOf(input).length)
         return readOnlyInvocationPlan({
           domains: [],
-          reason: input._alreadySaved?.length
-            ? "An earlier batch already wrote every one of these notes, so this call changes nothing."
-            : "Every item of this batch is already written, so continuing it changes nothing.",
+          reason: input._heldElsewhere?.length
+            ? "An earlier batch already wrote, or is still holding, a note for every one of these items, so this call changes nothing."
+            : input._alreadySaved?.length
+              ? "An earlier batch already wrote every one of these notes, so this call changes nothing."
+              : "Every item of this batch is already written, so continuing it changes nothing.",
         });
       return planLibraryMutations(
         mutationService,
@@ -1154,6 +1375,7 @@ export function createNoteWriteBatchTool(
       // card was pending. That paper was not offered for writing, so this
       // call cannot write it either; it is reported, not called saved.
       const target = resolvedOperation(input).target;
+      const heldElsewhere = input._heldElsewhere || [];
       const alreadySaved: AlreadySavedNote[] = [];
       const lapsed: AlreadySavedNote[] = [];
       for (const entry of input._alreadySaved || [])
@@ -1168,7 +1390,12 @@ export function createNoteWriteBatchTool(
         const settled = settledBatchResult(undefined);
         return {
           ...settled,
-          content: withAlreadySavedNotes(settled.content, alreadySaved, lapsed),
+          content: withAlreadySavedNotes(
+            settled.content,
+            alreadySaved,
+            lapsed,
+            heldElsewhere,
+          ),
           batchItems: alreadySaved.map(alreadySavedOutcome),
         };
       }
@@ -1183,6 +1410,12 @@ export function createNoteWriteBatchTool(
           await markBatchItemSettled(resume!.batchId, correction.itemKey, {
             noteId: correction.settledByNoteId,
           });
+        else if ("savedBy" in correction)
+          await markBatchItemSaved(
+            resume!.batchId,
+            correction.itemKey,
+            correction.savedBy,
+          );
         else
           await markBatchItemFailed(resume!.batchId, correction.itemKey, {
             actionId: correction.actionId,
@@ -1256,6 +1489,7 @@ export function createNoteWriteBatchTool(
           result.content,
           alreadySaved,
           lapsed,
+          heldElsewhere,
         ) as Record<string, unknown>),
         ...(stopped
           ? {
@@ -1279,7 +1513,11 @@ export function createNoteWriteBatchTool(
       return {
         ...result,
         batchItems: [...alreadySaved.map(alreadySavedOutcome), ...batchItems],
-        ...(stopped || resume || alreadySaved.length || lapsed.length
+        ...(stopped ||
+        resume ||
+        alreadySaved.length ||
+        lapsed.length ||
+        heldElsewhere.length
           ? { content }
           : {}),
       };
@@ -1352,8 +1590,10 @@ function withAlreadySavedNotes(
   content: unknown,
   alreadySaved: readonly AlreadySavedNote[],
   lapsed: readonly AlreadySavedNote[],
+  heldElsewhere: readonly HeldElsewhereNote[] = [],
 ): unknown {
-  if (!alreadySaved.length && !lapsed.length) return content;
+  if (!alreadySaved.length && !lapsed.length && !heldElsewhere.length)
+    return content;
   const outer = validateObject<Record<string, unknown>>(content) ? content : {};
   const inner = validateObject<Record<string, unknown>>(outer.result)
     ? outer.result
@@ -1381,7 +1621,10 @@ function withAlreadySavedNotes(
         ...payload,
         alreadySavedCount:
           Number(payload.alreadySavedCount || 0) + alreadySaved.length,
-        failedCount: Number(payload.failedCount || 0) + lapsed.length,
+        failedCount:
+          Number(payload.failedCount || 0) +
+          lapsed.length +
+          heldElsewhere.length,
         notes: [
           ...alreadySaved.map((entry) => ({
             targetItemId: entry.targetItemId,
@@ -1397,6 +1640,13 @@ function withAlreadySavedNotes(
             title: entry.title,
             status: "error" as const,
             reason: `The note an earlier batch saved for this item (${entry.noteId}) was moved to the trash or to another item while this call awaited confirmation, so this call wrote nothing for it. Call note_write_batch again to write it.`,
+          })),
+          ...heldElsewhere.map((entry) => ({
+            targetItemId: entry.targetItemId,
+            itemKey: entry.itemKey,
+            title: entry.title,
+            status: "error" as const,
+            reason: entry.reason,
           })),
           ...notes,
         ],

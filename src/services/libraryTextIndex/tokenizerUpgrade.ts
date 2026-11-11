@@ -83,6 +83,7 @@ export async function runTokenizerUpgradeSlice(
   const setAside = new Set<number>(); // failed in this slice: not retried until the next one
   let failure: string | undefined;
   let reposted = 0;
+  let attempted = 0;
   while (true) {
     const exclude = [
       ...new Set([
@@ -112,6 +113,13 @@ export async function runTokenizerUpgradeSlice(
       return { reposted, done: true, ...(failure ? { failure } : {}) };
     }
     for (const attachmentId of ids) {
+      // The budget is checked before a document, not after it: a slice that
+      // ran out of time just after the last document would otherwise return
+      // not done, and once nothing needs re-posting no later slice runs to
+      // record the version.
+      if (attempted > 0 && now() - started >= options.sliceMs)
+        return { reposted, done: false, ...(failure ? { failure } : {}) };
+      attempted += 1;
       try {
         await store.repostDocument(
           attachmentId,
@@ -130,8 +138,6 @@ export async function runTokenizerUpgradeSlice(
         setAside.add(attachmentId);
         if (count >= maxAttempts) options.onSkipped?.(attachmentId, message);
       }
-      if (now() - started >= options.sliceMs)
-        return { reposted, done: false, ...(failure ? { failure } : {}) };
     }
   }
 }

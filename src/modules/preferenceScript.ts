@@ -6,6 +6,7 @@ import {
   SIDEBAR_LAYOUT_PREF,
 } from "./contextPanel/sidebarLayout";
 import { config } from "../../package.json";
+import { consumeRequestedPreferencesTab } from "../utils/preferencesStartTab";
 import { t } from "../utils/i18n";
 import { WEBCHAT_TARGETS } from "../webchat/types";
 import {
@@ -1642,7 +1643,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
     }
     // Activate first tab
-    switchTab("models");
+    const requestedTab = consumeRequestedPreferencesTab();
+    switchTab(
+      requestedTab && tabBar.querySelector(`[data-pref-tab="${requestedTab}"]`)
+        ? requestedTab
+        : "models",
+    );
   }
 
   const modelSections = doc.querySelector(
@@ -1653,6 +1659,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLTextAreaElement | null;
   const popupAddTextEnabledInput = doc.querySelector(
     `#${config.addonRef}-popup-add-text-enabled`,
+  ) as HTMLInputElement | null;
+  const popupInlineAskEnabledInput = doc.querySelector(
+    `#${config.addonRef}-popup-inline-ask-enabled`,
   ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
@@ -3271,6 +3280,22 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       Zotero.Prefs.set(
         `${config.prefsPrefix}.showPopupAddText`,
         popupAddTextEnabledInput.checked,
+        true,
+      );
+    });
+  }
+
+  if (popupInlineAskEnabledInput) {
+    const prefValue = Zotero.Prefs.get(
+      `${config.prefsPrefix}.showPopupInlineAsk`,
+      true,
+    );
+    popupInlineAskEnabledInput.checked =
+      prefValue !== false && `${prefValue || ""}`.toLowerCase() !== "false";
+    popupInlineAskEnabledInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.showPopupInlineAsk`,
+        popupInlineAskEnabledInput.checked,
         true,
       );
     });

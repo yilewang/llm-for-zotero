@@ -3,7 +3,14 @@ import { appLogger } from "../../core/logging";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
 import { clearCitationPageCache } from "./citationNavigationCache";
-import { readPageCompleteZoteroFulltextCache } from "./zoteroFulltextPageCache";
+import {
+  readPageCompleteZoteroFulltextCache,
+  type ProveTextPageOffset,
+} from "./zoteroFulltextPageCache";
+import type { TextPageOffset } from "../paperContent/types";
+import { paperTextStore } from "../paperContent/paperTextStore";
+import { readPdfBookmarks } from "../paperContent/pdfBookmarks";
+import { textPageOffset as bookmarkTextPageOffset } from "../paperContent/documentStructure";
 import {
   readAttachmentFileState,
   type AttachmentFileState,
@@ -2012,9 +2019,17 @@ function positivePageCount(value: unknown): number | undefined {
  * leave no break behind. Older builds returned `pageChars`. Blank pages are
  * kept as empty strings so each page keeps its own index; `totalPages` is the
  * PDF's real page count, so trimmed pages show as missing, not as absent.
+ *
+ * Text that lost blank leading pages is placed only by a `textPageOffset`
+ * its bookmarks proved for a text of the same part count: part `i` goes on
+ * page `i + pageOffset`, and the lost pages, with the trimmed pages after
+ * the text up to the last extracted page, are listed empty. An offset that
+ * would place text past the PDF's or the extraction's last page refuses the
+ * split; one proven for another part count is ignored.
  */
 export function splitPdfWorkerFullTextIntoPages(
   result: PdfWorkerFullTextResult | null | undefined,
+  options?: { textPageOffset?: TextPageOffset },
 ): ExtractedPageTextIndexSource | null {
   const fullText = typeof result?.text === "string" ? result.text : "";
   if (!fullText) return null;
@@ -2051,17 +2066,34 @@ export function splitPdfWorkerFullTextIntoPages(
     // More parts than pages means a break inside a page: no part can be
     // trusted to sit on the page its position names.
     if (totalPages && ffPages.length > totalPages) return null;
-    // Zotero trims blank pages at either end, which shifts every index when
-    // a leading page is lost. Trust the split only when the part count equals
-    // the extracted page count (a limit such as pdfMaxPages keeps indices).
     const extractedPages = positivePageCount(result?.extractedPages);
-    if (extractedPages !== undefined && ffPages.length !== extractedPages) {
-      return null;
+    const shift = options?.textPageOffset;
+    if (shift && shift.pageOffset >= 0 && ffPages.length === shift.textParts) {
+      const textEnd = shift.pageOffset + ffPages.length;
+      if (!totalPages || textEnd > totalPages) return null;
+      if (extractedPages !== undefined && textEnd > extractedPages) return null;
+      const lastPage = Math.min(extractedPages ?? totalPages, totalPages);
+      for (let i = 0; i < lastPage; i++) {
+        const part = ffPages[i - shift.pageOffset];
+        pages.push({
+          pageIndex: i,
+          text: part === undefined ? "" : sanitizeText(part.trim()),
+        });
+      }
+      pageCount = totalPages;
+    } else {
+      // Zotero trims blank pages at either end, which shifts every index
+      // when a leading page is lost. Trust the split only when the part
+      // count equals the extracted page count (a limit such as pdfMaxPages
+      // keeps indices).
+      if (extractedPages !== undefined && ffPages.length !== extractedPages) {
+        return null;
+      }
+      for (let i = 0; i < ffPages.length; i++) {
+        pages.push({ pageIndex: i, text: sanitizeText(ffPages[i].trim()) });
+      }
+      pageCount = totalPages ?? ffPages.length;
     }
-    for (let i = 0; i < ffPages.length; i++) {
-      pages.push({ pageIndex: i, text: sanitizeText(ffPages[i].trim()) });
-    }
-    pageCount = totalPages ?? ffPages.length;
   }
   return pages.some((page) => page.text) ? { pages, pageCount } : null;
 }
@@ -2074,6 +2106,8 @@ export function splitPdfWorkerFullTextIntoPages(
  */
 async function extractPageTextsFromPdfWorkerItemId(
   itemId: number,
+  textPageOffset?: TextPageOffset,
+  proveShift?: ProveTextPageOffset,
 ): Promise<ExtractedPageTextIndexSource | null> {
   try {
     if (!Number.isFinite(itemId) || itemId <= 0) {
@@ -2090,7 +2124,25 @@ async function extractPageTextsFromPdfWorkerItemId(
       );
       return null;
     }
-    const extracted = splitPdfWorkerFullTextIntoPages(result);
+    let extracted = splitPdfWorkerFullTextIntoPages(result, {
+      textPageOffset,
+    });
+    // `pageChars` places text without a shift.
+    const totalPages = positivePageCount(result.totalPages);
+    const formFeed = !(
+      Array.isArray(result.pageChars) && result.pageChars.length
+    );
+    if (!extracted && proveShift && formFeed && totalPages) {
+      const proven = await proveShift({
+        text: String(result.text),
+        totalPages,
+      });
+      if (proven) {
+        extracted = splitPdfWorkerFullTextIntoPages(result, {
+          textPageOffset: proven,
+        });
+      }
+    }
     if (!extracted) {
       appLogger.warn(
         "LLM quote-locator: PDFWorker — text could not be split into pages",
@@ -2116,13 +2168,18 @@ async function extractPageTextsFromPdfWorkerItemId(
  */
 async function extractPageTextsFromZoteroFulltextCache(
   itemId: number,
+  textPageOffset?: TextPageOffset,
+  proveShift?: ProveTextPageOffset,
 ): Promise<ExtractedPageTextIndexSource | null> {
-  const cached = await readPageCompleteZoteroFulltextCache(itemId);
-  if (!cached) return null;
-  return splitPdfWorkerFullTextIntoPages({
-    text: cached.text,
-    totalPages: cached.totalPages,
+  const cached = await readPageCompleteZoteroFulltextCache(itemId, {
+    textPageOffset,
+    proveShift,
   });
+  if (!cached) return null;
+  return splitPdfWorkerFullTextIntoPages(
+    { text: cached.text, totalPages: cached.totalPages },
+    { textPageOffset: cached.textPageOffset },
+  );
 }
 
 async function extractPageTextsFromPdfWorker(
@@ -2698,6 +2755,11 @@ export async function warmPageTextCacheForAttachment(
     yieldToMain?: () => Promise<void>;
     shouldContinue?: () => boolean;
     reader?: any;
+    /**
+     * The shift the attachment's bookmarks proved for text that lost blank
+     * leading pages (`splitPdfWorkerFullTextIntoPages`).
+     */
+    textPageOffset?: TextPageOffset;
   },
 ): Promise<CachedPageTextIndex | null> {
   const key = getAttachmentPageTextCacheKey(contextItemId);
@@ -2719,6 +2781,46 @@ export async function warmPageTextCacheForAttachment(
   if (cached) return cached;
   const cachedTask = getCachedPageTextPromise(keys, !options?.yieldToMain);
   if (cachedTask) return cachedTask;
+  // Text that lost blank leading pages is placed by the shift its bookmarks
+  // proved when the paper was loaded, whoever asks. A shift proven on another
+  // file is dropped.
+  const proven =
+    options?.textPageOffset ?? paperTextStore.peek(itemId)?.textPageOffset;
+  const provenFile = proven?.file;
+  const textPageOffset =
+    proven &&
+    (!provenFile ||
+      (provenFile.size === (fileState?.size ?? null) &&
+        provenFile.mtime === (fileState?.mtime ?? null)))
+      ? proven
+      : undefined;
+  // Without one, the warm proves the shift as a paper load does, from the
+  // PDF's bookmarks (`readPdfBookmarks`) and this same text; without a proof
+  // the text is refused. Text with every page, or text an offset in hand was
+  // proven for, needs no proof.
+  let bookmarks: ReturnType<typeof readPdfBookmarks> | undefined;
+  const proveShift: ProveTextPageOffset = async ({ text, totalPages }) => {
+    const textParts = text.split("\f").length;
+    if (textParts < 2 || textParts >= totalPages) return undefined;
+    if (textPageOffset?.textParts === textParts) return undefined;
+    // One read per warm, even when both text sources need a proof.
+    bookmarks ??= readPdfBookmarks(itemId, fileState);
+    const pageOffset = bookmarkTextPageOffset({
+      text,
+      layout: { totalPages },
+      bookmarks: await bookmarks,
+    });
+    return pageOffset !== null
+      ? {
+          pageOffset,
+          textParts,
+          file: {
+            size: fileState?.size ?? null,
+            mtime: fileState?.mtime ?? null,
+          },
+        }
+      : undefined;
+  };
 
   let foreground = false;
   let promote: (() => void) | undefined;
@@ -2734,8 +2836,16 @@ export async function warmPageTextCacheForAttachment(
       // Zotero's page-complete full-text cache holds the same text a fresh
       // PDFWorker extraction would return, without queueing a PDF parse.
       let extracted =
-        (await extractPageTextsFromZoteroFulltextCache(itemId)) ??
-        (await extractPageTextsFromPdfWorkerItemId(itemId));
+        (await extractPageTextsFromZoteroFulltextCache(
+          itemId,
+          textPageOffset,
+          proveShift,
+        )) ??
+        (await extractPageTextsFromPdfWorkerItemId(
+          itemId,
+          textPageOffset,
+          proveShift,
+        ));
       let coverage: PageTextCacheCoverage = "full-pdfworker";
       let sourceFingerprint: string | undefined;
       if (!extracted?.pages.length && reader) {
@@ -2801,13 +2911,16 @@ export async function warmPageTextCacheForAttachment(
  * as the text a context extraction just read, so quote checks need no second
  * extraction. The text is split and normalised exactly as a PDFWorker warm
  * would; an attachment that is cached or being read already is left alone.
- * `fileState` is the attachment file as it was when that text was read.
+ * `fileState` is the attachment file as it was when that text was read;
+ * `textPageOffset` is the shift its bookmarks proved for text that lost
+ * blank leading pages.
  */
 export async function seedPageTextCacheFromFullText(
   contextItemId: number,
   fullText: PdfWorkerFullTextResult,
   options?: {
     fileState?: AttachmentFileState | null;
+    textPageOffset?: TextPageOffset;
     yieldToMain?: () => Promise<void>;
     shouldContinue?: () => boolean;
   },
@@ -2819,7 +2932,9 @@ export async function seedPageTextCacheFromFullText(
   if (cached) return cached;
   const pendingTask = getCachedPageTextPromise(keys);
   if (pendingTask) return pendingTask;
-  const extracted = splitPdfWorkerFullTextIntoPages(fullText);
+  const extracted = splitPdfWorkerFullTextIntoPages(fullText, {
+    textPageOffset: options?.textPageOffset,
+  });
   if (!extracted) return null;
 
   const generation = pageTextCacheGeneration;

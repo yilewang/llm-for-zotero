@@ -28,6 +28,12 @@ declare namespace _ZoteroTypes {
       "readerChoiceClaude": string;
       "systemPrompt": string;
       "showPopupAddText": boolean;
+      "showPopupInlineAsk": boolean;
+      "inlineAskPrompts": string;
+      "inlineAskDeletedPrompts": string;
+      "inlineAskModelEntryId": string;
+      "inlineAskReasoning": string;
+      "inlineAskTextSize": number;
       "semanticScholarApiKey": string;
       "temperaturePrimary": string;
       "maxTokensPrimary": string;

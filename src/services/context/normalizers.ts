@@ -107,6 +107,7 @@ export function normalizeSelectedTextSource(
   if (value === "note") return "note";
   if (value === "note-edit") return "note-edit";
   if (value === "sidechat") return "sidechat";
+  if (value === "inlineask") return "inlineask";
   return "pdf";
 }
 

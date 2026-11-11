@@ -437,6 +437,32 @@
   padding-inline: 10px;
 }
 
+/*
+ * Library tab, Independent pane: the toggle row centres on the items toolbar
+ * and the action row on the item list's column headers.
+ * libraryHeaderRowAlignment.ts measures both native rows and sets the three
+ * sizes; without them the rows keep the padding above. A toggle taller than
+ * its row (a large plugin font) overflows evenly and stays centred.
+ */
+:root[data-llm-library-header-aligned][data-llm-sidebar-layout="independent"]
+  #zotero-item-pane
+  .llm-dedicated-chat-pane
+  .llm-header-toggle-row {
+  box-sizing: border-box;
+  height: var(--llm-library-toggle-row-height);
+  padding-block: 0;
+}
+
+:root[data-llm-library-header-aligned][data-llm-sidebar-layout="independent"]
+  #zotero-item-pane
+  .llm-dedicated-chat-pane
+  .llm-header-nav-row {
+  box-sizing: border-box;
+  height: var(--llm-library-action-row-height);
+  margin-top: var(--llm-library-header-row-gap);
+  padding-block: 0;
+}
+
 .llm-header-info {
   flex: 1;
   display: flex;
@@ -717,8 +743,7 @@
  * Independent keeps the toggle row above the actions row; Stacked drops it
  * and shows the chip in the divider's place. The standalone window hides
  * this header altogether. */
-:root[data-llm-sidebar-layout="stacked"] .llm-header-toggle-row,
-:root[data-llm-sidebar-layout="stacked"] .llm-header-runtime-divider {
+:root[data-llm-sidebar-layout="stacked"] .llm-header-toggle-row {
   display: none;
 }
 
@@ -1350,6 +1375,155 @@
   pointer-events: none;
 }
 
+/*
+ * The More button (Stacked header only): hidden everywhere until the Stacked
+ * row folds Settings, Export and Delete into it (see the capsule header
+ * block below; the tight stage folds Task progress and Open in window into
+ * it as well). It sits after .llm-btn-icon so its display wins.
+ */
+.llm-header-more-btn {
+  position: relative;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  font-size: 0;
+  line-height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.llm-header-more-btn::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-image: url("icons/action-more.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/action-more.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  pointer-events: none;
+}
+
+.llm-header-more-btn[aria-expanded="true"] {
+  opacity: 1;
+  background: var(--fill-quinary);
+}
+
+/*
+ * The More strip: a row of icon buttons below the More button, with the same
+ * glyphs as the header buttons. Task progress and Open in window (and the
+ * separator after them) show in the tight stage only.
+ */
+.llm-header-more-menu {
+  display: none;
+  position: fixed;
+  z-index: 40;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--material-background) 96%, black 4%);
+  border: 1px solid var(--stroke-secondary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+
+.llm-header-more-item {
+  appearance: none;
+  -moz-appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  box-sizing: border-box;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fill-primary);
+  opacity: 0.72;
+  cursor: pointer;
+  font-size: 0;
+  line-height: 0;
+}
+
+.llm-header-more-item::before {
+  content: "";
+  display: block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  pointer-events: none;
+}
+
+.llm-header-more-item-task-progress::before {
+  mask-image: url("icons/action-task-progress.svg");
+  -webkit-mask-image: url("icons/action-task-progress.svg");
+}
+
+.llm-header-more-item-popout::before {
+  mask-image: url("icons/action-popout.svg");
+  -webkit-mask-image: url("icons/action-popout.svg");
+}
+
+.llm-header-more-item-settings::before {
+  mask-image: url("icons/action-settings.svg");
+  -webkit-mask-image: url("icons/action-settings.svg");
+}
+
+.llm-header-more-item-export::before {
+  mask-image: url("icons/action-export.svg");
+  -webkit-mask-image: url("icons/action-export.svg");
+}
+
+.llm-header-more-item-delete::before {
+  mask-image: url("icons/action-clear.svg");
+  -webkit-mask-image: url("icons/action-clear.svg");
+}
+
+.llm-header-more-item:hover:not(:disabled),
+.llm-header-more-item:focus-visible {
+  opacity: 1;
+  background: var(--fill-quinary);
+}
+
+.llm-header-more-item-delete:hover:not(:disabled) {
+  color: #d32f2f;
+}
+
+.llm-header-more-item:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.llm-header-more-separator {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--stroke-secondary);
+}
+
 /* Runtime spacing stays unchanged until the header actually runs out of room. */
 .llm-header-runtime-controls {
   gap: calc(4px * (1 - var(--llm-runtime-compression, 0)));
@@ -1381,12 +1555,6 @@
     gap: 0;
   }
 
-  /* The Stacked header's single row has no room for a fifth action here;
-   * above this width the button shows. */
-  :root[data-llm-sidebar-layout="stacked"] .llm-task-progress-btn {
-    display: none;
-  }
-
   .llm-header-actions .llm-btn-icon {
     width: 24px;
     min-width: 24px;
@@ -1416,6 +1584,219 @@
   .llm-mode-switch {
     margin-inline-start: 4px;
   }
+}
+
+/*
+ * Stacked capsule header. Three blocks on one row: new chat and history on
+ * the left, the mode chip and runtime toggles in a capsule that sits right
+ * after History (not centred), panel actions on the right. headerSpacing.ts
+ * picks `data-fit` on the row from arithmetic on these sizes (keep them in
+ * step):
+ *   full     28px boxes, 10px least between blocks, every action shown
+ *   compact  24px boxes, 8px least between blocks, every action shown
+ *   menu     as compact, with Settings, Export and Delete folded into More
+ *   tight    as menu, with Task progress and Open in window folded too,
+ *            so the right block is the More button alone
+ * The chip uses a fixed 16.8px font here (the base rule scales it with the
+ * plugin font), so the capsule is one width at every font scale and the
+ * stage does not depend on it. Every box is 28px (24px from compact on)
+ * with a 16px glyph at rest opacity 0.72; the row keeps its
+ * height in every stage. Independent keeps the @container rules above.
+ */
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row {
+  --llm-header-box: 28px;
+  --llm-header-gap-min: 10px;
+  column-gap: var(--llm-header-gap-min);
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="compact"],
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row[data-fit="menu"] {
+  --llm-header-box: 24px;
+  --llm-header-gap-min: 8px;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row[data-fit="tight"] {
+  --llm-header-box: 24px;
+  --llm-header-gap-min: 8px;
+}
+
+/* The history bar takes the room left of the actions. The capsule follows
+ * the history button, one minimum gap away (the button's end margin); all
+ * free space falls between the capsule and the actions, which the row's
+ * column gap keeps at least the minimum gap from the bar. */
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-bar {
+  flex: 1 1 0%;
+  gap: 0;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions {
+  gap: 2px;
+  min-height: 28px;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle {
+  margin-inline: 2px var(--llm-header-gap-min);
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-runtime-controls {
+  box-sizing: border-box;
+  height: 26px;
+  padding: 2px;
+  gap: 2px;
+  margin-inline: 0;
+  border-radius: 13px;
+  background: var(--fill-quinary);
+}
+
+/* The runtime toggles are 22px circles inside the capsule. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header
+  .llm-runtime-system-controls {
+  --llm-runtime-button-width: 22px;
+  --llm-runtime-gap: 2px;
+  order: 2;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header
+  .llm-runtime-system-toggle {
+  height: 22px;
+  border-radius: 11px;
+}
+
+/* The capsule is filled with quinary, so its toggles hover one step darker. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header
+  .llm-runtime-system-toggle:hover:not(:disabled) {
+  background: var(--fill-quarternary);
+}
+
+/* The Independent divider is the capsule's separator here; setupHandlers
+ * hides it while no runtime toggle shows. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-runtime-divider {
+  display: block;
+  order: 1;
+  height: 12px;
+  margin-inline: 2px;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-mode-switch {
+  margin: 0;
+}
+
+/* Fixed size: 16.8px is 12px x the 1.4 font scale the design was approved at; the
+ * capsule must not change with the sidebar width or the plugin font scale. */
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-mode-switch-sizer
+  > span,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-mode-switch-option {
+  font-size: 16.8px;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-new,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon {
+  box-sizing: border-box;
+  width: var(--llm-header-box);
+  min-width: var(--llm-header-box);
+  height: var(--llm-header-box);
+  min-height: var(--llm-header-box);
+  padding: 0;
+  border-radius: 6px;
+  transition:
+    opacity 0.12s,
+    background 0.12s;
+}
+
+:root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-history-new,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon {
+  margin: 0;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-new:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon:not(:disabled):not([aria-pressed="true"]):not(
+    [aria-expanded="true"]
+  ) {
+  opacity: 0.72;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-new:hover:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-history-toggle:hover:not(:disabled),
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row
+  .llm-header-actions
+  > .llm-btn-icon:hover:not(:disabled) {
+  color: var(--fill-primary);
+  background: var(--fill-quinary);
+  opacity: 1;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-settings-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-export-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-clear-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-settings-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-export-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-clear-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-task-progress-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-popout-btn {
+  display: none;
+}
+
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="menu"]
+  .llm-header-more-btn,
+:root[data-llm-sidebar-layout="stacked"]
+  .llm-header-nav-row[data-fit="tight"]
+  .llm-header-more-btn {
+  display: inline-flex;
 }
 
 .llm-panel[data-webchat-mode="true"] .llm-clear-btn {
@@ -5100,90 +5481,154 @@
   padding: 40px 20px 20px;
 }
 
+.llm-start-page,
+.llm-standalone-start-page {
+  container: llm-start / inline-size;
+  width: 100%;
+  box-sizing: border-box;
+  /* Tip text size; the title and subtitle keep fixed ratios to it, so a
+     wide window enlarges the page without changing its proportions.
+     Unregistered, so the cqi resolves in each child against this box. */
+  --llm-start-tip-size: clamp(
+    var(--llm-fs-11),
+    calc(11px + 1.1cqi),
+    calc(12.5px * var(--llm-font-scale))
+  );
+}
+
 .llm-start-page-title {
-  font-size: 22px;
+  font-size: max(22px, calc(1.43 * var(--llm-start-tip-size)));
   font-weight: 600;
+  line-height: 1.3;
+  text-wrap: balance;
   color: var(--fill-primary);
   margin-bottom: 4px;
 }
 
 .llm-start-page-subtitle {
-  font-size: 14px;
-  color: var(--fill-tertiary);
-  margin-bottom: 32px;
+  font-size: max(14px, calc(0.91 * var(--llm-start-tip-size)));
   font-style: italic;
+  line-height: 1.4;
+  text-wrap: balance;
+  color: var(--fill-tertiary);
 }
 
-.llm-start-page-recommendations {
-  text-align: left;
-  max-width: 500px;
+.llm-start-page-letter {
+  display: inline-block;
+}
+
+@keyframes llm-start-letter-wave {
+  0%,
+  100% {
+    transform: translateY(0);
+    color: var(--fill-primary);
+  }
+  40% {
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .llm-start-page-title:hover .llm-start-page-letter {
+    animation: llm-start-letter-wave 0.5s ease-in-out both;
+    animation-delay: calc(var(--i) * 32ms);
+  }
+}
+
+.llm-start-page-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* As wide as the longest tip, capped so a wide column keeps a short,
+     centred block (440px at font scale 1.4). */
+  width: fit-content;
+  max-width: min(100%, calc(315px * var(--llm-font-scale)));
+  margin: clamp(24px, calc(12px + 2.4cqi), 32px) 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: start;
+}
+
+.llm-start-page-tip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
   width: 100%;
-}
-
-.llm-start-page-rec-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fill-secondary);
-  margin-bottom: 8px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.llm-start-page-rec-list {
   margin: 0;
-  padding-left: 20px;
-  font-size: 12px;
-  color: var(--fill-tertiary);
-  line-height: 1.8;
-}
-
-.llm-start-page-rec-list li {
-  margin-bottom: 4px;
-}
-
-.llm-start-page-rec-list li strong {
+  padding: clamp(8px, calc(3px + 1.2cqi), 11px)
+    clamp(12px, calc(6px + 1.4cqi), 16px);
+  border: 1px solid var(--fill-quinary);
+  border-radius: 10px;
+  background: transparent;
+  font: inherit;
+  font-size: var(--llm-start-tip-size);
+  line-height: 1.35;
+  text-align: start;
   color: var(--fill-secondary);
+  cursor: default;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 
-.llm-webchat-start-page .llm-start-page-subtitle {
-  max-width: 560px;
-  margin-bottom: 20px;
-  font-style: normal;
+.llm-start-page-tip[role="button"] {
+  cursor: pointer;
 }
 
-.llm-webchat-start-page .llm-start-page-recommendations {
-  max-width: 560px;
+.llm-start-page-tip[role="button"]:hover,
+.llm-start-page-tip[role="button"]:focus-visible {
+  background: var(--fill-quinary);
+  color: var(--fill-primary);
 }
 
-.llm-webchat-rec-title-spaced {
-  margin-top: 18px;
+.llm-start-page-tip[role="button"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
-.llm-webchat-warning-title {
-  margin-top: 18px;
-  color: #b45309;
-}
-
-.llm-rec-reason {
-  opacity: 0.7;
-  font-size: 11px;
-}
-
-.llm-start-page-desc {
-  text-align: left;
-  max-width: 500px;
-  width: 100%;
-  font-size: 12px;
+.llm-start-page-tip-icon {
+  flex: none;
+  width: 1.1em;
+  height: 1.1em;
   color: var(--fill-tertiary);
-  line-height: 1.7;
+  transition: color 0.2s ease;
 }
 
-.llm-start-page-desc p {
-  margin: 0 0 8px;
+.llm-start-page-tip[role="button"]:hover .llm-start-page-tip-icon {
+  color: var(--color-accent);
 }
 
-.llm-start-page-desc strong {
-  color: var(--fill-secondary);
+.llm-start-page-tip-arrow {
+  flex: none;
+  width: 0.95em;
+  height: 0.95em;
+  color: var(--fill-tertiary);
+  opacity: 0;
+  transform: translateX(-4px);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.llm-start-page-tip[role="button"]:hover .llm-start-page-tip-arrow,
+.llm-start-page-tip[role="button"]:focus-visible .llm-start-page-tip-arrow {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.llm-start-page-tip-text {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .llm-start-page-tip,
+  .llm-start-page-tip-icon,
+  .llm-start-page-tip-arrow {
+    transition: none;
+  }
 }
 
 /* Transition animation: start page → chat mode */
@@ -20499,6 +20944,15 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
 .llm-standalone-side-panel-item-body[data-item-kind="code"]
   .llm-codeblock-body {
   max-height: none;
+}
+
+/* A code tab is read like a document: larger than code in the chat, and
+ * scaled by the tab's − and + (--llm-side-reader-text-scale). */
+.llm-standalone-side-panel-item-body[data-item-kind="code"]
+  .llm-codeblock-body
+  pre
+  code {
+  font-size: calc(var(--llm-fs-13) * var(--llm-side-reader-text-scale, 1));
 }
 
 /* Diagram and drawing tabs: the rendered diagram becomes the zoom stage

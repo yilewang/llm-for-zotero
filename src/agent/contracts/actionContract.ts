@@ -613,6 +613,11 @@ export class ActionContractService {
           (parameters.annotationType || "highlight") &&
         (parameters.pageIndex === undefined ||
           expected.position.pageIndex === parameters.pageIndex) &&
+        // A host selection (Inline Ask) froze its rects; the payload must
+        // carry exactly those, and the native row is compared below.
+        (parameters.expectedRects === undefined ||
+          JSON.stringify(expected.position.rects) ===
+            JSON.stringify(parameters.expectedRects)) &&
         findQuoteSourceSpansAllowingLayoutArtifacts(
           buildQuoteTextIndex(expected.text),
           parameters.expectedText,

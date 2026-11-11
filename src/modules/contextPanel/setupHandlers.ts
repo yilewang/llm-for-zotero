@@ -267,6 +267,15 @@ import {
   resolveStandaloneConversationSwitch,
   type StandaloneConversationSwitchDecision,
 } from "./standaloneConversationSwitch";
+import {
+  buildSeededConversationHandover,
+  buildSeededConversationMessages,
+  buildSeededConversationTitleSeed,
+  normalizeSeededTurns,
+  SEEDED_CONVERSATION_HANDOVER_SOURCE,
+  seededConversationNeedsHandover,
+  seedPaperConversationRefusal,
+} from "./seededConversation";
 import { createChatInputLock } from "./chatInputLock";
 import {
   getActiveContextAttachmentFromTabs,
@@ -580,7 +589,11 @@ import {
 import { resolveUnifiedHistorySystems } from "./unifiedHistorySource";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
-import { updateHeaderSpacing } from "./setupHandlers/controllers/headerSpacing";
+import { attachHeaderMoreMenuController } from "./setupHandlers/controllers/headerMoreMenuController";
+import {
+  updateHeaderFit,
+  updateHeaderSpacing,
+} from "./setupHandlers/controllers/headerSpacing";
 import { attachComposeCaptureController } from "./setupHandlers/controllers/composeCaptureController";
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
@@ -844,6 +857,8 @@ export function setupHandlers(
     settingsBtn,
     exportBtn,
     clearBtn,
+    headerMoreBtn,
+    headerMoreMenu,
     titleStatic,
     historyBar,
     historyNewBtn,
@@ -2509,6 +2524,35 @@ export function setupHandlers(
   menus.register("reasoning", closeReasoningMenu);
   menus.register("retryModel", closeRetryModelMenu);
 
+  // The Stacked header's More menu; its items click the Task progress, Open
+  // in window, Settings, Export and Delete buttons, so their handlers stay
+  // the only ones.
+  const headerMoreMenuController = attachHeaderMoreMenuController({
+    body,
+    panelDoc: body.ownerDocument,
+    moreBtn: headerMoreBtn,
+    menu: headerMoreMenu,
+    taskProgressBtn: taskProgressToggleBtn,
+    popoutBtn,
+    settingsBtn,
+    exportBtn,
+    clearBtn,
+    closeOtherMenus: () => {
+      menus.closeMany([
+        "slash",
+        "retryModel",
+        "model",
+        "reasoning",
+        "response",
+        "prompt",
+        "export",
+        "historyNew",
+        "history",
+      ]);
+    },
+  });
+  panelLifecycle.add(headerMoreMenuController.dispose);
+
   const handlerContext: SetupHandlersContext = {
     body,
     refs: panelRefs,
@@ -2646,11 +2690,28 @@ export function setupHandlers(
       withScrollGuard(chatBox, conversationKey, () => {
         applyResponsiveActionButtonsLayout();
         // The runtime systems share the actions row (row 2) with the panel
-        // actions; that row's gap is the one they compress against.
-        updateHeaderSpacing(
+        // actions. Independent compresses their gap; Stacked picks a fit
+        // stage for the whole row, from arithmetic and not from a re-layout.
+        const headerRow =
           headerTop?.querySelector<HTMLElement>(".llm-header-nav-row") ||
-            headerTop,
-        );
+          headerTop;
+        // The button goes with the room that showed it (or with the layout
+        // that showed it): its menu goes too.
+        if (
+          headerMoreMenuController.isOpen() &&
+          !headerMoreBtn?.getBoundingClientRect().width
+        ) {
+          headerMoreMenuController.close();
+        }
+        if (
+          body.ownerDocument?.documentElement?.getAttribute(
+            "data-llm-sidebar-layout",
+          ) === "stacked"
+        ) {
+          updateHeaderFit(headerRow);
+        } else {
+          updateHeaderSpacing(headerRow);
+        }
         if (panelWidth !== lastUserContextAlignmentPanelWidth) {
           syncUserContextAlignmentWidths(body);
           lastUserContextAlignmentPanelWidth = panelWidth;
@@ -5884,6 +5945,7 @@ export function setupHandlers(
     action.addEventListener("pointerdown", onActivate);
     action.addEventListener("click", onActivate);
     menu.appendChild(action);
+    return action;
   };
 
   const appendModelCatalogStatus = (params: {
@@ -5911,7 +5973,11 @@ export function setupHandlers(
         params.errorMessage,
       );
       if (params.errorTitle) message.title = params.errorTitle;
-      appendModelMenuAction(params.menu, params.retryLabel, params.onRetry);
+      appendModelMenuAction(
+        params.menu,
+        params.retryLabel,
+        params.onRetry,
+      ).dataset.modelMenuAction = "retry";
       return true;
     }
     if (params.status === "ready" && params.modelCount === 0) {
@@ -7419,6 +7485,47 @@ export function setupHandlers(
         }
       }
     },
+    startPaperConversationWithTurns: async (input) => {
+      const refusal = seedPaperConversationRefusal({
+        panelAlive: !setupHandlersCleaned && Boolean(item),
+        noteSession: isNoteSession(),
+        runtimeSwitchInFlight: runtimeSystemSwitchInFlight,
+        webChat: isWebChatModeActive(),
+        answering: item ? isRequestPending(getConversationKey(item)) : false,
+      });
+      if (refusal) return { ok: false, reason: refusal };
+      const turns = normalizeSeededTurns(input.turns);
+      if (!turns.length) return { ok: false, reason: "failed" };
+      const created =
+        await historyLifecycleController.createSeededPaperConversation({
+          paperItemID: input.paperItemId,
+          messages: buildSeededConversationMessages(
+            { ...input, turns },
+            Date.now(),
+          ),
+          titleSeed: buildSeededConversationTitleSeed(turns),
+        });
+      if (!created.ok) return created;
+      const shown =
+        !setupHandlersCleaned &&
+        Boolean(item) &&
+        getConversationKey(item as Zotero.Item) === created.conversationKey;
+      let handover = false;
+      if (shown && seededConversationNeedsHandover(created.system)) {
+        // A fresh Claude Code session gets no stored history: the passage
+        // and turns go with the next message as an "Inline Ask" chip.
+        handover = panelHandle.addTextContext(
+          buildSeededConversationHandover({
+            selectedTextContext: input.selectedTextContext,
+            turns,
+          }),
+          { source: SEEDED_CONVERSATION_HANDOVER_SOURCE, focusInput: true },
+        );
+      } else if (shown) {
+        inputBox.focus({ preventScroll: true });
+      }
+      return { ok: true, conversationKey: created.conversationKey, handover };
+    },
   };
   publishPanelHandle(body, panelHandle);
 
@@ -7483,6 +7590,8 @@ export function setupHandlers(
 
     panelRoot.dataset.webchatMode = isWebChat ? "true" : "false";
     syncQueuedFollowUpRegistration();
+    // WebChat keeps the Stacked header out of the "full" stage.
+    scheduleResponsiveLayoutSync();
 
     // Mode controls: WebChat takes the paper slot, with its connection dot,
     // in the Independent tab and the Stacked chip (which names the site), and
@@ -7639,7 +7748,7 @@ export function setupHandlers(
     if (headerTop) ro.observe(headerTop);
     for (const element of Array.from(
       headerTop?.querySelectorAll(
-        ".llm-header-nav-row, .llm-runtime-system-controls",
+        ".llm-header-nav-row, .llm-header-runtime-controls, .llm-runtime-system-controls, .llm-header-actions",
       ) || [],
     ))
       ro.observe(element as Element);

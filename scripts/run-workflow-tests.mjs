@@ -18,17 +18,24 @@ import {
   selectShard,
   shardCheckoutEntries,
 } from "./workflow-test-selection.mjs";
+import { readFileMarker, unitStem } from "./workflow-test-file-tracker.mjs";
 
 // Usage:
 //   npm run test:workflow                                  every workflow test
 //   npm run test:workflow -- test-workflows/foo.workflow.test.ts [more files]
 //   npm run test:workflow -- --shard 2/3                   one third, by run time
 //   npm run test:workflow -- --parallel 3                  all three thirds at once
+//   npm run test:workflow -- --bail                        stop at the first failure
+//
+// Every selected file runs, even after a failure. At the end the runner lists
+// the files that passed, failed, were skipped or never ran, and prints a
+// command that reruns only the failed and unrun files.
 const command = process.platform === "win32" ? "npx.cmd" : "npx";
 const args = ["zotero-plugin", "test", "--no-watch"];
 const argv = process.argv.slice(2);
 const webChatLive = argv.includes("--webchat-live");
 const agentLive = argv.includes("--agent-live");
+const bail = argv.includes("--bail");
 const posix = process.platform !== "win32";
 
 // After the last test reports, Zotero can take more than a minute to quit.
@@ -45,7 +52,8 @@ function parseOptions() {
   let parallel = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--webchat-live" || arg === "--agent-live") continue;
+    if (arg === "--webchat-live" || arg === "--agent-live" || arg === "--bail")
+      continue;
     if (arg === "--shard") {
       const match = /^(\d+)\/(\d+)$/.exec(argv[++i] ?? "");
       if (!match) throw new Error("--shard takes the form <index>/<count>");
@@ -129,6 +137,7 @@ function prepareShardCheckout(dir) {
 const ANSI = /\u001b\[[0-9;]*m/g;
 
 const children = new Set();
+let interrupted = false;
 
 function stopChild(child, signal) {
   try {
@@ -142,13 +151,15 @@ function stopChild(child, signal) {
 // A detached group does not get the terminal's Ctrl+C, so pass it on.
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
+    interrupted = true;
     for (const child of children) stopChild(child, signal);
     process.exitCode = 1;
   });
 }
 
 /**
- * Runs the scaffold once in `cwd` and resolves with whether every test passed.
+ * Runs the scaffold once in `cwd`. Resolves with whether every test passed,
+ * the scaffold's summary, and the per-file markers the test page sent.
  * `prefix` marks each output line when several runs share the terminal.
  */
 function runScaffold({ cwd, files, port, prefix }) {
@@ -171,6 +182,7 @@ function runScaffold({ cwd, files, port, prefix }) {
       ...(files ? { [WORKFLOW_TEST_FILES_ENV]: JSON.stringify(files) } : {}),
       ...(webChatLive ? { LLM_FOR_ZOTERO_WEBCHAT_LIVE: "1" } : {}),
       ...(agentLive ? { LLM_FOR_ZOTERO_AGENT_LIVE: "1" } : {}),
+      ...(bail ? { LLM_FOR_ZOTERO_WORKFLOW_BAIL: "1" } : {}),
     },
   });
   children.add(child);
@@ -181,11 +193,18 @@ function runScaffold({ cwd, files, port, prefix }) {
   let sawFailure = false;
   let summary = null;
   let quitTimer = null;
+  const markers = [];
   const say = (text) =>
     process.stdout.write(prefix ? `${prefix} ${text}\n` : `${text}\n`);
 
+  // Returns whether the line is for the terminal; markers are for us only.
   function readLine(raw) {
     const line = raw.replace(ANSI, "");
+    const marker = readFileMarker(line);
+    if (marker) {
+      markers.push(marker);
+      return false;
+    }
     if (/^\s*✖/.test(line)) sawFailure = true;
     const match = /Test run completed - (\d+) passed(?:, (\d+) failed)?/.exec(
       line,
@@ -199,6 +218,7 @@ function runScaffold({ cwd, files, port, prefix }) {
         stopChild(child, "SIGKILL");
       }, QUIT_GRACE_MS);
     }
+    return true;
   }
 
   const buffers = new Map();
@@ -206,8 +226,8 @@ function runScaffold({ cwd, files, port, prefix }) {
     const lines = ((buffers.get(stream) ?? "") + rest).split("\n");
     buffers.set(stream, lines.pop() ?? "");
     for (const line of lines) {
-      if (prefix) target.write(`${prefix} ${line}\n`);
-      readLine(line);
+      if (readLine(line))
+        target.write(prefix ? `${prefix} ${line}\n` : `${line}\n`);
     }
   };
   for (const [stream, target] of [
@@ -215,10 +235,7 @@ function runScaffold({ cwd, files, port, prefix }) {
     [child.stderr, process.stderr],
   ]) {
     stream.setEncoding("utf8");
-    stream.on("data", (chunk) => {
-      if (!prefix) target.write(chunk);
-      flush(stream, target, chunk);
-    });
+    stream.on("data", (chunk) => flush(stream, target, chunk));
   }
 
   return new Promise((resolveRun) => {
@@ -241,15 +258,152 @@ function runScaffold({ cwd, files, port, prefix }) {
             ? `Workflow tests terminated by ${signal} before they finished`
             : "Workflow tests ended without a result summary",
         );
-        resolveRun({ ok: false, summary });
+        resolveRun({ ok: false, summary, markers, signal, code });
         return;
       }
       // Stopped by us after a clean summary counts as a pass.
       const ok =
         summary.failed === 0 && !sawFailure && (signal ? true : code === 0);
-      resolveRun({ ok, summary });
+      resolveRun({ ok, summary, markers, signal, code });
     });
   });
+}
+
+// The folder the scaffold bundles tests from, as zotero-plugin.config.ts
+// picks it; the per-file report names files relative to it.
+const ENTRIES_DIR =
+  process.env.LLM_FOR_ZOTERO_TEST_ENTRIES ||
+  (agentLive
+    ? "test-live/agent"
+    : webChatLive
+      ? "test-live/webchat"
+      : WORKFLOW_TEST_DIR);
+
+const newFileResult = () => ({
+  planned: null,
+  started: false,
+  passed: 0,
+  failures: [],
+  crashed: null,
+});
+
+/**
+ * Runs `files` (null: every file) until each one has run. If Zotero stops
+ * before the end, the file it was running counts as failed and a fresh Zotero
+ * runs the files that had not started yet. --bail and Ctrl+C never restart.
+ */
+async function runGroup({ cwd, files, port, prefix }) {
+  const all = files ?? listWorkflowTestFiles(ENTRIES_DIR);
+  const results = new Map(all.map((file) => [file, newFileResult()]));
+  const byStem = new Map(all.map((file) => [unitStem(file), file]));
+  const say = (text) =>
+    process.stdout.write(prefix ? `${prefix} ${text}\n` : `${text}\n`);
+  let selection = files;
+  let ok = true;
+  for (;;) {
+    const run = await runScaffold({ cwd, files: selection, port, prefix });
+    ok &&= run.ok;
+    const startedNow = new Set();
+    for (const marker of run.markers) {
+      if (marker.event === "plan") {
+        for (const [unit, count] of Object.entries(marker.planned)) {
+          const file = byStem.get(unitStem(unit)) ?? unitStem(unit);
+          if (!results.has(file)) results.set(file, newFileResult());
+          results.get(file).planned = count;
+        }
+        continue;
+      }
+      const file = marker.unit
+        ? (byStem.get(unitStem(marker.unit)) ?? unitStem(marker.unit))
+        : "(outside any test file)";
+      if (!results.has(file)) results.set(file, newFileResult());
+      const result = results.get(file);
+      if (marker.event === "start") {
+        result.started = true;
+        startedNow.add(file);
+      } else if (marker.event === "end") startedNow.delete(file);
+      else if (marker.event === "pass") result.passed++;
+      else if (marker.event === "fail") {
+        result.started = true;
+        result.failures.push({ title: marker.title, message: marker.message });
+      }
+    }
+    if (run.summary) break;
+
+    // Zotero stopped mid-run: whatever was running did not finish.
+    const how = run.signal
+      ? `terminated by ${run.signal}`
+      : `exited with code ${run.code}`;
+    for (const file of startedNow) {
+      results.get(file).crashed = `Zotero ${how} while this file ran`;
+    }
+    const remaining = [...results.keys()].filter(
+      (file) => all.includes(file) && !results.get(file).started,
+    );
+    if (bail || interrupted || !startedNow.size || !remaining.length) break;
+    say(
+      `Restarting Zotero for the ${remaining.length} file(s) that have not run yet.`,
+    );
+    selection = remaining;
+  }
+  return { ok, results };
+}
+
+function classify(results) {
+  const groups = { passed: [], failed: [], skipped: [], notRun: [] };
+  for (const [file, result] of results) {
+    if (result.failures.length || result.crashed) groups.failed.push(file);
+    else if (result.passed) groups.passed.push(file);
+    // A file with tests that never started: the run stopped before it.
+    else if (!result.started && result.planned !== 0) groups.notRun.push(file);
+    else groups.skipped.push(file);
+  }
+  return groups;
+}
+
+const MAX_FAILURES_SHOWN = 3;
+
+function printReport(results) {
+  const { passed, failed, skipped, notRun } = classify(results);
+  const total = results.size;
+  console.log(
+    `\nWorkflow files: ${passed.length} passed, ${failed.length} failed, ${skipped.length} skipped, ${notRun.length} not run (of ${total}).`,
+  );
+  if (failed.length) {
+    console.log("\nFailed:");
+    for (const file of failed) {
+      const { failures, crashed } = results.get(file);
+      console.log(`  ${file}`);
+      for (const failure of failures.slice(0, MAX_FAILURES_SHOWN))
+        console.log(`    ✖ ${failure.title}: ${failure.message}`);
+      if (failures.length > MAX_FAILURES_SHOWN)
+        console.log(
+          `    … ${failures.length - MAX_FAILURES_SHOWN} more failure(s)`,
+        );
+      if (crashed) console.log(`    ✖ ${crashed}`);
+    }
+  }
+  if (skipped.length) {
+    console.log("\nSkipped (every test pending, or no tests):");
+    for (const file of skipped) console.log(`  ${file}`);
+  }
+  if (notRun.length) {
+    console.log("\nNot run (the run stopped before them):");
+    for (const file of notRun) console.log(`  ${file}`);
+  }
+  const known = new Set(listWorkflowTestFiles(ENTRIES_DIR));
+  const rerun = [...failed, ...notRun].filter((file) => known.has(file));
+  if (rerun.length && ENTRIES_DIR === WORKFLOW_TEST_DIR) {
+    console.log(
+      `\nRerun ${failed.length && notRun.length ? "the failed and unrun" : failed.length ? "the failed" : "the unrun"} files in a fresh Zotero:`,
+    );
+    console.log(
+      `  npm run test:workflow -- ${rerun
+        .map((file) => `${WORKFLOW_TEST_DIR}/${file}`)
+        .join(" ")}`,
+    );
+  }
+  return failed.length + notRun.length;
 }
 
 async function main() {
@@ -268,12 +422,13 @@ async function main() {
       console.log(
         `Running ${files.length} workflow test file(s):\n  ${files.join("\n  ")}`,
       );
-    const { ok } = await runScaffold({
+    const { ok, results } = await runGroup({
       cwd: process.cwd(),
       files,
       port: await freePort(),
     });
-    process.exitCode = ok ? 0 : 1;
+    const bad = printReport(results);
+    process.exitCode = ok && !bad ? 0 : 1;
     return;
   }
 
@@ -289,21 +444,17 @@ async function main() {
     let port = await freePort();
     while (ports.has(port)) port = await freePort();
     ports.add(port);
-    runs.push(runScaffold({ cwd, files, port, prefix: label }));
+    runs.push(runGroup({ cwd, files, port, prefix: label }));
   }
-  const results = await Promise.all(runs);
+  const shards = await Promise.all(runs);
   console.log(
     `\nWorkflow shards finished in ${Math.round((Date.now() - started) / 1000)} s:`,
   );
-  for (const [i, { ok, summary }] of results.entries())
-    console.log(
-      `  [${i + 1}/${count}] ${ok ? "passed" : "FAILED"}: ${
-        summary
-          ? `${summary.passed} passed, ${summary.failed} failed`
-          : "no result summary"
-      }`,
-    );
-  process.exitCode = results.every((result) => result.ok) ? 0 : 1;
+  for (const [i, { ok }] of shards.entries())
+    console.log(`  [${i + 1}/${count}] ${ok ? "passed" : "FAILED"}`);
+  const merged = new Map(shards.flatMap(({ results }) => [...results]));
+  const bad = printReport(merged);
+  process.exitCode = shards.every((shard) => shard.ok) && !bad ? 0 : 1;
 }
 
 await main();

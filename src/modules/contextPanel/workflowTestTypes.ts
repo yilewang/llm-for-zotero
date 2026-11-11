@@ -368,6 +368,312 @@ export type WorkflowTestStandaloneSidePanelDiagnostics = {
   };
 };
 
+export type WorkflowTestBox = {
+  left: number;
+  right: number;
+  width: number;
+};
+
+export type WorkflowTestNativePopupGeometry = {
+  /** Set when Zotero's own popup never showed the plugin row. */
+  error?: string;
+  /** What the reader document held when the popup was missing. */
+  diagnostic?: string;
+  colors?: WorkflowTestBox & { top: number; bottom: number };
+  toggle?: WorkflowTestBox & { top: number; bottom: number };
+  highlight?: WorkflowTestBox;
+  underline?: WorkflowTestBox;
+  row?: WorkflowTestBox;
+  buttons?: Array<WorkflowTestBox & { label: string }>;
+  rowTop?: number;
+  toggleBottom?: number;
+};
+
+export type WorkflowTestRect = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
+export type WorkflowTestNativeInlineAskOpen = {
+  /** Set when Zotero's own popup never showed the Inline Ask button. */
+  error?: string;
+  diagnostic?: string;
+  /** Zotero's popup just before the press (outer box, reader UI pixels). */
+  popup?: WorkflowTestRect;
+  /** Zotero's placement class on the popup, such as page-popup-bottom-center. */
+  popupSide?: string;
+  /** Milliseconds from the popup showing the row to the press. */
+  pressedAfterMs?: number;
+  /** `.selection-popup` is in the document this long after the press. */
+  popupOpenAfterPress?: { ms: number; open: boolean };
+  /** The card's outer box after it opened. */
+  card?: WorkflowTestRect;
+  cardMounted?: boolean;
+  /** The PDF text selection still exists after the card opened. */
+  selectionKept?: boolean;
+  /** `.selection-popup` is in the document 400 ms after the card opened. */
+  popupOpenLater?: boolean;
+  /** The card closed on Escape. */
+  cardClosed?: boolean;
+  /** `.selection-popup` is in the document 400 ms after the card closed. */
+  popupOpenAfterCardClose?: boolean;
+  /** Add Text only: the panel's selected-text chips after the box opened. */
+  chipTexts?: string[];
+};
+
+export type WorkflowTestReaderPopupActionRow = {
+  /** Calls the handler made to the popup's append. */
+  appendCalls: number;
+  /** Button labels in the plugin's popup row, in order. */
+  buttonLabels: string[];
+  /** All buttons share one row element. */
+  sharedRow: boolean;
+  /** The row lays its buttons out side by side. */
+  rowDisplay: string;
+};
+
+export type WorkflowTestReaderInlineAskCard = {
+  mounted: boolean;
+  phase: string;
+  questions: string[];
+  answers: Array<{ status: string; text: string }>;
+  fieldShown: boolean;
+  pillsShown: boolean;
+  footerShown: boolean;
+  placeholder: string;
+  sidebarDisabled: boolean;
+  saveDisabled: boolean;
+  /** The quick-prompt pills: id, label, and tooltip (the prompt). */
+  pills: Array<{ id: string; label: string; title: string }>;
+  promptEditorShown: boolean;
+  /** The prompt editor floats (absolute) over the card, not inside its flow. */
+  promptEditorFloating: boolean;
+  /** The composer box holds the field, the model button, and the send arrow. */
+  composerHoldsControls: boolean;
+  /** Each resize corner: controls its hit area overlaps, and its arc opacity. */
+  resizeCorners: Array<{
+    corner: string;
+    coveredControls: number;
+    arcOpacity: number;
+  }>;
+  /** The message actions under the latest answer, in order. */
+  messageActions: string[];
+  modelLabel: string;
+  effortLabel: string;
+  /** The card's box in the reader window, in whole pixels. */
+  rect: { left: number; top: number; width: number; height: number };
+  /** The answer area's max height in pixels (0 when it has none). */
+  threadMaxHeight: number;
+  /** The card's text size in percent. */
+  textSize: number;
+  /** Computed px of the passage text, and of the latest answer's first block. */
+  quoteFontSize: number;
+  answerFontSize: number;
+  /** The grey quote line beside the passage exists. */
+  quoteHasBar: boolean;
+  /** Curly quote marks remain around the passage. */
+  quoteHasQuoteMarks: boolean;
+  /** Alpha of the passage text color (1 when opaque). */
+  quoteColorAlpha: number;
+  /** The answer area has its top fade (it is scrolled). */
+  threadFaded: boolean;
+  /** The pinned passage line (paper label and selected text) is visible. */
+  passageShown: boolean;
+  /** The passage text, and whether the passage line is expanded. */
+  passageText: string;
+  passageExpanded: boolean;
+  /** The answer area (the thread) is visible. */
+  threadShown: boolean;
+  /** The question bubbles' quote lines, one list per question. */
+  questionQuotes: string[][];
+  /** The quotes waiting above the follow-up field, in order. */
+  composerQuotes: string[];
+  /** The follow-up field's typed text. */
+  editorText: string;
+  /** The follow-up field has the keyboard focus. */
+  editorFocused: boolean;
+  /** The send arrow is disabled. */
+  sendDisabled: boolean;
+  /** Boxes in the card's window: the quote list, send arrow and model line. */
+  composerQuotesRect: WorkflowTestRect | null;
+  sendRect: WorkflowTestRect | null;
+  modelRect: WorkflowTestRect | null;
+  /** The Copy and Quote bar: shown, its buttons, and its box. */
+  selectionBarShown: boolean;
+  selectionBarActions: string[];
+  selectionBarRect: WorkflowTestRect | null;
+  /** The reader document's current text selection. */
+  selectionText: string;
+};
+
+/** What a native drag over an answer selected, and the card afterwards. */
+export type WorkflowTestReaderInlineAskAnswerSelection = {
+  /** The text the browser selected (`getSelection().toString()`). */
+  selectedText: string;
+  /** The answer text the drag aimed at. */
+  expectedText: string;
+  card: WorkflowTestReaderInlineAskCard;
+};
+
+/** How an answer's math renders in the reader document. */
+export type WorkflowTestReaderInlineAskMath = {
+  katexCount: number;
+  inlineCount: number;
+  displayBlocks: Array<{
+    textAlign: string;
+    overflowX: string;
+    /** Distance of the formula's center from its block's center, in px. */
+    centerOffset: number;
+  }>;
+  /** True when a `$` shows in the answer text outside code. */
+  literalDollarOutsideCode: boolean;
+  codeTexts: string[];
+  katexLinkCount: number;
+  mathStyleCount: number;
+  /** Rules in the KaTeX stylesheet; 0 means it did not load. */
+  cssRules: number;
+  katexFontFamily: string;
+  katexColor: string;
+  answerColor: string;
+  katexFontSize: number;
+  answerFontSize: number;
+  answerWidth: number;
+  fontLoaded: boolean;
+  /** KaTeX font faces in the document, as "family:status". */
+  fontFaces: string[];
+};
+
+/** The card after a click on the More button or a text-size menu control. */
+export type WorkflowTestReaderInlineAskTextSize = {
+  card: WorkflowTestReaderInlineAskCard;
+  moreMenuShown: boolean;
+  /** The percentage shown in the menu ("" when it is closed). */
+  menuPercent: string;
+  /** Each A glyph's center minus its button's center, in pixels. */
+  glyphOffsets: Array<{ step: "smaller" | "larger"; dx: number; dy: number }>;
+};
+
+/** The card's right-click menu on a pill or the empty pill row. */
+export type WorkflowTestReaderInlineAskPromptMenu = {
+  /** The contextmenu event was cancelled (no native menu). */
+  defaultPrevented: boolean;
+  items: Array<{ action: string; text: string; disabled: boolean }>;
+};
+
+/** The card's prompt editor after typing into it and finishing. */
+export type WorkflowTestReaderInlineAskPromptEdit = {
+  /** What the editor showed when it opened. */
+  labelBefore: string;
+  promptBefore: string;
+  labelType: string;
+  promptContentEditable: string;
+  /** Typing keys in Label and Prompt; none may be prevented. */
+  keys: Array<{ field: string; key: string; defaultPrevented: boolean }>;
+  readerKeyStateBefore: string;
+  readerKeyStateAfter: string;
+  card: WorkflowTestReaderInlineAskCard;
+};
+
+/** The card's model or effort menu. */
+export type WorkflowTestReaderInlineAskModelMenu = {
+  kind: string;
+  note: string;
+  sections: string[];
+  options: Array<{ value: string; label: string; selected: boolean }>;
+};
+
+/** Zotero's annotation draft for a real selection, and where it came from. */
+export type WorkflowTestReaderSelectionDraft = {
+  source: string;
+  annotation: Record<string, unknown> | null;
+};
+
+/** The Inline Ask card's Save state: footer button and annotation card. */
+export type WorkflowTestReaderInlineAskSave = {
+  mounted: boolean;
+  /** "thread" or "save". */
+  view: string;
+  footerSaveDisabled: boolean;
+  footerSaveTitle: string;
+  saveViewShown: boolean;
+  color: string;
+  colorsShown: boolean;
+  colorLabels: string[];
+  pageText: string;
+  markText: string;
+  markBackground: string;
+  comment: string;
+  commentContentEditable: string;
+  error: string;
+  confirmDisabled: boolean;
+};
+
+/** The card after a click on Continue in sidebar. */
+export type WorkflowTestReaderInlineAskContinue = {
+  /** The button was disabled when clicked. */
+  disabledBefore: boolean;
+  cardOpen: boolean;
+  /** The reason the card shows when it stayed open. */
+  error: string;
+};
+
+/** The chat a workflow panel shows, as rendered and as stored. */
+export type WorkflowTestPanelChatMessages = {
+  conversationKey: number;
+  conversationKind: string;
+  conversationSystem: string;
+  rendered: Array<{
+    role: string;
+    text: string;
+    /** The answer's model header ("" for a question). */
+    model: string;
+    selectedText: string;
+  }>;
+  stored: Array<{
+    role: string;
+    text: string;
+    selectedTextContexts?: import("../../shared/types").SelectedTextContext[];
+  }>;
+  /** The paper catalog row (null for a library chat). */
+  catalog: {
+    title: string;
+    userTurnCount: number;
+    paperItemID: number;
+  } | null;
+  /** The selected-text chips waiting in the composer, in order. */
+  composerSelectedTexts: Array<{ text: string; source: string }>;
+};
+
+export type WorkflowTestReaderInlineAskOpen = {
+  /** The popup's annotation draft the card got (null for a synthetic one). */
+  draft: WorkflowTestReaderSelectionDraft | null;
+  /** The reader panel's conversation key (0 when no panel was mounted). */
+  panelConversationKey: number;
+  popupButtonLabels: string[];
+  mounted: boolean;
+  /** The card mounts in reader.html, where the popup lives. */
+  overlayDocumentUrl: string;
+  quoteLabel: string;
+  quoteText: string;
+  modelLabel: string;
+  pillLabels: string[];
+  hint: string;
+  editorContentEditable: string;
+  editorKeys: Array<{ key: string; defaultPrevented: boolean }>;
+  readerKeyStateBefore: string;
+  readerKeyStateAfter: string;
+  card: WorkflowTestReaderInlineAskCard;
+};
+
+export type WorkflowTestConversationStoreRowTotals = {
+  catalogs: number;
+  messages: number;
+  registry: number;
+  usageEvents: number;
+};
+
 export type WorkflowTestEphemeralConversationRowCounts = {
   globalCatalog: number;
   paperCatalog: number;
@@ -1005,6 +1311,9 @@ export type WorkflowTestApi = {
     title: string;
     pdfTitle?: string;
     pages?: string[];
+    /** Author last names, in order. */
+    creators?: string[];
+    date?: string;
   }) => Promise<WorkflowTestFixture>;
   trashWorkflowItem: (itemId: number) => Promise<void>;
   setWorkflowProviderSession: (
@@ -1071,6 +1380,34 @@ export type WorkflowTestApi = {
   ) => ReturnType<
     typeof import("./nativePlanReviewReplay").exerciseNativeQuestionReview
   >;
+  /**
+   * The real Codex approval bridge for a Zotero write, with the real card,
+   * when the card UI is missing and when the panel's owner is stale.
+   */
+  /**
+   * A run left running with a legacy agent_action_contract checkpoint, then
+   * the next turn (Auto mode, scripted model) that tags the paper.
+   */
+  exerciseInterruptedLegacyContract: (input: {
+    panelId: string;
+    legacyRunId: string;
+    legacyContractId: string;
+    tag: string;
+  }) => ReturnType<
+    typeof import("./interruptedContractReplay").exerciseInterruptedLegacyContract
+  >;
+  exerciseCodexApprovalFailClosed: (input: {
+    panelId: string;
+    itemId: number;
+    tag: string;
+    otherItemId: number;
+  }) => ReturnType<
+    typeof import("./codexApprovalReplay").exerciseCodexApprovalFailClosed
+  >;
+  /** Runs the plugin's own `initUserSkills` against the real skills folder. */
+  runUserSkillsInit: () => Promise<void>;
+  /** The skill files shipped in this build, by filename. */
+  readBuiltinSkillFiles: () => Record<string, string>;
   exercisePlanHistoryReplay: (input: {
     panelId: string;
     historyTurns: number;
@@ -1146,6 +1483,43 @@ export type WorkflowTestApi = {
     inputTokenCap: number;
     stopAfterNotes: number;
   }) => ReturnType<typeof import("./longJobReplay").exerciseLongJobBatchStop>;
+  /** The conversation key the panel's chat is stored under. */
+  getPanelConversationKey: (input: { panelId: string }) => number;
+  /**
+   * Real-restart scenario, first process: a note batch whose writing ends
+   * this Zotero process. Does not return when the process ends.
+   */
+  startNoteBatchUntilQuit: (input: {
+    panelId: string;
+    collection: import("../../shared/types").CollectionContextRef;
+    papers: Array<{ itemId: number; title: string }>;
+    inputTokenCap: number;
+    killAfterNotes: number;
+    variant: "crash" | "quit";
+    target?: "item" | "standalone";
+    /** 2: two child notes on each paper (rows `item:N` and `item:N#2`). */
+    notesPerPaper?: 1 | 2;
+  }) => ReturnType<
+    typeof import("./noteBatchRestartReplay").startNoteBatchUntilQuit
+  >;
+  /**
+   * Real-restart scenario, second process: "continue" the note batch, or
+   * with `retryPapers` send a new note_write_batch over those papers.
+   */
+  resumeNoteBatchAfterRestart: (input: {
+    panelId: string;
+    collection: import("../../shared/types").CollectionContextRef;
+    papers: Array<{ itemId: number; title: string }>;
+    inputTokenCap: number;
+    rewritePapers: number[];
+    /** The batch to continue, instead of the one the host names first. */
+    resumeBatchId?: string;
+    retryPapers?: number[];
+    /** Ends this process (SIGKILL) once this many new notes exist. */
+    killAfterNotes?: number;
+  }) => ReturnType<
+    typeof import("./noteBatchRestartReplay").resumeNoteBatchAfterRestart
+  >;
   exerciseStreamingReplay: (input: {
     panelId: string;
     historyTurns: number;
@@ -1730,6 +2104,23 @@ export type WorkflowTestApi = {
     sentBubbleChipQuestions: string[];
     sentBubbleBarCount: number;
   }>;
+  exerciseReaderPopupModEnterSend: (input: {
+    panelId: string;
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    prompt: string;
+  }) => Promise<{
+    overlayMounted: boolean;
+    /** The box's hint line. */
+    hint: string;
+    /** Whether Cmd/Ctrl+Enter sent within 3 s (it must). */
+    sent: boolean;
+    overlayRemoved: boolean;
+    sentQuestion: string;
+    sentDisplayQuestion: string;
+    sentSelectedTexts: string[];
+  }>;
   exerciseReaderPopupDuplicateAttach: (input: {
     panelId: string;
     attachmentItemId: number;
@@ -1769,6 +2160,201 @@ export type WorkflowTestApi = {
     chipsWithQuestion: number;
     sent: boolean;
   }>;
+  /**
+   * Shows the reader selection popup for `selectedText` and reads the
+   * plugin's action row: how many times the handler appended, and the
+   * buttons in the row.
+   */
+  readReaderPopupActionRow: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+  }) => Promise<WorkflowTestReaderPopupActionRow>;
+  /**
+   * Opens the reader, makes a real selection, waits for Zotero's own
+   * selection popup, and measures the plugin row against the native
+   * highlight/underline toggle (pixel boxes in the reader UI document).
+   */
+  readNativeReaderPopupGeometry: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    /** Mounts this workflow panel as the reader tab's panel first. */
+    panelId?: string;
+  }) => Promise<WorkflowTestNativePopupGeometry>;
+  /**
+   * Opens the reader, makes a real selection, and presses Inline Ask inside
+   * Zotero's own selection popup (a real pointer and click sequence on the
+   * plugin's button). Measures the popup before the press and the card
+   * after it, then closes the card with Escape and closes the reader.
+   */
+  openNativeReaderInlineAsk: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    /** Mounts this workflow panel as the reader tab's panel first. */
+    panelId?: string;
+    /**
+     * Which plugin button to press; default "Inline Ask". "Add Text" reads
+     * its question box (not the card) and needs panelId.
+     */
+    button?: "Inline Ask" | "Add Text";
+  }) => Promise<WorkflowTestNativeInlineAskOpen>;
+  /**
+   * Opens the reader, shows the selection popup, presses Inline Ask, and
+   * reads the card. Editing keys typed into the card must leave the
+   * reader's key state alone. The card stays open for the calls below.
+   */
+  openReaderInlineAsk: (input: {
+    attachmentItemId: number;
+    pageIndex: number;
+    selectedText: string;
+    /** Mounts this workflow panel as the reader tab's panel first. */
+    panelId?: string;
+    /**
+     * The popup's annotation draft: "synthetic" (default, text and page
+     * only), "native" (Zotero's draft for the real selection), or
+     * "native_cross_page" (that draft with a next-page part).
+     */
+    draft?: "synthetic" | "native" | "native_cross_page";
+  }) => Promise<WorkflowTestReaderInlineAskOpen>;
+  /** Sends typed text (Enter in the editor) or clicks a quick-prompt pill. */
+  sendReaderInlineAsk: (
+    input: { text: string } | { pillId: string },
+  ) => Promise<void>;
+  readReaderInlineAsk: () => WorkflowTestReaderInlineAskCard;
+  readReaderInlineAskSave: () => WorkflowTestReaderInlineAskSave;
+  /** Opens the annotation card: a click on Save as annotation, or Mod+Enter. */
+  openReaderInlineAskSave: (input: {
+    via: "click" | "keyboard";
+  }) => Promise<WorkflowTestReaderInlineAskSave>;
+  /** Types a comment and picks a color dot in the annotation card. */
+  editReaderInlineAskSave: (input: {
+    comment?: string;
+    color?: string;
+  }) => Promise<WorkflowTestReaderInlineAskSave>;
+  /** Presses Save in the annotation card (click, or Mod+Enter in the comment). */
+  confirmReaderInlineAskSave: (input: {
+    via: "click" | "keyboard";
+  }) => Promise<void>;
+  /** A pointerdown on the PDF page (the nested view document). */
+  pointerDownOutsideReaderInlineAsk: () => Promise<{ cardOpen: boolean }>;
+  /** A new text selection popup on the same reader. */
+  showNewReaderSelectionPopup: (input: {
+    selectedText: string;
+    /** Then presses the new popup's Add Text button. */
+    pressAddText?: boolean;
+  }) => Promise<{
+    cardOpen: boolean;
+    /** Add Text's question box is open in the reader. */
+    addTextPromptOpen: boolean;
+  }>;
+  /** Closes the card (Discard, Escape in the card, or Escape on the page) and the reader. */
+  endReaderInlineAsk: (input: {
+    via: "discard" | "escape" | "escape_page";
+  }) => Promise<{ cardRemoved: boolean }>;
+  /** Closes the reader tab under the card (the card goes with it). */
+  closeReaderInlineAskReaderTab: () => Promise<{ readerClosed: boolean }>;
+  /** Clicks Continue in sidebar; resolves when the card closed or says why not. */
+  continueReaderInlineAskInSidebar: () => Promise<WorkflowTestReaderInlineAskContinue>;
+  /** Right-clicks a pill (or the empty pill row) and reads the menu. */
+  openReaderInlineAskPromptMenu: (input: {
+    pillId?: string;
+  }) => Promise<WorkflowTestReaderInlineAskPromptMenu>;
+  /** Clicks an item of the open pill menu ("edit", "delete", ...). */
+  clickReaderInlineAskPromptMenuItem: (
+    action: string,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Clicks the More button ("toggle") or a text-size step of its menu. */
+  clickReaderInlineAskTextSize: (
+    step: "toggle" | "smaller" | "larger" | "reset",
+  ) => Promise<WorkflowTestReaderInlineAskTextSize>;
+  /**
+   * Drags over an answer with native mouse events (mousedown, mousemove,
+   * mouseup through the window's widget path) from character `fromChar` to
+   * `toChar` of the answer's text (default: the whole first paragraph).
+   */
+  selectReaderInlineAskAnswerText: (input: {
+    answerIndex: number;
+    fromChar?: number;
+    toChar?: number;
+  }) => Promise<WorkflowTestReaderInlineAskAnswerSelection>;
+  /** Drags over the whole inline math at `mathIndex` of an answer. */
+  selectReaderInlineAskAnswerMath: (input: {
+    answerIndex: number;
+    mathIndex: number;
+  }) => Promise<WorkflowTestReaderInlineAskAnswerSelection>;
+  /** Reads how the answer's math renders. */
+  readReaderInlineAskMath: (
+    answerIndex: number,
+  ) => Promise<WorkflowTestReaderInlineAskMath>;
+  /** Clicks the passage line (it expands or collapses). */
+  clickReaderInlineAskPassage: () => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Leaves the annotation card with its Back or Cancel button. */
+  leaveReaderInlineAskSave: (input: {
+    via: "back" | "cancel";
+  }) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Clicks Copy or Quote on the selection bar with native mouse events. */
+  clickReaderInlineAskSelectionAction: (
+    action: "Copy" | "Quote",
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Clicks the remove button of the composer quote at `index`. */
+  removeReaderInlineAskComposerQuote: (
+    index: number,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Runs the copy command on the reader document and reads the clipboard. */
+  copyReaderInlineAskSelection: () => Promise<{
+    commandRan: boolean;
+    clipboardText: string;
+  }>;
+  /** The clipboard's plain text now. */
+  readReaderInlineAskClipboard: () => string;
+  /** Presses a key in the follow-up field ("editor") or on the page. */
+  pressReaderInlineAskKey: (input: {
+    key: string;
+    target: "editor" | "page";
+  }) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Moves the pointer onto or off the passage. */
+  hoverReaderInlineAskPassage: (
+    on: boolean,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Moves the pointer onto or off one corner's hit area. */
+  hoverReaderInlineAskCorner: (
+    corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+    on: boolean,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** Drags a blank point of the card ("card") or its corner grip ("resize"). */
+  dragReaderInlineAsk: (input: {
+    part: "card" | "resize";
+    /** The corner to drag for a resize; the default is bottom-right. */
+    corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+    dx: number;
+    dy: number;
+  }) => Promise<WorkflowTestReaderInlineAskCard>;
+  /**
+   * In the open prompt editor: presses typing keys in both fields, fills
+   * Label and Prompt, and finishes with Enter in Label, Mod+Enter in Prompt,
+   * or the Save button.
+   */
+  editReaderInlineAskPrompt: (input: {
+    label: string;
+    prompt: string;
+    via: "enter-in-label" | "mod-enter-in-prompt" | "save-button";
+  }) => Promise<WorkflowTestReaderInlineAskPromptEdit>;
+  /** Clicks the model or effort button and reads the menu it opened. */
+  openReaderInlineAskModelMenu: (
+    kind: "model" | "effort",
+  ) => Promise<WorkflowTestReaderInlineAskModelMenu>;
+  /** Clicks an option (entry id or effort level) of the open model menu. */
+  pickReaderInlineAskMenuOption: (
+    value: string,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /** The messages a workflow panel renders and stores for its conversation. */
+  readPanelChatMessages: (
+    panelId: string,
+  ) => Promise<WorkflowTestPanelChatMessages>;
+  /** Total rows in the conversation catalogs, message, registry and usage tables. */
+  getConversationStoreRowTotals: () => Promise<WorkflowTestConversationStoreRowTotals>;
   exerciseHighlightAwareContextRetrieval: (input: {
     panelId: string;
     attachmentItemId: number;
@@ -1833,6 +2419,24 @@ export type WorkflowTestApi = {
     sentBubbleBodyText: string;
     sentBubbleChipQuestions: string[];
     sentBubbleBarCount: number;
+  }>;
+  exerciseAssistantSelectionNoteSave: (input: {
+    panelId: string;
+    assistantText: string;
+    /** "full" selects heading to end; "code" selects lines inside one code body. */
+    selection: "full" | "code";
+    /** For "code": the text inside the code body where the selection starts and ends. */
+    codeStart?: string;
+    codeEnd?: string;
+  }) => Promise<{
+    bubbleHasContentBar: boolean;
+    /** Ranges Gecko produced for the selection. */
+    nativeRangeCount: number;
+    /** Ranges the extractor read (rebuilt like a mouse drag when Gecko kept one). */
+    rangeCount: number;
+    extracted: string;
+    /** HTML of the child note that "Save as note" created, read from Zotero. */
+    noteHtml: string;
   }>;
   exerciseAssistantSelectionPromptDismissal: (input: {
     panelId: string;

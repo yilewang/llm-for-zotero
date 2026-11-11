@@ -45,13 +45,16 @@ function canInspectZoteroItems(): boolean {
 }
 
 export class PdfService {
+  /** The paper's text, loaded once; `signal` cancels this caller's load. */
   async ensurePaperContext(
     paperContext: PaperContextRef,
+    options: { signal?: AbortSignal } = {},
   ): Promise<PdfContext | undefined> {
     const contextItem = resolveContextItemFromPaperContext(paperContext);
     if (!contextItem) return undefined;
     await ensurePDFTextCached(contextItem, {
       sourceMode: paperContext.contentSourceMode,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     return paperTextStore.peek(contextItem.id);
   }

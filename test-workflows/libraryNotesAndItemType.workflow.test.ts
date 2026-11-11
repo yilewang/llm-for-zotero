@@ -75,7 +75,7 @@ describe("workflow: notes and item type (W5-B)", function () {
   }
 
   async function withRegistry<T>(
-    mode: "safe" | "yolo",
+    mode: "safe" | "auto" | "yolo",
     tools: string[],
     body: (registry: AgentToolRegistry) => Promise<T>,
   ): Promise<T> {
@@ -297,6 +297,76 @@ describe("workflow: notes and item type (W5-B)", function () {
       );
       const [receipt] = retried.actionReceipts || [];
       assert.notEqual(receipt?.verification, "unverified");
+    });
+  });
+
+  describe("note_write_batch target:'standalone'", function () {
+    it("files parentless notes in the folder and verifies the receipt against them", async function () {
+      const papers: any[] = [];
+      for (const label of ["one", "two"]) {
+        const paper = new Zotero.Item("journalArticle");
+        paper.libraryID = libraryID();
+        paper.setField("title", `Standalone source ${label} ${SUFFIX}`);
+        await paper.saveTx();
+        created.items.push(paper.id);
+        papers.push(paper);
+      }
+      const folder = await makeCollection("Standalone batch folder");
+      const bodies = [
+        `Standalone digest one ${SUFFIX}`,
+        `Standalone digest two ${SUFFIX}`,
+      ];
+      const result = await withRegistry(
+        "yolo",
+        ["note_write_batch"],
+        (registry) =>
+          runTool(
+            registry,
+            "note_write_batch",
+            {
+              target: "standalone",
+              notes: papers.map((paper, index) => ({
+                targetItemId: paper.id,
+                content:
+                  index === 0
+                    ? `${bodies[0]} {{cite item=${paper.id}}}`
+                    : bodies[1],
+                collections: [folder.id],
+              })),
+            },
+            contextFor(papers[0].id, "File a standalone digest per paper"),
+          ),
+      );
+      const report = JSON.stringify(result);
+      assert.isTrue(result.ok, report);
+      const receipts = result.actionReceipts || [];
+      assert.isAtLeast(receipts.length, 1, report);
+      for (const receipt of receipts)
+        assert.equal(receipt.verification, "verified", report);
+
+      // Native readback: two live notes in the folder, neither with a parent,
+      // one per body.
+      const rows = (await Zotero.DB.queryAsync(
+        `SELECT n.itemID AS itemID, n.parentItemID AS parentItemID, n.note AS note
+         FROM itemNotes n JOIN collectionItems c ON c.itemID = n.itemID
+         WHERE c.collectionID = ?
+         AND n.itemID NOT IN (SELECT itemID FROM deletedItems)`,
+        [folder.id],
+      )) as any[];
+      const notes = rows.map((row) => ({
+        itemID: Number(row.itemID),
+        parentItemID: row.parentItemID,
+        note: String(row.note),
+      }));
+      created.items.push(...notes.map((note) => note.itemID));
+      assert.lengthOf(notes, 2, report);
+      for (const note of notes) assert.isNull(note.parentItemID);
+      for (const body of bodies)
+        assert.lengthOf(
+          notes.filter((note) => note.note.includes(body)),
+          1,
+          body,
+        );
     });
   });
 
@@ -652,6 +722,237 @@ describe("workflow: notes and item type (W5-B)", function () {
         html,
         "nothing is appended twice",
       );
+    });
+  });
+
+  describe("note_write mode:'edit' with HTML content and a citation", function () {
+    async function citedNote(lastName: string, title: string, body: string) {
+      const paper = new Zotero.Item("journalArticle");
+      paper.libraryID = libraryID();
+      paper.setField("title", `${title} ${SUFFIX}`);
+      paper.setField("date", "2022");
+      paper.setCreators([
+        { creatorType: "author", firstName: "Grace", lastName },
+      ]);
+      await paper.saveTx();
+      created.items.push(paper.id);
+      const note = new Zotero.Item("note");
+      note.libraryID = libraryID();
+      note.parentID = paper.id;
+      note.setNote(`<div data-schema-version="9">${body}</div>`);
+      await note.saveTx();
+      created.items.push(note.id);
+      return { paper, note, uri: Zotero.URI.getItemURI(paper) };
+    }
+
+    function assertChip(html: string, uri: string) {
+      const registry = html.match(/data-citation-items="([^"]+)"/);
+      assert.exists(registry, html);
+      assert.include(decodeURIComponent(registry![1]), uri);
+      assert.include(html, 'class="citation"');
+      assert.notInclude(html, "{{cite");
+      assert.notInclude(html, "{{citation:");
+      // The chip label is escaped once, never twice.
+      assert.notInclude(html, "&amp;amp;");
+      assert.notInclude(html, "&amp;#39;");
+    }
+
+    async function editWithCitation(
+      mode: "auto" | "yolo",
+      lastName: string,
+      title: string,
+    ) {
+      const { paper, note, uri } = await citedNote(
+        lastName,
+        title,
+        "<p>Old.</p>",
+      );
+      const prepared = await withRegistry(mode, ["note_write"], (registry) =>
+        registry.prepareExecution(
+          {
+            id: `note_write:${Math.random()}`,
+            name: "note_write",
+            arguments: {
+              mode: "edit",
+              targetNoteId: note.id,
+              content: `<p>A.</p>\n<p>B {{cite item=${paper.id} page=1}}.</p>`,
+            },
+          },
+          contextFor(note.id, "Rewrite the note with a citation"),
+          { callerKind: "model" },
+        ),
+      );
+      // One call: no confirmation round trip is needed or accepted.
+      assert.equal(prepared.kind, "result", `${mode}: ${prepared.kind}`);
+      if (prepared.kind !== "result") throw new Error("unreachable");
+      const applied = prepared.execution.result;
+      assert.isTrue(applied.ok, JSON.stringify(applied.content));
+      const [receipt] = applied.actionReceipts || [];
+      assert.equal(receipt?.verification, "verified", JSON.stringify(receipt));
+      // Native readback: the cited work is in the root and shown as a chip.
+      const html = await storedNote(note.id);
+      assertChip(html, uri);
+      assert.include(html, "A.");
+      assert.include(html, "B");
+      assert.notInclude(html, "Old.");
+      return html;
+    }
+
+    for (const mode of ["auto", "yolo"] as const) {
+      it(`writes the cited note under ${mode} mode in one call`, async function () {
+        await editWithCitation(mode, "Hopper", `Cited edit paper ${mode}`);
+      });
+    }
+
+    it("writes it when the cited work's label holds an apostrophe and an ampersand", async function () {
+      const html = await editWithCitation(
+        "auto",
+        "O'Brien & Co",
+        "Rock & Roll's paper",
+      );
+      assert.match(html, /O(&#39;|'|’)Brien/, html);
+    });
+
+    /** Prepare a Safe edit; return the confirmation and its card content. */
+    async function safeEdit(
+      registry: AgentToolRegistry,
+      args: Record<string, unknown>,
+      noteId: number,
+    ) {
+      const prepared = await registry.prepareExecution(
+        {
+          id: `note_write:${Math.random()}`,
+          name: "note_write",
+          arguments: args,
+        },
+        contextFor(noteId, "Rewrite the note with a citation"),
+        { callerKind: "model" },
+      );
+      assert.equal(prepared.kind, "confirmation");
+      if (prepared.kind !== "confirmation") throw new Error("unreachable");
+      const field = prepared.action.fields.find(
+        (candidate) => candidate.id === "content",
+      ) as { value?: string } | undefined;
+      assert.isString(field?.value);
+      return { prepared, shown: String(field!.value), action: prepared.action };
+    }
+
+    async function approve(
+      prepared: Awaited<ReturnType<typeof safeEdit>>["prepared"],
+      data?: { content: string },
+    ) {
+      const done = await prepared.execute({ approved: true, data });
+      // Exactly one card: approving resolves to the result, not a second card.
+      assert.equal(done.kind, "result");
+      if (done.kind !== "result") throw new Error("unreachable");
+      const result = done.execution.result;
+      assert.isTrue(result.ok, JSON.stringify(result.content));
+      const [receipt] = result.actionReceipts || [];
+      assert.equal(receipt?.verification, "verified", JSON.stringify(receipt));
+    }
+
+    for (const edited of [false, true]) {
+      it(`Safe card for an HTML edit with a citation, approved ${edited ? "with an edited textarea" : "unchanged"}`, async function () {
+        const { paper, note, uri } = await citedNote(
+          "O'Brien & Co",
+          `Safe & sound's paper ${edited}`,
+          "<p>Old.</p>",
+        );
+        await withRegistry("safe", ["note_write"], async (registry) => {
+          const { prepared, shown, action } = await safeEdit(
+            registry,
+            {
+              mode: "edit",
+              targetNoteId: note.id,
+              content: `<p>A.</p>\n<p>B {{cite item=${paper.id} page=1}}.</p>`,
+            },
+            note.id,
+          );
+          assert.notInclude(shown, "{{cite", shown);
+          assert.include(action.description || "", "Adds 1 Zotero citation");
+          assert.include(action.description || "", "Brien");
+          const marker = `Marker ${SUFFIX}`;
+          await approve(
+            prepared,
+            edited ? { content: `${shown}\n<p>${marker}</p>` } : undefined,
+          );
+          const html = await storedNote(note.id);
+          assertChip(html, uri);
+          assert.notInclude(html, "Old.");
+          if (edited) assert.include(html, marker);
+        });
+      });
+    }
+
+    describe("content together with patches", function () {
+      it("applies the patch and ignores the HTML content under YOLO", async function () {
+        const { paper, note } = await citedNote(
+          "Turing",
+          "Patch yolo paper",
+          "<p>Alpha.</p><p>Beta.</p>",
+        );
+        await withRegistry("yolo", ["note_write"], async (registry) => {
+          const result = await runTool(
+            registry,
+            "note_write",
+            {
+              mode: "edit",
+              targetNoteId: note.id,
+              content: `<p>Ignored {{cite item=${paper.id} page=1}}.</p>`,
+              patches: [{ find: "Beta.", replace: "Gamma." }],
+            },
+            contextFor(note.id, "Patch the note"),
+          );
+          assert.isTrue(result.ok, JSON.stringify(result.content));
+        });
+        const html = await storedNote(note.id);
+        assert.include(html, "Alpha.");
+        assert.include(html, "Gamma.");
+        assert.notInclude(html, "Beta.");
+        assert.notInclude(html, "Ignored");
+        assert.notInclude(html, "{{cite");
+      });
+
+      for (const edited of [false, true]) {
+        it(`under Safe, approved ${edited ? "with Markdown-like edited text" : "unchanged"}, stores real structure`, async function () {
+          const { paper, note } = await citedNote(
+            "Turing",
+            `Patch safe paper ${edited}`,
+            "<p>Alpha.</p><p>Beta.</p>",
+          );
+          await withRegistry("safe", ["note_write"], async (registry) => {
+            const { prepared, shown } = await safeEdit(
+              registry,
+              {
+                mode: "edit",
+                targetNoteId: note.id,
+                content: `<p>Ignored {{cite item=${paper.id} page=1}}.</p>`,
+                patches: [{ find: "Beta.", replace: "Gamma." }],
+              },
+              note.id,
+            );
+            assert.notInclude(shown, "<p>", "the card shows model text");
+            await approve(
+              prepared,
+              edited
+                ? { content: "## Heading\n\nA **bold** paragraph." }
+                : undefined,
+            );
+          });
+          const html = await storedNote(note.id);
+          assert.notInclude(html, "{{cite");
+          if (edited) {
+            assert.match(html, /<h2[^>]*>\s*Heading\s*<\/h2>/, html);
+            assert.match(html, /<p[^>]*>[^<]*A <strong>bold<\/strong>/, html);
+            assert.notInclude(html, "##");
+            assert.notInclude(html, "**");
+          } else {
+            assert.include(html, "Alpha.");
+            assert.include(html, "Gamma.");
+            assert.notInclude(html, "Beta.");
+          }
+        });
+      }
     });
   });
 

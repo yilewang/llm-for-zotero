@@ -730,7 +730,14 @@ export function attachMenuActionController(
       deps.closeExportMenu();
       return;
     }
-    positionMenuBelowButton(deps.body, exportMenu, exportBtn);
+    // Collapsed, the header hides this button and the More button stands in.
+    const moreBtn = deps.body.querySelector<HTMLElement>("#llm-header-more");
+    const anchor =
+      !exportBtn.getBoundingClientRect().width &&
+      moreBtn?.getBoundingClientRect().width
+        ? moreBtn
+        : exportBtn;
+    positionMenuBelowButton(deps.body, exportMenu, anchor);
   });
 
   deps.popoutBtn?.addEventListener("click", (e: Event) => {

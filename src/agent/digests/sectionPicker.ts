@@ -24,7 +24,11 @@
  * model and the request, so a part declared again asks once.
  */
 import type { ManifestSection } from "../../services/mineru/mineruCache";
-import { buildSyntheticManifestSections } from "../../services/paperContent/pdfContext";
+import {
+  buildDocumentOutline,
+  buildSyntheticManifestSections,
+  sectionTextPieces,
+} from "../../services/paperContent/pdfContext";
 import type { PdfContext } from "../../services/paperContent/types";
 import {
   classifyReaderCompletionError,
@@ -952,6 +956,12 @@ export async function readPickedSections(params: {
    * mean the abstract are served first; their picked parts are not read.
    */
   abstractField?: () => string | Promise<string>;
+  /**
+   * Pick over a chaptered plain PDF's sections (`documentStructure`)
+   * instead of its chunk runs. Each picked block names its section in
+   * `sectionIndexes`, the map's own ids (`s<n>`).
+   */
+  documentSections?: boolean;
 }): Promise<PickedSections | null> {
   /**
    * The pick as it is read: with a Zotero abstract field, the abstract
@@ -1084,6 +1094,93 @@ export async function readPickedSections(params: {
   const context = await params.pdfContext();
   const chunks = context?.chunks || [];
   if (!context || !chunks.length) return null;
+  if (params.documentSections && context.documentStructure) {
+    const outline = buildDocumentOutline(context);
+    const { pick, field } = await withField(
+      withoutCombinedAbstract(
+        await params.picker({
+          names: params.names,
+          outline: {
+            kind: "sections",
+            sections: outline.sections.map((section, index) => ({
+              id: section.sectionId,
+              index,
+              heading: plainLine(section.title),
+              path: plainLine(section.path),
+              level: section.level,
+              chars: section.chars,
+              firstLine: outlineFirstLine(
+                sectionTextPieces(context, section)[0]?.text || "",
+              ),
+            })),
+          },
+          // The section list's titles and starts: two structures of one
+          // text with as many sections do not share a pick.
+          fingerprint: `pdfmap:${
+            context.chunkMeta?.[0]?.sourceFingerprint || hash(chunks.join("\n"))
+          }:${outline.sections.length}:${hash(
+            context.documentStructure.sections
+              .map((section) => `${section.title}\u0000${section.charStart}`)
+              .join("\u0001"),
+          )}`,
+          ...(params.title ? { title: params.title } : {}),
+        }),
+        (part) => part.indexes.length,
+      ),
+    );
+    // A section picked inside another picked one is read with it.
+    const inside = (index: number, roots: ReadonlySet<number>) => {
+      let parent = outline.sections[index]?.parentId;
+      while (parent) {
+        const at = Number(parent.slice(1));
+        if (roots.has(at)) return true;
+        parent = outline.sections[at]?.parentId;
+      }
+      return false;
+    };
+    const roots = new Set(pick.parts.flatMap((part) => part.indexes));
+    const blocks: PickedBlock[] = [];
+    for (const index of [...roots].sort((a, b) => a - b)) {
+      if (inside(index, roots)) continue;
+      const section = outline.sections[index];
+      // Only the section's own text, as a section read gives it; the
+      // pieces of one chunk stay under one label.
+      const byChunk = new Map<number, string[]>();
+      for (const piece of sectionTextPieces(context, section))
+        byChunk.set(piece.chunkIndex, [
+          ...(byChunk.get(piece.chunkIndex) || []),
+          piece.text,
+        ]);
+      const block: PickedBlock = {
+        label: plainLine(section.title),
+        for: [],
+        text: [...byChunk]
+          .map(([at, texts]) => `[chunk ${at}]\n${texts.join("\n")}`)
+          .join("\n\n"),
+        sectionIndexes: [index],
+        chunkIndexes: [...byChunk.keys()],
+      };
+      for (const part of pick.parts)
+        if (
+          part.indexes.some(
+            (picked) => picked === index || inside(picked, new Set([index])),
+          )
+        )
+          addName(block, part.name);
+      blocks.push(block);
+    }
+    const abstractNames = new Set(pick.abstractNames);
+    for (const block of blocks) markAbstract(block, abstractNames);
+    return finish(pick, [...field, ...blocks], {
+      backend: "pdf",
+      source: READ_SCOPE_TEXT_SOURCES.pdfSections,
+      approximate: false,
+      paperCharacters: chunks.reduce(
+        (sum, chunk) => sum + (chunk || "").length,
+        0,
+      ),
+    });
+  }
   const { pick, field } = await withField(
     withoutCombinedAbstract(
       await params.picker({

@@ -1,24 +1,62 @@
-import { executeNoteCreation } from "../noteCreation";
+import {
+  batchLinksRowsInFlight,
+  createdNoteOutcome,
+  executeNoteCreation,
+  findLandedNoteStepForRow,
+  findNoteHeldForRow,
+  findRelatedBatchNote,
+  findUnattributedNoteStep,
+  findUncertainNoteStepForRow,
+  heldNoteReason,
+  journalStepsReader,
+  listUnnamedNoteBatchActions,
+  oldNoteStepsWithNothingAtKey,
+  readReservedNote,
+  relatedNoteBatchIds,
+  RESERVED_NOTE_MISMATCH,
+  untiedNoteReason,
+  type RelatedBatchNote,
+} from "../noteCreation";
 import { MutationNoEffectError } from "../externalMutationCoordinator";
 import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
 import { verifyNativeNoteHtml } from "../../../services/notePersistence";
 import { canonicalNoteHtml } from "../../../utils/noteHtml";
-import { sha256Text } from "../../store/journalRecoveryBlobStore";
+import {
+  readRecoveryText,
+  sha256Text,
+  type RecoveryPayload,
+} from "../../store/journalRecoveryBlobStore";
+import {
+  inJournalTransaction,
+  listJournalSteps,
+  registerJournalRecoveryPayloads,
+  updateJournalStep,
+} from "../../store/changeJournal";
 import { executePreparedNoteChange } from "../../tools/write/preparedNoteChange";
-import type { AgentToolContext } from "../../types";
+import type { AgentJournalActionScope, AgentToolContext } from "../../types";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
-import type { NativeNoteWriteEvidence } from "./contracts";
+import type {
+  NativeNoteWriteEvidence,
+  SaveNotesBatchOperation,
+} from "./contracts";
 import { buildSaveNoteInverse } from "./forwardExecutionSupport";
 import type { AgentBatchBinding } from "../../types";
 import { loadPlanDocument } from "../../documents/store";
 import { documentNoteParts } from "../../documents/actions";
 import { mergeNoteCitationItems } from "../../../utils/noteCitations";
 import { assertMaterialRefMatches } from "../../documents/workflowMaterial";
-import { advanceBatchJob } from "../../store/batchJobStore";
 import {
+  advanceBatchJob,
+  getBatchJob,
+  type BatchJobRecord,
+} from "../../store/batchJobStore";
+import {
+  linkBatchItemsToAction,
   listBatchItems,
   markBatchItemFailed,
   markBatchItemSaved,
+  markBatchItemSettled,
+  type BatchItemRecord,
 } from "../../store/batchItemStore";
 
 /**
@@ -144,6 +182,479 @@ function batchBindingFor(
   return binding;
 }
 
+/** What a resume found for a row whose note an interrupted attempt began. */
+type InterruptedCreation =
+  | {
+      kind: "saved";
+      noteId: number;
+      evidence: NativeNoteWriteEvidence;
+    }
+  | {
+      kind: "blocked";
+      reason: string;
+      journalStep: { actionId: string; sequence: number };
+    };
+
+/**
+ * Settle, from native Zotero state, the note creations an interrupted
+ * attempt of this batch left `uncertain`, before any note is written again.
+ *
+ * The process can end after a note was saved and before its journal step
+ * recorded that. The step reserved the note's key, so the key says what
+ * happened:
+ * - a live note at the key, on the intended parent (a standalone note: in
+ *   each collection it was filed into), with the finalized content: the
+ *   step is recorded as applied, exactly as a creation that had finished
+ *   would have recorded it, and its row as saved;
+ * - nothing at the key: the creation never landed; the step is recorded as
+ *   having had no effect and the row is written as usual;
+ * - anything else: the step stays `uncertain` and the row is refused with
+ *   the reason. A note the user trashed or edited, moved to another parent,
+ *   or took out of a collection it was filed into was changed by the user
+ *   and is left alone: neither kept for the row nor written again. A
+ *   replacement would be the second note on that paper, and a settled step
+ *   would let a later resume write it.
+ *
+ * A step written before steps recorded their row, whose body matches no row
+ * (a cited work changed since), is some unwritten row's and nothing says
+ * which: while a note is at its key, every row it could be is refused
+ * instead of written (`findUnattributedNoteStep`), and told how to end the
+ * refusal. Once nothing is at its key (the user erased the note), the step
+ * had no effect and is settled so.
+ *
+ * The settling is read again from native state on every resume that
+ * reopens the action, so a refusal ends once the user puts the note back.
+ * It runs inside the action the resume reopened, which holds the claim, so
+ * no other resume can settle the same steps at the same time.
+ */
+async function settleInterruptedNoteCreations(params: {
+  operation: SaveNotesBatchOperation;
+  binding: AgentBatchBinding;
+  priorRows: ReadonlyMap<string, BatchItemRecord>;
+  /** Rows refused before settling; their steps are not this action's. */
+  refused: ReadonlyMap<string, unknown>;
+  scope: AgentJournalActionScope;
+  libraryIdOf: (targetItemId: number) => number | undefined;
+}): Promise<Map<string, InterruptedCreation>> {
+  const { operation, binding, scope } = params;
+  const settled = new Map<string, InterruptedCreation>();
+  const open = (await listJournalSteps(scope.actionId)).filter(
+    (step) => step.operation === "create_note" && step.status === "uncertain",
+  );
+  if (!open.length) return settled;
+  const standalone = operation.target === "standalone";
+  for (const [index, entry] of operation.notes.entries()) {
+    if (!open.length) break;
+    const bound = binding.items[index];
+    if (
+      !bound ||
+      params.priorRows.get(bound.itemKey)?.status === "saved" ||
+      params.refused.has(bound.itemKey)
+    )
+      continue;
+    const libraryID = params.libraryIdOf(entry.targetItemId);
+    if (libraryID === undefined) continue;
+    const collections = standalone ? entry.collections || [] : [];
+    const findMatch = () =>
+      findUncertainNoteStepForRow(open, {
+        batchId: binding.batchId,
+        itemKey: bound.itemKey,
+        targetItemId: entry.targetItemId,
+        standalone,
+        collections,
+        // Only an older step, which does not record its row, needs the
+        // rebuilt body to tell which row it belongs to.
+        rebuiltHtml: () =>
+          noteHtmlForBatchItem({ bound, content: entry.content, libraryID }),
+      });
+    // A row may have more than one open step (older data): a step whose note
+    // never landed says nothing about the others, so matching goes on.
+    for (;;) {
+      const match = await findMatch();
+      if (!match) break;
+      open.splice(open.indexOf(match.step), 1);
+      const { step, forward } = match;
+      const journalStep = { actionId: step.actionId, sequence: step.sequence };
+      const block = async (reason: string) => {
+        await inJournalTransaction(() =>
+          updateJournalStep({
+            stepId: step.stepId,
+            status: "uncertain",
+            error: reason,
+          }),
+        );
+        settled.set(bound.itemKey, { kind: "blocked", reason, journalStep });
+      };
+      try {
+        const parentItemId =
+          typeof forward.parentItemId === "number"
+            ? forward.parentItemId
+            : undefined;
+        const reserved = readReservedNote({
+          libraryID: Number(forward.libraryID),
+          key: forward.key as string,
+          parentItemId,
+          // The collections the step filed the note into: a note taken out
+          // of one was moved by the user.
+          collections: Array.isArray(forward.collections)
+            ? forward.collections.map(Number)
+            : [],
+        });
+        if (reserved.kind === "absent") {
+          // Nothing landed, so the step had no effect: the action can still
+          // read fully applied once the row is written.
+          await inJournalTransaction(() =>
+            updateJournalStep({
+              stepId: step.stepId,
+              status: "no_effect",
+              reversibility: "full",
+              error: "Interrupted before the change landed.",
+            }),
+          );
+          continue;
+        }
+        if (reserved.kind === "changed") {
+          // The same wording for the note's state as every other path.
+          await block(heldNoteReason(forward));
+          break;
+        }
+        const note = reserved.note;
+        // The content the step reserved, as a creation checks it: the rebuilt
+        // body can differ after a cited work's metadata was edited.
+        const html = await readRecoveryText(forward.html as RecoveryPayload);
+        const verification = await verifyNativeNoteHtml(note, html);
+        if (!verification.matches) {
+          await block(`${RESERVED_NOTE_MISMATCH} (note ${note.id})`);
+          break;
+        }
+        const outcome = await createdNoteOutcome({
+          note,
+          expectedHtml: html,
+          verification,
+          parentItemId,
+          collections: standalone ? collections : undefined,
+          warnings: [],
+        });
+        // The row is saved in the step's own transaction, not when the write
+        // loop reaches it: a process that ends in between must not leave an
+        // applied step beside a pending row.
+        await inJournalTransaction(async () => {
+          await registerJournalRecoveryPayloads({
+            actionId: step.actionId,
+            stepId: step.stepId,
+            value: outcome.inverse,
+          });
+          await updateJournalStep({
+            stepId: step.stepId,
+            status: "applied",
+            inverse: outcome.inverse,
+            expectedPostcondition: outcome.expectedPostcondition,
+            result: outcome.result,
+            reversibility: "full",
+          });
+          await markBatchItemSaved(binding.batchId, bound.itemKey, {
+            actionId: step.actionId,
+            stepSequence: step.sequence,
+            noteId: note.id,
+          });
+        });
+        scope.recordStep({
+          effect: "applied",
+          status: "applied",
+          reversibility: "full",
+          affectedCount: 1,
+        });
+        settled.set(bound.itemKey, {
+          kind: "saved",
+          noteId: note.id,
+          evidence: {
+            noteId: note.id,
+            ...(parentItemId === undefined ? {} : { parentItemId }),
+            ...(standalone && collections.length ? { collections } : {}),
+            verification,
+          },
+        });
+        break;
+      } catch (error) {
+        await block(error instanceof Error ? error.message : String(error));
+        break;
+      }
+    }
+  }
+  // An older step that matched no row by body, with nothing at its key, had
+  // no effect, whichever row it was for. That row may not be in this call
+  // at all (the preparation refused it), so the pass goes over the steps,
+  // not the rows.
+  for (const step of oldNoteStepsWithNothingAtKey(open)) {
+    open.splice(open.indexOf(step), 1);
+    await inJournalTransaction(() =>
+      updateJournalStep({
+        stepId: step.stepId,
+        status: "no_effect",
+        reversibility: "full",
+        error: "Nothing is at the reserved key; the change did not remain.",
+      }),
+    );
+  }
+  // The other older steps that matched no row by body, once every row has
+  // taken its own: while a note is at such a step's key, each row it could
+  // be is refused. The step is left as it is; it is no row's to settle.
+  for (const [index, entry] of operation.notes.entries()) {
+    if (!open.length) break;
+    const bound = binding.items[index];
+    if (
+      !bound ||
+      settled.has(bound.itemKey) ||
+      params.priorRows.get(bound.itemKey)?.status === "saved" ||
+      params.refused.has(bound.itemKey)
+    )
+      continue;
+    const unattributed = findUnattributedNoteStep(open, {
+      batchId: binding.batchId,
+      itemKey: bound.itemKey,
+      targetItemId: entry.targetItemId,
+      standalone,
+      collections: standalone ? entry.collections || [] : [],
+    });
+    if (unattributed)
+      settled.set(bound.itemKey, {
+        kind: "blocked",
+        reason: untiedNoteReason(unattributed.note),
+        journalStep: {
+          actionId: unattributed.step.actionId,
+          sequence: unattributed.step.sequence,
+        },
+      });
+  }
+  return settled;
+}
+
+/**
+ * What the related batches of this batch (its retry chain) hold for each
+ * row this call may write; see `findRelatedBatchNote`. Empty for a batch
+ * with no retry chain, which is the usual case.
+ */
+async function readRelatedBatchNotes(params: {
+  binding: AgentBatchBinding;
+  priorRows: ReadonlyMap<string, BatchItemRecord>;
+  job: BatchJobRecord | null;
+}): Promise<Map<string, RelatedBatchNote>> {
+  const found = new Map<string, RelatedBatchNote>();
+  if (!params.job) return found;
+  const ids = await relatedNoteBatchIds(
+    params.binding.batchId,
+    params.job.conversationKey,
+  );
+  if (!ids.length) return found;
+  const batches = await Promise.all(
+    ids.map(async (batchId) => ({
+      batchId,
+      rows: await listBatchItems(batchId),
+    })),
+  );
+  const stepsOf = journalStepsReader();
+  for (const item of params.binding.items) {
+    if (params.priorRows.get(item.itemKey)?.status === "saved") continue;
+    const note = await findRelatedBatchNote(batches, item.itemKey, stepsOf);
+    if (note) found.set(item.itemKey, note);
+  }
+  return found;
+}
+
+/**
+ * Save, before anything is written, the rows whose note already landed.
+ *
+ * A note's step is recorded applied before its row is saved, so a process
+ * that ends in between leaves an applied step beside a pending row; the
+ * settler reads only open steps, and the row would be written a second
+ * time. The step names its row (`findLandedNoteStepForRow`), so the row is
+ * saved with that step and its note, whatever state the note is in now. A
+ * related batch's live note for the paper saves the row the same way the
+ * tool settles one after a retry (`markBatchItemSettled`).
+ *
+ * The steps are read from the action this call writes under, the action
+ * the resume meant to continue, and the actions the rows name. Each saved
+ * row is updated in `priorRows` too, so the rest of the call skips it as
+ * already saved.
+ */
+async function keepLandedNoteRows(params: {
+  binding: AgentBatchBinding;
+  priorRows: Map<string, BatchItemRecord>;
+  scope: AgentJournalActionScope;
+  resumedActionId?: string;
+  related: ReadonlyMap<string, RelatedBatchNote>;
+}): Promise<void> {
+  const { binding, priorRows } = params;
+  const unsaved = binding.items.filter(
+    (item) => priorRows.get(item.itemKey)?.status !== "saved",
+  );
+  if (!unsaved.length) return;
+  const actionIds = new Set(
+    [
+      params.scope.actionId,
+      params.resumedActionId,
+      ...unsaved.map((item) => priorRows.get(item.itemKey)?.actionId),
+    ].filter((actionId): actionId is string => Boolean(actionId)),
+  );
+  const stepsOf = journalStepsReader();
+  const steps = (
+    await Promise.all([...actionIds].map((actionId) => stepsOf(actionId)))
+  ).flat();
+  for (const item of unsaved) {
+    const prior = priorRows.get(item.itemKey);
+    if (!prior) continue;
+    const landed = findLandedNoteStepForRow(steps, {
+      batchId: binding.batchId,
+      itemKey: item.itemKey,
+    });
+    if (landed) {
+      const saved = {
+        actionId: landed.step.actionId,
+        stepSequence: landed.step.sequence,
+        noteId: landed.found.note.id,
+      };
+      await markBatchItemSaved(binding.batchId, item.itemKey, saved);
+      priorRows.set(item.itemKey, { ...prior, ...saved, status: "saved" });
+      continue;
+    }
+    const related = params.related.get(item.itemKey);
+    if (related?.kind === "landed") {
+      await markBatchItemSettled(binding.batchId, item.itemKey, {
+        noteId: related.note.id,
+      });
+      priorRows.set(item.itemKey, {
+        ...prior,
+        noteId: related.note.id,
+        status: "saved",
+      });
+    }
+  }
+}
+
+/** A row refused because another action holds its reserved note. */
+type RefusedRow = {
+  reason: string;
+  journalStep: { actionId: string; sequence: number };
+};
+
+/**
+ * The rows whose note an action other than this one reserved and left
+ * `uncertain`.
+ *
+ * A resume prepares against the action the rows name, but reopens it only at
+ * execution. When that action can no longer be reopened by then (an undo
+ * ended it while the confirmation card was open), this call writes under a
+ * new action, and the settler, which reads only this action's steps, would
+ * not see the note the earlier attempt left. Writing the row would put a
+ * second note beside it. Such a row is refused with the reason the resume's
+ * preparation gives for the same case; the other action's step is never
+ * settled from here, because this call does not hold that action.
+ *
+ * The candidate actions are the ones the rows named before this call linked
+ * them to its own action, the one the resume meant to continue (a row
+ * written before rows were linked at the start names no action while its
+ * note is in flight), and the note-batch actions since this batch that no
+ * row names (`listUnnamedNoteBatchActions`): a batch that ended during its
+ * first note, or under a second action, before rows were linked. Only a
+ * batch opened before rows were linked can have such an action, so the scan
+ * runs only for one (`batchLinksRowsInFlight`).
+ *
+ * A note a related batch holds open for the paper (`readRelatedBatchNotes`)
+ * refuses the row the same way: that batch's resume settles it.
+ */
+async function refuseRowsHeldElsewhere(params: {
+  operation: SaveNotesBatchOperation;
+  binding: AgentBatchBinding;
+  priorRows: ReadonlyMap<string, BatchItemRecord>;
+  scope: AgentJournalActionScope;
+  /** The action the resume was prepared to continue, if any. */
+  resumedActionId?: string;
+  job: BatchJobRecord | null;
+  related: ReadonlyMap<string, RelatedBatchNote>;
+  libraryIdOf: (targetItemId: number) => number | undefined;
+}): Promise<Map<string, RefusedRow>> {
+  const { operation, binding, priorRows, scope, job } = params;
+  const refused = new Map<string, RefusedRow>();
+  for (const [itemKey, note] of params.related)
+    if (note.kind === "held" && priorRows.get(itemKey)?.status !== "saved")
+      refused.set(itemKey, {
+        reason: note.reason,
+        journalStep: {
+          actionId: note.step.actionId,
+          sequence: note.step.sequence,
+        },
+      });
+  const others = [
+    ...new Set(
+      [
+        ...[...priorRows.values()].flatMap((row) =>
+          row.status !== "saved" && row.actionId ? [row.actionId] : [],
+        ),
+        ...(params.resumedActionId ? [params.resumedActionId] : []),
+      ].filter((actionId) => actionId !== scope.actionId),
+    ),
+  ];
+  const unnamed =
+    job && !batchLinksRowsInFlight(job.inputJson)
+      ? (
+          await listUnnamedNoteBatchActions({
+            batchId: binding.batchId,
+            conversationKey: job.conversationKey,
+            createdAt: job.createdAt,
+            exclude: [scope.actionId, params.resumedActionId, ...others],
+          })
+        ).flatMap((action) => action.steps)
+      : [];
+  if (!others.length && !unnamed.length) return refused;
+  const steps = [
+    ...(
+      await Promise.all(others.map((actionId) => listJournalSteps(actionId)))
+    ).flat(),
+    ...unnamed,
+  ];
+  if (
+    !steps.some(
+      (step) => step.operation === "create_note" && step.status === "uncertain",
+    )
+  )
+    return refused;
+  const standalone = operation.target === "standalone";
+  for (const [index, entry] of operation.notes.entries()) {
+    const bound = binding.items[index];
+    const prior = bound ? priorRows.get(bound.itemKey) : undefined;
+    if (!bound || prior?.status === "saved" || refused.has(bound.itemKey))
+      continue;
+    const libraryID = params.libraryIdOf(entry.targetItemId);
+    const held = await findNoteHeldForRow(steps, {
+      batchId: binding.batchId,
+      itemKey: bound.itemKey,
+      targetItemId: entry.targetItemId,
+      standalone,
+      collections: standalone ? entry.collections || [] : [],
+      actionId: prior?.actionId,
+      stepSequence: prior?.stepSequence,
+      rebuiltHtml:
+        libraryID === undefined
+          ? undefined
+          : () =>
+              noteHtmlForBatchItem({
+                bound,
+                content: entry.content,
+                libraryID,
+              }),
+    });
+    if (held)
+      refused.set(bound.itemKey, {
+        reason: held.reason,
+        journalStep: {
+          actionId: held.step.actionId,
+          sequence: held.step.sequence,
+        },
+      });
+  }
+  return refused;
+}
+
 type DomainOperation =
   | "save_notes_batch"
   | "create_items"
@@ -180,15 +691,78 @@ export const noteLifecycleExecutors = {
         row,
       ]),
     );
+    const scope = context.journalActionScope;
+    const creates = Boolean(binding && scope && operation.mode !== "append");
+    const job = creates && binding ? await getBatchJob(binding.batchId) : null;
+    const related =
+      creates && binding
+        ? await readRelatedBatchNotes({ binding, priorRows, job })
+        : new Map<string, RelatedBatchNote>();
+    // Rows whose note landed already are saved first, so nothing below
+    // writes them again.
+    if (creates && binding && scope)
+      await keepLandedNoteRows({
+        binding,
+        priorRows,
+        scope,
+        resumedActionId: context.resumeJournalAction?.actionId,
+        related,
+      });
     let appliedCount = [...priorRows.values()].filter(
       (row) => row.status === "saved",
     ).length;
+    // Rows whose note an earlier action reserved, when that action is not
+    // the one this call writes under (an undo ended it after the resume was
+    // prepared, say). Read before the rows are linked to this action below.
+    const refused =
+      creates && binding && scope
+        ? await refuseRowsHeldElsewhere({
+            operation,
+            binding,
+            priorRows,
+            scope,
+            resumedActionId: context.resumeJournalAction?.actionId,
+            job,
+            related,
+            libraryIdOf: (targetItemId) =>
+              zoteroGateway.getItem(targetItemId)?.libraryID,
+          })
+        : new Map<string, RefusedRow>();
+    // Every row this call may write names the action before the first note
+    // starts, so a resume after a crash during that note finds its step. A
+    // refused row keeps pointing at the step that holds its note.
+    if (binding && scope)
+      await linkBatchItemsToAction(
+        binding.batchId,
+        binding.items
+          .map((item) => item.itemKey)
+          .filter((itemKey) => !refused.has(itemKey)),
+        scope.actionId,
+      );
+    const interrupted =
+      binding && scope && operation.mode !== "append"
+        ? await settleInterruptedNoteCreations({
+            operation,
+            binding,
+            priorRows,
+            refused,
+            scope,
+            libraryIdOf: (targetItemId) =>
+              zoteroGateway.getItem(targetItemId)?.libraryID,
+          })
+        : new Map<string, InterruptedCreation>();
+    for (const found of interrupted.values())
+      if (found.kind === "saved") appliedCount += 1;
     // Progress is written after each note lands, never before: a cursor ahead
     // of the library would skip an unwritten note on resume.
     const recordProgress = async (params: {
       itemKey?: string;
       position: number;
       journalStep?: { actionId: string; sequence: number };
+      // The action a failure belongs to when no step sequence is known.
+      actionId?: string;
+      // Keeps a row's own update time, so a refusal cannot become the newest.
+      keepUpdatedAt?: number;
       noteId?: number;
       error?: string;
       alreadySaved?: boolean;
@@ -208,10 +782,10 @@ export const noteLifecycleExecutors = {
         });
       } else {
         await markBatchItemFailed(batchId, params.itemKey, {
-          actionId: params.journalStep?.actionId,
+          actionId: params.journalStep?.actionId ?? params.actionId,
           stepSequence: params.journalStep?.sequence,
           error: params.error || "The note was not written",
-          now,
+          now: params.keepUpdatedAt ?? now,
         });
       }
       await advanceBatchJob({
@@ -254,6 +828,62 @@ export const noteLifecycleExecutors = {
           itemKey: bound?.itemKey,
           position,
           alreadySaved: true,
+        });
+        continue;
+      }
+      const held = bound ? refused.get(bound.itemKey) : undefined;
+      if (held) {
+        // No status change on the other action's step: only the action that
+        // holds a step may settle it. The row points at that step, so every
+        // later resume refuses it too.
+        rows.push({
+          targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
+          title,
+          status: "error",
+          reason: held.reason,
+        });
+        await recordProgress({
+          itemKey: bound?.itemKey,
+          position,
+          journalStep: held.journalStep,
+          keepUpdatedAt: prior?.updatedAt,
+          error: held.reason,
+        });
+        continue;
+      }
+      const found = bound ? interrupted.get(bound.itemKey) : undefined;
+      if (found?.kind === "saved") {
+        // The interrupted attempt's note, recorded by this call: it is this
+        // call's to prove, since no earlier receipt ever named it.
+        rows.push({
+          targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
+          noteId: found.noteId,
+          title,
+          status: "created",
+        });
+        noteWrites.push(found.evidence);
+        await recordProgress({
+          itemKey: bound?.itemKey,
+          position,
+          alreadySaved: true,
+        });
+        continue;
+      }
+      if (found?.kind === "blocked") {
+        rows.push({
+          targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
+          title,
+          status: "error",
+          reason: found.reason,
+        });
+        await recordProgress({
+          itemKey: bound?.itemKey,
+          position,
+          journalStep: found.journalStep,
+          error: found.reason,
         });
         continue;
       }
@@ -328,6 +958,14 @@ export const noteLifecycleExecutors = {
             operation.target === "standalone" ? undefined : target.id,
           collections:
             operation.target === "standalone" ? entry.collections : undefined,
+          ...(binding && bound
+            ? {
+                batchItem: {
+                  batchId: binding.batchId,
+                  itemKey: bound.itemKey,
+                },
+              }
+            : {}),
           html: await noteHtmlForBatchItem({
             bound,
             content: entry.content,
@@ -383,10 +1021,32 @@ export const noteLifecycleExecutors = {
         await recordProgress({
           itemKey: bound?.itemKey,
           position,
+          actionId: scope?.actionId,
           error: reason,
         });
       }
     }
+    // A Stop before the loop reached a row the settler already saved leaves
+    // that note landed and recorded; it still gets its result row and its
+    // evidence this turn, or the receipt would miss a note that exists.
+    if (stoppedAt !== undefined)
+      for (const [index, entry] of operation.notes.entries()) {
+        if (index < stoppedAt) continue;
+        const bound = binding?.items[index];
+        const found = bound ? interrupted.get(bound.itemKey) : undefined;
+        if (found?.kind !== "saved") continue;
+        const target = zoteroGateway.getItem(entry.targetItemId);
+        rows.push({
+          targetItemId: entry.targetItemId,
+          itemKey: bound?.itemKey,
+          noteId: found.noteId,
+          title: target
+            ? String(target.getDisplayTitle?.() || `Item ${entry.targetItemId}`)
+            : `Item ${entry.targetItemId}`,
+          status: "created",
+        });
+        noteWrites.push(found.evidence);
+      }
     return {
       result: {
         operation: operation.type,

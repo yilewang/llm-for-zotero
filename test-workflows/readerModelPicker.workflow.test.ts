@@ -6,11 +6,14 @@ import type {
 } from "../src/modules/contextPanel/workflowTestTypes";
 
 /**
- * The composer's model menu has a Main | Reader switch. Main is the model
- * list as it always was. Reader picks the model that reads papers for the
- * host: "Same as main", the runtime's own models, then the configured API
- * models. One reader is kept per runtime. The button keeps showing the main
- * model only; its tooltip names the reader.
+ * The composer's model menu opens on the chat page: a Subagent card on top,
+ * then the "Main Agent" model list as it always was. Clicking the card opens
+ * the subagent page, which picks the model that reads papers for the host:
+ * "Same as main agent", the runtime's own models, then the configured API
+ * models. A back row returns to the chat page. Picking a subagent keeps the
+ * menu open and returns to the chat page. One subagent is kept per runtime.
+ * The button keeps showing the main model only; its tooltip names the
+ * subagent.
  *
  * Runs in the real sidebar panel and the real standalone window. Claude Code
  * has no catalog hook in the workflow API, so its list is covered by unit
@@ -94,7 +97,7 @@ const settings: Record<string, string | boolean | number> = {
   readerChoiceClaude: "",
 };
 
-describe("workflow: reader model picker in the model menu", function () {
+describe("workflow: subagent model picker in the model menu", function () {
   this.timeout(60000);
   let api: WorkflowTestApi;
   let fixture: WorkflowTestFixture;
@@ -165,9 +168,13 @@ describe("workflow: reader model picker in the model menu", function () {
     root.querySelector<HTMLElement>("#llm-model-menu")!;
   const isOpen = (root: ParentNode) => menu(root).style.display !== "none";
   const openMenu = (root: ParentNode) => modelButton(root).click();
-  const tab = (root: ParentNode, which: "main" | "reader") =>
+  const subagentCard = (root: ParentNode) =>
     menu(root).querySelector<HTMLButtonElement>(
-      `[data-model-menu-tab="${which}"]`,
+      '[data-model-menu-subagent="open"]',
+    )!;
+  const backRow = (root: ParentNode) =>
+    menu(root).querySelector<HTMLButtonElement>(
+      '[data-model-menu-subagent="back"]',
     )!;
   const readerOptions = (root: ParentNode) =>
     all<HTMLButtonElement>(
@@ -181,25 +188,52 @@ describe("workflow: reader model picker in the model menu", function () {
   const tooltipReaderLine = (root: ParentNode) =>
     modelButton(root)
       .title.split("\n")
-      .find((line) => line.startsWith("Reader:")) || "";
+      .find((line) => line.startsWith("Subagent:")) || "";
 
-  /** Opens the menu, waits for the main list, and shows the Reader tab. */
-  async function openReaderTab(root: ParentNode, ready: string) {
+  /** Opens the menu, waits for the main list, and checks the chat page. */
+  async function openChatPage(root: ParentNode, ready: string) {
     openMenu(root);
     await waitFor(
       () => Boolean(menu(root).querySelector(ready)),
       "the main list must render",
     );
-    assert.isTrue(
-      tab(root, "main").classList.contains("active"),
-      "the menu opens on Main",
+    assertChatPage(root);
+  }
+
+  function assertChatPage(root: ParentNode) {
+    assert.isOk(subagentCard(root), "the chat page shows the subagent card");
+    assert.lengthOf(
+      readerOptions(root),
+      0,
+      "no subagent options on the chat page",
     );
-    tab(root, "reader").click();
-    assert.isTrue(tab(root, "reader").classList.contains("active"));
+    assert.isNotOk(backRow(root));
+  }
+
+  function assertSubagentPage(root: ParentNode) {
+    assert.lengthOf(
+      menu(root).querySelectorAll("[data-entry-id]"),
+      0,
+      "the subagent page has no main model rows",
+    );
+    assert.isAbove(readerOptions(root).length, 0);
+    assert.isOk(backRow(root), "the subagent page has a back row");
+  }
+
+  /** Clicks the subagent card to show the subagent page. */
+  function showSubagentPage(root: ParentNode) {
+    subagentCard(root).click();
+    assertSubagentPage(root);
+  }
+
+  /** Opens the menu, waits for the main list, and shows the subagent page. */
+  async function openSubagentPage(root: ParentNode, ready: string) {
+    await openChatPage(root, ready);
+    showSubagentPage(root);
   }
 
   for (const surface of ["panel", "standalone"] as const) {
-    it(`switches Main | Reader in the ${surface} menu, picks an API reader, and keeps it`, async function () {
+    it(`opens the subagent page in the ${surface} menu, picks an API subagent, and keeps it`, async function () {
       const root: ParentNode =
         surface === "panel"
           ? await renderPanel()
@@ -213,37 +247,13 @@ describe("workflow: reader model picker in the model menu", function () {
           Boolean(menu(root).querySelector(`[data-entry-id="${ALPHA.id}"]`)),
         "the main list must render",
       );
-      // The switch is the first row, with two equal tabs; Main is active.
-      const switchRow = menu(root).firstElementChild as HTMLElement;
-      assert.isTrue(switchRow.classList.contains("llm-model-menu-switch"));
-      assert.deepEqual(
-        all<HTMLButtonElement>(switchRow, "button").map((b) =>
-          b.textContent?.trim(),
-        ),
-        ["Main", "Reader"],
-      );
-      assert.isTrue(tab(root, "main").classList.contains("active"));
-      assert.equal(
-        getComputedStyle(switchRow).position,
-        "sticky",
-        "the switch stays at the top while the list scrolls",
-      );
-      const first = tab(root, "main").getBoundingClientRect();
-      const second = tab(root, "reader").getBoundingClientRect();
-      assert.approximately(first.width, second.width, 1, "equal tabs");
-      assert.approximately(
-        switchRow.getBoundingClientRect().width,
-        menu(root).clientWidth - 12,
-        3,
-        "the switch spans the menu",
-      );
-      // Main keeps today's list: the main model's options, no reader rows.
+      assertChatPage(root);
+      // The chat page keeps today's list: the main model's options.
       assert.isOk(menu(root).querySelector(`[data-entry-id="${BETA.id}"]`));
-      assert.lengthOf(readerOptions(root), 0);
 
-      // Reader: Same as main, then the API models; the Agent has no own ones.
-      tab(root, "reader").click();
-      assert.lengthOf(menu(root).querySelectorAll("[data-entry-id]"), 0);
+      // Subagent page: Same as main agent, then the API models; the Agent has
+      // no own ones.
+      showSubagentPage(root);
       assert.isOk(menu(root).querySelector('[data-reader-option="same"]'));
       assert.deepEqual(
         all<HTMLElement>(menu(root), "[data-reader-entry-id]").map(
@@ -257,51 +267,60 @@ describe("workflow: reader model picker in the model menu", function () {
         ["same"],
       );
 
-      // Picking closes the menu, leaves the button text, and names the
-      // reader in the tooltip only.
+      // Picking keeps the menu open on the chat page, leaves the button
+      // text, shows the pick on the card, and names the subagent in the
+      // tooltip only.
       menu(root)
         .querySelector<HTMLButtonElement>(
           `[data-reader-entry-id="${BETA.id}"]`,
         )!
         .click();
-      assert.isFalse(isOpen(root), "picking closes the menu");
+      assert.isTrue(isOpen(root), "picking keeps the menu open");
+      assertChatPage(root);
+      assert.include(subagentCard(root).textContent, BETA.model);
       assert.equal(modelButton(root).textContent, labelBefore);
       assert.notInclude(modelButton(root).textContent, BETA.model);
       // The layout pass applies the tooltip on the next frame.
       await waitFor(
         () => tooltipReaderLine(root).includes(BETA.model),
-        "the tooltip must name the reader",
+        "the tooltip must name the subagent",
       );
-      assert.match(tooltipReaderLine(root), /^Reader: .+ · /);
+      assert.match(tooltipReaderLine(root), /^Subagent: .+ · /);
       assert.equal(
         pref("readerChoiceAgent"),
         surface === "panel" ? `entry:${BETA.id}` : "",
         "the sidebar saves the pick; the window keeps its own",
       );
 
-      // Reopening starts on Main; the pick is still there on Reader.
-      await openReaderTab(root, `[data-entry-id="${ALPHA.id}"]`);
+      // The pick is still there on the subagent page. The back row returns
+      // to the chat page with the main list.
+      showSubagentPage(root);
       assert.deepEqual(
         selectedReader(root).map((option) => option.dataset.readerEntryId),
         [BETA.id],
       );
-      // Same as main clears it.
+      backRow(root).click();
+      assertChatPage(root);
+      assert.isOk(menu(root).querySelector(`[data-entry-id="${ALPHA.id}"]`));
+      // Same as main agent clears it.
+      showSubagentPage(root);
       menu(root)
         .querySelector<HTMLButtonElement>('[data-reader-option="same"]')!
         .click();
-      assert.isFalse(isOpen(root));
+      assert.isTrue(isOpen(root));
+      assertChatPage(root);
       await waitFor(
         () => tooltipReaderLine(root) === "",
-        "the tooltip must drop the reader line",
+        "the tooltip must drop the subagent line",
       );
       assert.equal(modelButton(root).textContent, labelBefore);
       if (surface === "panel") assert.equal(pref("readerChoiceAgent"), "");
     });
   }
 
-  it("keeps the sidebar's reader across a remount, and reads a deleted entry as Same as main", async function () {
+  it("keeps the sidebar's subagent across a remount, and reads a deleted entry as Same as main agent", async function () {
     const root = await renderPanel();
-    await openReaderTab(root, `[data-entry-id="${ALPHA.id}"]`);
+    await openSubagentPage(root, `[data-entry-id="${ALPHA.id}"]`);
     menu(root)
       .querySelector<HTMLButtonElement>(`[data-reader-entry-id="${BETA.id}"]`)!
       .click();
@@ -315,15 +334,15 @@ describe("workflow: reader model picker in the model menu", function () {
     )!;
     await waitFor(
       () => tooltipReaderLine(restored).includes(BETA.model),
-      "the remounted panel names the saved reader",
+      "the remounted panel names the saved subagent",
     );
-    await openReaderTab(restored, `[data-entry-id="${ALPHA.id}"]`);
+    await openSubagentPage(restored, `[data-entry-id="${ALPHA.id}"]`);
     assert.deepEqual(
       selectedReader(restored).map((option) => option.dataset.readerEntryId),
       [BETA.id],
     );
 
-    // The reader's model entry is deleted in settings.
+    // The subagent's model entry is deleted in settings.
     Zotero.Prefs.set(
       PREFIX + "modelProviderGroups",
       providerGroups([ALPHA, ALPHA_2]),
@@ -338,7 +357,7 @@ describe("workflow: reader model picker in the model menu", function () {
       "the panel renders",
     );
     assert.equal(tooltipReaderLine(reopened), "");
-    await openReaderTab(reopened, `[data-entry-id="${ALPHA.id}"]`);
+    await openSubagentPage(reopened, `[data-entry-id="${ALPHA.id}"]`);
     assert.deepEqual(
       selectedReader(reopened).map((option) => option.dataset.readerOption),
       ["same"],
@@ -346,7 +365,7 @@ describe("workflow: reader model picker in the model menu", function () {
   });
 
   for (const surface of ["panel", "standalone"] as const) {
-    it(`lists Codex's own models then the API models on Reader in the ${surface}, with a reader kept per runtime`, async function () {
+    it(`lists Codex's own models then the API models on the subagent page in the ${surface}, with a subagent kept per runtime`, async function () {
       if (surface === "panel")
         Zotero.Prefs.set(PREFIX + "conversationSystem", "codex", true);
       const root: ParentNode =
@@ -356,7 +375,7 @@ describe("workflow: reader model picker in the model menu", function () {
       const labelBefore = modelButton(root).textContent;
       assert.include(labelBefore, CODEX_MAIN.model);
 
-      await openReaderTab(
+      await openSubagentPage(
         root,
         `[data-entry-id="codex_app_server::${CODEX_READER.model}"]`,
       );
@@ -378,7 +397,7 @@ describe("workflow: reader model picker in the model menu", function () {
       assert.deepEqual(
         kinds.filter((kind, index) => kind !== kinds[index - 1]),
         ["same", "codex", "api"],
-        "Same as main, then the runtime's models, then the API models",
+        "Same as main agent, then the runtime's models, then the API models",
       );
 
       menu(root)
@@ -386,11 +405,12 @@ describe("workflow: reader model picker in the model menu", function () {
           `[data-reader-model="${CODEX_READER.model}"]`,
         )!
         .click();
-      assert.isFalse(isOpen(root));
+      assert.isTrue(isOpen(root));
+      assertChatPage(root);
       assert.equal(modelButton(root).textContent, labelBefore);
       await waitFor(
         () => tooltipReaderLine(root).includes(`Codex · ${CODEX_READER.model}`),
-        "the tooltip must name the Codex reader",
+        "the tooltip must name the Codex subagent",
       );
       assert.equal(
         pref("readerChoiceCodex"),
@@ -399,7 +419,7 @@ describe("workflow: reader model picker in the model menu", function () {
       assert.equal(
         pref("readerChoiceAgent"),
         "",
-        "the Agent's reader is its own",
+        "the Agent's subagent is its own",
       );
 
       // Back on the Agent runtime the Codex pick does not carry over.
@@ -412,7 +432,7 @@ describe("workflow: reader model picker in the model menu", function () {
         );
         await waitFor(
           () => tooltipReaderLine(agentRoot) === "",
-          "the Agent has no reader",
+          "the Agent has no subagent",
         );
       } else {
         await api.pickStandaloneRuntime("upstream");
@@ -422,12 +442,12 @@ describe("workflow: reader model picker in the model menu", function () {
         );
         await waitFor(
           () => tooltipReaderLine(root) === "",
-          "the Agent has no reader",
+          "the Agent has no subagent",
         );
         await api.pickStandaloneRuntime("codex");
         await waitFor(
           () => tooltipReaderLine(root).includes(CODEX_READER.model),
-          "the window keeps its Codex reader",
+          "the window keeps its Codex subagent",
         );
       }
     });

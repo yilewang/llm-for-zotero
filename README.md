@@ -557,6 +557,12 @@ planned for future deprecation after app-server validation.
 `Codex App Server` and `Claude Code` are mutually exclusive runtime modes in the
 Agent tab. Disable one before enabling the other.
 
+Codex context usage uses the runtime-reported window and the latest model
+request's input-token count when available. Reopening a chat keeps its last
+recorded window as an estimate until new usage arrives. Older chats may show
+a fallback estimate until the next turn; cumulative billed tokens are not
+the active context size.
+
 ### Codex Auth (Legacy)
 
 Existing users can keep the legacy direct backend configuration:

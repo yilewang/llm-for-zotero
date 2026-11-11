@@ -2,6 +2,7 @@ import { appLogger } from "../../core/logging";
 import { t } from "../../utils/i18n";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { getCurrentLocalTimestamp } from "./textUtils";
+import { projectMarkdownToPlainLines } from "./markdownPlainText";
 import { sanitizeText, escapeNoteHtml } from "../../utils/textSanitization";
 import { normalizeSelectedTextSource } from "../../services/context/normalizers";
 import { normalizeAttachmentContentHash } from "../../services/context/normalizers";
@@ -421,18 +422,65 @@ function stripTrailingPluginFooter(text: string): string {
   );
 }
 
+const NOTE_QUESTION_TITLE_MAX_LENGTH = 120;
+
+/**
+ * Title text for a note: the first non-empty line of the question as plain
+ * text, whitespace collapsed, cut to 120 characters. `isWholeQuestion` is
+ * false when the question has more lines or the line was cut.
+ */
+function buildNoteQuestionTitle(questionMarkdown: string | undefined): {
+  titleHtml: string;
+  isWholeQuestion: boolean;
+} {
+  const lines = projectMarkdownToPlainLines(questionMarkdown)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const first = lines[0] || "";
+  if (!first) return { titleHtml: "", isWholeQuestion: true };
+  const cut = first.length > NOTE_QUESTION_TITLE_MAX_LENGTH;
+  const title = cut
+    ? `${first.slice(0, NOTE_QUESTION_TITLE_MAX_LENGTH - 1).trimEnd()}…`
+    : first;
+  return {
+    titleHtml: escapeNoteHtml(title),
+    isWholeQuestion: lines.length === 1 && !cut,
+  };
+}
+
 function wrapAssistantNoteHtml(
   responseHtml: string,
   queryHtml: string,
   source: string,
   timestamp: string,
+  questionMarkdown?: string,
+  headingLevel: 1 | 2 = 1,
+  expandedQuestion = "",
 ): string {
+  const { titleHtml, isWholeQuestion: titleHoldsQuestion } =
+    buildNoteQuestionTitle(questionMarkdown);
+  // Quote expansion adds passages the title cannot show; keep them.
+  const isWholeQuestion =
+    titleHoldsQuestion &&
+    (questionMarkdown || "").trim() === expandedQuestion.trim();
+  // Zotero derives the native title from the first text block. When the note
+  // has a question, it leads as a heading (followed by the full question in a
+  // blockquote if the heading does not hold all of it), then the response,
+  // then the provenance lines. Without a question, the response leads and a
+  // "User query:" block follows the provenance lines.
+  const provenance = `<p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><p><strong>${escapeNoteHtml(timestamp)}</strong></p>`;
+  if (titleHtml) {
+    const quote =
+      !isWholeQuestion && queryHtml
+        ? `<blockquote>${queryHtml}</blockquote>`
+        : "";
+    return `<h${headingLevel}>${titleHtml}</h${headingLevel}>${quote}<div>${responseHtml}</div>${provenance}${NOTE_FOOTER_HTML}`;
+  }
   const queryBlock = queryHtml
     ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
     : "";
-  // Zotero derives the native title from the first text block. Keep the
-  // authored content first and retain export provenance after the response.
-  return `<div>${responseHtml}</div><p><strong>Model response:</strong> ${escapeNoteHtml(source)}</p><p><strong>${escapeNoteHtml(timestamp)}</strong></p>${queryBlock}${NOTE_FOOTER_HTML}`;
+  return `<div>${responseHtml}</div>${provenance}${queryBlock}${NOTE_FOOTER_HTML}`;
 }
 
 function buildAssistantNoteHtml(
@@ -442,6 +490,7 @@ function buildAssistantNoteHtml(
   quoteCitations?: QuoteCitation[],
   generatedImagesHtml = "",
   queryText = "",
+  headingLevel: 1 | 2 = 1,
 ): string {
   const query = buildQuoteExpandedMarkdown(
     {
@@ -482,6 +531,9 @@ function buildAssistantNoteHtml(
     queryHtml,
     source,
     timestamp,
+    sanitizeText(queryText || "").trim(),
+    headingLevel,
+    query,
   );
 }
 
@@ -497,6 +549,7 @@ async function buildAssistantNoteHtmlForSave(
     figureRender?: NoteFigureRenderOptions;
     noteSaveOptions?: NotePersistenceSaveOptions;
     timestamp?: string;
+    headingLevel?: 1 | 2;
   } = {},
 ): Promise<string> {
   const query = buildQuoteExpandedMarkdown(
@@ -540,6 +593,9 @@ async function buildAssistantNoteHtmlForSave(
     queryHtml,
     source,
     timestamp,
+    sanitizeText(queryText || "").trim(),
+    options.headingLevel,
+    query,
   );
 }
 
@@ -671,6 +727,9 @@ function formatSelectedTextLabel(
   if (source === "sidechat") {
     return total === 1 ? t("Side chat") : `${t("Side chat")} (${index + 1})`;
   }
+  if (source === "inlineask") {
+    return total === 1 ? t("Inline Ask") : `${t("Inline Ask")} (${index + 1})`;
+  }
   if (total === 1) return "Selected text";
   return `Selected text (${index + 1})`;
 }
@@ -790,6 +849,19 @@ async function normalizeHistoryAttachmentsToSharedBlobs(
     });
   }
   return cloned;
+}
+
+function buildChatHistoryTitle(messages: Message[]): {
+  headingHtml: string;
+  titleText: string;
+} {
+  const firstUser = messages.find((msg) => msg.role === "user");
+  const { titleHtml } = buildNoteQuestionTitle(firstUser?.text);
+  if (!titleHtml) return { headingHtml: "", titleText: "" };
+  return {
+    headingHtml: `<h1>${titleHtml}</h1>`,
+    titleText: decodeNoteHtmlEntities(titleHtml),
+  };
 }
 
 export function buildChatHistoryNotePayload(messages: Message[]): {
@@ -952,11 +1024,14 @@ export function buildChatHistoryNotePayload(
       `<p><strong>${escapeNoteHtml(speaker)}:</strong></p>${renderedBlock}${screenshotHtml}${fileHtml}${generatedImageHtml}`,
     );
   }
-  const noteText = textLines.join("\n\n");
+  const chatTitle = buildChatHistoryTitle(messages);
+  const noteText = [chatTitle.titleText, textLines.join("\n\n")]
+    .filter(Boolean)
+    .join("\n\n");
   const bodyHtml = htmlBlocks.join("<hr/>");
   return {
     noteText,
-    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
+    noteHtml: `${chatTitle.headingHtml}<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
   };
 }
 
@@ -1109,11 +1184,14 @@ async function buildChatHistoryNotePayloadForSave(
       `<p><strong>${escapeNoteHtml(speaker)}:</strong></p>${renderedBlock}${screenshotHtml}${fileHtml}${generatedImageHtml}`,
     );
   }
-  const noteText = textLines.join("\n\n");
+  const chatTitle = buildChatHistoryTitle(messages);
+  const noteText = [chatTitle.titleText, textLines.join("\n\n")]
+    .filter(Boolean)
+    .join("\n\n");
   const bodyHtml = htmlBlocks.join("<hr/>");
   return {
     noteText,
-    noteHtml: `<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
+    noteHtml: `${chatTitle.headingHtml}<p><strong>Chat history saved at ${escapeNoteHtml(timestamp)}</strong></p><div>${bodyHtml}</div>${NOTE_FOOTER_HTML}`,
   };
 }
 
@@ -1320,7 +1398,10 @@ export async function createNoteFromAssistantText(
   const generatedImages = normalizeEmbeddableGeneratedImages(
     options.generatedImages,
   );
-  const buildHtml = async (noteId?: number): Promise<string> => {
+  const buildHtml = async (
+    noteId?: number,
+    headingLevel?: 1 | 2,
+  ): Promise<string> => {
     const generatedImagesHtml =
       noteId && generatedImages.length
         ? await buildGeneratedImagesHtmlForNote(generatedImages, noteId)
@@ -1335,6 +1416,7 @@ export async function createNoteFromAssistantText(
       {
         noteId,
         figureRender: options.figureRender,
+        headingLevel,
       },
     );
   };
@@ -1345,7 +1427,7 @@ export async function createNoteFromAssistantText(
     const existingNote = getTrackedAssistantNoteForParent(parentId);
     if (existingNote) {
       try {
-        const html = await buildHtml(existingNote.id);
+        const html = await buildHtml(existingNote.id, 2);
         const appendedHtml = appendNoteHtml(existingNote.getNote() || "", html);
         // Verified write: a silently lost saveTx (the #327 failure class)
         // throws here, falling through to create a new note instead of

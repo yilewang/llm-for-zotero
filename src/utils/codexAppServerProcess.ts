@@ -1557,7 +1557,18 @@ export function waitForCodexAppServerTurnCompletion(params: {
       });
     };
     const emitUsage = (usage: UsageStats) => {
+      // Billing counters below are cumulative/delta values. The context gauge
+      // instead needs the absolute input size of the most recent model request.
+      const contextUsage =
+        usage.contextWindowIsAuthoritative === true
+          ? {
+              contextTokens: usage.contextTokens,
+              contextWindow: usage.contextWindow,
+              contextWindowIsAuthoritative: true,
+            }
+          : {};
       const nextUsage: UsageStats = {
+        ...contextUsage,
         promptTokens: Math.max(0, usage.promptTokens || 0),
         completionTokens: Math.max(0, usage.completionTokens || 0),
         totalTokens: Math.max(0, usage.totalTokens || 0),
@@ -1601,10 +1612,15 @@ export function waitForCodexAppServerTurnCompletion(params: {
           (nextUsage.cacheMissTokens || 0) -
             (lastEmittedUsageTotals.cacheMissTokens || 0),
         );
+        const contextChanged =
+          nextUsage.contextWindowIsAuthoritative === true &&
+          (nextUsage.contextTokens !== lastEmittedUsageTotals.contextTokens ||
+            nextUsage.contextWindow !== lastEmittedUsageTotals.contextWindow);
         lastEmittedUsageTotals = nextUsage;
-        if (deltaTotal <= 0) return;
+        if (deltaTotal <= 0 && !contextChanged) return;
         Promise.resolve(
           onUsage?.({
+            ...contextUsage,
             promptTokens: deltaPrompt,
             completionTokens: deltaCompletion,
             totalTokens: deltaTotal,
@@ -2028,6 +2044,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
         const notification = rawParams as {
           turnId?: unknown;
           tokenUsage?: {
+            modelContextWindow?: unknown;
             last?: {
               totalTokens?: unknown;
               inputTokens?: unknown;
@@ -2058,10 +2075,26 @@ export function waitForCodexAppServerTurnCompletion(params: {
         const completionTokens =
           typeof usage.outputTokens === "number" ? usage.outputTokens : 0;
         if (totalTokens <= 0) return;
+        const contextWindow = notification.tokenUsage?.modelContextWindow;
+        const contextTokens = notification.tokenUsage?.last?.inputTokens;
+        const hasRuntimeContext =
+          typeof contextWindow === "number" &&
+          Number.isFinite(contextWindow) &&
+          contextWindow > 0 &&
+          typeof contextTokens === "number" &&
+          Number.isFinite(contextTokens) &&
+          contextTokens > 0;
         emitUsage({
           promptTokens,
           completionTokens,
           totalTokens,
+          ...(hasRuntimeContext
+            ? {
+                contextTokens,
+                contextWindow,
+                contextWindowIsAuthoritative: true,
+              }
+            : {}),
           ...extractContextCacheUsage({
             inputTokens: promptTokens,
             prompt_tokens_details:

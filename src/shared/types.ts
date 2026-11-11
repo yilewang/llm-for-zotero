@@ -9,7 +9,9 @@ export type SelectedTextSource =
   | "note"
   | "note-edit"
   /** A side chat's transcript attached to the main chat. */
-  | "sidechat";
+  | "sidechat"
+  /** Inline Ask turns handed to a Claude Code or Codex app-server chat. */
+  | "inlineask";
 
 export type ChatAttachmentCategory =
   | "image"

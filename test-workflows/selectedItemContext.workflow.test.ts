@@ -203,21 +203,53 @@ describe("workflow: selected item context send", function () {
         assert.equal(initial.conversationSystem, "upstream");
         assertDualRuntimeControls(initial);
         // 380px is the narrow end of the range the sidebar is actually used at,
-        // and still inside the compact header breakpoint, so the icon-only
-        // assertions below stay meaningful. The mode chip scales with
-        // --llm-font-scale by design; the fixed furniture around it (20px
-        // history buttons, 54px runtime toggles, 96px action icons, gaps) leaves
-        // roughly 160px for the chip here against the ~149px it needs at scale
-        // 1.8. Drag the pane below about 363px at that scale and the chip does
-        // outgrow its grid column and overlap the action icons — accepted
-        // behaviour, unchanged since v3.8.28, and not worth freezing the label
-        // at every width to avoid.
+        // and inside the folded header stages, so the icon-only assertions
+        // below stay meaningful. The Stacked header is a capsule: the mode chip
+        // and two 22px runtime circles (22 + 2 + 22 = 46px for the toggles),
+        // between 28px (24px when compact) history and action boxes. The chip
+        // uses a fixed 12px label here, so the capsule is one width at every
+        // plugin font scale (--llm-font-scale 1.8 included) and the row
+        // picks the same stage.
+        // The header row picks its stage on the next frame (or after a 100ms
+        // fallback), later than the 50ms the measurement waits. Apply the
+        // width and scale first and wait for the stage to hold still, so the
+        // measurement reads the settled header.
+        const panelBody = Zotero.getMainWindow().document.querySelector(
+          `[data-workflow-panel-id="${panel.panelId}"]`,
+        ) as HTMLElement;
+        const navRow = panelBody.querySelector(
+          ".llm-header-nav-row",
+        ) as HTMLElement;
+        const panelRoot = panelBody.querySelector("#llm-main") as HTMLElement;
+        panelBody.style.width = "380px";
+        panelRoot.style.setProperty("--llm-font-scale", "1.8");
+        let lastFit = "";
+        let steady = 0;
+        const settleDeadline = Date.now() + 8000;
+        while (steady < 4 && Date.now() < settleDeadline) {
+          await Zotero.Promise.delay(50);
+          const fit = navRow.dataset.fit || "";
+          steady = fit && fit === lastFit ? steady + 1 : 0;
+          lastFit = fit;
+        }
+        assert.isAtLeast(steady, 4, "the header row settles on a stage");
         const geometry = await api.measurePanelRuntimeGeometry(panel.panelId, {
           width: 380,
           fontScale: 1.8,
         });
+        // The measurement restores the values it finds, which are ours.
+        panelBody.style.width = "";
+        panelRoot.style.removeProperty("--llm-font-scale");
         assert.closeTo(geometry.containerWidth, 376, 4);
-        assert.isAtLeast(geometry.runtimeWidth, 50, JSON.stringify(geometry));
+        assert.isAtLeast(geometry.runtimeWidth, 46, JSON.stringify(geometry));
+        assert.isAtLeast(
+          geometry.runtimeButtonWidths.length,
+          2,
+          JSON.stringify(geometry),
+        );
+        for (const buttonWidth of geometry.runtimeButtonWidths) {
+          assert.closeTo(buttonWidth, 22, 0.5, JSON.stringify(geometry));
+        }
         assert.isFalse(
           geometry.runtimeIntersectsLeadingContent,
           JSON.stringify(geometry),

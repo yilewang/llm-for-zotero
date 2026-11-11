@@ -456,6 +456,51 @@ function normalizePositiveInt(value: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
+/**
+ * Every page of a range from 1, in order. No cap: a read too large for the
+ * context returns its page map, as a page list given as an array does.
+ */
+function expandPageRange(
+  start: number,
+  end: number,
+  pushPage: (pageNumber: number) => void,
+): void {
+  const lower = Math.max(1, Math.min(start, end));
+  const upper = Math.max(lower, Math.max(start, end));
+  for (let page = lower; page <= upper; page += 1) {
+    pushPage(page);
+  }
+}
+
+/** A page number from 1, or a range of them (hyphen or dash). */
+const BARE_PAGE_TOKEN = /^(\d+)(?:\s*[-–—]\s*(\d+))?$/;
+
+/**
+ * Pages written as bare numbers, as a tool argument gives them: "4",
+ * "4-5" (hyphen or dash), "4, 5", or a comma list of those. Null for any
+ * other text, or for a page 0.
+ */
+function parseBarePageList(text: string): ParsedPageSelection | null {
+  const tokens = sanitizeText(text)
+    .split(",")
+    .map((token) => token.trim());
+  if (!tokens.length || tokens.some((token) => !BARE_PAGE_TOKEN.test(token)))
+    return null;
+  const pages = new Set<number>();
+  for (const token of tokens) {
+    const [, from, to] = token.match(BARE_PAGE_TOKEN)!;
+    const start = Number.parseInt(from, 10);
+    const end = to === undefined ? start : Number.parseInt(to, 10);
+    if (start < 1 || end < 1) return null;
+    expandPageRange(start, end, (page) => pages.add(page - 1));
+  }
+  const pageIndexes = Array.from(pages).sort((left, right) => left - right);
+  return {
+    pageIndexes,
+    displayValue: formatPageSelectionValue(pageIndexes),
+  };
+}
+
 function extractNumericPageRanges(text: string): number[] {
   const normalized = sanitizeText(text).toLowerCase();
   if (!normalized) return [];
@@ -478,11 +523,7 @@ function extractNumericPageRanges(text: string): number[] {
       const start = Number.parseInt(rangeMatch[1], 10);
       const end = Number.parseInt(rangeMatch[2], 10);
       if (Number.isFinite(start) && Number.isFinite(end)) {
-        const lower = Math.max(1, Math.min(start, end));
-        const upper = Math.max(lower, Math.max(start, end));
-        for (let page = lower; page <= upper && page - lower < 12; page += 1) {
-          pushPage(page);
-        }
+        expandPageRange(start, end, pushPage);
       }
       return;
     }
@@ -514,6 +555,11 @@ export function parsePageSelectionText(
   };
 }
 
+/**
+ * Pages a tool argument names, as 0-based indexes: page numbers from 1 as
+ * an array, a number, bare text ("4", "4-5", "4, 5"), or text with a page
+ * prefix ("pages 4-5", "pp. 4-5"). Null when it names none.
+ */
 export function parsePageSelectionValue(
   value: unknown,
 ): ParsedPageSelection | null {
@@ -538,7 +584,7 @@ export function parsePageSelectionValue(
     };
   }
   if (typeof value !== "string") return null;
-  return parsePageSelectionText(value);
+  return parseBarePageList(value) ?? parsePageSelectionText(value);
 }
 
 export function formatPageSelectionValue(pageIndexes: number[]): string {

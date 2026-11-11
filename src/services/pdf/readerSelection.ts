@@ -130,3 +130,40 @@ export function getFirstSelectionFromReader(
   }
   return getSelectionPopupTextFromReader(reader, normalize);
 }
+
+/**
+ * Closes Zotero's text selection popup and keeps the text selection.
+ *
+ * Zotero's reader has no public call for this. Its views open and close the
+ * popup through the internal reader's state (`primaryViewSelectionPopup` or
+ * `secondaryViewSelectionPopup`), and `focusView` clears it the same way;
+ * this sets that state to null for the view that holds `popup`. The reader
+ * then also clears the view's own copy, so a scroll does not show the popup
+ * again. Returns false and changes nothing when that state is not there
+ * (another reader version) or the reader throws.
+ */
+export function closeReaderSelectionPopup(
+  reader: any,
+  popup: Element | null,
+): boolean {
+  try {
+    const unwrap = (value: any): any => value?.wrappedJSObject || value;
+    const internal = unwrap(reader?._internalReader);
+    if (!internal || typeof internal._updateState !== "function") return false;
+    const key = popup?.closest?.(".secondary-view")
+      ? "secondaryViewSelectionPopup"
+      : "primaryViewSelectionPopup";
+    const state = unwrap(internal._state);
+    if (!state || !(key in state) || !state[key]) return false;
+    // Built in the reader's own realm: reader code cannot read the
+    // properties of a plugin-side object.
+    const readerJSON = unwrap(reader?._iframeWindow)?.JSON;
+    const update = readerJSON
+      ? readerJSON.parse(JSON.stringify({ [key]: null }))
+      : { [key]: null };
+    internal._updateState(update);
+    return true;
+  } catch {
+    return false;
+  }
+}

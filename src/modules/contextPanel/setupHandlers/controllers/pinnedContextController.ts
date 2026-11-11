@@ -46,11 +46,12 @@ function cleanupPinnedOwnerIfEmpty(
 
 function normalizeTextSource(
   source: SelectedTextContext["source"],
-): "pdf" | "model" | "note" | "note-edit" | "sidechat" {
+): "pdf" | "model" | "note" | "note-edit" | "sidechat" | "inlineask" {
   if (source === "model") return "model";
   if (source === "note") return "note";
   if (source === "note-edit") return "note-edit";
   if (source === "sidechat") return "sidechat";
+  if (source === "inlineask") return "inlineask";
   return "pdf";
 }
 

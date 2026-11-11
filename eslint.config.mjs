@@ -87,7 +87,6 @@ export default zotero({
     },
     {
       files: [
-        "test/**/*.test.ts",
         "test-workflows/**/*.test.ts",
         "test-live/**/*.test.ts",
         "test-isolated/**/*.test.ts",
