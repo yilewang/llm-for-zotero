@@ -530,6 +530,7 @@ export type WorkflowTestReaderInlineAskMath = {
   /** True when a `$` shows in the answer text outside code. */
   literalDollarOutsideCode: boolean;
   codeTexts: string[];
+  katexStyleCount: number;
   katexLinkCount: number;
   mathStyleCount: number;
   /** Rules in the KaTeX stylesheet; 0 means it did not load. */
