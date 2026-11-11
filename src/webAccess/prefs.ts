@@ -6,12 +6,14 @@ export type { WebAccessProviderId } from "./types";
 
 export const TAVILY_API_KEY_PREF = `${config.prefsPrefix}.tavilyApiKey`;
 export const ANYSEARCH_API_KEY_PREF = `${config.prefsPrefix}.anysearchApiKey`;
+export const KEENABLE_API_KEY_PREF = `${config.prefsPrefix}.keenableApiKey`;
 export const WEB_ACCESS_PROVIDER_PREF = `${config.prefsPrefix}.webAccessProvider`;
 
 const PROVIDERS: readonly WebAccessProviderId[] = [
   "tavily",
   "anysearch",
   "deepseek",
+  "keenable",
 ];
 
 /** The saved choice; unknown values (including an old "auto") read as "tavily". */
@@ -35,6 +37,7 @@ export function setWebAccessProvider(value: WebAccessProviderId): void {
 export function isWebAccessConfigured(): boolean {
   switch (getWebAccessProvider()) {
     case "anysearch":
+    case "keenable":
       return true;
     case "deepseek":
       return Boolean(getDeepSeekSearchCredential());
@@ -45,7 +48,7 @@ export function isWebAccessConfigured(): boolean {
 
 /**
  * Deliberately no environment, model-key, or cross-provider fallback for
- * Tavily and AnySearch. DeepSeek is the one exception: its key comes from an
+ * Tavily, AnySearch and Keenable. DeepSeek is the one exception: its key comes from an
  * official DeepSeek model profile (see deepseekSearchKey.ts).
  */
 export function getAnysearchApiKey(): string {
@@ -58,6 +61,18 @@ export function getAnysearchApiKey(): string {
 
 export function setAnysearchApiKey(value: string): void {
   Zotero.Prefs.set(ANYSEARCH_API_KEY_PREF, value.trim(), true);
+}
+
+export function getKeenableApiKey(): string {
+  try {
+    return String(Zotero.Prefs.get(KEENABLE_API_KEY_PREF, true) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function setKeenableApiKey(value: string): void {
+  Zotero.Prefs.set(KEENABLE_API_KEY_PREF, value.trim(), true);
 }
 
 export function getTavilyApiKey(): string {

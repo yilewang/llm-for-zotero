@@ -62,6 +62,7 @@ declare namespace _ZoteroTypes {
       "tavilyApiKey": string;
       "webAccessProvider": string;
       "anysearchApiKey": string;
+      "keenableApiKey": string;
       "conversationSystem": string;
       "enableCodexAppServerMode": boolean;
       "codexAppServerModel": string;

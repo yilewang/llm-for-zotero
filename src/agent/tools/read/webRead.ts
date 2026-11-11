@@ -66,7 +66,11 @@ const WEB_READ_MAX_MAX_CHARS = 40_000;
 /** Tavily alone extracts the passages that match a query. */
 function readsPassages(): boolean {
   const provider = getWebAccessProvider();
-  return provider !== "anysearch" && provider !== "deepseek";
+  return (
+    provider !== "anysearch" &&
+    provider !== "deepseek" &&
+    provider !== "keenable"
+  );
 }
 
 export function validateWebReadInput(
@@ -96,7 +100,12 @@ export function validateWebReadInput(
     return fail("mode must be one of: passages, outline, sections, full");
   }
   if (!passages) {
-    const name = provider === "deepseek" ? "DeepSeek fetch" : "AnySearch";
+    const name =
+      provider === "deepseek"
+        ? "DeepSeek fetch"
+        : provider === "keenable"
+          ? "Keenable fetch"
+          : "AnySearch";
     if (mode === "passages") {
       return fail(
         `${name} cannot pick passages by query; use mode outline, sections or full.`,
@@ -108,8 +117,8 @@ export function validateWebReadInput(
       )
     ) {
       return fail(
-        provider === "deepseek"
-          ? "DeepSeek fetch accepts only urls, mode, sections, offset and maxChars; query, depth and chunksPerSource are not supported."
+        provider === "deepseek" || provider === "keenable"
+          ? `${name} accepts only urls, mode, sections, offset and maxChars; query, depth and chunksPerSource are not supported.`
           : "AnySearch extraction accepts only urls, mode, sections, offset and maxChars; query, depth and chunksPerSource are not supported.",
       );
     }
@@ -491,6 +500,7 @@ export function createWebReadTool(
           mode && mode !== "passages" ? MODE_SUMMARIES[mode] : "Read web pages";
         if (result.provider === "anysearch") return `${label} · AnySearch`;
         if (result.provider === "deepseek") return `${label} · DeepSeek`;
+        if (result.provider === "keenable") return `${label} · Keenable`;
         const depth = validateObject<Record<string, unknown>>(args)
           ? args.depth
           : undefined;
@@ -578,6 +588,15 @@ export function createWebReadTool(
           ...tool.spec,
           description:
             "Read public URLs returned by web_search in this run with DeepSeek Fetch, which returns each page as Markdown. mode 'full' (default) reads one to five whole pages in pieces, continued with offset; mode 'outline' returns a page's headings with section ids and sizes; mode 'sections' reads the chosen sections of one page. No query-focused extraction or depth. " +
+            READING_STRATEGY,
+          inputSchema: PAGE_ONLY_SCHEMA,
+        };
+      }
+      if (provider === "keenable") {
+        return {
+          ...tool.spec,
+          description:
+            "Read public URLs returned by web_search in this run with Keenable Fetch, which returns each page as Markdown (PDFs as text). mode 'full' (default) reads one to five whole pages in pieces, continued with offset; mode 'outline' returns a page's headings with section ids and sizes; mode 'sections' reads the chosen sections of one page. No query-focused extraction or depth. " +
             READING_STRATEGY,
           inputSchema: PAGE_ONLY_SCHEMA,
         };
