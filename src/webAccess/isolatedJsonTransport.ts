@@ -1,5 +1,6 @@
 /**
- * The shared native transport for JSON web-search APIs (AnySearch, DeepSeek).
+ * The shared native transport for JSON web-search APIs (AnySearch, DeepSeek,
+ * Keenable).
  * Requests run anonymously in a fresh cookie context, never follow redirects,
  * never log bodies, and never parse an error body.
  */
@@ -7,10 +8,11 @@ const TIMEOUT_MS = 60_000;
 const RESPONSE_LIMIT = 1_048_576;
 
 export type IsolatedJsonTransport = (request: {
-  method: "POST";
+  method: "POST" | "GET";
   url: string;
   headers: Record<string, string>;
-  body: string;
+  /** Absent for GET. */
+  body?: string;
   signal: AbortSignal;
 }) => Promise<{ status: number; body: unknown }>;
 

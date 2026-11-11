@@ -14,15 +14,18 @@ import {
  * Web search provider choice, end to end in the real Zotero host: the
  * preferences window renders the card from saved prefs and model profiles,
  * and a real Agent turn sends the tool schemas that follow from them. The
- * chat model is a held fake provider; DeepSeek and OpenRouter are blocked so
- * that the dummy key never leaves the machine and no search is made. Requests
- * through fetch and through Zotero.HTTP.request are both blocked.
+ * chat model is a held fake provider; DeepSeek, Keenable and OpenRouter are
+ * blocked so that the dummy key never leaves the machine and no search is
+ * made. Requests through fetch and through Zotero.HTTP.request are both
+ * blocked.
  *
  * Contract under test:
  * - the default, and an old saved "auto", read as Tavily with only the Tavily
  *   section shown;
  * - choosing DeepSeek shows only the DeepSeek section (profile key masked)
  *   and the Agent searches through DeepSeek;
+ * - choosing Keenable shows only the Keenable section and offers web search
+ *   without a key, with query and result count only;
  * - choosing Tavily again shows only the Tavily section.
  */
 
@@ -31,6 +34,7 @@ declare const Zotero: any;
 const PREF_PREFIX = "extensions.zotero.llmforzotero.";
 const API_BASE = "https://workflow-web-search-provider.invalid/v1";
 const DEEPSEEK_ORIGIN = "https://api.deepseek.com";
+const KEENABLE_ORIGIN = "https://api.keenable.ai";
 const CHAT_GROUP_ID = "workflow-web-search-chat-group";
 const CHAT_ENTRY_ID = "workflow-web-search-chat-model";
 const DEEPSEEK_GROUP_ID = "workflow-web-search-deepseek-group";
@@ -48,6 +52,7 @@ const SAVED_PREF_KEYS = [
   "outputTokenAutoMigrationNoticePending",
   "webAccessProvider",
   "tavilyApiKey",
+  "keenableApiKey",
 ];
 
 type OfferedTool = {
@@ -220,6 +225,7 @@ describe("workflow: web search provider choice", function () {
       anysearch: element("anysearch-settings"),
       deepseek: element("deepseek-search-settings"),
       deepseekKey: element("deepseek-search-key"),
+      keenable: element("keenable-settings"),
     };
   }
 
@@ -231,6 +237,7 @@ describe("workflow: web search provider choice", function () {
       anysearchHidden: view.anysearch?.hidden,
       deepseekHidden: view.deepseek?.hidden,
       deepseekKey: view.deepseekKey?.textContent,
+      keenableHidden: view.keenable?.hidden,
     });
   }
 
@@ -257,10 +264,11 @@ describe("workflow: web search provider choice", function () {
       previousPrefs.set(key, Zotero.Prefs.get(PREF_PREFIX + key, true));
     }
     chat = installHeldChatProvider(API_BASE);
-    // Nothing in this suite may reach DeepSeek or the relay: their hosts get
-    // a local 404 for any request made through the plugin's fetch, and a
-    // rejected request through Zotero.HTTP.request (the DeepSeek search client).
+    // Nothing in this suite may reach DeepSeek, Keenable or the relay: their
+    // hosts get a local 404 for any request made through the plugin's fetch,
+    // and a rejected request through Zotero.HTTP.request (the search clients).
     blocked.push(installHeldChatProvider(DEEPSEEK_ORIGIN));
+    blocked.push(installHeldChatProvider(KEENABLE_ORIGIN));
     blocked.push(installHeldChatProvider("https://openrouter.ai"));
     originalHttpRequest = Zotero.HTTP.request;
     Zotero.HTTP.request = function (
@@ -270,6 +278,7 @@ describe("workflow: web search provider choice", function () {
     ) {
       if (
         String(url).startsWith(DEEPSEEK_ORIGIN) ||
+        String(url).startsWith(KEENABLE_ORIGIN) ||
         String(url).startsWith("https://openrouter.ai")
       ) {
         return Promise.reject(new Error(`blocked in workflow test: ${url}`));
@@ -283,6 +292,7 @@ describe("workflow: web search provider choice", function () {
     Zotero.Prefs.set(PREF_PREFIX + "lastUsedRuntimeMode", "agent", true);
     Zotero.Prefs.set(PREF_PREFIX + "webAccessProvider", "auto", true); // an old saved value
     Zotero.Prefs.set(PREF_PREFIX + "tavilyApiKey", "", true);
+    Zotero.Prefs.set(PREF_PREFIX + "keenableApiKey", "", true);
     setModelProviderGroups([
       chatGroup(),
       deepseekGroup(`${DEEPSEEK_ORIGIN}/v1`),
@@ -305,7 +315,7 @@ describe("workflow: web search provider choice", function () {
     }
   });
 
-  it("defaults to Tavily and offers DeepSeek only when chosen", async function () {
+  it("defaults to Tavily and offers DeepSeek or Keenable only when chosen", async function () {
     await api.reset();
     api.enableLiveAgentSending();
     fixture = await api.createPaperWithPdfFixture({
@@ -329,6 +339,7 @@ describe("workflow: web search provider choice", function () {
     assert.isFalse(view.tavily?.hidden, "the Tavily section is shown");
     assert.isTrue(view.deepseek?.hidden);
     assert.isTrue(view.anysearch?.hidden);
+    assert.isTrue(view.keenable?.hidden);
     const none = await offeredTools(panel, "web-search-tavily-nokey");
     assert.isFalse(none.has("web_search"), "no Tavily key, no web_search");
 
@@ -338,6 +349,7 @@ describe("workflow: web search provider choice", function () {
     assert.isFalse(view.deepseek?.hidden, `DeepSeek: ${describeCard(win)}`);
     assert.isTrue(view.tavily?.hidden);
     assert.isTrue(view.anysearch?.hidden);
+    assert.isTrue(view.keenable?.hidden);
     assert.include(
       view.deepseekKey?.textContent || "",
       "…9876",
@@ -368,14 +380,47 @@ describe("workflow: web search provider choice", function () {
         `web_read has no ${name} on DeepSeek`,
       );
 
+    // Choose Keenable: only its section shows, and it needs no key.
+    chooseProvider(win, "keenable");
+    view = card(win);
+    assert.isFalse(view.keenable?.hidden, `Keenable: ${describeCard(win)}`);
+    assert.isTrue(view.tavily?.hidden);
+    assert.isTrue(view.anysearch?.hidden);
+    assert.isTrue(view.deepseek?.hidden);
+    const keenableTools = await offeredTools(panel, "web-search-keenable");
+    const keenableSearch = keenableTools.get("web_search");
+    assert.isOk(keenableSearch, "web_search is offered without a Keenable key");
+    for (const name of ["depth", "topic", "startDate", "includeDomains"])
+      assert.notProperty(
+        keenableSearch!.parameters?.properties || {},
+        name,
+        `web_search has no ${name} on Keenable`,
+      );
+    assert.deepEqual(keenableSearch!.parameters?.required, ["query", "need"]);
+    assert.include(keenableSearch!.description || "", "Keenable");
+    const keenableRead = Object.keys(
+      keenableTools.get("web_read")?.parameters?.properties || {},
+    );
+    assert.include(keenableRead, "urls", "web_read takes URLs on Keenable");
+    for (const name of ["query", "depth", "chunksPerSource"])
+      assert.notInclude(
+        keenableRead,
+        name,
+        `web_read has no ${name} on Keenable`,
+      );
+
     // Back to Tavily: only its section shows, and it needs its own key.
     chooseProvider(win, "tavily");
     view = card(win);
     assert.isFalse(view.tavily?.hidden, `Tavily: ${describeCard(win)}`);
     assert.isTrue(view.deepseek?.hidden);
     assert.isTrue(view.anysearch?.hidden);
+    assert.isTrue(view.keenable?.hidden);
     const noKey = await offeredTools(panel, "web-search-tavily-again");
-    assert.isFalse(noKey.has("web_search"), "no fallback to DeepSeek");
+    assert.isFalse(
+      noKey.has("web_search"),
+      "no fallback to DeepSeek or Keenable",
+    );
     commitTavilyKey(win, "tvly-workflow-dummy-key");
     const tavilyTools = await offeredTools(panel, "web-search-tavily-key");
     const tavilySearch = tavilyTools.get("web_search");

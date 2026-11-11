@@ -1250,6 +1250,7 @@
                       <html:option value="tavily">Tavily</html:option>
                       <html:option value="anysearch">AnySearch</html:option>
                       <html:option value="deepseek">DeepSeek</html:option>
+                      <html:option value="keenable">Keenable</html:option>
                     </html:select>
                   </html:div>
                 </html:div>
@@ -1335,6 +1336,50 @@
                         DeepSeek account. Queries are limited to 128 characters,
                         including site and date filters. No depth, topic, or
                         query-focused page reading.
+                      </html:span>
+                    </html:div>
+                  </html:div>
+                </html:div>
+                <html:div id="__addonRef__-keenable-settings" hidden="hidden">
+                  <html:div class="llm-pref-field">
+                    <html:label for="__addonRef__-keenable-api-key"
+                      >Keenable API key (optional)</html:label
+                    >
+                    <html:div class="llm-pref-control">
+                      <html:input
+                        id="__addonRef__-keenable-api-key"
+                        class="llm-pref-input"
+                        type="password"
+                        autocomplete="off"
+                      ></html:input>
+                      <html:button
+                        id="__addonRef__-keenable-test"
+                        class="llm-pref-button"
+                        type="button"
+                        >Test search (sends a public query)</html:button
+                      >
+                      <html:span
+                        id="__addonRef__-keenable-status"
+                        class="llm-pref-hint"
+                        role="status"
+                        aria-live="polite"
+                        style="white-space: pre-line"
+                      ></html:span>
+                      <html:span class="llm-pref-hint">
+                        Works without a key; a key from keenable.ai only raises
+                        the rate limits. Saving these settings does not make a
+                        request.
+                      </html:span>
+                      <html:span class="llm-pref-hint">
+                        Keenable receives search queries and requested public
+                        URLs. Keys stay in local Zotero preferences. Do not send
+                        credentials or private library text. No automatic retry
+                        or provider fallback is performed.
+                      </html:span>
+                      <html:span class="llm-pref-hint">
+                        General search and whole-page reading, PDFs included. No
+                        depth, topic, date/domain filters, or query-focused page
+                        reading. Usage credits are not reported.
                       </html:span>
                     </html:div>
                   </html:div>
