@@ -2014,6 +2014,12 @@ export type WorkflowTestApi = {
     liveAuthPath?: string;
   }) => void;
   getCodexDirectCatalogRequests: () => string[];
+  /** Stubs the provider `/models` fetch with an HTTP status and JSON body. */
+  configureModelCatalogFetch: (input: {
+    status: number;
+    body?: unknown;
+  }) => void;
+  getModelCatalogRequests: () => string[];
   configureCodexModelCatalogs: (
     responses: WorkflowTestCodexModelCatalogResponse[],
   ) => void;
