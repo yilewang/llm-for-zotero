@@ -14,6 +14,7 @@ export type SupportedProviderPresetId =
   | "siliconflow"
   | "opencode"
   | "opencode_go"
+  | "atlascloud"
   | "copilot"
   | "ollama"
   | "local_openai";
@@ -296,6 +297,7 @@ const OPENCODE_GO_PATHS = [
   "/inference/go/anthropic/v1",
   "/inference/go/anthropic/v1/messages",
 ];
+const ATLASCLOUD_PATHS = ["/", "/v1", "/v1/chat/completions"];
 const COPILOT_PATHS = ["/", "/chat/completions", "/models"];
 
 const OLLAMA_DEFAULT_PORT = "11434";
@@ -498,6 +500,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     helperText:
       "Subscription plan for a curated set of open coding models, billed on one key.",
     matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_GO_PATHS),
+    supportsEmbeddings: false,
+  },
+  {
+    id: "atlascloud",
+    label: "Atlas Cloud",
+    defaultApiBase: "https://api.atlascloud.ai/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText:
+      "Preset uses Atlas Cloud's OpenAI-compatible chat API base (v1).",
+    matches: makeHostAndPathMatcher(["api.atlascloud.ai"], ATLASCLOUD_PATHS),
     supportsEmbeddings: false,
   },
   {
