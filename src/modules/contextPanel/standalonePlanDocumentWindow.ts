@@ -1,3 +1,4 @@
+import { markStandaloneFlatScope } from "./contentChrome";
 import type { PlanDocument } from "../../agent/documents/types";
 import { HTML_NS } from "../../utils/domHelpers";
 import type { AssistantCitationContext } from "./assistantRichText";
@@ -18,6 +19,7 @@ function renderPlanDocument(
   root.className = "llm-plan-document-window-root";
   const article = doc.createElementNS(HTML_NS, "article") as HTMLElement;
   article.className = "llm-plan-markdown llm-plan-document-window-content";
+  markStandaloneFlatScope(article);
   renderPlanDocumentContent({ doc, root: article, document, citationContext });
   const firstElement = article.firstElementChild;
   const hasOpeningHeading = Boolean(

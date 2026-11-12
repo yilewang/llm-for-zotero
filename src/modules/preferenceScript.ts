@@ -6,6 +6,7 @@ import {
   SIDEBAR_LAYOUT_PREF,
 } from "./contextPanel/sidebarLayout";
 import { config } from "../../package.json";
+import { consumeRequestedPreferencesTab } from "../utils/preferencesStartTab";
 import { t } from "../utils/i18n";
 import { WEBCHAT_TARGETS } from "../webchat/types";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../utils/llmDefaults";
 import { HTML_NS, createElement, el, iconBtn } from "../utils/domHelpers";
 import { registerAddonDialog } from "../utils/dialogRegistry";
+import { getTornChatWindows } from "./contextPanel/tornChatWindows";
 import {
   normalizeMaxTokens,
   normalizeOptionalInputTokenCap,
@@ -35,8 +37,10 @@ import {
   getFirstSelectableModelEntryId,
   getLastUsedModelEntryId,
   getModelProviderGroups,
+  notifyModelProviderGroupsChanged,
   setModelProviderGroups,
   setLastUsedModelEntryId,
+  subscribeModelProviderGroups,
   type ModelProviderAuthMode,
   type CodexDirectProviderGroup,
   type ModelProviderGroup,
@@ -47,6 +51,7 @@ import {
   CUSTOMIZED_MODEL_OPTION_VALUE,
   buildProviderModelSelectRows,
   canFetchProviderModels,
+  formatModelDiscoveryStatusHint,
   providerGroupRequiresApiKey,
   createSelectRebuildGate,
   resolveModelEntryMode,
@@ -66,9 +71,13 @@ import {
 } from "../utils/providerCardModelSection";
 import { describeProviderRow } from "./preferences/providerCards/providerRowHeader";
 import { registerUsagePreferencePanel } from "./preferences/usagePanel";
+import { createDeferredNotifier } from "./preferences/deferredNotifier";
 import {
   getModelCapabilities,
   getModelCatalogStatus,
+  hasModelDiscoveryAdapter,
+  invalidateModelCatalog,
+  isModelCatalogExpired,
   refreshModelCatalog,
   subscribeModelCapabilities,
   type ModelProfileOverride,
@@ -167,6 +176,7 @@ import {
   getMineruCloudModel,
   isMineruForceOcrEnabled,
   getMineruLocalApiBase,
+  getMineruLocalServerCommand,
   getMineruLocalBackend,
   getMineruMode,
   type MineruCloudModel,
@@ -179,6 +189,9 @@ import {
   setMineruCloudModel,
   setMineruForceOcrEnabled,
   setMineruLocalApiBase,
+  setMineruLocalServerCommand,
+  getMineruLocalServerIdleMinutes,
+  setMineruLocalServerIdleMinutes,
   setMineruLocalBackend,
   setMineruMode,
   isGlobalAutoParseEnabled,
@@ -206,6 +219,14 @@ import {
   testMineruLocalConnection,
 } from "../utils/mineruClient";
 import {
+  getMineruServerStatus,
+  startMineruServer,
+  stopMineruServer,
+  onMineruServerStatusChange,
+  syncMineruServerStatus,
+  type MineruServerState,
+} from "../utils/mineruServerManager";
+import {
   MINERU_PARSE_FILTERS_CHANGED_EVENT,
   registerMineruManagerScript,
 } from "./mineruManagerScript";
@@ -215,8 +236,25 @@ import {
 } from "../services/mineru/sync";
 import { getRuntimePlatformInfo } from "../utils/runtimePlatform";
 import {
+  describeLegacyClaudeBridgeRemoval,
+  detectLegacyClaudeBridge,
+  getClaudeBridgeStatus,
+  onClaudeBridgeStatusChange,
+  restartClaudeBridge,
+  type ClaudeBridgeStatus,
+} from "../claudeCode/bridgeProcess";
+import {
   getClaudeAutoCompactThresholdPercent,
+  getClaudeBridgeExtraArgsPref,
+  getClaudeBridgeMode,
+  getClaudeBridgeNodePathPref,
   getClaudeBridgeUrl,
+  getClaudeCliPathPref,
+  getCustomClaudeBridgeUrl,
+  setClaudeBridgeExtraArgsPref,
+  setClaudeBridgeMode,
+  setClaudeBridgeNodePathPref,
+  setClaudeCliPathPref,
   getClaudeConfigSourcePref,
   getClaudeManagedInstructionTemplatePref,
   getClaudePermissionModePref,
@@ -252,6 +290,8 @@ import {
 } from "../claudeCode/permissionModes";
 import {
   getCodexBinaryPathPref,
+  getCodexHomePref,
+  setCodexHomePref,
   getCodexReasoningModePref,
   getCodexRuntimeModelPref,
   isCodexAppServerModeEnabled,
@@ -295,9 +335,11 @@ import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate
 import {
   getTavilyApiKey,
   setTavilyApiKey,
-  getWebAccessProvider,
+  isWebAccessConfigured,
 } from "../webAccess/prefs";
 import { registerWebAccessPreferences } from "./preferences/webAccessPanel";
+import { registerSavedFilesPreferences } from "./preferences/savedFilesPanel";
+import { getAgentFilesRoot } from "../utils/agentFilesDirectory";
 import { TavilyClient } from "../webAccess/tavilyClient";
 import {
   clearLibraryTextIndex,
@@ -394,11 +436,35 @@ function getProviderProfile(index: number): ProviderProfile {
 
 const DEFAULT_AGENT_BRIDGE_URL = "http://127.0.0.1:19787";
 
+/** One plain-language line (plus details on failure) for the Bridge status. */
+export function describeClaudeBridgeStatus(
+  status: ClaudeBridgeStatus,
+  managed: boolean,
+): string {
+  if (!managed) {
+    return "Using your own bridge at the Bridge URL in Advanced. Zotero does not start one.";
+  }
+  switch (status.state) {
+    case "running":
+      return `Running${status.nodeVersion ? ` with Node.js ${status.nodeVersion}` : ""}.`;
+    case "starting":
+      return "Starting…";
+    case "failed":
+      return status.message || "The bridge could not start.";
+    default:
+      return "Not running. It starts when Claude Code mode needs it.";
+  }
+}
+
 function getPresetSelectHelperText(presetId: ProviderPresetId): string {
   if (presetId === "customized") {
     return t(CUSTOMIZED_API_HELPER_TEXT);
   }
-  return `${t(getProviderPreset(presetId).helperText)} ${t("Switch to Customized to edit the URL manually.")}`;
+  const helper = t(getProviderPreset(presetId).helperText);
+  if (presetId === "siliconflow") {
+    return helper;
+  }
+  return `${helper} ${t("Switch to Customized to edit the URL manually.")}`;
 }
 
 function getProtocolOptions(
@@ -519,13 +585,20 @@ function registerLiveProfileEditor(entry: LiveProfileEditor) {
  *
  * Returns the row container and the status line to place under the row.
  */
-function attachProviderModelSelect(args: {
+export function attachProviderModelSelect(args: {
   doc: Document;
   input: HTMLInputElement;
   group: Exclude<ModelProviderGroup, WebChatProviderGroup>;
   modelEntry: ModelProviderModel;
   onModelPicked: (modelId: string) => void;
-}): { container: HTMLElement; statusEl: HTMLElement; refresh: () => void } {
+  onCatalogRefreshed?: () => void;
+}): {
+  container: HTMLElement;
+  refreshBtn?: HTMLButtonElement;
+  statusEl: HTMLElement;
+  refresh: (options?: { force?: boolean }) => void;
+  sync: () => void;
+} {
   const { doc, input, group, modelEntry } = args;
 
   const container = createElement(doc, "div", PROVIDER_MODEL_SLOT_CLASS);
@@ -539,28 +612,64 @@ function attachProviderModelSelect(args: {
   let loading = false;
   let fetchToken = 0;
 
+  const isOnDemandDiscovery = () =>
+    hasModelDiscoveryAdapter({
+      provider: resolveProviderPresetId(group),
+      apiBase: group.apiBase,
+    });
+
+  const usesOnDemandDiscovery = isOnDemandDiscovery();
+  const refreshBtn = usesOnDemandDiscovery
+    ? (doc.createElementNS(HTML_NS, "button") as HTMLButtonElement)
+    : undefined;
+  if (refreshBtn) {
+    refreshBtn.className =
+      "llm-pref-button llm-pref-btn llm-pref-btn--ghost llm-pref-model-refresh";
+    refreshBtn.type = "button";
+    refreshBtn.textContent = t("Refresh");
+    refreshBtn.title = t("Refresh models");
+  }
+
   const readSnapshot = () =>
     getModelCatalogStatus(buildProviderCatalogIdentity(group));
 
-  const requiresApiKey = providerGroupRequiresApiKey(group);
+  const credentialKey = () =>
+    `${group.apiBase.trim().replace(/\/+$/, "")}\u0000${group.apiKey.trim()}`;
+  let lastSyncedCredentialKey = credentialKey();
+  let autoFetchedCredentialKey = readSnapshot() ? lastSyncedCredentialKey : "";
+
+  const requiresApiKey = () => providerGroupRequiresApiKey(group);
 
   const currentStatus = () =>
     resolveProviderModelFetchStatus({
       apiKey: group.apiKey,
       loading,
       snapshot: readSnapshot(),
-      requiresApiKey,
+      requiresApiKey: requiresApiKey(),
     });
 
   // The manual text input takes over while the catalog is unavailable, while
   // "Customized…" is explicitly active, and while the input has focus; the
   // dropdown returns once a catalog exists and the input is idle.
-  const currentMode = () =>
-    resolveModelEntryMode({
+  // For on-demand discovery providers before the first fetch attempt
+  // (readSnapshot() === null), keep the dropdown visible so focusing/clicking
+  // it triggers the on-demand catalog request.
+  const currentMode = () => {
+    const snapshot = readSnapshot();
+    if (
+      isOnDemandDiscovery() &&
+      snapshot === null &&
+      !userCustomized &&
+      doc.activeElement !== input
+    ) {
+      return "select";
+    }
+    return resolveModelEntryMode({
       status: currentStatus(),
       userCustomized,
       inputFocused: doc.activeElement === input,
     });
+  };
 
   const syncModes = () => {
     const manual = currentMode() === "manual";
@@ -606,13 +715,42 @@ function attachProviderModelSelect(args: {
     }
     select.value = desiredValue;
   };
-  // Rewriting the options while the native popup is open crashes Gecko's
-  // popup helper (SelectChild "this.element is null"), so rebuilds triggered
-  // by an async catalog refresh wait until the popup is provably closed.
-  const rebuildGate = createSelectRebuildGate(rewriteOptions);
+  // Rewriting the options or hiding the select while the native popup is open
+  // crashes Gecko's popup helper (SelectChild "this.element is null"), so
+  // rebuilds and mode switches triggered by an async catalog refresh wait
+  // until the popup is provably closed.
+  const rebuildGate = createSelectRebuildGate(() => {
+    syncModes();
+    rewriteOptions();
+  });
   const rebuildOptions = rebuildGate.requestRebuild;
 
   const updateStatus = () => {
+    const needsKey = requiresApiKey();
+    if (refreshBtn) {
+      refreshBtn.disabled = loading || (needsKey && !group.apiKey.trim());
+    }
+    if (isOnDemandDiscovery()) {
+      const hint = formatModelDiscoveryStatusHint({
+        apiKey: group.apiKey,
+        requiresApiKey: needsKey,
+        loading,
+        snapshot: readSnapshot(),
+      });
+      if (hint) {
+        statusEl.textContent = t(hint.text);
+        statusEl.style.color = hint.isError
+          ? "var(--color-error, #d93025)"
+          : "var(--fill-secondary, #888)";
+        statusEl.dataset.error = hint.isError ? "true" : "false";
+        statusEl.style.display = "block";
+      } else {
+        delete statusEl.dataset.error;
+        statusEl.style.display = "none";
+      }
+      rebuildOptions();
+      return;
+    }
     const status = currentStatus();
     if (status.kind === "needs_api_key") {
       statusEl.textContent = t(
@@ -629,11 +767,11 @@ function attachProviderModelSelect(args: {
       // the plain text input, so an error line would only add noise.
       statusEl.style.display = "none";
     }
-    syncModes();
+    rebuildOptions();
   };
 
-  const refreshCatalog = async () => {
-    if (requiresApiKey && !group.apiKey.trim()) {
+  const refreshCatalog = async (options?: { force?: boolean }) => {
+    if (requiresApiKey() && !group.apiKey.trim()) {
       updateStatus();
       return;
     }
@@ -641,13 +779,53 @@ function attachProviderModelSelect(args: {
     loading = true;
     updateStatus();
     try {
-      await refreshModelCatalog(buildProviderCatalogIdentity(group));
+      await refreshModelCatalog(buildProviderCatalogIdentity(group), {
+        force: options?.force,
+      });
     } finally {
       if (token === fetchToken) {
         loading = false;
         rebuildOptions();
         updateStatus();
+        args.onCatalogRefreshed?.();
       }
+    }
+  };
+
+  refreshBtn?.addEventListener("click", () => {
+    void refreshCatalog({ force: true });
+  });
+
+  const triggerSelectorEntryFetch = () => {
+    if (!isOnDemandDiscovery()) {
+      void refreshCatalog();
+      return;
+    }
+    if (loading) return;
+    if (requiresApiKey() && !group.apiKey.trim()) {
+      updateStatus();
+      return;
+    }
+    const currentCredKey = credentialKey();
+    const identity = buildProviderCatalogIdentity(group);
+    const snapshot = readSnapshot();
+    if (
+      snapshot &&
+      !snapshot.stale &&
+      snapshot.models.length > 0 &&
+      !isModelCatalogExpired(identity)
+    ) {
+      autoFetchedCredentialKey = currentCredKey;
+      sync();
+      return;
+    }
+    if (
+      snapshot === null ||
+      !snapshot.error ||
+      autoFetchedCredentialKey !== currentCredKey
+    ) {
+      autoFetchedCredentialKey = currentCredKey;
+      void refreshCatalog();
     }
   };
 
@@ -658,7 +836,12 @@ function attachProviderModelSelect(args: {
   attachCodexDirectCatalogInteractions({
     target: select,
     popupMayOpen: () => rebuildGate.popupMayOpen(),
-    refreshCatalog: () => void refreshCatalog(),
+    refreshCatalog: () => triggerSelectorEntryFetch(),
+  });
+  input.addEventListener("focus", () => {
+    if (isOnDemandDiscovery() && !userCustomized) {
+      triggerSelectorEntryFetch();
+    }
   });
   select.addEventListener("blur", () => rebuildGate.popupClosed());
   const applyModelChoice = (chosenValue: string) => {
@@ -698,15 +881,35 @@ function attachProviderModelSelect(args: {
     if ((event as KeyboardEvent).key === "Enter") input.blur();
   });
 
-  syncModes();
-  rebuildOptions();
-  updateStatus();
-  void refreshCatalog();
+  const sync = () => {
+    const currentCredKey = credentialKey();
+    if (currentCredKey !== lastSyncedCredentialKey) {
+      lastSyncedCredentialKey = currentCredKey;
+      if (loading) {
+        fetchToken += 1;
+        loading = false;
+      }
+      invalidateModelCatalog(buildProviderCatalogIdentity(group));
+    }
+    if (doc.activeElement !== select) {
+      rebuildGate.popupClosed();
+    }
+    syncModes();
+    rebuildOptions();
+    updateStatus();
+  };
+
+  sync();
+  if (!usesOnDemandDiscovery) {
+    void refreshCatalog();
+  }
 
   return {
     container,
+    refreshBtn,
     statusEl,
-    refresh: () => void refreshCatalog(),
+    refresh: (options?: { force?: boolean }) => void refreshCatalog(options),
+    sync,
   };
 }
 
@@ -724,8 +927,27 @@ function cloneGroups(groups: ModelProviderGroup[]): ModelProviderGroup[] {
   });
 }
 
+// Text fields save on every keystroke, and each save used to rebuild every
+// open chat panel. The value is still stored at once; only the notification
+// to open panels waits for a 300 ms pause, a blur, or the window closing.
+const typedGroupsNotifier = createDeferredNotifier({
+  setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimeout: (handle) =>
+    clearTimeout(handle as ReturnType<typeof setTimeout>),
+  notify: notifyModelProviderGroupsChanged,
+  delayMs: 300,
+});
+
 function persistGroups(groups: ModelProviderGroup[]) {
+  // This save notifies, which covers any typed save still waiting.
+  typedGroupsNotifier.cancel();
   setModelProviderGroups(cloneGroups(groups));
+}
+
+/** persistGroups for per-keystroke edits: store now, notify after a pause. */
+function persistGroupsWhileTyping(groups: ModelProviderGroup[]) {
+  setModelProviderGroups(cloneGroups(groups), { notify: false });
+  typedGroupsNotifier.schedule();
 }
 
 function ensureModels(
@@ -1354,6 +1576,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   if (mineruLocalApiBaseEl?.placeholder) {
     mineruLocalApiBaseEl.placeholder = t(mineruLocalApiBaseEl.placeholder);
   }
+  const mineruLocalServerCommandEl = doc.querySelector(
+    `#${config.addonRef}-mineru-local-server-command`,
+  ) as HTMLInputElement | null;
+  if (mineruLocalServerCommandEl?.placeholder) {
+    mineruLocalServerCommandEl.placeholder = t(
+      mineruLocalServerCommandEl.placeholder,
+    );
+  }
   // Translate language dropdown options
   const localeSelectEl = doc.querySelector(
     `#${config.addonRef}-locale-select`,
@@ -1413,7 +1643,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
     }
     // Activate first tab
-    switchTab("models");
+    const requestedTab = consumeRequestedPreferencesTab();
+    switchTab(
+      requestedTab && tabBar.querySelector(`[data-pref-tab="${requestedTab}"]`)
+        ? requestedTab
+        : "models",
+    );
   }
 
   const modelSections = doc.querySelector(
@@ -1424,6 +1659,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLTextAreaElement | null;
   const popupAddTextEnabledInput = doc.querySelector(
     `#${config.addonRef}-popup-add-text-enabled`,
+  ) as HTMLInputElement | null;
+  const popupInlineAskEnabledInput = doc.querySelector(
+    `#${config.addonRef}-popup-inline-ask-enabled`,
   ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
@@ -1481,6 +1719,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   ) as HTMLButtonElement | null;
   const codexAppServerPathInput = doc.querySelector(
     `#${config.addonRef}-codex-app-server-path`,
+  ) as HTMLInputElement | null;
+  const codexHomeInput = doc.querySelector(
+    `#${config.addonRef}-codex-home`,
   ) as HTMLInputElement | null;
   const codexAppServerPathHelper = doc.querySelector(
     `#${config.addonRef}-codex-app-server-path-helper`,
@@ -1540,6 +1781,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   _window.addEventListener("unload", disposeDirectCardControllers, {
     once: true,
   });
+  // Typed provider edits notify open chat panels once the field loses focus
+  // or the window closes, without waiting for the pause.
+  const flushTypedGroups = () => typedGroupsNotifier.flush();
+  modelSections.addEventListener("focusout", flushTypedGroups);
+  _window.addEventListener("unload", flushTypedGroups, { once: true });
 
   // ── Render ────────────────────────────────────────────────────────
 
@@ -1810,7 +2056,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           if (preset.id === "copilot") continue;
           const option = el(doc, "option") as HTMLOptionElement;
           option.value = preset.id;
-          option.textContent = preset.label;
+          option.textContent = t(preset.label);
           option.selected = preset.id === selectedPresetId;
           providerPresetSelect.appendChild(option);
         }
@@ -1865,6 +2111,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         group.authMode !== "codex_app_server" &&
         group.authMode !== "copilot_auth" &&
         !isCustomizedPreset &&
+        selectedPresetId !== "siliconflow" &&
         // Local presets ship a default host and port, but the server may run on
         // another port or another machine on the LAN, so the URL stays editable.
         presetRequiresApiKey;
@@ -1874,11 +2121,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiUrlInput.title = apiUrlInput.readOnly
         ? t("Switch Provider to Customized to edit this URL manually.")
         : "";
+      const modelPickerRefreshers: Array<() => void> = [];
+      const modelPickerSyncers: Array<() => void> = [];
       apiUrlInput.addEventListener("input", () => {
         if (group.authMode === "webchat") return;
+        if (selectedPresetId !== "customized" && !group.presetIdOverride) {
+          group.presetIdOverride = selectedPresetId;
+        }
         group.apiBase = apiUrlInput.value;
-        persistGroups(groups);
+        persistGroupsWhileTyping(groups);
         syncAddProviderBtn();
+        for (const sync of modelPickerSyncers) sync();
       });
       const apiUrlHelper = prefHint(
         doc,
@@ -1909,13 +2162,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       apiKeyInput.value = group.apiKey || "";
       // Model dropdowns register here so a freshly pasted key refetches their
       // catalogs without reopening the pane. Debounced to sit out keystrokes.
-      const modelPickerRefreshers: Array<() => void> = [];
       let modelPickerRefreshTimer: ReturnType<typeof setTimeout> | null = null;
       apiKeyInput.addEventListener("input", () => {
         if (group.authMode === "webchat") return;
         group.apiKey = apiKeyInput.value;
-        persistGroups(groups);
+        persistGroupsWhileTyping(groups);
         syncAddProviderBtn();
+        for (const sync of modelPickerSyncers) sync();
+        if (
+          hasModelDiscoveryAdapter({
+            provider: resolveProviderPresetId(group),
+            apiBase: group.apiBase,
+          })
+        ) {
+          return;
+        }
         if (modelPickerRefreshTimer !== null)
           clearTimeout(modelPickerRefreshTimer);
         modelPickerRefreshTimer = setTimeout(() => {
@@ -2398,10 +2659,19 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               syncAddProviderBtn();
               syncAdvAvailability();
             },
+            onCatalogRefreshed: () => {
+              for (const sync of modelPickerSyncers) sync();
+            },
           });
           pickerStatusEl = picker.statusEl;
           modelPickerRefreshers.push(picker.refresh);
-          mainRow.append(picker.container, testBtn, advGearBtn);
+          modelPickerSyncers.push(picker.sync);
+          mainRow.append(
+            picker.container,
+            ...(picker.refreshBtn ? [picker.refreshBtn] : []),
+            testBtn,
+            advGearBtn,
+          );
         } else {
           mainRow.append(modelInput, testBtn, advGearBtn);
         }
@@ -2457,6 +2727,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         );
         const resolveDetectedProfile = () =>
           getModelCapabilities({
+            // Gateways and local runtimes still need model-family inference.
+            // SiliconFlow needs its identity for catalogs on custom relay URLs.
+            provider:
+              selectedPresetId === "siliconflow" ? selectedPresetId : undefined,
             model: modelEntry.model,
             apiBase: group.apiBase,
             protocol: resolveModelSelectedProtocol(
@@ -2624,7 +2898,8 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             } else {
               delete modelEntry.profileOverride;
             }
-            persistGroups(groups);
+            // The profile editor commits on each keystroke in its fields.
+            persistGroupsWhileTyping(groups);
           },
           classes: {
             input: "llm-pref-input",
@@ -2753,7 +3028,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
           const previousModel = modelEntry.model;
           modelEntry.model = modelInput.value;
           onSelectedModelChanged(previousModel);
-          persistGroups(groups);
+          persistGroupsWhileTyping(groups);
           syncAddModelBtn();
           syncAddProviderBtn();
           syncAdvAvailability();
@@ -3010,6 +3285,22 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     });
   }
 
+  if (popupInlineAskEnabledInput) {
+    const prefValue = Zotero.Prefs.get(
+      `${config.prefsPrefix}.showPopupInlineAsk`,
+      true,
+    );
+    popupInlineAskEnabledInput.checked =
+      prefValue !== false && `${prefValue || ""}`.toLowerCase() !== "false";
+    popupInlineAskEnabledInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.showPopupInlineAsk`,
+        popupInlineAskEnabledInput.checked,
+        true,
+      );
+    });
+  }
+
   if (doc.querySelector(`#${config.addonRef}-library-text-index-section`)) {
     const customizationPanel = doc.querySelector(
       `#${config.addonRef}-pref-panel-customization`,
@@ -3155,6 +3446,18 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         .forEach((n: Element) => push(n as HTMLElement));
       push(
         standaloneWin.document.getElementById(
+          "llmforzotero-standalone-chat-root",
+        ) as HTMLElement | null,
+      );
+    }
+    for (const tornWin of getTornChatWindows()) {
+      const d = tornWin.document;
+      if (!d) continue;
+      d.querySelectorAll("#llm-main").forEach((n: Element) =>
+        push(n as HTMLElement),
+      );
+      push(
+        d.getElementById(
           "llmforzotero-standalone-chat-root",
         ) as HTMLElement | null,
       );
@@ -3444,6 +3747,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         tavilyStatus.style.display = "none";
         tavilyStatus.textContent = "";
       }
+      refreshAgentRowSummaries();
     };
     tavilyApiKeyInput.addEventListener("change", commitTavilyKey);
     tavilyApiKeyInput.addEventListener("blur", commitTavilyKey);
@@ -3769,10 +4073,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       originalOn
         ? [
             selectedOptionLabel(originalAgentPermissionModeSelect),
-            getWebAccessProvider() === "anysearch" ||
-            tavilyApiKeyInput?.value.trim()
-              ? t("Web search on")
-              : t("Web search off"),
+            isWebAccessConfigured() ? t("Web search on") : t("Web search off"),
           ]
         : [t("Off")],
     );
@@ -3809,6 +4110,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         ? [inputValue("notes-dir-nickname") || t("Notes"), notesPath]
         : [t("Not set")],
     );
+    const savedFilesRoot = getAgentFilesRoot();
+    setAgentRowSummary("saved-files", !!savedFilesRoot, [
+      savedFilesRoot || t("Not set"),
+    ]);
   };
 
   for (const row of Array.from(
@@ -3843,6 +4148,12 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     agentPanel.addEventListener("input", onAgentPanelEdit);
   }
   refreshAgentRowSummaries();
+  // A DeepSeek model profile can turn web search on or off.
+  _window.addEventListener(
+    "unload",
+    subscribeModelProviderGroups(() => refreshAgentRowSummaries()),
+    { once: true },
+  );
 
   if (codexAppServerEnableToggle) {
     const applyCodexAppServerUi = (enabled: boolean) => {
@@ -4028,6 +4339,21 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     codexAppServerPathInput.addEventListener("blur", commitCodexPath);
     codexAppServerPathInput.addEventListener("input", () => {
       setCodexBinaryPathPref(codexAppServerPathInput.value);
+    });
+  }
+
+  if (codexHomeInput) {
+    codexHomeInput.value = getCodexHomePref();
+    const commitCodexHome = () => {
+      setCodexHomePref(codexHomeInput.value);
+      codexHomeInput.value = getCodexHomePref();
+      void refreshCodexCatalog();
+      void refreshCodexPermissionOptions();
+    };
+    codexHomeInput.addEventListener("change", commitCodexHome);
+    codexHomeInput.addEventListener("blur", commitCodexHome);
+    codexHomeInput.addEventListener("input", () => {
+      setCodexHomePref(codexHomeInput.value);
     });
   }
 
@@ -4319,20 +4645,174 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     claudeCodeEnableToggle.addEventListener("change", () => {
       const enabled = claudeCodeEnableToggle.checked;
       void applyClaudeCodeModePreferenceChange(enabled, applyAgentBackendUi);
+      // The bridge only starts once the mode is on, so load its lists now.
+      if (enabled) refreshClaudeBridgeConsumers();
+      refreshClaudeBridgeStatusUi();
+      refreshClaudeBridgeLegacyNotice();
     });
   }
 
+  const claudeBridgeUseOwnToggle = doc.querySelector(
+    `#${config.addonRef}-claude-bridge-use-own`,
+  ) as HTMLInputElement | null;
+  const applyClaudeBridgeModeUi = () => {
+    const custom = getClaudeBridgeMode() === "custom";
+    if (claudeBridgeUseOwnToggle) claudeBridgeUseOwnToggle.checked = custom;
+    if (agentBridgeUrlInput) agentBridgeUrlInput.disabled = !custom;
+  };
+  const refreshClaudeBridgeConsumers = () => {
+    void refreshClaudeModelSuggestions(true, true);
+    void refreshClaudePermissionOptions();
+  };
+
   if (agentBridgeUrlInput) {
     agentBridgeUrlInput.value =
-      getClaudeBridgeUrl() || DEFAULT_AGENT_BRIDGE_URL;
+      getCustomClaudeBridgeUrl() || DEFAULT_AGENT_BRIDGE_URL;
     const commitBridgeUrl = () => {
+      if (getCustomClaudeBridgeUrl() === agentBridgeUrlInput.value.trim()) {
+        return;
+      }
       setClaudeBridgeUrl(agentBridgeUrlInput.value);
-      void refreshClaudeModelSuggestions(true, true);
-      void refreshClaudePermissionOptions();
+      refreshClaudeBridgeConsumers();
     };
     agentBridgeUrlInput.addEventListener("change", commitBridgeUrl);
     agentBridgeUrlInput.addEventListener("blur", commitBridgeUrl);
   }
+  if (claudeBridgeUseOwnToggle) {
+    claudeBridgeUseOwnToggle.addEventListener("change", () => {
+      setClaudeBridgeMode(
+        claudeBridgeUseOwnToggle.checked ? "custom" : "managed",
+      );
+      applyClaudeBridgeModeUi();
+      refreshClaudeBridgeStatusUi();
+      refreshClaudeBridgeLegacyNotice();
+      refreshClaudeBridgeConsumers();
+    });
+  }
+  applyClaudeBridgeModeUi();
+
+  const bindClaudeBridgeTextPref = (
+    id: string,
+    read: () => string,
+    write: (value: string) => void,
+  ) => {
+    const input = doc.querySelector(
+      `#${config.addonRef}-${id}`,
+    ) as HTMLInputElement | null;
+    if (!input) return;
+    input.value = read();
+    const commit = () => {
+      if (input.value.trim() === read()) return;
+      write(input.value);
+    };
+    input.addEventListener("change", commit);
+    input.addEventListener("blur", commit);
+  };
+  bindClaudeBridgeTextPref(
+    "claude-bridge-node-path",
+    getClaudeBridgeNodePathPref,
+    setClaudeBridgeNodePathPref,
+  );
+  bindClaudeBridgeTextPref(
+    "claude-bridge-cli-path",
+    getClaudeCliPathPref,
+    setClaudeCliPathPref,
+  );
+  bindClaudeBridgeTextPref(
+    "claude-bridge-extra-args",
+    getClaudeBridgeExtraArgsPref,
+    setClaudeBridgeExtraArgsPref,
+  );
+
+  const claudeBridgeStatusText = doc.querySelector(
+    `#${config.addonRef}-claude-bridge-status`,
+  ) as HTMLSpanElement | null;
+  const claudeBridgeRestartButton = doc.querySelector(
+    `#${config.addonRef}-claude-bridge-restart`,
+  ) as HTMLButtonElement | null;
+  const claudeBridgeOpenLogButton = doc.querySelector(
+    `#${config.addonRef}-claude-bridge-open-log`,
+  ) as HTMLButtonElement | null;
+  function refreshClaudeBridgeStatusUi(): void {
+    const managed = getClaudeBridgeMode() === "managed";
+    const bridgeStatus = getClaudeBridgeStatus();
+    if (claudeBridgeStatusText) {
+      claudeBridgeStatusText.textContent = describeClaudeBridgeStatus(
+        bridgeStatus,
+        managed,
+      );
+    }
+    if (claudeBridgeRestartButton) {
+      claudeBridgeRestartButton.disabled =
+        !isClaudeCodeModeEnabled() ||
+        !managed ||
+        bridgeStatus.state === "starting";
+    }
+    if (claudeBridgeOpenLogButton) {
+      claudeBridgeOpenLogButton.disabled = !managed || !bridgeStatus.logFile;
+    }
+  }
+  refreshClaudeBridgeStatusUi();
+  const claudeBridgeLegacyNotice = doc.querySelector(
+    `#${config.addonRef}-claude-bridge-legacy-notice`,
+  ) as HTMLElement | null;
+  let claudeBridgeWindowClosed = false;
+  _window.addEventListener(
+    "unload",
+    () => {
+      claudeBridgeWindowClosed = true;
+    },
+    { once: true },
+  );
+  function refreshClaudeBridgeLegacyNotice(): void {
+    if (!claudeBridgeLegacyNotice) return;
+    // Someone who uses their own bridge may run it on the old port on purpose.
+    const wanted = () =>
+      isClaudeCodeModeEnabled() && getClaudeBridgeMode() !== "custom";
+    if (!wanted()) {
+      claudeBridgeLegacyNotice.style.display = "none";
+      return;
+    }
+    void detectLegacyClaudeBridge().then((found) => {
+      if (!found || claudeBridgeWindowClosed || !wanted()) {
+        return;
+      }
+      const isMac = getRuntimePlatformInfo().platform === "macos";
+      claudeBridgeLegacyNotice.textContent = "";
+      for (const line of describeLegacyClaudeBridgeRemoval(isMac)) {
+        const row = doc.createElement("div");
+        row.textContent = line || "\u00a0";
+        if (line.startsWith("    ")) row.style.fontFamily = "monospace";
+        claudeBridgeLegacyNotice.appendChild(row);
+      }
+      claudeBridgeLegacyNotice.style.display = "block";
+    });
+  }
+  refreshClaudeBridgeLegacyNotice();
+  const unsubscribeClaudeBridgeStatus = onClaudeBridgeStatusChange(
+    refreshClaudeBridgeStatusUi,
+  );
+  _window.addEventListener("unload", unsubscribeClaudeBridgeStatus, {
+    once: true,
+  });
+  claudeBridgeRestartButton?.addEventListener("click", () => {
+    void restartClaudeBridge()
+      .then(refreshClaudeBridgeConsumers)
+      .catch(() => {
+        // The status line shows the reason.
+      });
+  });
+  claudeBridgeOpenLogButton?.addEventListener("click", () => {
+    const logFile = getClaudeBridgeStatus().logFile;
+    if (!logFile) return;
+    try {
+      (
+        Zotero as unknown as { launchFile?: (path: string) => void }
+      ).launchFile?.(logFile);
+    } catch (error) {
+      ztoolkit.log("LLM: could not open the Claude bridge log", error);
+    }
+  });
 
   const copyTextToClipboard = async (text: string) => {
     const value = text.trim();
@@ -4962,6 +5442,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       });
     }
   }
+
+  // ── Saved files: the agent's folder and its cleanup ─────────────
+  registerSavedFilesPreferences(doc, () => refreshAgentRowSummaries());
 
   // ── Semantic Search settings ───────────────────────────────────
   // Follows the same toggle + sub-settings pattern as MinerU.
@@ -5771,6 +6254,126 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       commitMineruLocalApiBase,
     );
     mineruLocalApiBaseInput.addEventListener("blur", commitMineruLocalApiBase);
+  }
+
+  const mineruLocalServerCommandInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-server-command`,
+  ) as HTMLInputElement | null;
+  const mineruLocalServerManagedContainer = doc.querySelector(
+    `#${config.addonRef}-mineru-local-server-managed-container`,
+  ) as HTMLDivElement | null;
+  const mineruLocalServerIdleMinutesInput = doc.querySelector(
+    `#${config.addonRef}-mineru-local-server-idle-minutes`,
+  ) as HTMLInputElement | null;
+  const mineruLocalServerStatusSpan = doc.querySelector(
+    `#${config.addonRef}-mineru-local-server-status`,
+  ) as HTMLSpanElement | null;
+  const mineruLocalServerToggleBtn = doc.querySelector(
+    `#${config.addonRef}-mineru-local-server-toggle-btn`,
+  ) as HTMLButtonElement | null;
+
+  const syncManagedServerVisibility = () => {
+    if (mineruLocalServerManagedContainer) {
+      const hasCommand = Boolean(getMineruLocalServerCommand());
+      mineruLocalServerManagedContainer.style.display = hasCommand
+        ? "flex"
+        : "none";
+    }
+  };
+  syncManagedServerVisibility();
+
+  if (mineruLocalServerCommandInput) {
+    mineruLocalServerCommandInput.value = getMineruLocalServerCommand();
+    const commitMineruLocalServerCommand = () => {
+      setMineruLocalServerCommand(mineruLocalServerCommandInput.value);
+      mineruLocalServerCommandInput.value = getMineruLocalServerCommand();
+      syncManagedServerVisibility();
+    };
+    mineruLocalServerCommandInput.addEventListener(
+      "change",
+      commitMineruLocalServerCommand,
+    );
+    mineruLocalServerCommandInput.addEventListener(
+      "blur",
+      commitMineruLocalServerCommand,
+    );
+  }
+
+  if (mineruLocalServerIdleMinutesInput) {
+    mineruLocalServerIdleMinutesInput.value = `${getMineruLocalServerIdleMinutes()}`;
+    const commitIdleMinutes = () => {
+      setMineruLocalServerIdleMinutes(
+        Number(mineruLocalServerIdleMinutesInput.value),
+      );
+      mineruLocalServerIdleMinutesInput.value = `${getMineruLocalServerIdleMinutes()}`;
+    };
+    mineruLocalServerIdleMinutesInput.addEventListener(
+      "change",
+      commitIdleMinutes,
+    );
+    mineruLocalServerIdleMinutesInput.addEventListener(
+      "blur",
+      commitIdleMinutes,
+    );
+  }
+
+  const renderManagedServerStatus = (state: MineruServerState) => {
+    if (!mineruLocalServerStatusSpan || !mineruLocalServerToggleBtn) return;
+    switch (state) {
+      case "running":
+        mineruLocalServerStatusSpan.textContent = t("Running");
+        mineruLocalServerStatusSpan.style.color = "green";
+        mineruLocalServerToggleBtn.disabled = false;
+        mineruLocalServerToggleBtn.textContent = t("Stop Server");
+        break;
+      case "starting":
+        mineruLocalServerStatusSpan.textContent = t("Starting…");
+        mineruLocalServerStatusSpan.style.color = "#b45309";
+        mineruLocalServerToggleBtn.disabled = true;
+        mineruLocalServerToggleBtn.textContent = t("Starting…");
+        break;
+      case "stopping":
+        mineruLocalServerStatusSpan.textContent = t("Stopping…");
+        mineruLocalServerStatusSpan.style.color = "#b45309";
+        mineruLocalServerToggleBtn.disabled = true;
+        mineruLocalServerToggleBtn.textContent = t("Stopping…");
+        break;
+      case "stopped":
+      default:
+        mineruLocalServerStatusSpan.textContent = t("Stopped");
+        mineruLocalServerStatusSpan.style.color = "var(--fill-secondary, #888)";
+        mineruLocalServerToggleBtn.disabled = false;
+        mineruLocalServerToggleBtn.textContent = t("Start Server");
+        break;
+    }
+  };
+
+  renderManagedServerStatus(getMineruServerStatus());
+  const unsubscribeStatus = onMineruServerStatusChange((state) =>
+    renderManagedServerStatus(state),
+  );
+  _window?.addEventListener("unload", unsubscribeStatus, { once: true });
+
+  void syncMineruServerStatus(getMineruLocalApiBase());
+
+  if (mineruLocalServerToggleBtn) {
+    mineruLocalServerToggleBtn.addEventListener("click", () => {
+      const current = getMineruServerStatus();
+      if (current === "running") {
+        void stopMineruServer("manual");
+      } else if (current === "stopped") {
+        void startMineruServer(getMineruLocalApiBase(), (stage) => {
+          if (mineruLocalServerStatusSpan) {
+            mineruLocalServerStatusSpan.textContent = stage;
+          }
+        }).catch((err) => {
+          if (mineruLocalServerStatusSpan) {
+            mineruLocalServerStatusSpan.textContent = `\u2717 ${(err as Error).message}`;
+            mineruLocalServerStatusSpan.style.color = "red";
+          }
+        });
+      }
+    });
   }
 
   if (mineruLocalBackendSelect) {

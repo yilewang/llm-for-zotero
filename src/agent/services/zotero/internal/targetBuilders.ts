@@ -149,6 +149,7 @@ export function buildPaperTargetFromItem(
       normalizeText(target.getField?.("date")).match(/\b(19|20)\d{2}\b/)?.[0] ||
       undefined,
     dateAdded: normalizeText(target.getField?.("dateAdded")) || undefined,
+    dateModified: normalizeText(target.getField?.("dateModified")) || undefined,
     attachments,
     tags: getItemTags(target),
     collectionIds: getCollectionIDs(target),
@@ -167,6 +168,7 @@ export function buildItemTargetFromItem(
       itemType: "attachment",
       title,
       dateAdded: normalizeText(item.getField?.("dateAdded")) || undefined,
+      dateModified: normalizeText(item.getField?.("dateModified")) || undefined,
       attachments: [
         {
           contextItemId: item.id,
@@ -191,6 +193,7 @@ export function buildItemTargetFromItem(
       itemType: "note",
       title: rawTitle || `Note ${item.id}`,
       dateAdded: normalizeText(item.getField?.("dateAdded")) || undefined,
+      dateModified: normalizeText(item.getField?.("dateModified")) || undefined,
       attachments: [],
       tags: getItemTags(item),
       collectionIds: getCollectionIDs(item),
@@ -217,6 +220,7 @@ export function buildItemTargetFromItem(
       normalizeText(target.getField?.("date")).match(/\b(19|20)\d{2}\b/)?.[0] ||
       undefined,
     dateAdded: normalizeText(target.getField?.("dateAdded")) || undefined,
+    dateModified: normalizeText(target.getField?.("dateModified")) || undefined,
     attachments: allAtts.map((att, index, list) => ({
       contextItemId: att.id,
       title: resolveAnyAttachmentTitle(att, index, list.length),

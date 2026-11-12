@@ -13,9 +13,10 @@ export function renderActionCardDetail(
   doc: Document,
   entry: ActionCardEntry,
   status: HTMLElement,
+  options: { readOnly?: boolean } = {},
 ): HTMLElement | null {
   if (!entry.detail) return null;
   return entry.detail.kind === "note_change"
-    ? renderNoteChangeDetail(doc, entry.detail.card, status)
+    ? renderNoteChangeDetail(doc, entry.detail.card, status, options)
     : renderSavedNoteDetail(doc, entry.detail.card, status);
 }

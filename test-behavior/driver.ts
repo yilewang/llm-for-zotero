@@ -6,12 +6,13 @@ import {
   setOriginalAgentPermissionMode,
 } from "../src/agent/originalAgentPermissionMode";
 import type { AgentEvent, AgentRuntimeRequestInput } from "../src/agent/types";
-import type { LiveAgentCredentials } from "../test-live-agent/liveAgentCredentials";
+import type { LiveAgentCredentials } from "../test-live/agent/liveAgentCredentials";
 import {
   assertExact,
   check,
   confirmationDecision,
   appendTurnHistory,
+  type CardAnswer,
   assertApprovalProposal,
   failedTurnError,
   type ConfirmationExpectation,
@@ -50,6 +51,9 @@ export class LiveDriver {
     answerQuestion?: (
       action: import("../src/agent/types").AgentPendingAction,
     ) => Record<string, unknown> | Promise<Record<string, unknown>>,
+    answerCard?: (
+      action: import("../src/agent/types").AgentPendingAction,
+    ) => CardAnswer | undefined | Promise<CardAnswer | undefined>,
   ): Promise<Turn> {
     setOriginalAgentPermissionMode(mode);
     assertExact(
@@ -77,31 +81,44 @@ export class LiveDriver {
       });
       if (event.type === "confirmation_required") {
         confirmations++;
-        const decision =
-          event.action.toolName === "request_user_input" &&
-          answerQuestion &&
-          expected === "review"
-            ? { approve: true, failure: undefined as string | undefined }
-            : confirmationDecision(
-                mode,
-                expected,
-                event.action.mode || "approval",
-                runtime.getToolDefinition(event.action.toolName)?.spec
-                  .executionClass === "external_effect",
-              );
+        // A journey may answer a card itself: a chosen button and the card's
+        // own rows, as the real card sends them. It owns the checks of that
+        // card, so the generic field and proposal checks below do not apply.
+        let answered: CardAnswer | undefined;
+        let decision: { approve: boolean; failure?: string } = {
+          approve: false,
+        };
         try {
+          answered = await answerCard?.(event.action);
+          decision = answered
+            ? { approve: answered.approved !== false }
+            : event.action.toolName === "request_user_input" &&
+                answerQuestion &&
+                expected === "review"
+              ? { approve: true }
+              : confirmationDecision(
+                  mode,
+                  expected,
+                  event.action.mode || "approval",
+                  runtime.getToolDefinition(event.action.toolName)?.spec
+                    .executionClass === "external_effect",
+                );
           assertExact(
             await this.inspectEffectState(),
             stable,
             "Native and file state before approval",
           );
           check(
-            event.action.toolName &&
-              event.action.title &&
-              event.action.fields.length,
+            event.action.toolName && event.action.title,
             "Confirmation card must describe the proposed action",
           );
+          if (!answered)
+            check(
+              event.action.fields.length,
+              "Confirmation card must describe the proposed action",
+            );
           if (
+            !answered &&
             decision.approve &&
             event.action.toolName !== "request_user_input"
           ) {
@@ -127,14 +144,21 @@ export class LiveDriver {
         }
         if (decision.failure)
           errors.push(`${decision.failure}: ${event.action.toolName}`);
-        if (decision.approve) approvals++;
-        runtime.resolveConfirmation(
-          event.requestId,
-          decision.approve,
-          event.action.toolName === "request_user_input"
-            ? await answerQuestion?.(event.action)
-            : undefined,
-        );
+        if (decision.approve && (!answered || answered.effect)) approvals++;
+        if (answered && decision.approve)
+          runtime.resolveConfirmation(event.requestId, {
+            approved: true,
+            actionId: answered.actionId,
+            data: answered.data,
+          });
+        else
+          runtime.resolveConfirmation(
+            event.requestId,
+            decision.approve,
+            event.action.toolName === "request_user_input"
+              ? await answerQuestion?.(event.action)
+              : undefined,
+          );
         if (errors.length) controller.abort();
       }
       if (

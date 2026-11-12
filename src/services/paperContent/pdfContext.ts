@@ -23,6 +23,8 @@ import {
   RRF_K,
 } from "../retrieval/constants";
 import {
+  toRetrievalIndexTerm,
+  toRetrievalIndexTerms,
   tokenizeRetrievalQuery,
   tokenizeRetrievalText,
 } from "../retrieval/retrievalTokenizer";
@@ -61,6 +63,9 @@ import { ensureMineruRuntimeCacheForAttachment } from "../mineru/sync";
 import { isMineruEnabled } from "../../utils/mineruConfig";
 import type {
   PdfContext,
+  PdfDocumentStructure,
+  SectionChunkPiece,
+  DocumentStructureSection,
   ChunkStat,
   DocumentOutline,
   DocumentOutlineSection,
@@ -68,6 +73,7 @@ import type {
   PdfChunkMeta,
   PdfChunkKind,
   RetrievalExplanation,
+  TextPageOffset,
 } from "./types";
 import type {
   PaperContentSourceMode,
@@ -80,6 +86,17 @@ import {
 } from "./textAttachmentExtraction";
 import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
 import { isPdfContextAttachment } from "./contextAttachmentSupport";
+import {
+  bookmarkSectionTree,
+  detectDocumentStructure,
+  splitPdfTextPages,
+  textPageOffset,
+  type PdfOutlineEntry,
+  type PdfPageLayout,
+} from "./documentStructure";
+import { readPdfBookmarks } from "./pdfBookmarks";
+import { seedPageTextCacheFromFullText } from "../pdf/livePdfSelectionLocator";
+import { readAttachmentFileState } from "../../utils/attachmentFileState";
 import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
 import {
   extractDocumentReferenceEvidence,
@@ -396,10 +413,19 @@ async function cachePDFText(
   options?: {
     sourceMode?: PaperContentSourceMode;
     preferFulltextCache?: boolean;
+    silentLoad?: boolean;
+    signal?: AbortSignal;
   },
 ) {
   if (paperTextStore.has(item.id)) return;
 
+  // Hands the PDFWorker text this load read to the page-text cache, once;
+  // `textPageOffset` places text that lost blank leading pages.
+  let seedPageText: (textPageOffset?: TextPageOffset) => void = () => {};
+  // The PDF file the worker text was read from (null if unknown).
+  const workerFileState: {
+    current: Awaited<ReturnType<typeof readAttachmentFileState>>;
+  } = { current: null };
   try {
     const requestedTextAttachmentMode =
       options?.sourceMode === "markdown" ||
@@ -419,6 +445,11 @@ async function cachePDFText(
     let pdfText = "";
     let sourceType: PdfContext["sourceType"];
     let pdfWorkerPageChars: number[] | undefined;
+    let pdfWorkerTotalPages: number | undefined;
+    // Chats read a chaptered document by its structure; background indexing
+    // (a silent load) stores the text alone, so index rows never depend on it.
+    const wantStructure = !options?.silentLoad;
+    let pdfBookmarks: Promise<PdfOutlineEntry[] | null> | null = null;
     const mainItem =
       item.isAttachment() && item.parentID
         ? Zotero.Items.get(item.parentID)
@@ -451,10 +482,27 @@ async function cachePDFText(
     // 2. Fallback to Zotero.PDFWorker
     const tryPdfWorker = async (pdfItem: Zotero.Item) => {
       try {
+        // The file as this read finds it: page text seeded from the read is
+        // dropped once the PDF is replaced.
+        const fileState = options?.preferFulltextCache
+          ? null
+          : await readAttachmentFileState(pdfItem);
+        workerFileState.current = fileState;
+        // Read beside the text extraction; a PDF without bookmarks or one
+        // that cannot be read answers null.
+        if (wantStructure)
+          pdfBookmarks = readPdfBookmarks(pdfItem.id, fileState, {
+            signal: options?.signal,
+          });
         const result = await Zotero.PDFWorker.getFullText(pdfItem.id);
         if (result && result.text) {
           pdfText = result.text;
           sourceType = "zotero-worker";
+          const totalPages = Number(result.totalPages);
+          pdfWorkerTotalPages =
+            Number.isInteger(totalPages) && totalPages > 0
+              ? totalPages
+              : undefined;
           const rawPageChars = Array.isArray(result.pageChars)
             ? result.pageChars.map((value: unknown) => Number(value))
             : undefined;
@@ -463,6 +511,26 @@ async function cachePDFText(
           )
             ? rawPageChars
             : undefined;
+          // Quote checks need this same text split into pages. Hand it over
+          // instead of letting the quote warm extract the PDF a second time.
+          // Background library indexing reads papers no chat is quoting and
+          // would only evict the pages a chat needs.
+          if (!options?.preferFulltextCache) {
+            let seeded = false;
+            seedPageText = (textPageOffset) => {
+              if (seeded) return;
+              seeded = true;
+              void seedPageTextCacheFromFullText(pdfItem.id, result, {
+                fileState,
+                ...(textPageOffset ? { textPageOffset } : {}),
+              }).catch((error) => {
+                appLogger.debug("LLM: PDF page text seed failed", error);
+              });
+            };
+            // A chat's load seeds once the bookmarks have shown whether the
+            // text lost blank leading pages (after structure detection).
+            if (!wantStructure) seedPageText();
+          }
         }
       } catch (e) {
         appLogger.warn("PDF extraction failed:", e);
@@ -525,6 +593,10 @@ async function cachePDFText(
 
       let chunks: string[];
       let chunkMeta: PdfChunkMeta[];
+      let documentStructure: PdfDocumentStructure | undefined;
+      let textPages: PdfContext["textPages"];
+      let bookmarkSections: PdfContext["bookmarkSections"];
+      let textPageOffsetProof: PdfContext["textPageOffset"];
 
       // Section-aware chunking: slice from the raw markdown (offsets match raw
       // full.md), build metadata from the raw chunks, then convert HTML tables
@@ -603,11 +675,51 @@ async function cachePDFText(
       } else if (sourceType === "mineru") {
         ({ chunks, chunkMeta } = chunkMineruWithoutManifestSections());
       } else {
-        chunks = splitIntoChunks(pdfText, CHUNK_TARGET_LENGTH);
-        chunkMeta = buildChunkMetadata(chunks, sourceType, {
-          sourceText: pdfText,
-          pageChars: pdfWorkerPageChars,
+        // Only page-aware PDF worker text can carry a structure: the Zotero
+        // full-text cache has no reliable page breaks.
+        const structured = wantStructure && sourceType === "zotero-worker";
+        // Assigned inside tryPdfWorker, which the compiler cannot follow.
+        const bookmarksRead = pdfBookmarks as Promise<
+          PdfOutlineEntry[] | null
+        > | null;
+        const bookmarks = structured ? await (bookmarksRead || null) : null;
+        // A cancelled load stores nothing: its bookmark read may have been
+        // cut short, and the next load must find the same structure.
+        if (options?.signal?.aborted) {
+          seedPageText();
+          return;
+        }
+        const plain = chunkPlainPdfText(pdfText, sourceType, {
+          layout: {
+            pageChars: pdfWorkerPageChars,
+            totalPages: pdfWorkerTotalPages,
+          },
+          ...(structured
+            ? {
+                structure: {
+                  bookmarks,
+                  chapters: allowsChapterMap(mainItem?.itemType),
+                },
+              }
+            : {}),
         });
+        seedPageText(plain.textPageOffset);
+        // The proof names the file it was shown on, so a replaced PDF is
+        // not placed by it.
+        textPageOffsetProof = plain.textPageOffset
+          ? {
+              ...plain.textPageOffset,
+              file: {
+                size: workerFileState.current?.size ?? null,
+                mtime: workerFileState.current?.mtime ?? null,
+              },
+            }
+          : undefined;
+        chunks = plain.chunks;
+        chunkMeta = plain.chunkMeta;
+        documentStructure = plain.documentStructure;
+        textPages = plain.textPages;
+        bookmarkSections = plain.bookmarkSections;
       }
 
       const { chunkStats, docFreq, avgChunkLength } = buildChunkIndex(chunks);
@@ -619,7 +731,10 @@ async function cachePDFText(
         docFreq,
         avgChunkLength,
         fullLength: pdfText.length,
-
+        ...(documentStructure ? { documentStructure } : {}),
+        ...(textPages ? { textPages } : {}),
+        ...(bookmarkSections ? { bookmarkSections } : {}),
+        ...(textPageOffsetProof ? { textPageOffset: textPageOffsetProof } : {}),
         sourceType,
       });
     } else {
@@ -634,6 +749,7 @@ async function cachePDFText(
       });
     }
   } catch (e) {
+    seedPageText();
     appLogger.warn("Error caching PDF:", formatErrorForLog(e), e);
     paperTextStore.write(item.id, {
       title: "",
@@ -650,7 +766,7 @@ async function cachePDFText(
 export function ensurePDFTextCached(
   item: Zotero.Item,
   options?: PaperTextLoadOptions,
-): Promise<void> {
+): Promise<PdfContext | undefined> {
   return paperTextStore.load(item, options, cachePDFText);
 }
 
@@ -847,23 +963,70 @@ function findSentenceBoundary(
 // ── Plain-text chunking (PDFWorker, notes) ────────────────────────────────────
 
 function splitIntoChunks(text: string, targetLength: number): string[] {
+  return splitIntoChunkSpans(text, targetLength).map((chunk) => chunk.text);
+}
+
+/** A chunk and the `[start, end)` offsets of its text in the source. */
+type ChunkSpan = { text: string; start: number; end: number };
+
+/**
+ * `splitIntoChunks` with where each chunk lies in `text`. A chunk joins
+ * paragraphs with a blank line, so its text can differ from the source's
+ * in whitespace only.
+ */
+function splitIntoChunkSpans(text: string, targetLength: number): ChunkSpan[] {
   if (!text) return [];
-  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  // "\r\n" and "\r" read as "\n"; offsets still index `text`.
+  const lineEnds = /\r\n?/g;
+  const rawAt: number[] = [];
+  let normalized = text;
+  if (text.includes("\r")) {
+    normalized = "";
+    let from = 0;
+    for (let match; (match = lineEnds.exec(text)); ) {
+      for (let at = from; at < match.index; at += 1) rawAt.push(at);
+      rawAt.push(match.index);
+      normalized += `${text.slice(from, match.index)}\n`;
+      from = match.index + match[0].length;
+    }
+    for (let at = from; at < text.length; at += 1) rawAt.push(at);
+    normalized += text.slice(from);
+  }
+  const raw = (offset: number) =>
+    rawAt.length ? (rawAt[offset] ?? text.length) : offset;
+  const lead = normalized.length - normalized.trimStart().length;
+  normalized = normalized.trim();
   if (!normalized) return [];
 
-  const paragraphs = normalized.split(/\n\s*\n/);
-  const chunks: string[] = [];
+  const chunks: ChunkSpan[] = [];
+  // `end` is where the chunk's last source character ends; a joined chunk's
+  // text can be shorter than its source span, so callers pass it explicitly.
+  const push = (chunk: string, start: number, end = start + chunk.length) =>
+    chunks.push({
+      text: chunk,
+      start: raw(lead + start),
+      end: raw(lead + end - 1) + 1,
+    });
   let current = "";
+  let currentStart = 0;
+  let currentEnd = 0;
 
   const pushCurrent = () => {
-    if (current.trim()) chunks.push(current.trim());
+    if (current.trim()) push(current.trim(), currentStart, currentEnd);
     current = "";
   };
 
-  for (const para of paragraphs) {
+  const separator = /\n\s*\n/g;
+  let paraStart = 0;
+  for (;;) {
+    const match = separator.exec(normalized);
+    const para = normalized.slice(
+      paraStart,
+      match ? match.index : normalized.length,
+    );
     const p = para.trim();
-    if (!p) continue;
-    if (p.length > targetLength) {
+    const pStart = paraStart + para.length - para.trimStart().length;
+    if (p && p.length > targetLength) {
       pushCurrent();
       let start = 0;
       while (start < p.length) {
@@ -871,22 +1034,30 @@ function splitIntoChunks(text: string, targetLength: number): string[] {
         const rawEnd = Math.min(start + targetLength, p.length);
         const end =
           rawEnd < p.length ? findSentenceBoundary(p, rawEnd, 200) : rawEnd;
-        const slice = p.slice(start, end).trim();
-        if (slice) chunks.push(slice);
+        const piece = p.slice(start, end);
+        const slice = piece.trim();
+        if (slice)
+          push(slice, pStart + start + piece.length - piece.trimStart().length);
         if (end >= p.length) break;
         const rawOverlapStart = Math.max(0, end - CHUNK_OVERLAP);
         start = findSentenceBoundary(p, rawOverlapStart, 100);
         // Guard: ensure forward progress to prevent infinite loop
         if (start <= prevStart) start = prevStart + targetLength;
       }
-      continue;
+    } else if (p) {
+      if (current.length + p.length + 2 <= targetLength) {
+        if (!current) currentStart = pStart;
+        current = current ? `${current}\n\n${p}` : p;
+        currentEnd = pStart + p.length;
+      } else {
+        pushCurrent();
+        current = p;
+        currentStart = pStart;
+        currentEnd = pStart + p.length;
+      }
     }
-    if (current.length + p.length + 2 <= targetLength) {
-      current = current ? `${current}\n\n${p}` : p;
-    } else {
-      pushCurrent();
-      current = p;
-    }
+    if (!match) break;
+    paraStart = match.index + match[0].length;
   }
   pushCurrent();
   return chunks;
@@ -1194,9 +1365,14 @@ const INHERITED_SECTION_KINDS = new Set<PdfChunkKind>([
   "conclusion",
 ]);
 
-/** Back matter ends the standard section before it: nothing after inherits. */
+/**
+ * Back matter ends the standard section before it: nothing after inherits.
+ * "Online content" (the whole heading, never "Online content moderation")
+ * is Nature's heading over the methods pointer that runs into the
+ * reference list.
+ */
 const BACK_MATTER_HEADING_PATTERN =
-  /^(?:references?|bibliography|literature cited|works cited|acknowledg(?:e)?ments?|funding|financial (?:support|disclosures?)|authors?['’]?s? contributions?|competing (?:financial )?interests?|conflicts? of interests?|declarations?(?: of (?:competing )?interests?)?|(?:(?:data|code|materials?|software)(?:,|\s+(?:and|&))?\s+)+availability|availability of (?:data|code|materials?)|supplementary|supporting information|additional (?:information|files)|appendix|appendices)\b/i;
+  /^(?:online content(?=[:.\s-]*$)|references?|bibliography|literature cited|works cited|acknowledg(?:e)?ments?|funding|financial (?:support|disclosures?)|authors?['’]?s? contributions?|competing (?:financial )?interests?|conflicts? of interests?|declarations?(?: of (?:competing )?interests?)?|(?:(?:data|code|materials?|software)(?:,|\s+(?:and|&))?\s+)+availability|availability of (?:data|code|materials?)|supplementary|supporting information|additional (?:information|files)|appendix|appendices)\b/i;
 
 function stripHeadingEnumerator(heading: string): string {
   return normalizeEvidenceText(heading)
@@ -1205,7 +1381,8 @@ function stripHeadingEnumerator(heading: string): string {
     .trim();
 }
 
-function isBackMatterHeading(heading: string): boolean {
+/** Whether a heading opens back matter (references, funding, ...). */
+export function isBackMatterHeading(heading: string): boolean {
   return BACK_MATTER_HEADING_PATTERN.test(stripHeadingEnumerator(heading));
 }
 
@@ -1238,7 +1415,7 @@ function matchBackMatterHeading(
  * structure; when the markdown does nest its headings, a heading no deeper
  * than the standard one is a sibling, not a subsection, and ends it too.
  */
-function enclosingStandardSections(
+export function enclosingStandardSections(
   sections: ManifestSection[],
 ): Array<string | undefined> {
   const nested = new Set(sections.map((section) => section.level)).size > 1;
@@ -1265,6 +1442,8 @@ function enclosingStandardSections(
   });
 }
 
+// English-only: these match English caption words ("Figure", "Fig.",
+// "Table") and serve only the chunk and caption labels they served before.
 const FIGURE_CAPTION_PATTERN =
   /^(?:\d+\s+)?(?:fig(?:ure)?\.?)\s*(?:s(?:upp(?:lementary)?)?\s*)?\d+[a-z]?(?:\s*[:.)-]\s*|\s+)/i;
 const TABLE_CAPTION_PATTERN =
@@ -1680,6 +1859,327 @@ export function buildChunkMetadata(
   return chunkMeta;
 }
 
+/**
+ * The structure's sections fitted to the chunks: each section with the
+ * chunks it overlaps (`spans`, where the chunks lie in the text) and its
+ * heading chain; a section no chunk overlaps is left out and its
+ * subsections move up to its parent.
+ */
+function fitStructureToChunks(
+  sections: DocumentStructureSection[],
+  spans: ChunkSpan[],
+): PdfDocumentStructure["sections"] {
+  const ranges = sections.map((section) => {
+    let chunkStart = -1;
+    let chunkEnd = -1;
+    for (const [chunkIndex, span] of spans.entries()) {
+      if (span.start < section.charEnd && span.end > section.charStart) {
+        if (chunkStart < 0) chunkStart = chunkIndex;
+        chunkEnd = chunkIndex;
+      }
+    }
+    return { chunkStart, chunkEnd };
+  });
+  const keptIndex = new Map<number, number>();
+  const fitted: PdfDocumentStructure["sections"] = [];
+  sections.forEach((section, index) => {
+    if (ranges[index].chunkStart < 0) return;
+    let parent = section.parentIndex;
+    while (parent !== undefined && !keptIndex.has(parent))
+      parent = sections[parent].parentIndex;
+    const parentIndex =
+      parent === undefined ? undefined : keptIndex.get(parent);
+    keptIndex.set(index, fitted.length);
+    const { parentIndex: _dropped, ...rest } = section;
+    void _dropped;
+    fitted.push({
+      ...rest,
+      ...(parentIndex !== undefined ? { parentIndex } : {}),
+      path:
+        parentIndex !== undefined
+          ? `${fitted[parentIndex].path} › ${section.title}`
+          : section.title,
+      ...ranges[index],
+    });
+  });
+  return fitted;
+}
+
+/**
+ * The position in `span.text` of the first character at or past source
+ * offset `offset`. The chunk text matches the source but for whitespace.
+ * Null when the two do not line up.
+ */
+function chunkPositionAt(
+  source: string,
+  span: ChunkSpan,
+  offset: number,
+): number | null {
+  if (offset <= span.start) return 0;
+  if (offset >= span.end) return span.text.length;
+  if (source.startsWith(span.text, span.start)) return offset - span.start;
+  let at = span.start;
+  for (let index = 0; index < span.text.length; index += 1) {
+    const char = span.text[index];
+    if (/\s/.test(char)) continue;
+    while (at < source.length && source[at] !== char && /\s/.test(source[at]))
+      at += 1;
+    if (source[at] !== char) return null;
+    if (at >= offset) return index;
+    at += 1;
+  }
+  return span.text.length;
+}
+
+/**
+ * The chunks cut at every section start, without the text a chunk repeats
+ * from the one before it: each piece lies in one deepest section. A chunk
+ * whose text does not line up with the source stays whole.
+ */
+function sectionPieces(
+  source: string,
+  spans: ChunkSpan[],
+  sections: PdfDocumentStructure["sections"],
+  pageAt: (offset: number) => number,
+): SectionChunkPiece[] {
+  const starts = [...new Set(sections.map((section) => section.charStart))];
+  const sectionAt = (offset: number) => {
+    let found = 0;
+    for (const [index, section] of sections.entries()) {
+      if (section.charStart > offset) break;
+      found = index;
+    }
+    return found;
+  };
+  const pieces: SectionChunkPiece[] = [];
+  let covered = 0;
+  for (const [chunkIndex, span] of spans.entries()) {
+    const from = Math.max(span.start, covered);
+    covered = Math.max(covered, span.end);
+    const cuts = [
+      from,
+      ...starts.filter((start) => start > from && start < span.end),
+      span.end,
+    ].sort((a, b) => a - b);
+    const positions = cuts.map((cut) => chunkPositionAt(source, span, cut));
+    if (positions.some((position) => position === null)) {
+      pieces.push({
+        chunkIndex,
+        start: 0,
+        end: span.text.length,
+        sourceStart: span.start,
+        sourceEnd: span.end,
+        sectionIndex: sectionAt(span.start),
+        pageStart: pageAt(span.start),
+        pageEnd: pageAt(span.end - 1),
+      });
+      continue;
+    }
+    for (let at = 0; at + 1 < cuts.length; at += 1) {
+      const start = positions[at]!;
+      const end = positions[at + 1]!;
+      if (!span.text.slice(start, end).trim()) continue;
+      pieces.push({
+        chunkIndex,
+        start,
+        end,
+        sourceStart: cuts[at],
+        sourceEnd: cuts[at + 1],
+        sectionIndex: sectionAt(cuts[at]),
+        pageStart: pageAt(cuts[at]),
+        pageEnd: pageAt(cuts[at + 1] - 1),
+      });
+    }
+  }
+  return pieces;
+}
+
+/**
+ * The PDF's pages, each with its size and first line, from the text's own
+ * page split. Pages the text lacks (blank pages Zotero trims) are listed
+ * empty, placed by the shift the bookmarks show (`pageOffset`, from
+ * `textPageOffset`). Null when no shift can be shown.
+ */
+function textPageEntries(
+  text: string,
+  layout: PdfPageLayout | undefined,
+  pageOffset: number | null,
+): Array<{ tokens: number; firstLine: string }> | null {
+  const pages = splitPdfTextPages(text, layout);
+  if (!pages?.length) return null;
+  if (pageOffset === null) return null;
+  const pageCount = layout?.totalPages ?? pages.length;
+  const blank = { tokens: 0, firstLine: "" };
+  const entries = Array.from({ length: pageCount }, () => blank);
+  for (const page of pages) {
+    const pageText = text.slice(page.start, page.end);
+    entries[page.index + pageOffset] = {
+      tokens: estimateTextTokens(pageText),
+      firstLine:
+        pageText
+          .split("\n")
+          .map((line) => line.trim())
+          .find(Boolean) || "",
+    };
+  }
+  return entries;
+}
+
+/** Article item types read as whole text; they never get a chapter map. */
+const ARTICLE_ITEM_TYPES = new Set([
+  "journalArticle",
+  "preprint",
+  "conferencePaper",
+  "magazineArticle",
+  "newspaperArticle",
+]);
+
+export function allowsChapterMap(itemType: string | undefined): boolean {
+  return !itemType || !ARTICLE_ITEM_TYPES.has(itemType);
+}
+
+/**
+ * Plain PDF text as chunks with their metadata: `buildChunkMetadata`, and,
+ * with `structure` and a chaptered text (`detectDocumentStructure`), the
+ * document's sections on top of it. A structured chunk names its section
+ * (`sectionIndex`, label, path, level) and its pages; the metadata without
+ * the structure stays in `documentStructure.plainChunkMeta`, which is what
+ * the library index stores. Without `structure` (background indexing) the
+ * result is `buildChunkMetadata`'s alone; with it, an unchaptered text adds
+ * only its `textPages` (`textPageEntries`) and, with usable bookmarks, its
+ * `bookmarkSections` (`bookmarkSectionTree`). With it, a text that lost
+ * pages also carries the `textPageOffset` its bookmarks prove; without a
+ * proof it gets no structure and no page map.
+ */
+export function chunkPlainPdfText(
+  text: string,
+  sourceType: PdfContext["sourceType"],
+  options: {
+    layout?: PdfPageLayout;
+    structure?: {
+      bookmarks?: PdfOutlineEntry[] | null;
+      /** False turns off chapter detection only; default true. */
+      chapters?: boolean;
+    };
+  } = {},
+): Pick<
+  PdfContext,
+  | "chunks"
+  | "chunkMeta"
+  | "documentStructure"
+  | "textPages"
+  | "bookmarkSections"
+  | "textPageOffset"
+> {
+  const spans = splitIntoChunkSpans(text, CHUNK_TARGET_LENGTH);
+  const chunks = spans.map((span) => span.text);
+  const chunkMeta = buildChunkMetadata(chunks, sourceType, {
+    sourceText: text,
+    pageChars: options.layout?.pageChars,
+  });
+  if (!options.structure) return { chunks, chunkMeta };
+  const pages = splitPdfTextPages(text, options.layout) || [];
+  const pageAtShifted = (offset: number, shiftBy: number) => {
+    let found = pages[0];
+    for (const page of pages) {
+      if (page.start > offset) break;
+      found = page;
+    }
+    return (found?.index ?? 0) + shiftBy;
+  };
+  const pageOffset = textPageOffset({
+    text,
+    layout: options.layout,
+    bookmarks: options.structure.bookmarks,
+  });
+  const textParts = pages.length;
+  // A proven shift (0 included) for text that lost pages; text with every
+  // page needs none.
+  const pageCount = options.layout?.totalPages ?? textParts;
+  const shift: Pick<PdfContext, "textPageOffset"> =
+    pageOffset !== null && textParts < pageCount
+      ? { textPageOffset: { pageOffset, textParts } }
+      : {};
+  const unstructured = () => {
+    const textPages = textPageEntries(text, options.layout, pageOffset);
+    const tree = bookmarkSectionTree({
+      text,
+      layout: options.layout,
+      bookmarks: options.structure?.bookmarks,
+    });
+    const sections = tree ? fitStructureToChunks(tree.sections, spans) : [];
+    return {
+      chunks,
+      chunkMeta,
+      ...(textPages ? { textPages } : {}),
+      ...(tree && sections.length
+        ? {
+            bookmarkSections: {
+              pageCount: tree.pageCount,
+              sections,
+              pieces: sectionPieces(text, spans, sections, (offset) =>
+                pageAtShifted(offset, tree.pageOffset),
+              ),
+            },
+          }
+        : {}),
+      ...shift,
+    };
+  };
+  if (options.structure.chapters === false) return unstructured();
+  const detected = detectDocumentStructure({
+    text,
+    layout: options.layout,
+    bookmarks: options.structure.bookmarks,
+  });
+  if (!detected) return unstructured();
+  const sections = fitStructureToChunks(detected.sections, spans);
+  if (!sections.length) return unstructured();
+  const pageAt = (offset: number) => pageAtShifted(offset, detected.pageOffset);
+  const sectionAt = (offset: number) => {
+    let found = 0;
+    for (const [index, section] of sections.entries()) {
+      if (section.charStart > offset) break;
+      found = index;
+    }
+    return found;
+  };
+  const structured = chunkMeta.map((meta, chunkIndex): PdfChunkMeta => {
+    // Placed by where the chunker cut it, not by a text search.
+    const { start, end: spanEnd } = spans[chunkIndex];
+    const end = Math.max(start, spanEnd - 1);
+    const sectionIndex = sectionAt(start);
+    const section = sections[sectionIndex];
+    // A chunk that crosses a section start is in every section it touches.
+    const sectionIndexes = sections.flatMap((other, index) =>
+      other.charStart < spanEnd && other.charEnd > start ? [index] : [],
+    );
+    return {
+      ...meta,
+      sectionIndex,
+      sectionIndexes,
+      sectionLabel: section.title,
+      sectionPath: section.path,
+      sectionLevel: section.level,
+      ...(meta.pageStart === undefined || meta.pageEnd === undefined
+        ? { pageStart: pageAt(start), pageEnd: pageAt(end) }
+        : {}),
+    };
+  });
+  return {
+    chunks,
+    chunkMeta: structured,
+    documentStructure: {
+      source: detected.source,
+      pageCount: detected.pageCount,
+      sections,
+      pieces: sectionPieces(text, spans, sections, pageAt),
+      plainChunkMeta: chunkMeta,
+    },
+    ...shift,
+  };
+}
+
 function buildCompactPaperSourceLabel(ref: PaperContextRef): string {
   const verbose = normalizeEvidenceText(formatPaperCitationLabel(ref));
   if (verbose && !/^paper\b/i.test(verbose)) {
@@ -1734,10 +2234,15 @@ export function formatSuggestedEvidenceCitation(
   return `(${citationParts.join(", ")})`;
 }
 
+/** A chunk's BM25 terms: index terms (stems of plain English words). */
 function tokenizeText(text: string): string[] {
-  return tokenizeRetrievalText(text);
+  return tokenizeRetrievalText(text, { stem: true });
 }
 
+/**
+ * BM25 term statistics per chunk. `tf` and `docFreq` are keyed by index
+ * terms (`toRetrievalIndexTerm`), so look a surface query term up through it.
+ */
 export function buildChunkIndex(chunks: string[]): {
   chunkStats: ChunkStat[];
   docFreq: Record<string, number>;
@@ -1781,9 +2286,16 @@ function queryPlanTerms(
     : tokenizeQuery(question);
 }
 
+/**
+ * The query variants a chunk matches: the whole variant as a substring, or
+ * one of its terms as a substring or (the BM25 rule) through a shared index
+ * term in the chunk's `tf`, so a chunk BM25 ranked for "error" also names
+ * the variant that asked about "errors".
+ */
 function matchedQueryVariantsForText(
   text: string,
   queryPlan: RetrievalQueryPlan | undefined,
+  chunkTf?: Record<string, number>,
 ): string[] {
   if (!queryPlan?.effectiveQueries.length || !text.trim()) return [];
   const haystack = text.toLocaleLowerCase();
@@ -1795,13 +2307,26 @@ function matchedQueryVariantsForText(
       continue;
     }
     const terms = tokenizeQuery(query);
-    if (terms.length && terms.some((term) => haystack.includes(term))) {
+    if (
+      terms.length &&
+      terms.some(
+        (term) =>
+          haystack.includes(term) ||
+          Boolean(chunkTf?.[toRetrievalIndexTerm(term)]),
+      )
+    ) {
       matches.push(query);
     }
   }
   return Array.from(new Set(matches));
 }
 
+/**
+ * BM25 of one chunk for surface query terms (`lexicalTerms`, or
+ * `tokenizeRetrievalQuery` output). They are mapped to their distinct index
+ * terms here, the keys of `buildChunkIndex`; never pass stems, which would be
+ * stemmed again.
+ */
 export function scoreChunkBM25(
   chunk: ChunkStat,
   terms: string[],
@@ -1814,7 +2339,7 @@ export function scoreChunkBM25(
   const b = 0.75;
   let score = 0;
 
-  for (const term of terms) {
+  for (const term of toRetrievalIndexTerms(terms)) {
     const tf = chunk.tf[term] || 0;
     if (!tf) continue;
     const df = docFreq[term] || 0;
@@ -2273,11 +2798,18 @@ function shouldTryEmbeddings(): boolean {
  * `body` and `unknown` never move — a prior may break a tie, it may not
  * decide the order (reciprocal-rank fusion spans ~0.03 in total, so the old
  * additive constants of 0.8–1.5 overruled relevance outright).
+ *
+ * Captions and appendices are not demoted. Their kinds come from the text
+ * heuristic (a chunk that starts "Figure 2:", or any mention of "appendix"),
+ * and PDF text runs a caption straight into the body paragraph after it, so a
+ * demoted "caption" was often the passage that held the answer. An offline
+ * replay over QASPER-200 found more gold evidence without the demotion
+ * (scripts/qasper-evidence-replay.ts).
  */
 const SECTION_BOOST_PROFILE: { boost: PdfChunkKind[]; demote: PdfChunkKind[] } =
   {
     boost: ["abstract", "results", "discussion", "conclusion"],
-    demote: ["figure-caption", "table-caption", "appendix", "references"],
+    demote: ["references"],
   };
 
 /** Ranks a boosted section kind can climb. */
@@ -2293,9 +2825,10 @@ const DEMOTED_PRIOR: SectionPrior = { priorShift: 0, demoted: true };
 const NEUTRAL_PRIOR: SectionPrior = { priorShift: 0 };
 
 /**
- * Bounded section prior: a rank shift, not a score. Demoted chunks carry
- * `demoted: true` and sort to the end; they stay candidates so a
- * reference-locked read can still pull a caption or a reference entry back.
+ * Bounded section prior: a rank shift, not a score. Demoted chunks (reference
+ * lists and chunks under MIN_EVIDENCE_WORD_COUNT words) carry `demoted: true`
+ * and sort to the end; they stay candidates so a reference-locked read can
+ * still pull a reference entry back.
  */
 function priorShiftFor(params: {
   chunkText: string;
@@ -2358,19 +2891,18 @@ export function selectStructuredCandidates(params: {
   queryTerms: string[];
   sections: ReadonlyArray<RetrievalSectionSummary>;
   sectionIds?: string[];
+  /** Chunks in scope besides those sections (text with no section ids). */
+  chunkIndexes?: number[];
   hasSignal: boolean;
 }): PaperContextCandidate[] {
   const topK = Math.max(1, Math.floor(params.topK));
   const requestedSectionIds = (params.sectionIds || []).filter(Boolean);
   let pool = params.ranked;
-  if (requestedSectionIds.length) {
-    const wanted = new Set(requestedSectionIds);
+  if (requestedSectionIds.length || params.chunkIndexes?.length) {
     // Same rule as the ranking stage: a requested scope that matches nothing
     // returns nothing rather than widening to the whole document.
-    pool = params.ranked.filter(
-      (candidate) =>
-        candidate.sectionIndex !== undefined &&
-        wanted.has(sectionIdForIndex(candidate.sectionIndex)),
+    pool = params.ranked.filter((candidate) =>
+      inRequestedScope(candidate, requestedSectionIds, params.chunkIndexes),
     );
   }
   if (!pool.length) return [];
@@ -2544,6 +3076,27 @@ function selectSectionDiverseFallback(
   return selected;
 }
 
+/**
+ * Whether a candidate is in a requested scope of sections or chunks. A
+ * chunk that crosses a section start is in every section it touches.
+ */
+function inRequestedScope(
+  candidate: Pick<
+    PaperContextCandidate,
+    "chunkIndex" | "sectionIndex" | "sectionIndexes"
+  >,
+  sectionIds: readonly string[] = [],
+  chunkIndexes: readonly number[] = [],
+): boolean {
+  const sections =
+    candidate.sectionIndexes ??
+    (candidate.sectionIndex !== undefined ? [candidate.sectionIndex] : []);
+  return (
+    chunkIndexes.includes(candidate.chunkIndex) ||
+    sections.some((index) => sectionIds.includes(sectionIdForIndex(index)))
+  );
+}
+
 /** Sections of a document, derived from the chunk metadata. */
 function buildSectionSummaries(
   chunkMeta: PdfChunkMeta[],
@@ -2562,10 +3115,135 @@ function buildSectionSummaries(
   return [...byIndex.values()].sort((a, b) => a.index - b.index);
 }
 
+/** A plain PDF's structure sections as an outline's sections. */
+function outlineFromStructure(
+  map: Pick<PdfDocumentStructure, "pageCount" | "sections">,
+  totalChunks: number,
+): DocumentOutline {
+  const sections = map.sections.map(
+    (section, index): DocumentOutlineSection => ({
+      sectionId: sectionIdForIndex(index),
+      title: section.title,
+      level: section.level,
+      path: section.path,
+      chunkIndexes: [section.chunkStart, section.chunkEnd],
+      chars: section.chars,
+      ownChars: section.ownChars,
+      tokens: section.tokens,
+      pageStart: section.pageStart + 1,
+      pageEnd: section.pageEnd + 1,
+      ...(section.parentIndex !== undefined
+        ? { parentId: sectionIdForIndex(section.parentIndex) }
+        : {}),
+      childIds: [],
+    }),
+  );
+  for (const section of sections)
+    if (section.parentId)
+      sections[Number(section.parentId.slice(1))].childIds.push(
+        section.sectionId,
+      );
+  return { sections, totalChunks, pageCount: map.pageCount };
+}
+
 /**
- * The section list of a document, derived from the chunk metadata: one entry
- * per `sectionIndex`, with the chunk range and character count that tell the
- * model how much text a section holds before it asks to read it.
+ * An unchaptered plain PDF's section tree by its bookmarks
+ * (`bookmarkSections`): the map a chat shows when its whole text does not
+ * fit, and what section ids read. Null when it has none.
+ */
+export function buildBookmarkOutline(
+  ctx: PdfContext | undefined,
+): DocumentOutline | null {
+  const map = ctx?.bookmarkSections;
+  if (!ctx || !map?.sections.length) return null;
+  return outlineFromStructure(map, ctx.chunks.length);
+}
+
+/** A run of a section's text: a chunk, or the part of it in the section. */
+export type SectionTextPiece = {
+  chunkIndex: number;
+  text: string;
+  /** 0-based PDF pages, when known. */
+  pageStart?: number;
+  pageEnd?: number;
+  /** The deepest section that holds it, when the chunks name sections. */
+  sectionIndex?: number;
+};
+
+/**
+ * A section's text in document order. A plain PDF's section (from
+ * `documentStructure` or `bookmarkSections`) gives only its own text, from
+ * the chunks cut at section starts (`pieces`); any other section gives its
+ * chunks whole.
+ */
+export function sectionTextPieces(
+  content: Pick<
+    PdfContext,
+    "chunks" | "chunkMeta" | "documentStructure" | "bookmarkSections"
+  >,
+  section: Pick<DocumentOutlineSection, "sectionId" | "title" | "chunkIndexes">,
+): SectionTextPiece[] {
+  const [from, to] = section.chunkIndexes;
+  const index = Number(section.sectionId.slice(1));
+  for (const map of [content.bookmarkSections, content.documentStructure]) {
+    const entry = map?.sections[index];
+    if (
+      !map?.pieces ||
+      !entry ||
+      entry.title !== section.title ||
+      entry.chunkStart !== from ||
+      entry.chunkEnd !== to
+    )
+      continue;
+    const namesSections = map === content.documentStructure;
+    return map.pieces.flatMap((piece) => {
+      if (piece.sourceStart >= entry.charEnd) return [];
+      if (piece.sourceEnd <= entry.charStart) return [];
+      const text = (content.chunks[piece.chunkIndex] || "")
+        .slice(piece.start, piece.end)
+        .trim();
+      return text
+        ? [
+            {
+              chunkIndex: piece.chunkIndex,
+              text,
+              pageStart: piece.pageStart,
+              pageEnd: piece.pageEnd,
+              ...(namesSections ? { sectionIndex: piece.sectionIndex } : {}),
+            },
+          ]
+        : [];
+    });
+  }
+  const pieces: SectionTextPiece[] = [];
+  for (let chunkIndex = from; chunkIndex <= to; chunkIndex += 1) {
+    const text = (content.chunks[chunkIndex] || "").trim();
+    if (!text) continue;
+    const meta = content.chunkMeta[chunkIndex];
+    pieces.push({
+      chunkIndex,
+      text,
+      ...(meta?.pageStart !== undefined
+        ? { pageStart: meta.pageStart, pageEnd: meta.pageEnd ?? meta.pageStart }
+        : {}),
+      ...(meta?.sectionIndex !== undefined
+        ? { sectionIndex: meta.sectionIndex }
+        : {}),
+    });
+  }
+  return pieces;
+}
+
+/**
+ * The section tree of a document: what an `outline` read returns and what
+ * section reads address.
+ *
+ * A chaptered plain PDF's tree is its `documentStructure`. Any other
+ * document's comes from the chunk metadata: one entry per `sectionIndex`,
+ * nested by heading path (the MinerU manifest's `path`, which leaves the
+ * title block out, so a paper's sections stay top level under its title).
+ * Every entry's range, sizes and pages include its subsections; `ownChars`
+ * is its own text.
  *
  * Pure: the MinerU parse-health block is passed in by the caller (the tool
  * reads it through `ensureManifest`) rather than read from disk here.
@@ -2575,22 +3253,46 @@ export function buildDocumentOutline(
   structure?: MineruManifest["structure"],
 ): DocumentOutline {
   const chunkMeta = Array.isArray(ctx?.chunkMeta) ? ctx.chunkMeta : [];
-  const byIndex = new Map<number, DocumentOutlineSection>();
+  const totalChunks = Array.isArray(ctx?.chunks)
+    ? ctx.chunks.length
+    : chunkMeta.length;
+  const map = ctx?.documentStructure;
+  if (map?.sections.length)
+    return {
+      sections: outlineFromStructure(map, totalChunks).sections,
+      totalChunks,
+      chaptered: true,
+      pageCount: map.pageCount,
+      ...(structure ? { structure } : {}),
+    };
+  type Draft = DocumentOutlineSection & {
+    index: number;
+    pages: number[];
+  };
+  const byIndex = new Map<number, Draft>();
   for (const meta of chunkMeta) {
     if (!meta || meta.sectionIndex === undefined) continue;
     const chunkIndex = Number.isFinite(meta.chunkIndex)
       ? Math.floor(meta.chunkIndex)
       : 0;
-    const chars = (meta.text || "").length;
+    const text = meta.text || "";
+    const pages = [meta.pageStart, meta.pageEnd].filter(
+      (page): page is number => typeof page === "number",
+    );
     const existing = byIndex.get(meta.sectionIndex);
     if (!existing) {
       byIndex.set(meta.sectionIndex, {
+        index: meta.sectionIndex,
         sectionId: sectionIdForIndex(meta.sectionIndex),
         title: meta.sectionLabel || "",
         level: meta.sectionLevel ?? 1,
         path: meta.sectionPath || meta.sectionLabel || "",
         chunkIndexes: [chunkIndex, chunkIndex],
-        chars,
+        chars: text.length,
+        ownChars: text.length,
+        tokens: estimateTextTokens(text),
+        childIds: [],
+        pages,
       });
       continue;
     }
@@ -2598,16 +3300,55 @@ export function buildDocumentOutline(
       Math.min(existing.chunkIndexes[0], chunkIndex),
       Math.max(existing.chunkIndexes[1], chunkIndex),
     ];
-    existing.chars += chars;
+    existing.chars += text.length;
+    existing.ownChars += text.length;
+    existing.tokens += estimateTextTokens(text);
+    existing.pages.push(...pages);
   }
-  const sections = [...byIndex.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([, section]) => section);
+  const drafts = [...byIndex.values()].sort((a, b) => a.index - b.index);
+  // A section's parent is the nearest section before it whose path is its
+  // own path less the last heading.
+  const parentPath = (path: string) => {
+    const parts = path.split(" › ");
+    return parts.length > 1 ? parts.slice(0, -1).join(" › ") : null;
+  };
+  drafts.forEach((draft, position) => {
+    const wanted = parentPath(draft.path);
+    if (wanted === null) return;
+    for (let at = position - 1; at >= 0; at -= 1)
+      if (drafts[at].path === wanted) {
+        draft.parentId = drafts[at].sectionId;
+        drafts[at].childIds.push(draft.sectionId);
+        return;
+      }
+  });
+  const byId = new Map(drafts.map((draft) => [draft.sectionId, draft]));
+  // Children follow their parent, so the back of the list rolls up first.
+  for (let position = drafts.length - 1; position >= 0; position -= 1) {
+    const draft = drafts[position];
+    const parent = draft.parentId ? byId.get(draft.parentId) : undefined;
+    if (!parent) continue;
+    parent.chars += draft.chars;
+    parent.tokens += draft.tokens;
+    parent.chunkIndexes = [
+      Math.min(parent.chunkIndexes[0], draft.chunkIndexes[0]),
+      Math.max(parent.chunkIndexes[1], draft.chunkIndexes[1]),
+    ];
+    parent.pages.push(...draft.pages);
+  }
+  const sections = drafts.map(({ index: _index, pages, ...section }) => {
+    void _index;
+    return pages.length
+      ? {
+          ...section,
+          pageStart: Math.min(...pages) + 1,
+          pageEnd: Math.max(...pages) + 1,
+        }
+      : section;
+  });
   return {
     sections,
-    totalChunks: Array.isArray(ctx?.chunks)
-      ? ctx.chunks.length
-      : chunkMeta.length,
+    totalChunks,
     ...(structure ? { structure } : {}),
   };
 }
@@ -2631,6 +3372,8 @@ export async function buildPaperRetrievalCandidates(
     preferredChunkIndexes?: number[];
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
+    /** Also in scope: these chunks (text with no section ids). */
+    chunkIndexes?: number[];
   },
   compatibilityOptions?: {
     topK?: number;
@@ -2645,6 +3388,8 @@ export async function buildPaperRetrievalCandidates(
     preferredChunkIndexes?: number[];
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
+    /** Also in scope: these chunks (text with no section ids). */
+    chunkIndexes?: number[];
   },
 ): Promise<PaperContextCandidate[]> {
   if (!pdfContext) return [];
@@ -2655,7 +3400,8 @@ export async function buildPaperRetrievalCandidates(
     "precomputedQueryEmbedding" in (apiOverridesOrOptions || {}) ||
     "queryPlan" in (apiOverridesOrOptions || {}) ||
     "preferredChunkIndexes" in (apiOverridesOrOptions || {}) ||
-    "sectionIds" in (apiOverridesOrOptions || {})
+    "sectionIds" in (apiOverridesOrOptions || {}) ||
+    "chunkIndexes" in (apiOverridesOrOptions || {})
       ? apiOverridesOrOptions
       : undefined);
   const { chunks, chunkStats, docFreq, avgChunkLength } = pdfContext;
@@ -2754,6 +3500,7 @@ export async function buildPaperRetrievalCandidates(
     const matchedQueryVariants = matchedQueryVariantsForText(
       chunks[chunk.index],
       queryPlan,
+      chunk.tf,
     );
     const candidate: PaperContextCandidate = {
       paperKey: buildPaperKey(paperContext),
@@ -2767,6 +3514,7 @@ export async function buildPaperRetrievalCandidates(
       chunkText: chunks[chunk.index],
       sectionLabel: meta?.sectionLabel,
       sectionIndex: meta?.sectionIndex,
+      ...(meta?.sectionIndexes ? { sectionIndexes: meta.sectionIndexes } : {}),
       sectionPath: meta?.sectionPath,
       enclosingSection: meta?.enclosingSection,
       chunkKind: meta?.chunkKind,
@@ -2853,18 +3601,17 @@ export async function buildPaperRetrievalCandidates(
     (adjustedRank.get(a) || 0) - (adjustedRank.get(b) || 0) ||
     (fusedRank.get(a) || 0) - (fusedRank.get(b) || 0);
   const allRanked = [...candidates].sort(byAdjustedRank);
-  const requestedSections = new Set(options?.sectionIds || []);
-  const restricted = requestedSections.size
-    ? allRanked.filter(
-        (candidate) =>
-          candidate.sectionIndex !== undefined &&
-          requestedSections.has(sectionIdForIndex(candidate.sectionIndex)),
-      )
-    : [];
+  const scoped = Boolean(
+    options?.sectionIds?.length || options?.chunkIndexes?.length,
+  );
   // Every later reservation and fallback must obey the same valid scope.
   // A requested scope that matches nothing returns nothing: falling back to
   // the whole document would deliver out-of-scope passages without a warning.
-  const ranked = requestedSections.size ? restricted : allRanked;
+  const ranked = scoped
+    ? allRanked.filter((candidate) =>
+        inRequestedScope(candidate, options?.sectionIds, options?.chunkIndexes),
+      )
+    : allRanked;
 
   // Stage 2 — structure.
   const selected = selectStructuredCandidates({
@@ -2873,6 +3620,7 @@ export async function buildPaperRetrievalCandidates(
     queryTerms: terms,
     sections: buildSectionSummaries(chunkMeta),
     sectionIds: options?.sectionIds,
+    chunkIndexes: options?.chunkIndexes,
     hasSignal: bm25Scores.some((score) => score > 0) || embedRank !== null,
   });
   const selectionOrder = new Map(

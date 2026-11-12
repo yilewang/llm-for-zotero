@@ -1,4 +1,5 @@
 import { isSinglePaperConversation } from "../context/requestTurnPaperScope";
+import { buildEphemeralBackgroundContextBlock } from "../../shared/ephemeralBackgroundContext";
 import { renderLibraryOverviewSection } from "../context/libraryOverview";
 
 import type {
@@ -10,7 +11,10 @@ import type {
   AgentToolDefinition,
   AgentUserMessage,
 } from "../types";
-import { AGENT_PERSONA_INSTRUCTIONS } from "./agentPersona";
+import {
+  AGENT_PERSONA_INSTRUCTIONS,
+  AGENT_SEARCH_TOOL_ROUTES,
+} from "./agentPersona";
 import {
   AGENT_MEMORY_QUESTION_EXCERPT_LENGTH,
   formatAgentMemoryBlock,
@@ -18,16 +22,29 @@ import {
   type AgentTurnMemory,
 } from "../store/conversationMemory";
 import { buildSkillInventory, getAllSkills } from "../skills";
+import { toolGuidanceItems } from "../tools/guidance";
 import type { AgentSkill } from "../skills";
 import { getSkillCustomizationNotice } from "../skills/managedBlock";
 import { SKILL_SCOPE_GUARD } from "../skills/scopeGuard";
+import { skillBodyForRuntime } from "../skills/runtimeSections";
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
+import {
+  SIDE_CHAT_READ_ONLY_INSTRUCTION,
+  isSkillWithheldForEphemeralRequest,
+} from "../skills/sideChatScope";
 import { getOriginalAgentPermissionMode } from "../originalAgentPermissionMode";
 import { buildPermissionModeGuidance } from "./permissionModeGuidance";
 
 import { resolveProviderCapabilities } from "../../providers";
 import type { ProviderCapabilities } from "../../providers";
 import { buildNotesDirectoryConfigSection } from "../../utils/notesDirectoryConfig";
+import { buildAgentFilesInstructionForScope } from "../../utils/agentFilesDirectory";
 import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../../shared/quoteGuidance";
+import {
+  findNoteEmbedTokensInSelection,
+  hasNoteEmbedTokens,
+  NOTE_EMBED_PLACEHOLDER_GUIDANCE,
+} from "../../utils/noteEmbeds";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
 import { formatPaperSourceLabel } from "../../services/paperContent/paperAttribution";
 import {
@@ -39,9 +56,14 @@ import {
   type AgentResourceContextPlan,
 } from "../context/resourceContextPlan";
 import { buildAgentCoverageContextBlock } from "../context/coverageLedger";
+import type { PaperPromptContext } from "../context/paperPromptContext";
 import { buildVisibleTurnContextBlock } from "../context/turnContextEnvelope";
-import { getSelectedPassagePaper } from "../context/turnPaperScope";
+import {
+  getActiveTurnPaper,
+  getSelectedPassagePaper,
+} from "../context/turnPaperScope";
 import { renderLongJobResume } from "../loop/longJob";
+import { resolveAgentLimits } from "./limits";
 import { OUTCOME_REASONS } from "../loop/outcomes";
 import {
   hasAgentContentInputs,
@@ -50,7 +72,10 @@ import {
 import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
 import {
   formatSelectedTextLocator,
+  formatSelectedTextQuestionSuffix,
+  isPromptOnlySelectedTextQuestions,
   renderSelectedTextAnchorContext,
+  SELECTED_TEXT_QUESTIONS_INSTRUCTION,
 } from "../../services/context/selectedTextAnchorFormatting";
 import {
   buildInstructionInventory,
@@ -183,8 +208,11 @@ function buildFullUserMessage(
   options: {
     priorReadBlock?: string;
     coverageBlock?: string;
+    earlierSourcesBlock?: string;
     turnGuidanceBlock?: string;
     contentInputs?: AgentContentInputCapabilities;
+    /** Where selections lie in a preloaded map (paper prompt context). */
+    selectionLocations?: PaperPromptContext["selectionLocations"];
   } = {},
 ): AgentUserMessage {
   const contextLines: string[] = [];
@@ -206,6 +234,8 @@ function buildFullUserMessage(
       `Current note content for this turn:\n"""\n${note.noteText}\n"""`,
     );
     contextLines.push(NOTE_EDITING_QUOTE_BLOCK_GUIDANCE);
+    if (hasNoteEmbedTokens(note.noteText))
+      contextLines.push(NOTE_EMBED_PLACEHOLDER_GUIDANCE);
     if (note.noteHtml) {
       contextLines.push(`Original note HTML:\n"""\n${note.noteHtml}\n"""`);
     }
@@ -252,7 +282,11 @@ function buildFullUserMessage(
               ? "Zotero note"
               : source === "note-edit"
                 ? "active note editing focus"
-                : "PDF reader";
+                : source === "sidechat"
+                  ? "side chat transcript"
+                  : source === "inlineask"
+                    ? "Inline Ask transcript"
+                    : "PDF reader";
         const noteContext = selectedTextContexts[index]?.noteContext;
         const sourceMeta =
           source === "pdf" && paperContext
@@ -275,7 +309,20 @@ function buildFullUserMessage(
           selectedTextContexts[index],
           anchorsByIndex.get(index),
         );
-        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]${locator ? ` ${locator}` : ""}:\n"""\n${entry}\n"""`;
+        const question = formatSelectedTextQuestionSuffix(
+          selectedTextContexts[index]?.userQuery,
+        );
+        const embedTokens =
+          source === "note-edit" && request.activeNoteContext
+            ? findNoteEmbedTokensInSelection(
+                request.activeNoteContext.noteText,
+                entry,
+              )
+            : [];
+        const embedHint = embedTokens.length
+          ? `\nThis selection contains embedded note items. Keep each placeholder in your replacement where its item belongs: ${embedTokens.join(" ")}`
+          : "";
+        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]${locator ? ` ${locator}` : ""}:\n"""\n${entry}\n"""${question}${embedHint}`;
       })
       .join("\n\n");
     contextLines.push(
@@ -285,7 +332,16 @@ function buildFullUserMessage(
     );
     const anchorContext = renderSelectedTextAnchorContext({
       selectedTextContexts,
-      anchors: [...(request.resolvedSelectedTextAnchors || [])],
+      // The turn scope holds each passage's paper; the page hint's read
+      // call names it when it owns the anchor's attachment.
+      anchors: (request.resolvedSelectedTextAnchors || []).map((anchor) => {
+        const paper = selectedTextPaperContexts[anchor.contextIndex];
+        return paper?.contextItemId === anchor.contextItemId
+          ? { ...anchor, paperContext: paper }
+          : anchor;
+      }),
+      locations: options.selectionLocations,
+      readCalls: true,
     });
     if (anchorContext) contextLines.push(anchorContext);
   }
@@ -309,6 +365,9 @@ function buildFullUserMessage(
   if (options.coverageBlock) {
     contextLines.push(options.coverageBlock);
   }
+  if (options.earlierSourcesBlock) {
+    contextLines.push(options.earlierSourcesBlock);
+  }
   if (request.clarificationHistory?.length) {
     contextLines.push(
       [
@@ -323,9 +382,17 @@ function buildFullUserMessage(
     contextLines.push(options.turnGuidanceBlock);
   }
 
+  // A request that is only the chip questions (empty composer) already shows
+  // each question under its selection above; do not repeat them here.
+  const userRequestText = isPromptOnlySelectedTextQuestions(
+    request.userText,
+    selectedTextContexts,
+  )
+    ? SELECTED_TEXT_QUESTIONS_INSTRUCTION
+    : request.userText;
   const promptText = `${
     contextLines.length ? `${contextLines.join("\n")}\n\n` : ""
-  }User request:\n${request.userText}`;
+  }User request:\n${userRequestText}`;
   const screenshots = Array.isArray(request.screenshots)
     ? request.screenshots.filter((entry) => Boolean(entry))
     : [];
@@ -377,13 +444,16 @@ function buildUserMessage(
   resourceContextPlan?: AgentResourceContextPlan,
   options: {
     coverageBlock?: string;
+    earlierSourcesBlock?: string;
     turnGuidanceBlock?: string;
     contentInputs?: AgentContentInputCapabilities;
   } = {},
 ): AgentUserMessage {
   return buildFullUserMessage(request, {
     priorReadBlock: resourceContextPlan?.priorReadBlock,
+    selectionLocations: resourceContextPlan?.paperContext?.selectionLocations,
     coverageBlock: options.coverageBlock,
+    earlierSourcesBlock: options.earlierSourcesBlock,
     turnGuidanceBlock: options.turnGuidanceBlock,
     contentInputs: options.contentInputs,
   });
@@ -491,11 +561,11 @@ function collectMatchingToolGuidance(
     ...guidanceContext
   } = request;
   for (const tool of tools) {
-    const guidance = tool.guidance;
-    if (!guidance) continue;
-    if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
-    const instruction = guidance.instruction.trim();
-    if (instruction) instructions.add(instruction);
+    for (const guidance of toolGuidanceItems(tool.guidance)) {
+      if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
+      const instruction = guidance.instruction.trim();
+      if (instruction) instructions.add(instruction);
+    }
   }
   return [...instructions];
 }
@@ -519,7 +589,8 @@ function formatSkillGuidanceBlock(
     `Description: ${skill.description || "No description provided."}`,
     `Activation: ${activationSource}`,
     "Instructions:",
-    skill.instruction.trim(),
+    // The plugin's own Agent reads no runtime section (runtimeSections.ts).
+    skillBodyForRuntime(skill.instruction).trim(),
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -533,7 +604,8 @@ function collectSkillGuidanceInstructions(
   const forcedSkillIds = new Set(request.forcedSkillIds || []);
   for (const skill of getAllSkills()) {
     if (!activeSkillIds.has(skill.id)) continue;
-    const instruction = skill.instruction.trim();
+    if (isSkillWithheldForEphemeralRequest(skill.id, request)) continue;
+    const instruction = skillBodyForRuntime(skill.instruction).trim();
     if (!instruction) continue;
     blocks.push(
       formatSkillGuidanceBlock(
@@ -576,9 +648,21 @@ export async function renderAgentPromptEnvelope(
   resourceContextPlan?: AgentResourceContextPlan,
   options: {
     contentInputs?: AgentContentInputCapabilities;
+    /** Outside sources earlier questions of this chat found (follow-ups). */
+    earlierSourcesBlock?: string;
   } = {},
 ): Promise<RenderedAgentPromptEnvelope> {
   const continuityNotes = await loadAgentTurnMemory(request.conversationKey);
+  // A side chat is read-only, so it saves no files.
+  const agentFilesInstruction = isEphemeralConversationKey(
+    request.conversationKey,
+  )
+    ? ""
+    : await buildAgentFilesInstructionForScope({
+        conversationKind: request.turnPaperScope.conversationKind,
+        libraryID: request.libraryID || request.turnPaperScope.libraryID,
+        paperItemId: getActiveTurnPaper(request.turnPaperScope)?.itemId,
+      });
   const toolGuidanceInstructions = collectMatchingToolGuidance(
     request,
     tools,
@@ -586,7 +670,7 @@ export async function renderAgentPromptEnvelope(
   );
   const dynamicGuidanceInstructions = [
     isSinglePaperConversation(request)
-      ? "Single-paper chat: answer directly using the supplied paper context; questions about the paper need no skill, so do not load evidence-based-qa for them. You may freely choose additional snippet, section, full, figure, or search reads when useful. For whole-paper explanations, consider the argument, methods, results, and limitations throughout the available source."
+      ? "Single-paper chat: answer directly using the supplied paper context; questions about the paper need no skill, so do not load evidence-based-qa for them. You may freely choose additional snippet, section, full, figure, or targeted reads of this paper when useful. For whole-paper explanations, consider the argument, methods, results, and limitations throughout the available source."
       : "",
     request.workingDirectory
       ? `Command working directory retained from this conversation: ${request.workingDirectory}. run_command uses it when cwd is omitted; pass cwd explicitly to change it. This directory does not confer filesystem permission.`
@@ -617,13 +701,22 @@ export async function renderAgentPromptEnvelope(
       lines: AGENT_PERSONA_INSTRUCTIONS,
     },
     {
+      id: "search-tools",
+      lines: [AGENT_SEARCH_TOOL_ROUTES],
+    },
+    {
       id: "direct-agent-workflow",
       lines: [
         [
           "## Direct agent workflow",
           "Understand the current request yourself and choose the lightest useful sequence of reads, searches, questions, document finalization, and concrete actions.",
           "Use actual tools for requested effects. Inspect results and continue until the requested outcome is complete, reviewed, or has a concrete error.",
-          "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update in your first step, together with that step's first tool calls. The host marks each part done from the tools' results; never mark one done yourself.",
+          // The runtime's per-step limit (runtime.ts runs the first calls).
+          `One step runs at most ${
+            resolveAgentLimits(request.metadata?.hostRecordedBatchJob === true)
+              .maxToolCallsPerRound
+          } tool calls, unless a job page states more; calls past that are not run, so make them in the next step.`,
+          "When a request asks for more than one outcome, such as summarizing a paper and saving it as a note, declare each part with task_update before reading, together with that step's first tool calls; with nothing attached, declare them after library_retrieve has chosen the papers. The host marks each part done from the tools' results; never mark one done yourself.",
           "When the work needs one result for each of several papers (a summary, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part whose description states that per-paper result; the host runs it on each paper and returns the results.",
           "A write result with a verified receipt already confirms the change; do not re-read the target to confirm it.",
           "Natural-language restrictions in the current request and clarifications remain binding. Tool calls do not grant their own permission; the host validates each concrete proposal, applies permission policy, journals effects, and verifies native state.",
@@ -632,12 +725,24 @@ export async function renderAgentPromptEnvelope(
       ],
     },
     {
+      id: "side-chat-read-only",
+      lines: [
+        isEphemeralConversationKey(request.conversationKey)
+          ? SIDE_CHAT_READ_ONLY_INSTRUCTION
+          : "",
+      ],
+    },
+    {
       id: "skill-inventory",
       lines: [
         `Installed skill inventory (workflow playbooks for multi-step tasks: notes, comparisons, reviews, imports, figure work; ordinary paper questions need no skill. When one matches and its guidance is not already active, call load_skill with its id): ${JSON.stringify(
           // Manual skills apply only when the user selects them.
           buildSkillInventory(getAllSkills())
-            .filter((skill) => skill.activation !== "manual")
+            .filter(
+              (skill) =>
+                skill.activation !== "manual" &&
+                !isSkillWithheldForEphemeralRequest(skill.id, request),
+            )
             .map(({ id, description }) => ({ id, description })),
         )}`,
       ],
@@ -658,6 +763,10 @@ export async function renderAgentPromptEnvelope(
       id: "notes-directory-config",
       lines: [buildNotesDirectoryConfigSection()],
     },
+    {
+      id: "agent-files",
+      lines: [agentFilesInstruction],
+    },
   ];
   // The library overview is deliberately NOT a system section.
   //
@@ -673,8 +782,12 @@ export async function renderAgentPromptEnvelope(
     buildAgentStableResourceContextBlock(request);
 
   const fixedPrompt = buildSystemPrompt(sections);
+  const ephemeralBackgroundBlock = buildEphemeralBackgroundContextBlock(
+    request.conversationKey,
+  );
   const turnMessage = buildUserMessage(request, resourceContextPlan, {
     coverageBlock,
+    earlierSourcesBlock: options.earlierSourcesBlock,
     turnGuidanceBlock,
     contentInputs: options.contentInputs,
   });
@@ -696,6 +809,16 @@ export async function renderAgentPromptEnvelope(
             role: "system",
             content: stableResourceBlock,
             cachePolicy: "stable-prefix",
+          }),
+        ]
+      : []),
+    // A temporary side chat reads the window's main chat as background. It
+    // changes every turn, so it stays outside the cached prefix.
+    ...(ephemeralBackgroundBlock
+      ? [
+          freezeEnvelopeMessage<AgentSystemMessage>({
+            role: "system",
+            content: ephemeralBackgroundBlock,
           }),
         ]
       : []),

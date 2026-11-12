@@ -75,6 +75,11 @@ export class ZoteroChangeDispatcher {
     const actionId = getActiveMutationActionId() || undefined;
     const run = async (): Promise<void> => {
       if (actionId) {
+        // Deliberately not in a transaction of its own: Zotero can notify
+        // observers inside the triggering flow's open transaction, where a
+        // new one would wait on it for 30 s. A row written there rolls back
+        // with the change it observed. Outside a transaction it can still
+        // join another flow's and be lost; observations are supplementary.
         await recordJournalObservation({
           actionId,
           event: change.event,

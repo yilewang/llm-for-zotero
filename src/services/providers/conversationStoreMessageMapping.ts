@@ -12,9 +12,11 @@ import {
   normalizeSelectedTextPaperContexts,
   normalizeSelectedTextSource,
   normalizeTagContextRefs,
+  normalizeAttachedConversationRefs,
   synthesizeSelectedTextContexts,
 } from "../context/normalizers";
 import { normalizeQuoteCitations } from "../quotes/quoteCitations";
+import { restoreQuoteSourceFileStates } from "../../shared/quoteLocationStorage";
 
 /**
  * Read a conversation's most recent message rows and map them back into
@@ -214,7 +216,10 @@ export async function loadStoredConversationMessages(config: {
         return undefined;
       try {
         const parsed = JSON.parse(row.quoteCitationsJson) as unknown;
-        const normalized = normalizeQuoteCitations(parsed);
+        const normalized = restoreQuoteSourceFileStates(
+          parsed,
+          normalizeQuoteCitations(parsed),
+        );
         return normalized.length ? normalized : undefined;
       } catch {
         return undefined;
@@ -241,6 +246,21 @@ export async function loadStoredConversationMessages(config: {
       try {
         const normalized = normalizeTagContextRefs(
           JSON.parse(row.tagContextsJson) as unknown,
+        );
+        return normalized.length ? normalized : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+    const attachedConversations = (() => {
+      if (
+        typeof row.attachedConversationsJson !== "string" ||
+        !row.attachedConversationsJson
+      )
+        return undefined;
+      try {
+        const normalized = normalizeAttachedConversationRefs(
+          JSON.parse(row.attachedConversationsJson) as unknown,
         );
         return normalized.length ? normalized : undefined;
       } catch {
@@ -348,6 +368,7 @@ export async function loadStoredConversationMessages(config: {
       quoteCitations,
       selectedCollectionContexts,
       selectedTagContexts,
+      attachedConversations,
       screenshotImages,
       attachments,
       generatedImages,

@@ -73,6 +73,16 @@ const SCHEMA_SQL = [
      PRIMARY KEY (term, attachment_id)
    )`,
   `CREATE INDEX IF NOT EXISTS postings_attachment_idx ON postings (attachment_id)`,
+  // The tokenizer version each document's postings were written with. A
+  // document without a row predates the table (tokenizer version 1). The row
+  // copies the document's indexed_at: an older build that re-indexes the
+  // document moves indexed_at and leaves the row behind, which marks the
+  // postings as unknown again.
+  `CREATE TABLE IF NOT EXISTS document_tokenizer (
+     attachment_id INTEGER PRIMARY KEY,
+     tokenizer_version INTEGER NOT NULL,
+     indexed_at INTEGER NOT NULL
+   )`,
   `CREATE TABLE IF NOT EXISTS queue (
      attachment_id INTEGER PRIMARY KEY,
      library_id INTEGER NOT NULL,
@@ -96,6 +106,7 @@ const SCHEMA_SQL = [
 ];
 const TABLES = [
   "postings",
+  "document_tokenizer",
   "chunks",
   "vector_documents",
   "queue",

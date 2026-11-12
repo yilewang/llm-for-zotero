@@ -6,11 +6,11 @@
  *   1. Creates one temporary worktree W at the older commit (always the same
  *      absolute path, because the profile path is part of the conversation
  *      identity and the Claude Code working directory).
- *   2. SEED: runs test-db-upgrade/seed.workflow.test.ts on the older build.
+ *   2. SEED: runs test-isolated/db-upgrade/seed.workflow.test.ts on the older build.
  *      Live turns: upstream 3, Claude Code 2, Codex 2.
  *   3. Copies W's scaffold data directory and profile prefs.js aside.
  *   4. Checks W out at the newer commit, in place.
- *   5. VERIFY: runs test-db-upgrade/verify.workflow.test.ts on the newer
+ *   5. VERIFY: runs test-isolated/db-upgrade/verify.workflow.test.ts on the newer
  *      build against those copies (LLM_FOR_ZOTERO_QA_DATA_SNAPSHOT and
  *      LLM_FOR_ZOTERO_PROFILE_PREFS_SNAPSHOT), with the Zotero debug store on
  *      so the test can read the startup log. Live turns: one per system.
@@ -37,7 +37,7 @@
  * Zotero DB file (default ~/Zotero/zotero.sqlite.bak, Zotero's own
  * consistent backup) into a scratch directory outside any git tree, counts
  * each conversation's rows with node:sqlite, starts this checkout's build on
- * the copy, and compares (test-db-upgrade/realProfile.workflow.test.ts).
+ * the copy, and compares (test-isolated/db-upgrade/realProfile.workflow.test.ts).
  * Prints only counts and pass/fail. Deletes the copy afterwards.
  *
  *   node scripts/run-db-upgrade-tests.mjs --real-profile --scratch <dir> [--source <zotero.sqlite>]
@@ -124,16 +124,16 @@ async function stageTests(checkout, treeName, testFile) {
   const tree = path.join(checkout, ".scaffold", "db-upgrade", treeName);
   await rm(tree, { recursive: true, force: true });
   const files = [
-    `test-db-upgrade/${testFile}`,
-    "test-db-upgrade/dbUpgradeShared.ts",
-    "test-live-runtimes/runtimeLiveShared.ts",
-    "test-live-agent/liveAgentCredentials.ts",
+    `test-isolated/db-upgrade/${testFile}`,
+    "test-isolated/db-upgrade/dbUpgradeShared.ts",
+    "test-live/runtimes/runtimeLiveShared.ts",
+    "test-live/agent/liveAgentCredentials.ts",
   ];
   for (const file of files) {
     await mkdir(path.dirname(path.join(tree, file)), { recursive: true });
     await cp(path.join(root, file), path.join(tree, file));
   }
-  return path.relative(checkout, path.join(tree, "test-db-upgrade"));
+  return path.relative(checkout, path.join(tree, "test-isolated/db-upgrade"));
 }
 
 /** Adds the prefs-snapshot hook to a checkout's config when it lacks it. */

@@ -8,6 +8,7 @@ export type PanelDomRefs = {
   modelMenu: HTMLDivElement | null;
   reasoningBtn: HTMLButtonElement | null;
   runtimeModeBtn: HTMLButtonElement | null;
+  runtimeMenu: HTMLDivElement | null;
   reasoningSlot: HTMLDivElement | null;
   reasoningMenu: HTMLDivElement | null;
   actionsRow: HTMLDivElement | null;
@@ -17,6 +18,9 @@ export type PanelDomRefs = {
   settingsBtn: HTMLButtonElement | null;
   exportBtn: HTMLButtonElement | null;
   clearBtn: HTMLButtonElement | null;
+  /** The Stacked header's More button and its menu. */
+  headerMoreBtn: HTMLButtonElement | null;
+  headerMoreMenu: HTMLDivElement | null;
   titleStatic: HTMLDivElement | null;
   historyBar: HTMLDivElement | null;
   historyNewBtn: HTMLButtonElement | null;
@@ -47,8 +51,10 @@ export type PanelDomRefs = {
   slashMenu: HTMLDivElement | null;
   slashUploadOption: HTMLButtonElement | null;
   slashReferenceOption: HTMLButtonElement | null;
+  slashPastConversationOption: HTMLButtonElement | null;
   slashPdfPageOption: HTMLButtonElement | null;
   slashPdfMultiplePagesOption: HTMLButtonElement | null;
+  slashSideChatOption: HTMLButtonElement | null;
   imagePreview: HTMLDivElement | null;
   contextPreviews: HTMLDivElement | null;
   selectedContextList: HTMLDivElement | null;
@@ -116,6 +122,9 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     runtimeModeBtn: body.querySelector(
       "#llm-runtime-mode-toggle",
     ) as HTMLButtonElement | null,
+    runtimeMenu: body.querySelector(
+      "#llm-runtime-menu",
+    ) as HTMLDivElement | null,
     reasoningSlot: body.querySelector(
       "#llm-reasoning-dropdown",
     ) as HTMLDivElement | null,
@@ -135,6 +144,12 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     ) as HTMLButtonElement | null,
     exportBtn: body.querySelector("#llm-export") as HTMLButtonElement | null,
     clearBtn: body.querySelector("#llm-clear") as HTMLButtonElement | null,
+    headerMoreBtn: body.querySelector(
+      "#llm-header-more",
+    ) as HTMLButtonElement | null,
+    headerMoreMenu: body.querySelector(
+      "#llm-header-more-menu",
+    ) as HTMLDivElement | null,
     titleStatic: body.querySelector(
       "#llm-title-static",
     ) as HTMLDivElement | null,
@@ -216,11 +231,17 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
     slashReferenceOption: body.querySelector(
       "#llm-slash-reference-option",
     ) as HTMLButtonElement | null,
+    slashPastConversationOption: body.querySelector(
+      "#llm-slash-past-conversation-option",
+    ) as HTMLButtonElement | null,
     slashPdfPageOption: body.querySelector(
       "#llm-slash-pdf-page-option",
     ) as HTMLButtonElement | null,
     slashPdfMultiplePagesOption: body.querySelector(
       "#llm-slash-pdf-multiple-pages-option",
+    ) as HTMLButtonElement | null,
+    slashSideChatOption: body.querySelector(
+      "#llm-slash-side-chat-option",
     ) as HTMLButtonElement | null,
     imagePreview: body.querySelector(
       "#llm-image-preview",

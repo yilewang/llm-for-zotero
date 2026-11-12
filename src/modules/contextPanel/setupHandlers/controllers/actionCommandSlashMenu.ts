@@ -48,7 +48,7 @@ type ClaudeSlashMenuItem = {
 function firstSentence(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return "";
-  const match = /^(.+?[.!?])(?:\s|$)/.exec(normalized);
+  const match = /^(.+?(?:[。！？]|[.!?](?=\s|$)))/.exec(normalized);
   if (match) return match[1];
   return normalized.length <= 80
     ? normalized
@@ -70,7 +70,8 @@ export function renderSkillsInSlashMenu(
     ? allSkills.filter(
         (skill: AgentSkill) =>
           skill.id.toLowerCase().includes(query) ||
-          skill.description.toLowerCase().includes(query),
+          skill.description.toLowerCase().includes(query) ||
+          t(skill.description).toLowerCase().includes(query),
       )
     : allSkills;
   if (!filtered.length) return;
@@ -96,13 +97,13 @@ export function renderSkillsInSlashMenu(
     button.type = "button";
     button.disabled = false;
     button.setAttribute("aria-disabled", "false");
-    button.title = skill.description || skill.id;
+    button.title = t(skill.description) || skill.id;
     const titleEl = ownerDoc.createElement("span");
     titleEl.className = "llm-action-picker-title";
     titleEl.textContent = skill.id;
     const descEl = ownerDoc.createElement("span");
     descEl.className = "llm-action-picker-description";
-    descEl.textContent = skill.description;
+    descEl.textContent = t(skill.description);
     const badgeEl = ownerDoc.createElement("span");
     badgeEl.className = "llm-action-picker-badge";
     badgeEl.textContent = t(
@@ -228,7 +229,8 @@ export function renderAgentActionsInSlashMenu(
     ? allActions.filter(
         (action) =>
           action.name.toLowerCase().includes(query) ||
-          action.description.toLowerCase().includes(query),
+          action.description.toLowerCase().includes(query) ||
+          t(action.description).toLowerCase().includes(query),
       )
     : allActions;
   const baseAnchor = list.querySelector("[data-slash-base-item]") || null;
@@ -249,20 +251,21 @@ export function renderAgentActionsInSlashMenu(
   if (
     !query ||
     compactAction.name.includes(query) ||
-    compactAction.description.toLowerCase().includes(query)
+    compactAction.description.toLowerCase().includes(query) ||
+    t(compactAction.description).toLowerCase().includes(query)
   ) {
     const button = mkAgentEl(
       "button",
       "llm-action-picker-item",
     ) as HTMLButtonElement;
     button.type = "button";
-    button.title = compactAction.description;
+    button.title = t(compactAction.description);
     const titleEl = ownerDoc.createElement("span");
     titleEl.className = "llm-action-picker-title";
     titleEl.textContent = "/compact";
     const descEl = ownerDoc.createElement("span");
     descEl.className = "llm-action-picker-description";
-    descEl.textContent = compactAction.description;
+    descEl.textContent = t(compactAction.description);
     button.append(titleEl, descEl);
     button.addEventListener("click", (event: Event) => {
       event.preventDefault();
@@ -283,13 +286,13 @@ export function renderAgentActionsInSlashMenu(
       "llm-action-picker-item",
     ) as HTMLButtonElement;
     button.type = "button";
-    button.title = action.description;
+    button.title = t(action.description);
     const titleEl = ownerDoc.createElement("span");
     titleEl.className = "llm-action-picker-title";
     titleEl.textContent = action.name;
     const descEl = ownerDoc.createElement("span");
     descEl.className = "llm-action-picker-description";
-    descEl.textContent = firstSentence(action.description);
+    descEl.textContent = firstSentence(t(action.description));
     button.append(titleEl, descEl);
     button.addEventListener("click", (event: Event) => {
       event.preventDefault();

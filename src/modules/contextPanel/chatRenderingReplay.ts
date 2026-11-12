@@ -147,6 +147,29 @@ export async function exerciseChatRenderingLifecycle(panel: {
     const thinkingUpdated =
       wrapper().textContent?.includes("Updated thinking remains visible.") &&
       wrapper().textContent?.includes("Updated model");
+    // Growing thinking text, with the model unchanged, updates in place.
+    const thinkingBefore = wrapper().querySelector<HTMLDetailsElement>(
+      ".llm-agent-reasoning",
+    );
+    const wrapperBeforeThinking = wrapper();
+    for (let n = 0; n < 3; n++) {
+      message.reasoningSummary += ` Streamed thinking ${n}.`;
+      helpers.refreshAssistantMessageSafely(message);
+      await settle();
+    }
+    message.reasoningDetails = "Streamed **details** text.";
+    helpers.refreshAssistantMessageSafely(message);
+    await settle();
+    const thinkingStreamedInPlace =
+      Boolean(thinkingBefore) &&
+      wrapper() === wrapperBeforeThinking &&
+      wrapper().querySelector(".llm-agent-reasoning") === thinkingBefore &&
+      thinkingBefore!.open;
+    const thinkingStreamedText =
+      wrapper().querySelector(".llm-agent-reasoning")?.textContent ?? "";
+    const thinkingTextAppended =
+      thinkingStreamedText.includes("Streamed thinking 2.") &&
+      thinkingStreamedText.includes("Streamed details text.");
     const quote = "The quotation remains readable throughout streaming.";
     message.text = `# Final answer\n\n> ${quote}\n>\n> (Workflow, 2026)\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n[source][ref]\n\n[ref]: https://example.org/paper`;
     helpers.refreshAssistantMessageSafely(message);
@@ -157,6 +180,12 @@ export async function exerciseChatRenderingLifecycle(panel: {
     message.streaming = false;
     helpers.refreshAssistantMessageSafely(message);
     await settle();
+    // The final full render keeps the streamed thinking text.
+    const thinkingFinalText =
+      wrapper().querySelector(".llm-agent-reasoning")?.textContent ?? "";
+    const thinkingFinalMatches =
+      thinkingFinalText.includes("Streamed thinking 2.") &&
+      thinkingFinalText.includes("Streamed details text.");
     const finalQuoteReadable =
       wrapper()
         .querySelector(".llm-quote-card")
@@ -191,6 +220,9 @@ export async function exerciseChatRenderingLifecycle(panel: {
       manualScrollDelta,
       followBottomGap,
       thinkingUpdated: Boolean(thinkingUpdated),
+      thinkingStreamedInPlace,
+      thinkingTextAppended,
+      thinkingFinalMatches,
       streamingQuoteReadable: Boolean(streamingQuoteReadable),
       finalQuoteReadable: Boolean(finalQuoteReadable),
       finalControlsPresent,

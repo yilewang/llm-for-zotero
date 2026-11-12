@@ -12,6 +12,7 @@ import {
   setSelectedTextExpandedIndex,
   setNoteContextExpanded,
 } from "../contextResolution";
+import type { SelectedTextContext } from "../types";
 
 export function clearSelectedTextState(
   pinnedSelectedTextKeys: Map<number, Set<string>>,
@@ -36,10 +37,17 @@ export function retainPinnedTextState(
     itemId,
     contexts.filter((context) => context.source !== "note-edit"),
   );
-  setSelectedTextContextEntries(itemId, [
-    ...liveNoteEditingContexts,
-    ...retained,
-  ]);
+  // A kept chip keeps its text across sends; its question was for the turn
+  // just sent (D5).
+  const withoutQuestion = (context: SelectedTextContext) => {
+    if (context.userQuery === undefined) return context;
+    const { userQuery: _sentQuestion, ...rest } = context;
+    return rest;
+  };
+  setSelectedTextContextEntries(
+    itemId,
+    [...liveNoteEditingContexts, ...retained].map(withoutQuestion),
+  );
   setSelectedTextExpandedIndex(itemId, null);
   setNoteContextExpanded(itemId, null);
 }

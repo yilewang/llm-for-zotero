@@ -1,0 +1,149 @@
+declare const Zotero: any;
+
+const PREF_PREFIX = "extensions.zotero.llmforzotero";
+
+export type LiveAgentCredentials = {
+  model: string;
+  apiBase: string;
+  apiKey: string;
+  providerProtocol: string;
+  reasoningLevel?: string;
+  /** Codex Direct signs in through ~/.codex/auth.json and has no API key. */
+  authMode?: "codex_auth";
+};
+
+function environmentValue(key: string): string {
+  try {
+    return String(
+      (
+        globalThis as unknown as {
+          Services?: { env?: { get?: (name: string) => string } };
+        }
+      ).Services?.env?.get?.(key) || "",
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The model a live test asks for: LLM_FOR_ZOTERO_LIVE_MODEL when it is set,
+ * otherwise the test's own default.
+ */
+export function liveModelName(defaultModel: string): string {
+  return environmentValue("LLM_FOR_ZOTERO_LIVE_MODEL") || defaultModel;
+}
+
+/** Reads one string pref out of a profile prefs.js, without loading it. */
+export function stringPrefFromContents(contents: string, key: string): string {
+  const escaped = key.replace(/\./g, "\\.");
+  const match = contents.match(
+    new RegExp(`user_pref\\("${escaped}",\\s*("(?:\\\\.|[^"\\\\])*")\\);`),
+  );
+  if (!match) return "";
+  try {
+    return String(JSON.parse(match[1]));
+  } catch {
+    return "";
+  }
+}
+
+function credentialsFromProviderGroups(
+  serialized: string,
+  requestedModel: string,
+): LiveAgentCredentials | null {
+  if (!serialized || !requestedModel) return null;
+  try {
+    const groups = JSON.parse(serialized) as Array<{
+      apiBase?: unknown;
+      apiKey?: unknown;
+      authMode?: unknown;
+      providerProtocol?: unknown;
+      models?: Array<{ model?: unknown }>;
+    }>;
+    const candidates = groups.filter((group) => {
+      const listed = group.models?.some(
+        (entry) => String(entry.model || "") === requestedModel,
+      );
+      return (
+        listed &&
+        String(group.apiBase || "").trim() &&
+        String(group.providerProtocol || "").trim()
+      );
+    });
+    // Codex Direct first: live runs use it whenever it lists the model.
+    const group =
+      candidates.find((entry) => entry.authMode === "codex_auth") ??
+      candidates.find((entry) => String(entry.apiKey || "").trim());
+    if (group) {
+      const codexAuth = group.authMode === "codex_auth";
+      const reasoningLevel = environmentValue("LLM_FOR_ZOTERO_LIVE_REASONING");
+      return {
+        model: requestedModel,
+        apiBase: String(group.apiBase || "").trim(),
+        apiKey: String(group.apiKey || "").trim(),
+        providerProtocol: String(group.providerProtocol || "").trim(),
+        ...(codexAuth ? { authMode: "codex_auth" as const } : {}),
+        ...(reasoningLevel ? { reasoningLevel } : {}),
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function legacyCredentials(readPref: (key: string) => string) {
+  const apiKey = readPref("apiKey");
+  const apiBase = readPref("apiBase");
+  const model = readPref("model");
+  return apiKey && apiBase && model
+    ? {
+        model,
+        apiBase,
+        apiKey,
+        providerProtocol: "openai_chat_compat",
+      }
+    : null;
+}
+
+export async function resolveLiveAgentCredentials(
+  options: {
+    requestedModel?: string;
+    profilePath?: string;
+  } = {},
+): Promise<LiveAgentCredentials | null> {
+  const requestedModel =
+    options.requestedModel ?? environmentValue("LLM_FOR_ZOTERO_LIVE_MODEL");
+  const activeRead = (key: string) =>
+    String(Zotero.Prefs.get(`${PREF_PREFIX}.${key}`, true) || "");
+  if (requestedModel) {
+    const active = credentialsFromProviderGroups(
+      activeRead("modelProviderGroups"),
+      requestedModel,
+    );
+    if (active) return active;
+  } else {
+    const legacy = legacyCredentials(activeRead);
+    if (legacy) return legacy;
+  }
+
+  const profilePath =
+    options.profilePath ?? environmentValue("LLM_FOR_ZOTERO_LIVE_PROFILE_PATH");
+  if (!profilePath) return null;
+  try {
+    const contents = await Zotero.File.getContentsAsync(profilePath);
+    if (typeof contents !== "string") return null;
+    const readFilePref = (key: string) =>
+      stringPrefFromContents(contents, `${PREF_PREFIX}.${key}`);
+    if (requestedModel) {
+      return credentialsFromProviderGroups(
+        readFilePref("modelProviderGroups"),
+        requestedModel,
+      );
+    }
+    return legacyCredentials(readFilePref);
+  } catch {
+    return null;
+  }
+}

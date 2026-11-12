@@ -307,7 +307,8 @@ export async function sendProviderRequest(params: {
   fetchFn: typeof fetch;
   init: RequestInit;
 }): Promise<Response> {
-  if (detectProviderPreset(params.url) !== "opencode") {
+  const preset = detectProviderPreset(params.url);
+  if (preset !== "opencode" && preset !== "opencode_go") {
     return params.fetchFn(params.url, params.init);
   }
   const sessionId =

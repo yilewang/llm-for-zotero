@@ -1,14 +1,15 @@
 import {
   archiveCodexAppServerThread,
-  forkCodexAppServerThread,
+  forkCodexAppServerThreadWithRecord,
 } from "./nativeClient";
 
 export type CodexAppServerForkService = {
-  forkThread: typeof forkCodexAppServerThread;
+  /** The fork's thread and the permission record its conversation stores. */
+  forkThread: typeof forkCodexAppServerThreadWithRecord;
   archiveThread: typeof archiveCodexAppServerThread;
 };
 
 export const codexAppServerForkService: CodexAppServerForkService = {
-  forkThread: forkCodexAppServerThread,
+  forkThread: forkCodexAppServerThreadWithRecord,
   archiveThread: archiveCodexAppServerThread,
 };

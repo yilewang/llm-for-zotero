@@ -1,5 +1,8 @@
 import { appLogger } from "../../core/logging";
-import { SELECTED_TEXT_MAX_LENGTH } from "./constants";
+import {
+  SELECTED_TEXT_MAX_LENGTH,
+  SIDECHAT_SELECTED_TEXT_MAX_LENGTH,
+} from "./constants";
 import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
 import type {
   PaperContextRef,
@@ -18,39 +21,67 @@ import {
 } from "../../services/quotes/quoteCitations";
 import {
   formatSelectedTextLocator,
+  formatSelectedTextQuestionSuffix,
+  isPromptOnlySelectedTextQuestions,
+  joinSelectedTextQuestions,
   renderSelectedTextAnchorContext,
+  SELECTED_TEXT_QUESTIONS_INSTRUCTION,
 } from "../../services/context/selectedTextAnchorFormatting";
 import { t } from "../../utils/i18n";
 import { sanitizeText } from "../../utils/textSanitization";
+import {
+  selectionFragmentToMarkdown,
+  stripSelectionChrome,
+} from "./selectionMarkdown";
 
 export const DEFAULT_SELECTED_TEXT_PROMPT =
   "Please explain this selected text.";
 export const DEFAULT_FILE_ANALYSIS_PROMPT = "Please analyze attached files.";
 
+/**
+ * The block that closes a selected-text prompt. When the prompt is only the
+ * chip questions (empty composer), each question already follows its quote,
+ * so a short instruction replaces the repeated "User question:" block.
+ */
+function formatUserQuestionBlock(
+  normalizedPrompt: string,
+  contexts: readonly Pick<SelectedTextContext, "userQuery">[],
+): string {
+  return isPromptOnlySelectedTextQuestions(
+    normalizedPrompt,
+    contexts,
+    sanitizeText,
+  )
+    ? SELECTED_TEXT_QUESTIONS_INSTRUCTION
+    : `User question:\n${normalizedPrompt}`;
+}
+
 function buildQuestionWithSelectedNoteText(
   selectedText: string,
   userPrompt: string,
+  userQuery?: string,
 ): string {
   const normalizedPrompt = userPrompt.trim() || DEFAULT_SELECTED_TEXT_PROMPT;
   return [
     "Selected text from a Zotero note:",
-    `"""\n${selectedText}\n"""`,
+    `"""\n${selectedText}\n"""${formatSelectedTextQuestionSuffix(userQuery)}`,
     "",
-    `User question:\n${normalizedPrompt}`,
+    formatUserQuestionBlock(normalizedPrompt, [{ userQuery }]),
   ].join("\n");
 }
 
 function buildQuestionWithNoteEditingText(
   selectedText: string,
   userPrompt: string,
+  userQuery?: string,
 ): string {
   const normalizedPrompt = userPrompt.trim() || DEFAULT_SELECTED_TEXT_PROMPT;
   return [
     "Selected text from the current Zotero note editor (editing focus):",
-    `"""\n${selectedText}\n"""`,
+    `"""\n${selectedText}\n"""${formatSelectedTextQuestionSuffix(userQuery)}`,
     "The user selected this snippet inside the active note and wants help editing it in place.",
     "",
-    `User question:\n${normalizedPrompt}`,
+    formatUserQuestionBlock(normalizedPrompt, [{ userQuery }]),
   ].join("\n");
 }
 
@@ -59,12 +90,21 @@ export function normalizeSelectedText(
   source?: SelectedTextSource,
 ): string {
   const sanitized = sanitizeText(text);
-  // Editing needs the selected characters, including paragraph boundaries.
-  const normalized =
-    source === "note-edit"
-      ? sanitized.replace(/\r\n?/g, "\n")
-      : sanitized.replace(/\s+/g, " ");
-  return normalized.trim().slice(0, SELECTED_TEXT_MAX_LENGTH);
+  // Editing needs the selected characters, including paragraph boundaries;
+  // a side-chat or Inline Ask transcript keeps its Q:/A: lines.
+  const isTranscript = source === "sidechat" || source === "inlineask";
+  const keepsLineBreaks = source === "note-edit" || isTranscript;
+  const normalized = keepsLineBreaks
+    ? sanitized.replace(/\r\n?/g, "\n")
+    : sanitized.replace(/\s+/g, " ");
+  return normalized
+    .trim()
+    .slice(
+      0,
+      isTranscript
+        ? SIDECHAT_SELECTED_TEXT_MAX_LENGTH
+        : SELECTED_TEXT_MAX_LENGTH,
+    );
 }
 
 export function isLikelyCorruptedSelectedText(text: string): boolean {
@@ -135,9 +175,10 @@ export function isLikelyCorruptedSelectedText(text: string): boolean {
 export function buildQuestionWithSelectedText(
   selectedText: string,
   userPrompt: string,
+  userQuery?: string,
 ): string {
   const normalizedPrompt = userPrompt.trim() || DEFAULT_SELECTED_TEXT_PROMPT;
-  return `Selected text from the PDF reader:\n"""\n${selectedText}\n"""\n\nUser question:\n${normalizedPrompt}`;
+  return `Selected text from the PDF reader:\n"""\n${selectedText}\n"""${formatSelectedTextQuestionSuffix(userQuery)}\n\n${formatUserQuestionBlock(normalizedPrompt, [{ userQuery }])}`;
 }
 
 export function buildQuestionWithSelectedTextContexts(
@@ -183,18 +224,24 @@ export function buildQuestionWithSelectedTextContexts(
     !includePaperAttribution &&
     !formatSelectedTextLocator(contexts[0], anchorsByContextIndex.get(0))
   ) {
-    return buildQuestionWithSelectedText(normalizedTexts[0], normalizedPrompt);
+    return buildQuestionWithSelectedText(
+      normalizedTexts[0],
+      normalizedPrompt,
+      contexts[0].userQuery,
+    );
   }
   if (normalizedTexts.length === 1 && normalizedSources[0] === "note-edit") {
     return buildQuestionWithNoteEditingText(
       normalizedTexts[0],
       normalizedPrompt,
+      contexts[0].userQuery,
     );
   }
   if (normalizedTexts.length === 1 && normalizedSources[0] === "note") {
     return buildQuestionWithSelectedNoteText(
       normalizedTexts[0],
       normalizedPrompt,
+      contexts[0].userQuery,
     );
   }
   const contextBlocks = normalizedTexts.map((text, index) => {
@@ -206,7 +253,11 @@ export function buildQuestionWithSelectedTextContexts(
           ? "zotero_note"
           : source === "note-edit"
             ? "note_editor"
-            : "pdf_reader";
+            : source === "sidechat"
+              ? "side_chat_transcript"
+              : source === "inlineask"
+                ? "inline_ask_transcript"
+                : "pdf_reader";
     const paperLabel =
       includePaperAttribution && source === "pdf"
         ? formatPaperCitationLabel(selectedTextPaperContexts[index])
@@ -224,7 +275,10 @@ export function buildQuestionWithSelectedTextContexts(
       anchorsByContextIndex.get(index),
     );
     const locatorPart = locator ? ` ${locator}` : "";
-    return `Text Context ${index + 1} [source=${sourceLabel}]${paperPart}${citationPart}${locatorPart}:\n"""\n${text}\n"""`;
+    const questionPart = formatSelectedTextQuestionSuffix(
+      contexts[index].userQuery,
+    );
+    return `Text Context ${index + 1} [source=${sourceLabel}]${paperPart}${citationPart}${locatorPart}:\n"""\n${text}\n"""${questionPart}`;
   });
   const selectedTextQuoteCitations = includePaperAttribution
     ? buildSelectedTextQuoteCitations(
@@ -256,17 +310,28 @@ export function buildQuestionWithSelectedTextContexts(
     : "";
   const question = `Selected text contexts with explicit sources:\n${guidance}${contextBlocks.join(
     "\n\n",
-  )}\n\nUser question:\n${normalizedPrompt}`;
+  )}\n\n${formatUserQuestionBlock(normalizedPrompt, contexts)}`;
   return anchorContext ? `${question}\n\n${anchorContext}` : question;
 }
 
+/**
+ * The user-question text for a send. Composer text wins; with an empty
+ * composer, the questions attached to selected-text chips (in chip order,
+ * blank-line separated) replace the default selected-text prompt (D3).
+ */
 export function resolvePromptText(
   userInput: string,
   selectedText: string,
   hasAttachments: boolean,
+  selectedTextContexts?: readonly SelectedTextContext[],
 ): string {
   const normalizedInput = sanitizeText(userInput).trim();
   if (normalizedInput) return normalizedInput;
+  const chipQuestions = joinSelectedTextQuestions(
+    selectedTextContexts,
+    sanitizeText,
+  );
+  if (chipQuestions) return chipQuestions;
   if (sanitizeText(selectedText).trim()) return DEFAULT_SELECTED_TEXT_PROMPT;
   if (hasAttachments) return DEFAULT_FILE_ANALYSIS_PROMPT;
   return "";
@@ -359,13 +424,28 @@ export function getAttachmentTypeLabel(entry: {
   return "FILE";
 }
 
+/**
+ * Sets the footer status line. The idle "Ready" line takes the plain style
+ * a freshly mounted panel shows; other messages keep their variant's colour.
+ */
 export function setStatus(
   statusEl: HTMLElement,
   text: string,
   variant: "ready" | "sending" | "error" | "warning",
 ) {
+  const idle = variant === "ready" && (text === "Ready" || text === t("Ready"));
+  if (idle) {
+    setNeutralStatus(statusEl, text);
+    return;
+  }
   statusEl.textContent = text;
   statusEl.className = `llm-status llm-status-${variant}`;
+}
+
+/** A steady status label in the plain (mounted-panel) style. */
+export function setNeutralStatus(statusEl: HTMLElement, text: string) {
+  statusEl.textContent = text;
+  statusEl.className = "llm-status";
 }
 
 export function formatTokenCount(tokens: number): string {
@@ -449,6 +529,17 @@ export function setTokenUsage(
     cacheProvider?: string;
   } = {},
 ): void {
+  if (
+    typeof options.cacheHitRatio === "number" &&
+    Number.isFinite(options.cacheHitRatio)
+  ) {
+    const percent = Math.round(
+      Math.max(0, Math.min(1, options.cacheHitRatio)) * 100,
+    );
+    el.dataset.cache = `${t("Cache hit")} ${percent}%`;
+  } else {
+    delete el.dataset.cache;
+  }
   const normalizedTokens = Math.max(0, sessionTokens);
   if (
     typeof contextWindow === "number" &&
@@ -527,6 +618,7 @@ export function setTokenUsage(
   el.dataset.summary = presentation.summary;
   el.dataset.detail = presentation.detail;
   delete el.dataset.warning;
+  delete el.dataset.cache;
   el.style.display = "";
   if (gaugeEl) {
     gaugeEl.style.display = "inline-block";
@@ -554,10 +646,61 @@ export function getCurrentLocalTimestamp(): string {
   }).format(new Date());
 }
 
+// Range.compareBoundaryPoints modes (the Range global is not always in scope).
+const RANGE_START_TO_START = 0;
+const RANGE_START_TO_END = 1;
+const RANGE_END_TO_END = 2;
+const RANGE_END_TO_START = 3;
+
 /**
- * Extract the selected text within a bubble, replacing KaTeX-rendered math
- * with its original LaTeX source wrapped in `$...$` (inline) or `$$...$$`
- * (display).
+ * Clones one selected range into a detached box, with UI chrome removed.
+ * A range that sits inside one code block gets a code wrapper, because the
+ * clone holds only text.
+ */
+function cloneRangeForMarkdown(
+  doc: Document,
+  container: HTMLElement,
+  range: Range,
+): HTMLElement {
+  const box = doc.createElement("div");
+  const host = range.commonAncestorContainer;
+  const hostEl = (
+    host.nodeType === 1 ? host : host.parentNode
+  ) as Element | null;
+  const codeBody = hostEl?.closest?.(".llm-codeblock-body, pre");
+  const fragment = range.cloneContents();
+  if (codeBody && container.contains(codeBody)) {
+    const source = codeBody
+      .closest(".llm-copyable")
+      ?.getAttribute("data-llm-copy-source");
+    const pre = doc.createElement("pre");
+    pre.appendChild(fragment);
+    const lang = codeBody
+      .closest("[data-code-lang]")
+      ?.getAttribute("data-code-lang");
+    if (lang) pre.setAttribute("data-code-lang", lang);
+    if (source) {
+      const wrap = doc.createElement("div");
+      wrap.className = "llm-copyable llm-copyable-code";
+      wrap.setAttribute("data-llm-copy-source", source);
+      wrap.appendChild(pre);
+      box.appendChild(wrap);
+    } else {
+      box.appendChild(pre);
+    }
+  } else {
+    box.appendChild(fragment);
+  }
+  stripSelectionChrome(box);
+  return box;
+}
+
+/**
+ * Extract the selected part of a bubble as Markdown. Gecko splits one visible
+ * selection into several ranges around nodes that cannot be selected (such as
+ * a code block's hover bar), so every range is read. Neighbouring ranges with
+ * only chrome between them become one segment; other gaps become a blank line.
+ * KaTeX-rendered math returns as its LaTeX source.
  */
 export function getSelectedTextWithinBubble(
   doc: Document,
@@ -581,33 +724,59 @@ export function getSelectedTextWithinBubble(
   }
 
   try {
-    const range = selection.getRangeAt(0);
-    const fragment = range.cloneContents();
-    const temp = doc.createElement("div");
-    temp.appendChild(fragment);
-
-    const katexEls = Array.from(temp.querySelectorAll(".katex")) as Element[];
-    for (const el of katexEls) {
-      const ann = el.querySelector('annotation[encoding="application/x-tex"]');
-      if (ann) {
-        const latex = (ann.textContent || "").trim();
-        const mathEl = ann.closest("math");
-        const isDisplay = mathEl?.getAttribute("display") === "block";
-        el.replaceWith(
-          doc.createTextNode(isDisplay ? `$$${latex}$$` : `$${latex}$`),
-        );
+    const bounds = doc.createRange();
+    bounds.selectNodeContents(container);
+    const ranges: Range[] = [];
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const range = selection.getRangeAt(i).cloneRange();
+      if (range.collapsed) continue;
+      // Skip ranges outside the bubble; clip the others to it.
+      if (
+        range.compareBoundaryPoints(RANGE_END_TO_START, bounds) >= 0 ||
+        range.compareBoundaryPoints(RANGE_START_TO_END, bounds) <= 0
+      ) {
         continue;
       }
-      const mathml = el.querySelector(".katex-mathml");
-      if (mathml) mathml.remove();
+      if (range.compareBoundaryPoints(RANGE_START_TO_START, bounds) < 0) {
+        range.setStart(bounds.startContainer, bounds.startOffset);
+      }
+      if (range.compareBoundaryPoints(RANGE_END_TO_END, bounds) > 0) {
+        range.setEnd(bounds.endContainer, bounds.endOffset);
+      }
+      if (!range.collapsed) ranges.push(range);
+    }
+    ranges.sort((a, b) => a.compareBoundaryPoints(RANGE_START_TO_START, b));
+
+    const segments: Range[] = [];
+    for (const range of ranges) {
+      const prev = segments[segments.length - 1];
+      if (prev) {
+        const gap = doc.createRange();
+        gap.setStart(prev.endContainer, prev.endOffset);
+        if (range.compareBoundaryPoints(RANGE_START_TO_START, prev) >= 0) {
+          gap.setEnd(range.startContainer, range.startOffset);
+        }
+        const probe = doc.createElement("div");
+        probe.appendChild(gap.cloneContents());
+        stripSelectionChrome(probe);
+        if (!(probe.textContent || "").trim()) {
+          if (range.compareBoundaryPoints(RANGE_END_TO_END, prev) > 0) {
+            prev.setEnd(range.endContainer, range.endOffset);
+          }
+          continue;
+        }
+      }
+      segments.push(range);
     }
 
-    const strayMathml = Array.from(
-      temp.querySelectorAll(".katex-mathml"),
-    ) as Element[];
-    for (const el of strayMathml) el.remove();
-
-    return sanitizeText(temp.textContent || "").trim();
+    const parts = segments
+      .map((range) =>
+        selectionFragmentToMarkdown(
+          cloneRangeForMarkdown(doc, container, range),
+        ),
+      )
+      .filter(Boolean);
+    return sanitizeText(parts.join("\n\n").replace(/\n{3,}/g, "\n\n")).trim();
   } catch (err) {
     appLogger.warn("LLM: Selected text extraction failed:", err);
     return "";

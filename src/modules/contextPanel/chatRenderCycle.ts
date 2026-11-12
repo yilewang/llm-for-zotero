@@ -21,6 +21,17 @@ export function beginChatRenderCycle(body: Element): ChatRenderCycle {
 }
 
 /**
+ * Start a cycle whose chat render the caller already owns, so neither the
+ * deferred nor the async lifecycle path draws the chat again. Used when the
+ * mounted panel moves to the next paper in place and draws it itself.
+ */
+export function beginOwnedChatRenderCycle(body: Element): ChatRenderCycle {
+  const cycle = beginChatRenderCycle(body);
+  cycle.rendered = true;
+  return cycle;
+}
+
+/**
  * Deferred-onRender path. True when this cycle is still the body's current
  * cycle and nothing rendered yet; the claim is then taken.
  */

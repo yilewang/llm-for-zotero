@@ -66,6 +66,7 @@ type GeminiResponse = {
 type GeminiUsageMetadata = {
   promptTokenCount?: unknown;
   candidatesTokenCount?: unknown;
+  thoughtsTokenCount?: unknown;
   totalTokenCount?: unknown;
   cachedContentTokenCount?: unknown;
 };
@@ -82,7 +83,9 @@ async function reportGeminiUsage(
 ): Promise<void> {
   if (!onUsage || !usageMetadata) return;
   const promptTokens = geminiTokenCount(usageMetadata.promptTokenCount);
-  const completionTokens = geminiTokenCount(usageMetadata.candidatesTokenCount);
+  const completionTokens =
+    geminiTokenCount(usageMetadata.candidatesTokenCount) +
+    geminiTokenCount(usageMetadata.thoughtsTokenCount);
   const totalTokens =
     geminiTokenCount(usageMetadata.totalTokenCount) ||
     promptTokens + completionTokens;
@@ -763,6 +766,19 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
   }
 
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+    const cached = this.conversationMessages;
+    try {
+      return await this.runStepOnce(params);
+    } catch (error) {
+      // A step that failed keeps nothing: the first step of a conversation
+      // leaves no cached messages behind, so a retry of it starts from the
+      // same input instead of adding its continuation twice.
+      if (!cached) this.resetState();
+      throw error;
+    }
+  }
+
+  private async runStepOnce(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
     const initial = await buildInitialGeminiMessages(params.messages);
     const cachedConversationMessages = this.conversationMessages;
@@ -805,7 +821,7 @@ export class GeminiNativeAgentAdapter implements AgentModelAdapter {
       tools: buildGeminiTools(params.tools),
       toolConfig: {
         functionCallingConfig: {
-          mode: "AUTO",
+          mode: params.toolChoice === "none" ? "NONE" : "AUTO",
         },
       },
       generationConfig: {

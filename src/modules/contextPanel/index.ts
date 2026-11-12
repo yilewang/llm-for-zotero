@@ -26,7 +26,7 @@ import { getSidebarLayout } from "./sidebarLayout";
 
 import { getLocaleID } from "../../utils/locale";
 import { config, PANE_ID } from "./constants";
-import type { Message } from "./types";
+import type { Message, PaperContextRef } from "./types";
 import type { ConversationSystem } from "../../shared/types";
 import {
   activeContextPanels,
@@ -52,8 +52,14 @@ import { mountPanelShell } from "./panelMount";
 import { ensureConversationLoaded, getConversationKey } from "./chat";
 import { renderShortcuts } from "./shortcuts";
 import { refreshChat } from "./chat";
+import { prewarmQuoteSourcePageText } from "./quoteValidation/scheduling";
+import {
+  installPaperWarmOnIntent,
+  type PaperWarmTarget,
+} from "./paperWarmOnIntent";
 import {
   beginChatRenderCycle,
+  beginOwnedChatRenderCycle,
   claimAsyncChatRender,
   claimDeferredChatRender,
   setPanelRenderClaim,
@@ -66,6 +72,8 @@ import {
   resolvePanelContextLifecycleState,
   applySelectedTextPreview,
   getSelectedTextContextEntries,
+  getSelectedTextContextQueryForItem,
+  updateSelectedTextContextQueryForItem,
   type SelectedTextPageLocation,
 } from "./contextResolution";
 import {
@@ -87,6 +95,7 @@ import {
 } from "../../services/paperContent/pdfContext";
 import { getPageLabelForIndex } from "../../services/pdf/livePdfSelectionLocator";
 import {
+  closeReaderSelectionPopup,
   getFirstSelectionFromReader,
   getSelectionFromDocument,
 } from "../../services/pdf/readerSelection";
@@ -100,8 +109,27 @@ import { resolveReaderPopupPaperContext } from "./readerPopup";
 import { resolveReaderPopupPanelTarget } from "./readerPopupPanelRouting";
 import {
   includeReaderSelectedText,
+  refreshSelectedTextPanels,
   type IncludeReaderSelectedTextResult,
 } from "./readerTextInclusion";
+import {
+  closeAllReaderSelectionPromptOverlays,
+  openReaderSelectionPromptForChip,
+} from "./selectionPrompt/readerSelectionPromptOverlay";
+import {
+  closeReaderOverlayForNewSelection,
+  type ReaderOverlayAnchor,
+} from "./selectionPrompt/readerOverlayShared";
+import { createInlineAskSparkIcon } from "./selectionPrompt/inlineAskOverlay";
+import { openInlineAskCardForReader } from "./selectionPrompt/inlineAskReader";
+import type { InlineAskPanelReach } from "./selectionPrompt/inlineAskContinue";
+import { revealReaderChatPane } from "./dedicatedChatPane";
+import {
+  cloneInlineAskAnnotation,
+  isInlineAskReader,
+  type InlineAskPopupSnapshot,
+} from "./selectionPrompt/inlineAskSnapshot";
+import { t } from "../../utils/i18n";
 import {
   resolveInitialPanelItemState,
   resolveConversationSystemForItem,
@@ -131,8 +159,12 @@ import {
   renderPanelOwnershipBlocked,
 } from "./panelHostOwnership";
 import { getPanelHandle } from "./panelHandle";
+import { pluginStylesheetHref } from "../../utils/pluginReload";
 
-export { openStandaloneChat } from "./standaloneWindow";
+export {
+  openStandaloneChat,
+  getStandaloneActivePaperItemID,
+} from "./standaloneWindow";
 import {
   isStandaloneWindowActive,
   notifyStandaloneItemChanged,
@@ -142,16 +174,29 @@ import {
 // Public API
 // =============================================================================
 
+const LLM_STYLE_LINK_IDS = [
+  `${config.addonRef}-styles`,
+  `${config.addonRef}-katex-styles`,
+];
+
+export function unregisterLLMStyles(doc: Document): void {
+  for (const id of LLM_STYLE_LINK_IDS) {
+    doc.querySelectorAll(`[id="${id}"]`).forEach((el: Element) => el.remove());
+  }
+}
+
 export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   const doc = win.document;
-  if (doc.getElementById(`${config.addonRef}-styles`)) return;
+  // After an in-place update the previous version's links are still here and
+  // point at its CSS. Replace them rather than keep them.
+  unregisterLLMStyles(doc);
 
   // Main styles
   const link = doc.createElement("link") as HTMLLinkElement;
   link.id = `${config.addonRef}-styles`;
   link.rel = "stylesheet";
   link.type = "text/css";
-  link.href = `chrome://${config.addonRef}/content/zoteroPane.css`;
+  link.href = pluginStylesheetHref("zoteroPane.css");
   doc.documentElement?.appendChild(link);
 
   // KaTeX styles for math rendering
@@ -159,7 +204,7 @@ export function registerLLMStyles(win: _ZoteroTypes.MainWindow) {
   katexLink.id = `${config.addonRef}-katex-styles`;
   katexLink.rel = "stylesheet";
   katexLink.type = "text/css";
-  katexLink.href = `chrome://${config.addonRef}/content/vendor/katex/katex.min.css`;
+  katexLink.href = pluginStylesheetHref("vendor/katex/katex.min.css");
   doc.documentElement?.appendChild(katexLink);
 }
 
@@ -250,9 +295,47 @@ function isPanelConversationLoaded(
   );
 }
 
+let registeredReaderPaneID: string | false = false;
+
+/**
+ * Zotero keeps an item pane section element while a section with its paneID
+ * is registered at the pane's next render, and the element keeps the hooks
+ * of the plugin scope that created it. An update unregisters and registers
+ * the same paneID back to back, so without this every item pane keeps the
+ * old version's section, hooks, and chat panel. A render while the paneID is
+ * unregistered removes them.
+ */
+function removeUnregisteredItemPaneSections(): void {
+  for (const win of Zotero.getMainWindows()) {
+    win.document
+      .querySelectorAll("item-details")
+      .forEach((details: Element) => {
+        try {
+          (
+            details as Element & { renderCustomSections?: () => void }
+          ).renderCustomSections?.();
+        } catch (err) {
+          appLogger.debug("LLM: item pane section cleanup skipped", err);
+        }
+      });
+  }
+}
+
+export function unregisterReaderContextPanel(): void {
+  if (registeredReaderPaneID) {
+    Zotero.ItemPaneManager.unregisterSection(registeredReaderPaneID);
+  }
+  registeredReaderPaneID = false;
+  setReaderContextPanelRegistered(false);
+  removeUnregisteredItemPaneSections();
+}
+
 export function registerReaderContextPanel() {
   if (readerContextPanelRegistered) return;
   setReaderContextPanelRegistered(true);
+  // Zotero unregistered the previous version's section after its shutdown;
+  // drop its elements before this version registers the same paneID.
+  removeUnregisteredItemPaneSections();
   // Generation counter: incremented on every onAsyncRender call so stale
   // (superseded) renders can bail out at each await point.
   let renderGeneration = 0;
@@ -263,10 +346,94 @@ export function registerReaderContextPanel() {
   ) => {
     setupHandlers(body, rawItem);
   };
+  // Clicking another paper in the library rebinds the same pane body. A
+  // mounted paper chat moves to that paper in place instead of rebuilding
+  // the whole panel and wiring every handler again; it then draws the chat
+  // once, so the lifecycle's own chat renders are claimed up front.
+  const switchEmbeddedPanelInPlace = (
+    body: Element,
+    rawItem: Zotero.Item | null | undefined,
+    resolvedState: {
+      item: Zotero.Item | null;
+      basePaperItem?: Zotero.Item | null;
+    },
+  ): boolean => {
+    const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
+    const panelHandle = getPanelHandle(body);
+    const nextItem = resolvedState.item;
+    if (
+      !nextItem ||
+      !panelHandle ||
+      !panelRoot ||
+      !isPanelRootInitialized(panelRoot) ||
+      !activeContextPanels.has(body)
+    ) {
+      return false;
+    }
+    const previousRawItem = activeContextPanelRawItems.get(body);
+    // The panel resolves the next paper from the live raw item.
+    activeContextPanelRawItems.set(body, rawItem || null);
+    if (
+      !panelHandle.switchToPaperItem(
+        nextItem,
+        resolvedState.basePaperItem || null,
+        // A switch that cannot draw the paper falls back to the full remount.
+        () => rebuildEmbeddedPanelForHost(body, rawItem, resolvedState),
+      )
+    ) {
+      activeContextPanelRawItems.set(body, previousRawItem || null);
+      return false;
+    }
+    writePanelContextDataset(panelRoot, rawItem || nextItem);
+    setPanelRenderClaim(body, {
+      kind: "sync-rendered",
+      itemKey: getPanelItemIdKey(rawItem || null),
+      cycle: beginOwnedChatRenderCycle(body),
+    });
+    return true;
+  };
+  const switchEmbeddedPanelForHost = (
+    body: Element,
+    rawItem: Zotero.Item | null | undefined,
+    resolvedState: {
+      item: Zotero.Item | null;
+      basePaperItem?: Zotero.Item | null;
+    },
+  ): boolean => {
+    const nextItem = resolvedState.item;
+    if (!nextItem) return false;
+    // A library-wide lock moves the panel to Library chat; that remounts.
+    const nextSystem = resolveConversationSystemForItem(nextItem) || "upstream";
+    const libraryID = Number(nextItem.libraryID || 0);
+    if (
+      nextSystem === "upstream" &&
+      libraryID > 0 &&
+      getLockedGlobalConversationKey(libraryID) !== null
+    ) {
+      return false;
+    }
+    const hostLease = capturePanelOperationLease(body);
+    if (
+      !canLifecycleCommitPanelConversation(
+        body,
+        nextItem,
+        "embedded-switch",
+        hostLease,
+      )
+    ) {
+      return false;
+    }
+    clearCompletedPanelLifecycleSignature(body);
+    persistPendingChatScrollRestoreFromBody(body);
+    return switchEmbeddedPanelInPlace(body, rawItem, resolvedState);
+  };
   const rebuildEmbeddedPanelForHost = (
     body: Element,
     rawItem: Zotero.Item | null | undefined,
-    resolvedState: { item: Zotero.Item | null },
+    resolvedState: {
+      item: Zotero.Item | null;
+      basePaperItem?: Zotero.Item | null;
+    },
   ) => {
     const hostLease = capturePanelOperationLease(body);
     if (
@@ -313,7 +480,7 @@ export function registerReaderContextPanel() {
   // Zotero draws the head icon in a 16px box and the rail icon at its own
   // size in a 28px button, so each slot gets the icon drawn for its size,
   // as Zotero's own itempane/16 and itempane/20 icons are.
-  Zotero.ItemPaneManager.registerSection({
+  registeredReaderPaneID = Zotero.ItemPaneManager.registerSection({
     paneID: PANE_ID,
     pluginID: config.addonID,
     header: {
@@ -349,8 +516,10 @@ export function registerReaderContextPanel() {
         mountedVerdict === "host-mismatch" ||
         (mountedVerdict === "unresolved" && isPanelBodyInitialized(body))
       ) {
-        renderPanelOwnershipBlocked(body, "onItemChange", mountedVerdict);
-        rebuildEmbeddedPanelForHost(body, item || null, resolvedState);
+        if (!switchEmbeddedPanelForHost(body, item || null, resolvedState)) {
+          renderPanelOwnershipBlocked(body, "onItemChange", mountedVerdict);
+          rebuildEmbeddedPanelForHost(body, item || null, resolvedState);
+        }
       }
       const selectedTabId = refreshLastKnownSelectedTabId();
       const itemChangeSignature = [
@@ -468,7 +637,15 @@ export function registerReaderContextPanel() {
         ) {
           // Build and attach synchronously so host identity is corrected even
           // when Zotero reveals a reused pane without a useful async render.
-          rebuildEmbeddedPanelForHost(body, item, resolvedState);
+          // A plain change of paper moves the mounted panel in place instead.
+          const onlyPaperChanged =
+            !needsFullRender && !lockStale && !systemChanged;
+          if (
+            !onlyPaperChanged ||
+            !switchEmbeddedPanelForHost(body, item, resolvedState)
+          ) {
+            rebuildEmbeddedPanelForHost(body, item, resolvedState);
+          }
         } else {
           // Same item — keep item reference current so delegated handlers
           // (e.g. Add Text) always resolve the active item.
@@ -506,6 +683,11 @@ export function registerReaderContextPanel() {
     },
     onAsyncRender: async ({ body, item, setEnabled }) => {
       setEnabled(true);
+      installPaperWarmOnIntent(
+        body,
+        resolveIntentPaperWarmTarget(body),
+        warmPanelPaper,
+      );
 
       const resolvedInitialState = resolveInitialPanelItemState(item);
       const resolvedItem = resolvedInitialState.item;
@@ -608,19 +790,366 @@ export function registerReaderContextPanel() {
         refreshChat(body, resolvedItem);
       }
       markCompletedPanelLifecycleSignature(body, lifecycleSignature);
-      // Defer content extraction so the panel becomes interactive sooner.
-      const activeContextItem = getActiveContextAttachmentFromTabs();
-      if (activeContextItem) {
-        void ensurePDFTextCached(activeContextItem);
-      } else if (item && (item as any).isNote?.()) {
-        void ensureNoteTextCached(item);
+      // The PDF's own text is read when the user starts using this chat
+      // (installPaperWarmOnIntent above), never while the PDF opens (#524).
+      // A note is small and read straight from Zotero, so it stays eager.
+      if (!getActiveContextAttachmentFromTabs() && (item as any)?.isNote?.()) {
+        void ensureNoteTextCached(item!);
       }
     },
   });
 }
 
+/**
+ * The paper a panel's chat would read: the PDF open in the selected reader
+ * tab, which is the panel the user is typing in.
+ */
+function resolveIntentPaperWarmTarget(
+  body: Element,
+): () => PaperWarmTarget | null {
+  return () => {
+    const contextItem = getActiveContextAttachmentFromTabs();
+    if (!contextItem) return null;
+    const panelItem = activeContextPanels.get(body)?.() || null;
+    return {
+      contextItemId: contextItem.id,
+      conversationKey: panelItem ? getConversationKey(panelItem) : 0,
+    };
+  };
+}
+
+function warmPanelPaper(target: PaperWarmTarget): void {
+  const contextItem = Zotero.Items.get(target.contextItemId);
+  if (!contextItem) return;
+  // Context extraction seeds PDF page text when it reads the PDF; the
+  // prewarm then fills it from Zotero's full-text cache or PDFWorker when
+  // that read came from MinerU or an earlier cache, and re-checks this
+  // conversation's quote cards if it added the page text.
+  void ensurePDFTextCached(contextItem).finally(() => {
+    void prewarmQuoteSourcePageText({
+      conversationKey: target.conversationKey,
+      contextItemIds: [target.contextItemId],
+    });
+  });
+}
+
 type ReaderTextSelectionPopupHandler =
   _ZoteroTypes.Reader.EventHandler<"renderTextSelectionPopup">;
+
+/** Add Text outcome plus the panel body it targeted, for the follow-up prompt. */
+type ReaderPopupAddTextActionResult = {
+  result: IncludeReaderSelectedTextResult | null;
+  targetBody: Element | null;
+  /** The conversation the selection was added to. */
+  conversationKey: number | null;
+  /** The paper context the chip was stored with. */
+  paperContext: PaperContextRef | null;
+};
+
+const EMPTY_READER_POPUP_ADD_TEXT_RESULT: ReaderPopupAddTextActionResult = {
+  result: null,
+  targetBody: null,
+  conversationKey: null,
+  paperContext: null,
+};
+
+/** Reads a boolean popup pref; anything but false (or "false") is on. */
+function readPopupTogglePref(name: string): boolean {
+  const value = Zotero.Prefs.get(`${config.prefsPrefix}.${name}`, true);
+  return value !== false && `${value || ""}`.toLowerCase() !== "false";
+}
+
+/** The page of the selection popup's annotation draft. */
+function readPopupAnnotationPage(
+  annotation: unknown,
+  reader: unknown,
+): { pageIndex: number | null; pageLabel: string | undefined } {
+  const popupAnnotation = annotation as {
+    pageIndex?: unknown;
+    pageLabel?: unknown;
+    position?: {
+      pageIndex?: unknown;
+      pageLabel?: unknown;
+    } | null;
+  } | null;
+  const rawPopupPageIndex =
+    popupAnnotation?.position?.pageIndex ?? popupAnnotation?.pageIndex;
+  const parsedPopupPageIndex = Number(rawPopupPageIndex);
+  const pageIndex =
+    Number.isFinite(parsedPopupPageIndex) && parsedPopupPageIndex >= 0
+      ? Math.floor(parsedPopupPageIndex)
+      : null;
+  const rawPopupPageLabel =
+    popupAnnotation?.position?.pageLabel ?? popupAnnotation?.pageLabel;
+  const pageLabel =
+    typeof rawPopupPageLabel === "string" && rawPopupPageLabel.trim()
+      ? rawPopupPageLabel.trim()
+      : pageIndex !== null
+        ? getPageLabelForIndex(reader as any, pageIndex)
+        : undefined;
+  return { pageIndex, pageLabel };
+}
+
+/**
+ * Attaches the reader box's text to the chip that Add Text made (or found)
+ * as its question. The chip is found by the same text, source, paper
+ * context, and context item that Add Text stored; its page is ignored, so a
+ * page that arrived later still matches. Returns false when no chip matches.
+ */
+function attachReaderSelectionQuestion(input: {
+  body: Element;
+  conversationKey: number;
+  selectedText: string;
+  paperContext: PaperContextRef | null;
+  contextItemId: number | undefined;
+  pageIndex: number | undefined;
+  question: string;
+}): boolean {
+  const { body, conversationKey, selectedText, paperContext } = input;
+  const updated = updateSelectedTextContextQueryForItem(
+    conversationKey,
+    selectedText,
+    "pdf",
+    paperContext,
+    input.question,
+    input.contextItemId,
+    input.pageIndex,
+  );
+  if (!updated) return false;
+  // The chip stays collapsed; its card shows the question on hover or click.
+  refreshSelectedTextPanels(body, conversationKey);
+  const status = body.querySelector("#llm-status") as HTMLElement | null;
+  if (status) {
+    setStatus(status, t("Question attached to the selected text"), "ready");
+  }
+  const composer = body.querySelector("#llm-input") as HTMLElement | null;
+  composer?.focus({ preventScroll: true });
+  return true;
+}
+
+/**
+ * The reader tab's own context panel, as Add Text routes to it: also while
+ * the standalone window is open. Null when the tab has no mounted panel.
+ */
+function resolveReaderPopupPanel(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): ReturnType<typeof resolveReaderPopupPanelTarget> {
+  return resolveReaderPopupPanelTarget({
+    preferredDocument: event.doc.defaultView?.top?.document || null,
+    documents: collectReaderPopupDocuments(event),
+    tabID: readReaderTabID(event),
+  });
+}
+
+/** The popup's documents and every main window's: where reader panes live. */
+function collectReaderPopupDocuments(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): Set<Document> {
+  const docs = new Set<Document>();
+  const pushDoc = (doc?: Document | null) => {
+    if (doc) docs.add(doc);
+  };
+  pushDoc(event.doc);
+  pushDoc(event.doc.defaultView?.top?.document || null);
+  try {
+    pushDoc(Zotero.getMainWindow()?.document || null);
+  } catch (_err) {
+    void _err;
+  }
+  try {
+    const wins = Zotero.getMainWindows?.() || [];
+    for (const win of wins) {
+      pushDoc(win?.document || null);
+    }
+  } catch (_err) {
+    void _err;
+  }
+  return docs;
+}
+
+function readReaderTabID(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): string | number | null {
+  const readerWithTab = event.reader as unknown as {
+    tabID?: string | number | null;
+    _tabID?: string | number | null;
+  };
+  return readerWithTab.tabID ?? readerWithTab._tabID ?? null;
+}
+
+/** How long Continue in sidebar waits for a revealed panel to mount. */
+const READER_PANEL_REACH_TIMEOUT_MS = 4000;
+
+/**
+ * Continue in sidebar's route to the reader tab's own panel: shows the
+ * tab's chat when it is hidden, waits for its panel to publish a handle,
+ * and runs the request there. Null when no panel answered in time.
+ */
+function createReaderPanelReach(
+  event: Parameters<ReaderTextSelectionPopupHandler>[0],
+): InlineAskPanelReach {
+  return async (input) => {
+    // A collapsed pane still lays the panel out a few pixels wide, so only
+    // the tab's side navigation knows whether the chat shows. The tab's
+    // pane lives in a main window, not in the reader's own document.
+    const tabID = readReaderTabID(event);
+    for (const doc of collectReaderPopupDocuments(event)) {
+      try {
+        if (revealReaderChatPane(doc, tabID)) break;
+      } catch (err) {
+        appLogger.warn("LLM: could not reveal the reader chat", err);
+      }
+    }
+    const deadline = Date.now() + READER_PANEL_REACH_TIMEOUT_MS;
+    for (;;) {
+      const current = resolveReaderPopupPanel(event);
+      const handle = current ? getPanelHandle(current.body) : undefined;
+      if (handle) return handle.startPaperConversationWithTurns(input);
+      if (Date.now() >= deadline) {
+        appLogger.warn(
+          "LLM: Continue in sidebar found no reader panel to take the chat",
+        );
+        return null;
+      }
+      await Zotero.Promise.delay(50);
+    }
+  };
+}
+
+/** The conversation key of a reader panel, or null (never 0). */
+function readPanelConversationKey(
+  target: ReturnType<typeof resolveReaderPopupPanelTarget>,
+): number | null {
+  const key = Math.floor(Number(target?.root.dataset.itemId || 0));
+  return Number.isFinite(key) && key > 0 ? key : null;
+}
+
+/**
+ * The reader popup's Inline Ask button. Like Add Text, it acts on the first
+ * pointerdown (Zotero may remove the popup before "click") and measures its
+ * anchor then. It opens the Inline Ask card with the snapshot taken when the
+ * popup appeared.
+ *
+ * In Zotero's own selection popup the card replaces the popup: the popup
+ * closes (the text selection stays) and the card takes its place. If the
+ * popup cannot be closed, the card opens below the button row instead.
+ */
+function createInlineAskPopupButton(input: {
+  event: Parameters<ReaderTextSelectionPopupHandler>[0];
+  /** The popup row; the card opens below it unless it replaces the popup. */
+  getAnchorElement: () => Element | null;
+  snapshot: InlineAskPopupSnapshot;
+  /** Reads the selection again when the popup had none. */
+  resolveSelectedText: () => string;
+  reasoningItemId: number;
+  /** The reader panel's conversation, read when Save checks or runs. */
+  resolveConversationKey: () => number | null;
+  /** Runs Continue in sidebar in the reader tab's panel. */
+  reachPanel: InlineAskPanelReach;
+}): HTMLButtonElement {
+  const { event } = input;
+  const button = event.doc.createElementNS(
+    "http://www.w3.org/1999/xhtml",
+    "button",
+  ) as HTMLButtonElement;
+  button.type = "button";
+  button.setAttribute("data-llm-inline-ask-button", "true");
+  button.title = t("Ask about the selected text here");
+  button.style.cssText = [
+    "display:inline-flex",
+    "align-items:center",
+    "justify-content:center",
+    "gap:5px",
+    "flex:1 1 0",
+    "min-width:0",
+    "margin:0",
+    "padding:6px 8px",
+    "box-sizing:border-box",
+    "border:1px solid rgba(130,130,130,0.38)",
+    "border-radius:6px",
+    "background:rgba(255,255,255,0.04)",
+    "color:inherit",
+    "font-size:12px",
+    "line-height:1.25",
+    "white-space:nowrap",
+    "cursor:pointer",
+  ].join(";");
+  const label = event.doc.createElementNS(
+    "http://www.w3.org/1999/xhtml",
+    "span",
+  ) as HTMLSpanElement;
+  label.textContent = t("Inline Ask");
+  button.append(createInlineAskSparkIcon(event.doc), label);
+  let handled = false;
+  const open = (e: Event) => {
+    if (handled) return;
+    handled = true;
+    e.preventDefault();
+    e.stopPropagation();
+    // Measure now: Zotero may remove the popup right after this.
+    const rowRect = (
+      input.getAnchorElement() || button
+    ).getBoundingClientRect();
+    const nativePopup = button.closest(".selection-popup");
+    const popupRect = nativePopup?.getBoundingClientRect();
+    const selectedText =
+      normalizeSelectedText(input.snapshot.selectedText) ||
+      input.resolveSelectedText();
+    if (!selectedText) {
+      appLogger.debug("LLM: Inline Ask skipped (no selection)");
+      return;
+    }
+    const replacesPopup =
+      nativePopup && popupRect
+        ? closeReaderSelectionPopup(event.reader, nativePopup)
+        : false;
+    const anchor: ReaderOverlayAnchor =
+      replacesPopup && nativePopup && popupRect
+        ? {
+            left: popupRect.left,
+            top: popupRect.top,
+            right: popupRect.right,
+            bottom: popupRect.bottom,
+            // Zotero marks a popup placed above the selection with this
+            // class; there the card keeps the popup's bottom edge, so it
+            // grows away from the selection.
+            cover: nativePopup.classList.contains("page-popup-top-center")
+              ? "bottom"
+              : "top",
+          }
+        : {
+            left: rowRect.left,
+            top: rowRect.top,
+            right: rowRect.right,
+            bottom: rowRect.bottom,
+          };
+    try {
+      openInlineAskCardForReader({
+        doc: event.doc,
+        anchor,
+        snapshot: { ...input.snapshot, selectedText },
+        reasoningItemId: input.reasoningItemId,
+        resolveConversationKey: input.resolveConversationKey,
+        reachPanel: input.reachPanel,
+      });
+    } catch (err) {
+      appLogger.warn("LLM: Inline Ask card failed", err);
+    }
+  };
+  const isPrimaryButton = (e: Event): boolean => {
+    const maybeMouse = e as MouseEvent;
+    return typeof maybeMouse.button !== "number" || maybeMouse.button === 0;
+  };
+  button.addEventListener("pointerdown", (e: Event) => {
+    if (isPrimaryButton(e)) open(e);
+  });
+  button.addEventListener("mousedown", (e: Event) => {
+    if (isPrimaryButton(e)) open(e);
+  });
+  button.addEventListener("click", open);
+  button.addEventListener("command", open);
+  return button;
+}
 
 let readerSelectionTrackingHandler: ReaderTextSelectionPopupHandler | null =
   null;
@@ -632,6 +1161,9 @@ let readerSelectionTrackingReaderAPI: ReaderSelectionTrackingReader<ReaderTextSe
 function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
   if (readerSelectionTrackingHandler) return readerSelectionTrackingHandler;
   readerSelectionTrackingHandler = (event) => {
+    // A new selection popup replaces any prompt box left from the last one,
+    // except an Inline Ask card that holds a conversation.
+    closeReaderOverlayForNewSelection(event.doc);
     const selectedText = (() => {
       const fromAnnotation = normalizeSelectedText(
         event.params?.annotation?.text || "",
@@ -652,13 +1184,10 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
     const item = Zotero.Items.get(itemId) || null;
     const cacheKeys = getItemSelectionCacheKeys(item);
     const keys = cacheKeys.length ? cacheKeys : [itemId];
-    const popupPrefValue = Zotero.Prefs.get(
-      `${config.prefsPrefix}.showPopupAddText`,
-      true,
-    );
-    const showAddTextInPopup =
-      popupPrefValue !== false &&
-      `${popupPrefValue || ""}`.toLowerCase() !== "false";
+    const showAddTextInPopup = readPopupTogglePref("showPopupAddText");
+    const showInlineAskInPopup =
+      readPopupTogglePref("showPopupInlineAsk") &&
+      isInlineAskReader(event.reader as { type?: unknown }, item);
 
     const resolveSelectedTextForPopupAction = (): string => {
       const fromPopupDoc = getSelectionFromDocument(
@@ -692,10 +1221,10 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
       return "";
     };
 
-    if (selectedText || showAddTextInPopup) {
+    if (selectedText || showAddTextInPopup || showInlineAskInPopup) {
       let popupSentinelEl: HTMLElement | null = null;
       const addTextToPanel =
-        async (): Promise<IncludeReaderSelectedTextResult | null> => {
+        async (): Promise<ReaderPopupAddTextActionResult> => {
           const effectiveSelectedText =
             normalizeSelectedText(selectedText) ||
             resolveSelectedTextForPopupAction();
@@ -703,45 +1232,17 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
             appLogger.debug(
               "LLM: Add Text popup action skipped (no selection)",
             );
-            return null;
+            return EMPTY_READER_POPUP_ADD_TEXT_RESULT;
           }
           try {
-            const docs = new Set<Document>();
-            const pushDoc = (doc?: Document | null) => {
-              if (doc) docs.add(doc);
-            };
-            pushDoc(event.doc);
-            pushDoc(event.doc.defaultView?.top?.document || null);
-            try {
-              pushDoc(Zotero.getMainWindow()?.document || null);
-            } catch (_err) {
-              void _err;
-            }
-            try {
-              const wins = Zotero.getMainWindows?.() || [];
-              for (const win of wins) {
-                pushDoc(win?.document || null);
-              }
-            } catch (_err) {
-              void _err;
-            }
-            const readerWithTab = event.reader as unknown as {
-              tabID?: string | number | null;
-              _tabID?: string | number | null;
-            };
-            const popupTopDoc = event.doc.defaultView?.top?.document || null;
             // Always the reader tab's own panel, also while the standalone
             // window is open; without one the text is not added anywhere.
-            const target = resolveReaderPopupPanelTarget({
-              preferredDocument: popupTopDoc,
-              documents: docs,
-              tabID: readerWithTab.tabID ?? readerWithTab._tabID ?? null,
-            });
+            const target = resolveReaderPopupPanel(event);
             if (!target) {
               appLogger.warn(
                 "LLM: Add Text popup action skipped (reader panel unavailable)",
               );
-              return null;
+              return EMPTY_READER_POPUP_ADD_TEXT_RESULT;
             }
 
             const readerPaperContext = resolveReaderPopupPaperContext(
@@ -749,44 +1250,19 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
               getActiveContextAttachmentFromTabs(),
             );
             const panelBody = target.body;
-            const conversationKey = Math.floor(
-              Number(target.root.dataset.itemId || 0),
-            );
-            if (!Number.isFinite(conversationKey) || conversationKey <= 0) {
+            const conversationKey = readPanelConversationKey(target);
+            if (conversationKey === null) {
               appLogger.debug(
                 "LLM: Add Text popup action skipped (invalid conversation target)",
               );
-              return null;
+              return EMPTY_READER_POPUP_ADD_TEXT_RESULT;
             }
             const selectedPaperContext =
               target.root.dataset.conversationKind === "global"
                 ? readerPaperContext
                 : null;
-            const popupAnnotation = event.params?.annotation as unknown as {
-              pageIndex?: unknown;
-              pageLabel?: unknown;
-              position?: {
-                pageIndex?: unknown;
-                pageLabel?: unknown;
-              } | null;
-            };
-            const rawPopupPageIndex =
-              popupAnnotation?.position?.pageIndex ??
-              popupAnnotation?.pageIndex;
-            const parsedPopupPageIndex = Number(rawPopupPageIndex);
-            const popupPageIndex =
-              Number.isFinite(parsedPopupPageIndex) && parsedPopupPageIndex >= 0
-                ? Math.floor(parsedPopupPageIndex)
-                : null;
-            const rawPopupPageLabel =
-              popupAnnotation?.position?.pageLabel ??
-              popupAnnotation?.pageLabel;
-            const popupPageLabel =
-              typeof rawPopupPageLabel === "string" && rawPopupPageLabel.trim()
-                ? rawPopupPageLabel.trim()
-                : popupPageIndex !== null
-                  ? getPageLabelForIndex(event.reader as any, popupPageIndex)
-                  : undefined;
+            const { pageIndex: popupPageIndex, pageLabel: popupPageLabel } =
+              readPopupAnnotationPage(event.params?.annotation, event.reader);
             const selectedTextLocation: SelectedTextPageLocation | null =
               popupPageIndex !== null
                 ? {
@@ -795,7 +1271,7 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
                     pageLabel: popupPageLabel,
                   }
                 : null;
-            return await includeReaderSelectedText({
+            const result = await includeReaderSelectedText({
               body: panelBody,
               conversationKey,
               selectedText: effectiveSelectedText,
@@ -804,9 +1280,15 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
               initialLocation: selectedTextLocation,
               log: (message, ...args) => appLogger.debug(message, ...args),
             });
+            return {
+              result,
+              targetBody: panelBody,
+              conversationKey,
+              paperContext: selectedPaperContext,
+            };
           } catch (err) {
             appLogger.warn("LLM: Add Text popup action failed", err);
-            return null;
+            return EMPTY_READER_POPUP_ADD_TEXT_RESULT;
           }
         };
       const stripPopupRowChrome = (
@@ -819,8 +1301,22 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
           row.style.display = "none";
         } else {
           row.style.width = "100%";
-          row.style.padding = "0 12px";
+          // No side inset: the row's edges are the native highlight /
+          // underline toggle's edges, and its buttons split that width.
+          row.style.padding = "0";
+          row.style.boxSizing = "border-box";
           row.style.margin = "0";
+          // The popup puts its own gap between rows; as the first section,
+          // cancel the sections box's top padding so the gap above the row
+          // equals the gap between the colors and the toggle.
+          const sections = row.parentElement;
+          if (sections && sections.firstElementChild === row) {
+            const topPadding = Number.parseFloat(
+              event.doc.defaultView?.getComputedStyle(sections)?.paddingTop ||
+                "0",
+            );
+            if (topPadding > 0) row.style.marginTop = `-${topPadding}px`;
+          }
           row.style.borderTop = "none";
           row.style.borderBottom = "none";
           row.style.boxShadow = "none";
@@ -837,6 +1333,8 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
         if (isSeparator(prev)) prev.style.display = "none";
         if (isSeparator(next)) next.style.display = "none";
       };
+      const popupButtons: HTMLButtonElement[] = [];
+      let popupRow: HTMLDivElement | null = null;
       if (showAddTextInPopup) {
         try {
           const addTextBtn = event.doc.createElementNS(
@@ -848,7 +1346,9 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
           addTextBtn.title = "Add selected text to LLM panel";
           addTextBtn.style.cssText = [
             "display:block",
-            "width:100%",
+            // Shares the popup row with Inline Ask.
+            "flex:1 1 0",
+            "min-width:0",
             "margin:0",
             "padding:6px 8px",
             "box-sizing:border-box",
@@ -874,15 +1374,101 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
             addTextHandled = true;
             e.preventDefault();
             e.stopPropagation();
-            void addTextToPanel().then((result) => {
-              if (
-                !result ||
-                result.outcome === "no-selection" ||
-                result.outcome === "invalid-target"
-              ) {
-                showAddTextUnavailable();
-              }
-            });
+            // Measure now: Zotero may remove the popup before the add settles.
+            // In Zotero's own popup the question box takes the popup's place
+            // (as the Inline Ask card does); otherwise it opens below the
+            // button.
+            const nativePopup = addTextBtn.closest(".selection-popup");
+            const anchorRect = (
+              nativePopup || addTextBtn
+            ).getBoundingClientRect();
+            const anchor: ReaderOverlayAnchor = {
+              left: anchorRect.left,
+              top: anchorRect.top,
+              right: anchorRect.right,
+              bottom: anchorRect.bottom,
+              ...(nativePopup
+                ? {
+                    cover: nativePopup.classList.contains(
+                      "page-popup-top-center",
+                    )
+                      ? ("bottom" as const)
+                      : ("top" as const),
+                  }
+                : {}),
+            };
+            void addTextToPanel().then(
+              ({ result, targetBody, conversationKey, paperContext }) => {
+                if (
+                  !result ||
+                  result.outcome === "no-selection" ||
+                  result.outcome === "invalid-target"
+                ) {
+                  showAddTextUnavailable();
+                  return;
+                }
+                if (!targetBody || typeof conversationKey !== "number") {
+                  return;
+                }
+                try {
+                  const box = openReaderSelectionPromptForChip({
+                    doc: event.doc,
+                    anchor,
+                    outcome: result.outcome,
+                    selectedText: result.selectedText,
+                    // A duplicate add reopens the box with the chip's question.
+                    existingQuestion: getSelectedTextContextQueryForItem(
+                      conversationKey,
+                      result.selectedText,
+                      "pdf",
+                      paperContext,
+                      result.location?.contextItemId,
+                      result.location?.pageIndex,
+                    ),
+                    labels: {
+                      placeholder: t("Ask about this selection…"),
+                      hint: (Zotero as { isMac?: boolean }).isMac
+                        ? t(
+                            "Enter to add · ⌘Enter to send · Shift+Enter for a new line · Esc to close",
+                          )
+                        : t(
+                            "Enter to add · Ctrl+Enter to send · Shift+Enter for a new line · Esc to close",
+                          ),
+                      submit: t("Add"),
+                      selectedTextLabel: t("Selected text"),
+                      chipGone: t("Selected text is no longer in the context"),
+                    },
+                    attach: (question) =>
+                      attachReaderSelectionQuestion({
+                        body: targetBody,
+                        conversationKey,
+                        selectedText: result.selectedText,
+                        paperContext,
+                        contextItemId: result.location?.contextItemId,
+                        pageIndex: result.location?.pageIndex,
+                        question,
+                      }),
+                    // As the panel's own Send button: the chip's question is
+                    // the prompt, plus any draft already in the composer.
+                    send: () => {
+                      (
+                        targetBody.querySelector(
+                          "#llm-send",
+                        ) as HTMLButtonElement | null
+                      )?.click();
+                    },
+                  });
+                  // The box now sits where the popup is; close the popup
+                  // (the text selection stays). Without a box, or if the
+                  // popup cannot be closed, Zotero's popup stays as before.
+                  if (box && nativePopup?.isConnected) {
+                    closeReaderSelectionPopup(event.reader, nativePopup);
+                  }
+                } catch (err) {
+                  appLogger.warn("LLM: reader selection prompt failed", err);
+                }
+              },
+            );
           };
           const isPrimaryButton = (e: Event): boolean => {
             const maybeMouse = e as MouseEvent;
@@ -902,11 +1488,69 @@ function getReaderSelectionTrackingHandler(): ReaderTextSelectionPopupHandler {
           });
           addTextBtn.addEventListener("click", handleAddTextAction);
           addTextBtn.addEventListener("command", handleAddTextAction);
-          event.append(addTextBtn);
-          popupSentinelEl = addTextBtn;
-          stripPopupRowChrome(addTextBtn.parentElement as HTMLElement | null);
+          popupButtons.push(addTextBtn);
         } catch (err) {
-          appLogger.warn("LLM: failed to append Add Text popup button", err);
+          appLogger.warn("LLM: failed to create Add Text popup button", err);
+        }
+      }
+
+      if (showInlineAskInPopup) {
+        try {
+          popupButtons.push(
+            createInlineAskPopupButton({
+              event,
+              getAnchorElement: () => popupRow,
+              snapshot: {
+                annotation: cloneInlineAskAnnotation(event.params?.annotation),
+                readerItemId: itemId,
+                paperContext: resolveReaderPopupPaperContext(
+                  item,
+                  getActiveContextAttachmentFromTabs(),
+                ),
+                selectedText,
+                ...readPopupAnnotationPage(
+                  event.params?.annotation,
+                  event.reader,
+                ),
+              },
+              resolveSelectedText: resolveSelectedTextForPopupAction,
+              reasoningItemId:
+                Number(
+                  (item as { parentItemID?: unknown } | null)?.parentItemID,
+                ) || itemId,
+              // The open panel's conversation, else the paper's own: Save
+              // must work with the sidebar closed.
+              resolveConversationKey: () =>
+                readPanelConversationKey(resolveReaderPopupPanel(event)) ??
+                (item ? getConversationKey(item) : null),
+              reachPanel: createReaderPanelReach(event),
+            }),
+          );
+        } catch (err) {
+          appLogger.warn("LLM: failed to create Inline Ask popup button", err);
+        }
+      }
+
+      // One append for the row: separate appends stack vertically.
+      if (popupButtons.length) {
+        try {
+          popupRow = event.doc.createElementNS(
+            "http://www.w3.org/1999/xhtml",
+            "div",
+          ) as HTMLDivElement;
+          popupRow.setAttribute("data-llm-reader-popup-actions", "true");
+          popupRow.style.cssText = [
+            "display:flex",
+            "gap:8px",
+            "width:100%",
+            "box-sizing:border-box",
+          ].join(";");
+          popupRow.append(...popupButtons);
+          event.append(popupRow);
+          popupSentinelEl = popupRow;
+          stripPopupRowChrome(popupRow.parentElement as HTMLElement | null);
+        } catch (err) {
+          appLogger.warn("LLM: failed to append reader popup buttons", err);
         }
       }
 
@@ -1010,6 +1654,8 @@ export function unregisterReaderSelectionTracking() {
   readerSelectionTrackingLifecycle = null;
   readerSelectionTrackingReaderAPI = null;
   readerSelectionTrackingHandler = null;
+  // Overlays live in reader documents that outlive the plugin.
+  closeAllReaderSelectionPromptOverlays();
 }
 
 type MainWindowWithNoteEditingTracker = _ZoteroTypes.MainWindow & {

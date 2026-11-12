@@ -6,6 +6,7 @@ import {
   normalizeClaudePermissionMode,
   type ClaudePermissionMode,
 } from "../shared/claudePermissionMode";
+import { claudeBridgeFetch } from "./bridgeProcess";
 
 export type ClaudePermissionModeCatalog = {
   options: PermissionOption[];
@@ -23,7 +24,7 @@ export async function fetchClaudePermissionModeCatalog(params: {
 }): Promise<ClaudePermissionModeCatalog> {
   const baseUrl = normalizeBaseUrl(params.bridgeUrl);
   if (!baseUrl) throw new Error("Claude Code bridge URL is not configured");
-  const fetchImpl = params.fetchImpl ?? fetch;
+  const fetchImpl = params.fetchImpl ?? (claudeBridgeFetch as typeof fetch);
   const healthResponse = await fetchImpl(`${baseUrl}/healthz`, {
     headers: { Accept: "application/json" },
   });

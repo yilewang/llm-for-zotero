@@ -11,7 +11,9 @@ export type SupportedProviderPresetId =
   | "qwen"
   | "kimi"
   | "mimo"
+  | "siliconflow"
   | "opencode"
+  | "opencode_go"
   | "atlascloud"
   | "copilot"
   | "ollama"
@@ -253,18 +255,47 @@ const KIMI_PATHS = [
   "/coding/v1/chat/completions",
 ];
 const MIMO_PATHS = ["/", "/v1", "/v1/chat/completions"];
-// Zen serves the same catalog on two tiers: /zen/v1 and the cheaper /zen/go/v1
-// the reporter of #439 uses. Everything else on opencode.ai is the website and
-// the agent's own server, so the host alone must not claim the preset.
+const SILICONFLOW_PATHS = [
+  "/",
+  "/v1",
+  "/v1/chat/completions",
+  "/v1/models",
+  "/v1/embeddings",
+];
+// OpenCode runs two products behind one host: Zen (pay-as-you-go balance) and
+// Go (subscription). Each is published under two URL generations: the older
+// /zen/v1 and /zen/go/v1, and the newer /inference/... forms, with an optional
+// per-vendor segment. Everything else on opencode.ai is the website and the
+// agent's own server, so the host alone must not claim either preset.
 const OPENCODE_PATHS = [
   "/zen/v1",
   "/zen/v1/chat/completions",
   "/zen/v1/responses",
   "/zen/v1/messages",
+  "/inference/v1",
+  "/inference/v1/chat/completions",
+  "/inference/v1/responses",
+  "/inference/v1/messages",
+  "/inference/openai/v1",
+  "/inference/openai/v1/chat/completions",
+  "/inference/openai/v1/responses",
+  "/inference/anthropic/v1",
+  "/inference/anthropic/v1/messages",
+];
+const OPENCODE_GO_PATHS = [
   "/zen/go/v1",
   "/zen/go/v1/chat/completions",
   "/zen/go/v1/responses",
   "/zen/go/v1/messages",
+  "/inference/go/v1",
+  "/inference/go/v1/chat/completions",
+  "/inference/go/v1/responses",
+  "/inference/go/v1/messages",
+  "/inference/go/openai/v1",
+  "/inference/go/openai/v1/chat/completions",
+  "/inference/go/openai/v1/responses",
+  "/inference/go/anthropic/v1",
+  "/inference/go/anthropic/v1/messages",
 ];
 const ATLASCLOUD_PATHS = ["/", "/v1", "/v1/chat/completions"];
 const COPILOT_PATHS = ["/", "/chat/completions", "/models"];
@@ -427,6 +458,19 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportsEmbeddings: false,
   },
   {
+    id: "siliconflow",
+    label: "SiliconFlow",
+    defaultApiBase: "https://api.siliconflow.cn/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat"],
+    helperText: "Preset uses SiliconFlow's OpenAI-compatible API base (v1).",
+    matches: makeHostAndPathMatcher(
+      ["api.siliconflow.cn", "api.siliconflow.com"],
+      SILICONFLOW_PATHS,
+    ),
+    supportsEmbeddings: false,
+  },
+  {
     id: "opencode",
     supportsResponsesEndpoint: true,
     label: "OpenCode Zen",
@@ -440,6 +484,22 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     helperText:
       "Gateway for a curated set of models from several vendors, billed on one key.",
     matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_PATHS),
+    supportsEmbeddings: false,
+  },
+  {
+    id: "opencode_go",
+    supportsResponsesEndpoint: true,
+    label: "OpenCode Go",
+    defaultApiBase: "https://opencode.ai/zen/go/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: [
+      "openai_chat_compat",
+      "anthropic_messages",
+      "responses_api",
+    ],
+    helperText:
+      "Subscription plan for a curated set of open coding models, billed on one key.",
+    matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_GO_PATHS),
     supportsEmbeddings: false,
   },
   {

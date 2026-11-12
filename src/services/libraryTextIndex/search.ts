@@ -1,6 +1,9 @@
 import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
 import { RRF_K } from "../retrieval/constants";
-import { tokenizeRetrievalQuery } from "../retrieval/retrievalTokenizer";
+import {
+  toRetrievalIndexTerm,
+  tokenizeRetrievalQuery,
+} from "../retrieval/retrievalTokenizer";
 import { MAX_QUERY_TERMS } from "./constants";
 import type { LibraryTextIndexStore, StoredChunkMeta } from "./store";
 
@@ -26,6 +29,7 @@ export type IndexedChunkHit = {
   hybridScore: number;
   rank: number;
   evidenceScore: number;
+  /** Surface query terms whose index term occurs in this chunk. */
   matchedTerms: string[];
 };
 export type IndexedPaperHit = {
@@ -56,6 +60,7 @@ export type LibraryTextIndexSearchResult = {
   /** Every in-scope paper with a match, before the `maxPapers` cut. */
   totalMatchingPapers: number;
   coverage: IndexCoverage;
+  /** The surface query terms (what the reader typed), not index terms. */
   queryTerms: string[];
   timings: Record<string, number>;
 };
@@ -81,7 +86,11 @@ export function scoreBm25(
   return idf * norm;
 }
 
-/** Union of the query variants' terms in first-seen order, capped at MAX_QUERY_TERMS. */
+/**
+ * Union of the query variants' surface terms in first-seen order, capped at
+ * MAX_QUERY_TERMS. Postings are keyed by index terms: look them up through
+ * `toRetrievalIndexTerm`.
+ */
 export function collectQueryTerms(queries: string[]): string[] {
   const terms: string[] = [];
   const seen = new Set<string>();
@@ -133,6 +142,15 @@ export async function searchLibraryTextIndex(
     stale: [],
   };
   const queryTerms = collectQueryTerms(params.queries);
+  // Index term → the surface terms that asked for it ("errors" → "error").
+  const surfaceByIndexTerm = new Map<string, string[]>();
+  for (const term of queryTerms) {
+    const indexTerm = toRetrievalIndexTerm(term);
+    const surfaces = surfaceByIndexTerm.get(indexTerm) || [];
+    surfaces.push(term);
+    surfaceByIndexTerm.set(indexTerm, surfaces);
+  }
+  const indexTerms = [...surfaceByIndexTerm.keys()];
   if (!queryTerms.length || !coverage.indexed) {
     timings.total = Date.now() - started;
     return {
@@ -144,13 +162,20 @@ export async function searchLibraryTextIndex(
       timings,
     };
   }
-  const [postings, df, stats] = await mark("postings", () =>
-    Promise.all([
-      params.store.getPostings(queryTerms),
-      params.store.getDocumentFrequencies(queryTerms),
+  const [postings, df, stats] = await mark("postings", async () => {
+    // During the re-posting pass (tokenizerUpgrade.ts) a document not yet
+    // re-posted still holds surface postings: ask for the surface terms too,
+    // so it keeps matching what it matched before. Re-posted documents hold
+    // no surface postings for a term whose stem differs.
+    const lookupTerms = (await params.store.isTokenizerVersionCurrent())
+      ? indexTerms
+      : [...new Set([...indexTerms, ...queryTerms])];
+    return Promise.all([
+      params.store.getPostings(lookupTerms),
+      params.store.getDocumentFrequencies(lookupTerms),
       params.store.getCorpusStats(),
-    ]),
-  );
+    ]);
+  });
   const byChunk = new Map<string, ChunkAccumulator>();
   await mark("score", async () => {
     for (const posting of postings) {
@@ -273,7 +298,11 @@ export async function searchLibraryTextIndex(
       hybridScore: s.score,
       rank,
       evidenceScore: 1 / (RRF_K + rank),
-      matchedTerms: s.terms,
+      matchedTerms: [
+        ...new Set(
+          s.terms.flatMap((term) => surfaceByIndexTerm.get(term) || [term]),
+        ),
+      ],
     });
   }
   // Papers past `chunkPapers` have no chunk read: their parent stays null.

@@ -32,6 +32,7 @@ export type StoredUserRowPatch = Pick<
   | "citationPaperContexts"
   | "selectedCollectionContexts"
   | "selectedTagContexts"
+  | "attachedConversations"
   | "attachments"
   | "modelAttachments"
   | "modelName"
@@ -62,6 +63,7 @@ export function toStoredUserRowPatch(
     citationPaperContexts: message.citationPaperContexts,
     selectedCollectionContexts: message.selectedCollectionContexts,
     selectedTagContexts: message.selectedTagContexts,
+    attachedConversations: message.attachedConversations,
     attachments: message.attachments,
     modelAttachments: message.modelAttachments,
     modelName: message.modelName,

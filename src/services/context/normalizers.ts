@@ -1,4 +1,5 @@
 import type {
+  AttachedConversationRef,
   CollectionContextRef,
   NoteContextRef,
   PaperContentSourceMode,
@@ -13,6 +14,33 @@ type TextSanitizer = (value: string) => string;
 function normalizeText(value: unknown, sanitize?: TextSanitizer): string {
   const raw = typeof value === "string" ? value : "";
   return (sanitize ? sanitize(raw) : raw).trim();
+}
+
+/** Longest question a selected-text chip keeps (D1). */
+export const SELECTED_TEXT_USER_QUERY_MAX_LENGTH = 2000;
+
+/**
+ * Normalizes a chip's question: sanitized, runs of spaces and tabs collapsed
+ * to one space, each line trimmed, three or more newlines collapsed to two,
+ * trimmed, and capped. Line breaks stay. Returns "" when nothing is left, so
+ * callers omit the field.
+ */
+export function normalizeSelectedTextUserQuery(
+  value: unknown,
+  sanitize?: TextSanitizer,
+): string {
+  if (typeof value !== "string") return "";
+  const sanitized = sanitize ? sanitize(value) : value;
+  return sanitized
+    .replace(/\r\n?/g, "\n")
+    .replace(/[^\S\n]+/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+    .slice(0, SELECTED_TEXT_USER_QUERY_MAX_LENGTH)
+    .trim();
 }
 
 function normalizeLibraryItemKey(value: unknown): string | undefined {
@@ -78,6 +106,8 @@ export function normalizeSelectedTextSource(
   if (value === "model") return "model";
   if (value === "note") return "note";
   if (value === "note-edit") return "note-edit";
+  if (value === "sidechat") return "sidechat";
+  if (value === "inlineask") return "inlineask";
   return "pdf";
 }
 
@@ -128,6 +158,7 @@ export function normalizeSelectedTextContexts(
         ? Math.floor(rawPageIndex)
         : undefined;
     const rawPageLabel = normalizeText(typed.pageLabel, sanitize);
+    const userQuery = normalizeSelectedTextUserQuery(typed.userQuery, sanitize);
     out.push({
       text,
       source,
@@ -137,6 +168,8 @@ export function normalizeSelectedTextContexts(
       pageIndex,
       // Only a stored label; none is guessed from the page index.
       pageLabel: rawPageLabel || undefined,
+      // Absent, not undefined, when empty (D1).
+      ...(userQuery ? { userQuery } : {}),
     });
   }
   return out;
@@ -426,6 +459,58 @@ export function normalizeTagContextRefs(
       scope,
       includeAutomatic,
       ...(excludedItemIds ? { excludedItemIds } : {}),
+    });
+  }
+  return out;
+}
+
+/** Most past conversations one user message can attach. */
+export const MAX_ATTACHED_CONVERSATIONS = 3;
+const ATTACHED_CONVERSATION_TITLE_MAX_LENGTH = 512;
+
+export function normalizeAttachedConversationRefs(
+  value: unknown,
+  options?: {
+    sanitizeText?: TextSanitizer;
+  },
+): AttachedConversationRef[] {
+  if (!Array.isArray(value)) return [];
+  const sanitize = options?.sanitizeText;
+  const out: AttachedConversationRef[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (out.length >= MAX_ATTACHED_CONVERSATIONS) break;
+    if (!entry || typeof entry !== "object") continue;
+    const typed = entry as Record<string, unknown>;
+    const system = typed.system;
+    if (system !== "upstream" && system !== "claude_code" && system !== "codex")
+      continue;
+    const conversationKey = normalizePositiveInt(typed.conversationKey);
+    const libraryID = normalizePositiveInt(typed.libraryID);
+    if (!conversationKey || !libraryID) continue;
+    const dedupeKey = `${system}:${conversationKey}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const title =
+      normalizeText(typed.title, sanitize).slice(
+        0,
+        ATTACHED_CONVERSATION_TITLE_MAX_LENGTH,
+      ) || `Conversation ${conversationKey}`;
+    const conversationID = normalizeText(typed.conversationID, sanitize);
+    const kind =
+      typed.kind === "paper" || typed.kind === "global"
+        ? typed.kind
+        : undefined;
+    const paperItemID = normalizePositiveInt(typed.paperItemID);
+    out.push({
+      system,
+      conversationKey,
+      ...(conversationID ? { conversationID } : {}),
+      title,
+      libraryID,
+      ...(kind ? { kind } : {}),
+      ...(paperItemID ? { paperItemID } : {}),
+      ...(typed.via === "agent" ? { via: "agent" as const } : {}),
     });
   }
   return out;

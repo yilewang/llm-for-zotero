@@ -23,6 +23,13 @@ export type AgentStepParams = {
   /** Messages appended after the preceding model response. */
   continuationMessages?: AgentModelMessage[];
   tools: ToolSpec[];
+  /**
+   * "none" asks for an answer without tool calls while keeping the tool
+   * definitions (the history holds tool calls and results). An adapter
+   * whose provider has no such control sends its default; the runtime then
+   * rejects a tool call in that step (`turnBoundary.ts`, Rule 2).
+   */
+  toolChoice?: "auto" | "none";
   signal?: AbortSignal;
   onTextDelta?: (delta: string) => void | Promise<void>;
   onReasoning?: (event: ReasoningEvent) => void | Promise<void>;

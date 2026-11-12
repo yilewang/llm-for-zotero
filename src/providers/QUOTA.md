@@ -47,7 +47,7 @@ A live MiniMax account read has not been verified.
 
 ## OpenCode Go integration
 
-Only Go inference routes under `https://opencode.ai/zen/go/v1` select this quota source.
+Only Go inference routes under `https://opencode.ai/zen/go/v1` and `https://opencode.ai/inference/go/` select this quota source.
 Zen prepaid routes on the same host remain unsupported because Go usage does not describe their balance.
 The request reuses the configured API key, with no additional credential or settings field.
 The footer displays the highest reported percentage and names rolling, weekly, and monthly periods in the tooltip.

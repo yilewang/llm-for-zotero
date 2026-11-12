@@ -1,7 +1,6 @@
 import type { ChatRuntimeMode, PaperContextRef } from "./types";
 
 export type RuntimeModeResolutionInput = {
-  cachedMode?: ChatRuntimeMode | null;
   isRuntimeConversationSystem?: boolean;
   runtimeConversationSystem?:
     | "upstream"
@@ -11,10 +10,6 @@ export type RuntimeModeResolutionInput = {
     | null;
   isWebChat?: boolean;
   agentModeEnabled?: boolean;
-  displayConversationKind?: "global" | "paper" | null;
-  noteKind?: "standalone" | "item" | string | null;
-  /** Sticky mode from the last explicit toggle; null when never chosen. */
-  lastUsedRuntimeMode?: ChatRuntimeMode | null;
 };
 
 export function isSamePaperContextRef(
@@ -40,6 +35,11 @@ export function filterManualPaperContextsAgainstAutoLoaded(
   );
 }
 
+/**
+ * The built-in runtime is always Agent while the Agent feature is on and
+ * WebChat is off. Nothing chosen earlier (a cached per-conversation mode or a
+ * saved last-used mode) changes that. Codex stays chat; Claude Code is agent.
+ */
 export function resolveRuntimeModeForConversation(
   input: RuntimeModeResolutionInput,
 ): ChatRuntimeMode {
@@ -52,18 +52,5 @@ export function resolveRuntimeModeForConversation(
   }
   if (input.isWebChat) return "chat";
   if (!input.agentModeEnabled) return "chat";
-  if (input.cachedMode === "agent" || input.cachedMode === "chat") {
-    return input.cachedMode;
-  }
-  if (input.noteKind === "standalone" || input.noteKind === "item") {
-    return "agent";
-  }
-  if (input.displayConversationKind === "global") return "agent";
-  if (
-    input.lastUsedRuntimeMode === "agent" ||
-    input.lastUsedRuntimeMode === "chat"
-  ) {
-    return input.lastUsedRuntimeMode;
-  }
-  return "chat";
+  return "agent";
 }

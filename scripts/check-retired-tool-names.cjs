@@ -5,8 +5,8 @@
 // name. Names that remain internal identifiers (IDENTIFIER_NAMES) are allowed
 // only as exact double-quoted string literals or object keys.
 //
-// test/ is deliberately NOT scanned: unit tests replay historical traces and
-// stored tool history, whose fixtures legitimately carry retired names.
+// test/ is deliberately NOT scanned: its shared fixtures can carry historical
+// traces and stored tool history, which legitimately use retired names.
 /* global __dirname -- CommonJS script; eslint config only declares console/process */
 const fs = require("fs");
 const path = require("path");

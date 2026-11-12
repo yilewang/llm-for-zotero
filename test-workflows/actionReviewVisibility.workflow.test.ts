@@ -1,6 +1,7 @@
 import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import { createSearchLiteratureReviewAction } from "../src/agent/reviewCards";
+import { ZoteroGateway } from "../src/agent/services/zoteroGateway";
 import type { AgentToolContext } from "../src/agent/types";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 import { resolvedAgentRequest } from "../test/helpers/resolvedAgentRequest";
@@ -50,6 +51,7 @@ describe("workflow: literature review action visibility", function () {
         },
         context,
         { destinationLabel: "My Library › Research", targetCollectionId: 79 },
+        new ZoteroGateway(),
       )!;
       const pending = api.renderPendingActionForPanel(panel.panelId, {
         requestId: "literature-visibility",

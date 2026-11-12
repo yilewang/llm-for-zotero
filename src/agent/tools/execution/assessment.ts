@@ -1,3 +1,4 @@
+import { isPastChatMessageText } from "../../../services/pastConversations/pastConversationText";
 import { ActionAuthorizationService } from "../../authorization/service";
 import { createActionReviewer } from "../../model/actionReview";
 import { resolveActionInteraction } from "../../authorization/interaction";
@@ -241,7 +242,10 @@ export class InvocationAssessor {
               .filter(
                 (message) =>
                   (message.role === "user" || message.role === "assistant") &&
-                  typeof message.content === "string",
+                  typeof message.content === "string" &&
+                  // An attached past chat is reference data, not what the
+                  // user said in this conversation.
+                  !isPastChatMessageText(message.content),
               )
               .slice(-6)
               .map((message) => ({

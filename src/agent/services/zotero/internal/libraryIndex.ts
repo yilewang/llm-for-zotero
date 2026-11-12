@@ -13,6 +13,12 @@ import type {
   LibraryIndexSnapshot,
 } from "../../../../services/libraryIndexService";
 import { normalizeResultLimit, normalizeText } from "./normalize";
+import {
+  compareSortValues,
+  isLibrarySortKey,
+  type LibrarySortKey,
+  type LibrarySortOrder,
+} from "../../librarySortKeys";
 import type {
   AgentLibraryFilters,
   AgentSearchCondition,
@@ -74,48 +80,47 @@ export function sortAndPageIndexIds(
   snapshot: LibraryIndexSnapshot,
   ids: number[],
   options: {
-    sort?: "dateAdded" | "title";
-    order?: "asc" | "desc";
+    sort?: LibrarySortKey;
+    order?: LibrarySortOrder;
     offset?: number;
     limit?: number;
   },
 ): number[] {
-  const sorted =
-    options.sort === "dateAdded" || options.sort === "title"
-      ? [...ids].sort((leftId, rightId) => {
-          const left = snapshot.itemById.get(leftId);
-          const right = snapshot.itemById.get(rightId);
-          const leftValue =
-            options.sort === "title"
-              ? left?.title || ""
-              : left?.dateAdded || "";
-          const rightValue =
-            options.sort === "title"
-              ? right?.title || ""
-              : right?.dateAdded || "";
-          if (!leftValue && !rightValue) return 0;
-          if (!leftValue) return 1;
-          if (!rightValue) return -1;
-          const compared =
-            options.sort === "title"
-              ? leftValue.localeCompare(rightValue)
-              : leftValue < rightValue
-                ? -1
-                : leftValue > rightValue
-                  ? 1
-                  : 0;
-          const descending =
-            options.sort === "title"
-              ? options.order === "desc"
-              : options.order !== "asc";
-          return descending ? -compared : compared;
-        })
-      : ids;
+  const sort = options.sort;
+  const sorted = isLibrarySortKey(sort)
+    ? [...ids].sort((leftId, rightId) =>
+        compareSortValues(
+          sort,
+          indexSortValue(snapshot.itemById.get(leftId), sort),
+          indexSortValue(snapshot.itemById.get(rightId), sort),
+          options.order,
+        ),
+      )
+    : ids;
   const offset =
     Number.isFinite(options.offset) && Number(options.offset) > 0
       ? Math.floor(Number(options.offset))
       : 0;
   return pageIds(offset ? sorted.slice(offset) : sorted, options.limit);
+}
+
+function indexSortValue(
+  item: LibraryIndexItem | undefined,
+  key: LibrarySortKey,
+): string {
+  if (!item) return "";
+  switch (key) {
+    case "title":
+      return item.title || "";
+    case "dateAdded":
+      return item.dateAdded || "";
+    case "dateModified":
+      return item.dateModified || "";
+    case "year":
+      return item.year || "";
+    case "creator":
+      return item.firstCreator || "";
+  }
 }
 
 export function libraryItemTargetHasPdf(target: LibraryItemTarget): boolean {

@@ -1,4 +1,4 @@
-import { resolveLiveAgentCredentials } from "../test-live-agent/liveAgentCredentials";
+import { resolveLiveAgentCredentials } from "../test-live/agent/liveAgentCredentials";
 import {
   getConversationSystemPref,
   setConversationSystemPref,
@@ -69,6 +69,8 @@ export async function runBehaviorSuite(requestPath: string): Promise<void> {
   };
   let preferencesChanged = false;
   let completed = false;
+  let heartbeat: number | undefined;
+  let heartbeatWindow: Window | undefined;
   const checkpoint = async (results: StepResult[]) => {
     rows = results;
     await write("run.json", {
@@ -119,6 +121,16 @@ export async function runBehaviorSuite(requestPath: string): Promise<void> {
       profile: PathUtils.profileDir,
       data: Zotero.DataDirectory.dir,
     });
+    // The Node runner reads this to notice that Zotero stopped running the suite.
+    const beat = () =>
+      write("heartbeat.json", { at: new Date().toISOString() }).catch(
+        (error: unknown) =>
+          Zotero.debug(`[behavior] heartbeat failed: ${error}`),
+      );
+    await beat();
+    const win = Zotero.getMainWindow();
+    heartbeat = win.setInterval(beat, 15000);
+    heartbeatWindow = win;
     const bundle = await Zotero.File.getContentsAsync(
       `${request.root}/.scaffold/build/addon/content/scripts/llmforzotero.js`,
     );
@@ -209,6 +221,11 @@ export async function runBehaviorSuite(requestPath: string): Promise<void> {
     });
     await checkpoint(rows);
   } finally {
+    try {
+      if (heartbeat !== undefined) heartbeatWindow?.clearInterval(heartbeat);
+    } catch (error) {
+      Zotero.debug(`[behavior] heartbeat cleanup failed: ${error}`);
+    }
     if (preferencesChanged) {
       setConversationSystemPref(original.system);
       setOriginalAgentPermissionMode(original.mode);

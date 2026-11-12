@@ -1,4 +1,7 @@
-import { buildPaperRetrievalCandidates } from "../../services/paperContent/pdfContext";
+import {
+  buildPaperRetrievalCandidates,
+  sectionIdForIndex,
+} from "../../services/paperContent/pdfContext";
 import type { RetrievalExplanation } from "../../services/paperContent/types";
 import {
   resolveRetrievalQueryPlan,
@@ -27,6 +30,8 @@ type RetrievalResult = {
   chunkIndex: number;
   sectionLabel?: string;
   sectionPath?: string;
+  /** The outline id of the chunk's section (`s<n>`), to open it next. */
+  sectionId?: string;
   chunkKind?: string;
   citationLabel: string;
   sourceLabel: string;
@@ -71,6 +76,7 @@ export function buildEvidenceCacheKey(params: {
   queryKey: string;
   perPaperTopK: number;
   sectionIds: readonly string[];
+  chunkIndexes?: readonly number[];
   source: Awaited<ReturnType<PdfService["ensurePaperContext"]>>;
   embeddingKey: string;
   quotePolicy?: string;
@@ -94,6 +100,9 @@ export function buildEvidenceCacheKey(params: {
     params.queryKey,
     params.perPaperTopK,
     [...params.sectionIds].sort(),
+    ...(params.chunkIndexes?.length
+      ? [[...params.chunkIndexes].sort((a, b) => a - b)]
+      : []),
     params.embeddingKey,
     params.quotePolicy,
     fingerprints.length
@@ -104,6 +113,47 @@ export function buildEvidenceCacheKey(params: {
           )}`
         : undefined,
   ]);
+}
+
+/**
+ * The call's passages from every paper's ranked candidates. Each paper keeps
+ * its best chunk first, so a paper with candidates is never cut by the call
+ * budget, which is therefore never smaller than the number of such papers;
+ * the remaining slots go to the best of the rest by score.
+ *
+ * Evidence mode gives every paper's rank-1 chunk the same score, so the fused
+ * score decides which paper's best chunk leads; the chunk index is only the
+ * last resort.
+ */
+function allocateEvidenceBudget(
+  results: RetrievalResult[],
+  topK: number,
+): RetrievalResult[] {
+  const ranked = results
+    .slice()
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.hybridScore - a.hybridScore ||
+        a.chunkIndex - b.chunkIndex,
+    );
+  const paperKey = (result: RetrievalResult) =>
+    `${result.paperContext.libraryID || 0}:${result.paperContext.itemId}:${result.paperContext.contextItemId}`;
+  const seenPapers = new Set<string>();
+  const best = new Set<RetrievalResult>();
+  for (const result of ranked) {
+    const key = paperKey(result);
+    if (seenPapers.has(key)) continue;
+    seenPapers.add(key);
+    best.add(result);
+  }
+  const cap = Math.max(topK, best.size);
+  const kept = new Set(best);
+  for (const result of ranked) {
+    if (kept.size >= cap) break;
+    kept.add(result);
+  }
+  return ranked.filter((result) => kept.has(result));
 }
 
 export class RetrievalService {
@@ -134,6 +184,8 @@ export class RetrievalService {
     /** Restrict candidates to these section ids (`s<n>`) before ranking. */
     sectionIds?: string[];
     sectionIdsByPaper?: ReadonlyMap<number, readonly string[]>;
+    /** Also in scope per paper: these chunks (text with no section ids). */
+    chunkIndexesByPaper?: ReadonlyMap<number, readonly number[]>;
   }): Promise<RetrievalResult[]> {
     const papers = dedupePaperContexts(params.papers);
     if (!papers.length) return [];
@@ -206,6 +258,9 @@ export class RetrievalService {
           params.sectionIds ??
           []),
       ].filter(Boolean),
+      chunkIndexes: [
+        ...(params.chunkIndexesByPaper?.get(paperContext.contextItemId) ?? []),
+      ],
     }));
     const results = await retrievePerPaper({
       targets,
@@ -217,6 +272,7 @@ export class RetrievalService {
             queryKey: queryCacheKey,
             perPaperTopK,
             sectionIds: target.sectionIds,
+            chunkIndexes: target.chunkIndexes,
             source: target.pdfContext,
             embeddingKey,
             quotePolicy: queryPlan.quoteAnchorPolicy,
@@ -233,13 +289,17 @@ export class RetrievalService {
               .then((values) => values[0])
               .catch(() => undefined)
           : Promise.resolve(undefined),
-      builderArguments: ({ sectionIds }, precomputedQueryEmbedding) => ({
+      builderArguments: (
+        { sectionIds, chunkIndexes },
+        precomputedQueryEmbedding,
+      ) => ({
         apiOverrides: {
           apiBase: params.apiBase,
           apiKey: params.apiKey,
           precomputedQueryEmbedding,
           queryPlan,
           ...(sectionIds.length ? { sectionIds } : {}),
+          ...(chunkIndexes.length ? { chunkIndexes } : {}),
         },
         options: {
           topK: perPaperTopK,
@@ -247,6 +307,7 @@ export class RetrievalService {
           precomputedQueryEmbedding,
           queryPlan,
           ...(sectionIds.length ? { sectionIds } : {}),
+          ...(chunkIndexes.length ? { chunkIndexes } : {}),
         },
       }),
       project: ({ paperContext }, candidates): RetrievalResult[] =>
@@ -259,6 +320,9 @@ export class RetrievalService {
             candidate.title,
           ),
           sectionPath: candidate.sectionPath,
+          ...(candidate.sectionIndex !== undefined
+            ? { sectionId: sectionIdForIndex(candidate.sectionIndex) }
+            : {}),
           chunkKind: candidate.chunkKind,
           citationLabel: formatPaperCitationLabel(paperContext),
           sourceLabel: formatPaperSourceLabel(paperContext),
@@ -274,16 +338,7 @@ export class RetrievalService {
         })),
       candidateBuilder: this.candidateBuilder,
     });
-    // Evidence mode gives every paper's rank-1 chunk the same score, so the
-    // fused score decides which paper's best chunk leads; the chunk index is
-    // only the last resort.
-    results.sort(
-      (a, b) =>
-        b.score - a.score ||
-        b.hybridScore - a.hybridScore ||
-        a.chunkIndex - b.chunkIndex,
-    );
-    return results.slice(0, topK);
+    return allocateEvidenceBudget(results, topK);
   }
 
   clearEvidenceCache(): void {

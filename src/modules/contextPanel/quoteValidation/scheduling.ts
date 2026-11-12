@@ -10,10 +10,21 @@ import { appLogger } from "../../../core/logging";
 import { getConversationKey } from "../conversationIdentity";
 import { isQuoteValidationPreempted } from "../quoteValidationActivity";
 import { activeContextPanels, chatHistory } from "../state";
-import type { Message } from "../types";
+import type { Message, PaperContextRef } from "../types";
 import type { QuoteCitation } from "../../../shared/types";
 import { buildQuoteExpandedMarkdown } from "../quoteRenderPlan";
+import { paragraphCitationIds } from "../../../services/quotes/paragraphCitations";
+import { mergeQuoteCitations } from "../../../services/quotes/quoteCitations";
+import { quoteTokenPattern } from "../../../services/quotes/quoteTokenIds";
 import { refreshQuoteValidatedConversation } from "./chatRefreshBridge";
+import {
+  syncTaskAnswerCitations,
+  taskTurnIndexFor,
+} from "../taskProgress/store";
+import {
+  scheduleQuoteLocationWriteBack,
+  waitForQuoteLocationWriteBacksForTests,
+} from "./locationWriteBack";
 import {
   applyAssistantMessageQuoteGate,
   collectLivePdfQuoteSecondaryEvidence,
@@ -44,6 +55,17 @@ const pendingQuoteValidations = new Map<
   Map<Message, PendingQuoteValidation>
 >();
 const quoteValidationTasks = new Map<number, Promise<void>>();
+
+/** The question an answer answers: the user message before it. */
+function answerTurn(conversationKey: number, answer: Message): number {
+  const history = chatHistory.get(conversationKey) || [];
+  const at = history.indexOf(answer);
+  for (let index = at - 1; index >= 0; index -= 1) {
+    if (history[index].role === "user")
+      return taskTurnIndexFor(history, history[index]);
+  }
+  return 0;
+}
 
 function refreshConversationAfterQuoteValidation(
   conversationKey: number,
@@ -227,6 +249,12 @@ function startConversationQuoteValidation(conversationKey: number): void {
             quoteSourcePaperContextGroups(request.options),
           ),
           {
+            // The papers a message cites are the ones its cards point at.
+            priorityContextItemIds: batch.flatMap((request) =>
+              (request.rawQuoteCitations || []).map(
+                (citation) => citation.contextItemId || 0,
+              ),
+            ),
             yieldToMain: async () => {
               await waitForQuoteValidationIdle(
                 conversationKey,
@@ -289,7 +317,28 @@ function startConversationQuoteValidation(conversationKey: number): void {
               shouldContinue: shouldContinueQuoteValidation,
             },
           );
+          if (isPendingQuoteValidationCurrent(conversationKey, request)) {
+            // Save what this pass located on PDF pages into the stored
+            // message, so a reload shows those cards located at once.
+            scheduleQuoteLocationWriteBack({
+              conversationKey,
+              message: assistantMessage,
+              rawMarkdown,
+              finalizedQuoteCitations: assistantMessage.quoteDisplayOverride
+                ? assistantMessage.quoteDisplayOverride.quoteCitations
+                : rawQuoteCitations,
+            });
+          }
           if (changed) {
+            // Task progress lists the passages the answer now shows.
+            syncTaskAnswerCitations(
+              conversationKey,
+              {
+                runId: assistantMessage.agentRunId,
+                turn: answerTurn(conversationKey, assistantMessage),
+              },
+              assistantMessage,
+            );
             // Flip this message the moment it is classified so quotes appear
             // progressively, rather than holding every result until the whole
             // batch finishes. The targeted re-render only rebuilds this one
@@ -374,6 +423,7 @@ export async function waitForAssistantQuoteValidationForTests(
   conversationKey: number,
 ): Promise<void> {
   await waitForConversationQuoteValidation(conversationKey);
+  await waitForQuoteLocationWriteBacksForTests();
 }
 
 function clearPendingQuoteValidation(message: Message): void {
@@ -391,11 +441,64 @@ export function resetAssistantQuoteDisplay(message: Message): void {
   message.quoteDisplayOverride = undefined;
 }
 
+/**
+ * A turn may cite a passage id that an earlier turn of the same conversation
+ * delivered. This run's tools never saw it, so without this step the id has no
+ * record and the claim silently loses its source. Copy the earlier records for
+ * exactly the ids this answer references and does not already carry.
+ */
+function recoverEarlierTurnQuoteCitations(
+  assistantMessage: Message,
+  rawMarkdown: string,
+  conversationKey: number | undefined,
+): void {
+  const key = Math.floor(Number(conversationKey || 0));
+  if (!key) return;
+  const earlierMessages = chatHistory.get(key);
+  if (!earlierMessages?.length) return;
+  const referenced = paragraphCitationIds(rawMarkdown);
+  for (const match of rawMarkdown.matchAll(quoteTokenPattern("quote"))) {
+    referenced.add(match[1]);
+  }
+  for (const existing of assistantMessage.quoteCitations || []) {
+    referenced.delete(existing.id);
+  }
+  if (!referenced.size) return;
+  const recovered: QuoteCitation[] = [];
+  // Only turns before this one can lend citations: stop at this message by
+  // identity, else keep the messages stamped before it.
+  const selfIndex = earlierMessages.indexOf(assistantMessage);
+  const priorMessages =
+    selfIndex >= 0
+      ? earlierMessages.slice(0, selfIndex)
+      : earlierMessages.filter(
+          (message) => message.timestamp < assistantMessage.timestamp,
+        );
+  for (const message of priorMessages) {
+    if (message.role !== "assistant") continue;
+    for (const citation of message.quoteCitations || []) {
+      if (!referenced.has(citation.id)) continue;
+      referenced.delete(citation.id);
+      recovered.push({ ...citation });
+    }
+  }
+  if (!recovered.length) return;
+  assistantMessage.quoteCitations = mergeQuoteCitations(
+    assistantMessage.quoteCitations,
+    recovered,
+  );
+}
+
 export function finalizeAssistantMessageQuoteCitations(
   assistantMessage: Message,
   options: AssistantQuoteFinalizationOptions = {},
 ): void {
   const rawMarkdown = assistantMessage.text || "";
+  recoverEarlierTurnQuoteCitations(
+    assistantMessage,
+    rawMarkdown,
+    options.conversationKey,
+  );
   if (!assistantMarkdownNeedsQuoteSourceSearch(rawMarkdown)) {
     resetAssistantQuoteDisplay(assistantMessage);
     return;
@@ -428,6 +531,9 @@ export function validateLoadedConversationQuoteMessages(
     }
     if (
       message.compactMarker ||
+      // A streaming answer is finalized when it ends; its partial text is
+      // not a quote to review.
+      message.streaming ||
       !assistantMarkdownNeedsQuoteSourceSearch(message.text || "")
     ) {
       continue;
@@ -452,4 +558,111 @@ export function scheduleConversationQuoteRevalidation(
   const messages = chatHistory.get(normalizedKey);
   if (!messages?.length) return;
   validateLoadedConversationQuoteMessages(messages, normalizedKey);
+}
+
+/**
+ * Early warms read at most this many papers, so a turn's first answer does
+ * not wait behind a whole library; the post-answer warm reads the rest.
+ */
+export const MAX_PREWARMED_QUOTE_SOURCE_PAPERS = 8;
+
+export type QuoteSourcePrewarmResult = {
+  /** Papers whose PDF page text this prewarm added. */
+  addedPapers: number;
+  /** Whether rendered messages were sent back through the quote gate. */
+  revalidationScheduled: boolean;
+};
+
+let quoteSourcePrewarmQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Yield between prewarm slices without the validator's idle wait, which holds
+ * while any answer streams. Prewarming exists to run during that stream.
+ */
+function yieldForQuoteSourcePrewarm(conversationKey: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const win = conversationKey
+      ? getQuoteValidationWindow(conversationKey)
+      : null;
+    if (typeof win?.requestIdleCallback === "function") {
+      win.requestIdleCallback(() => resolve(), { timeout: 50 });
+      return;
+    }
+    const schedule = win?.setTimeout?.bind(win) || setTimeout;
+    schedule(() => resolve(), 0);
+  });
+}
+
+function conversationHasUnresolvedRenderedQuotes(
+  conversationKey: number,
+): boolean {
+  return Boolean(
+    chatHistory
+      .get(conversationKey)
+      ?.some(
+        (message) =>
+          message.role === "assistant" &&
+          !message.streaming &&
+          !message.compactMarker &&
+          assistantMarkdownNeedsBackgroundQuoteSearch(
+            message.text || "",
+            message.quoteCitations,
+          ),
+      ),
+  );
+}
+
+async function runQuoteSourcePrewarm(params: {
+  conversationKey?: number;
+  paperContexts?: Array<PaperContextRef[] | undefined | null>;
+  contextItemIds?: readonly number[];
+}): Promise<QuoteSourcePrewarmResult> {
+  const conversationKey = Math.floor(Number(params.conversationKey || 0)) || 0;
+  const warm = await warmQuoteSourceCachesForPaperContexts(
+    params.paperContexts || [],
+    {
+      priorityContextItemIds: params.contextItemIds,
+      maxPapers: MAX_PREWARMED_QUOTE_SOURCE_PAPERS,
+      yieldToMain: () => yieldForQuoteSourcePrewarm(conversationKey),
+    },
+  );
+  const addedPapers = warm.addedPageTextContextItemIds.length;
+  // Only new page text can turn a card green; re-gating on a warm that added
+  // nothing would only repeat the last verdict.
+  const revalidationScheduled =
+    addedPapers > 0 &&
+    conversationKey > 0 &&
+    conversationHasUnresolvedRenderedQuotes(conversationKey);
+  if (revalidationScheduled) {
+    scheduleConversationQuoteRevalidation(conversationKey);
+  }
+  return { addedPapers, revalidationScheduled };
+}
+
+/**
+ * Read PDF page text for a turn's papers as soon as they are known, while the
+ * model is still answering, so quote cards can be checked against PDF pages
+ * the moment the answer ends. Papers come in priority order: attached or
+ * selected papers first. Never blocks or throws into the caller's turn.
+ */
+export function prewarmQuoteSourcePageText(params: {
+  conversationKey?: number;
+  paperContexts?: Array<PaperContextRef[] | undefined | null>;
+  /** Bare attachment ids, such as the PDF open in the reader. */
+  contextItemIds?: readonly number[];
+}): Promise<QuoteSourcePrewarmResult> {
+  const none: QuoteSourcePrewarmResult = {
+    addedPapers: 0,
+    revalidationScheduled: false,
+  };
+  // One prewarm at a time: a second prewarm of the same papers then finds
+  // them cached instead of counting them as added again.
+  const task = quoteSourcePrewarmQueue.then(() =>
+    runQuoteSourcePrewarm(params).catch((error) => {
+      appLogger.debug("LLM: quote source prewarm failed", error);
+      return none;
+    }),
+  );
+  quoteSourcePrewarmQueue = task;
+  return task;
 }

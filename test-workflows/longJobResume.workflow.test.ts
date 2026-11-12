@@ -1,16 +1,21 @@
 /**
- * The resume gate of long jobs (stage 6.4): a note job over fifty papers,
+ * The resume gate of long jobs (stage 6.4): a note job over thirty papers,
  * one note a paper, survives the user's Stop and a restart of the agent's
  * state, and "continue" finishes it with no paper written twice. Only the
  * model is scripted; the notes are real Zotero notes, proved by receipts.
  */
 import { assert } from "chai";
+import { MAX_AGENT_TOOL_CALLS_PER_ROUND } from "../src/agent/model/limits";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
+
+// Thirty papers still give the note job three pages (12, 12, 6) with the
+// Stop in the middle of the second; fifty only made each test slower.
+const PAPER_COUNT = 30;
 
 describe("workflow: long job resume", function () {
   this.timeout(180000);
 
-  it("finishes a fifty-paper note job after Stop and a restart, with one note a paper and none written twice", async function () {
+  it("finishes a thirty-paper note job after Stop and a restart, with one note a paper and none written twice, writing a read page's notes in one step past the ordinary limit", async function () {
     assert.match(
       Zotero.DataDirectory.dir,
       /(?:[/\\]zotero-dev|[/\\]\.scaffold[/\\]test[/\\]data)[/\\]?$/,
@@ -24,7 +29,7 @@ describe("workflow: long job resume", function () {
     await folder.saveTx();
     const papers: Zotero.Item[] = [];
     try {
-      for (let index = 1; index <= 50; index += 1) {
+      for (let index = 1; index <= PAPER_COUNT; index += 1) {
         const paper = new Zotero.Item("journalArticle");
         paper.libraryID = libraryID;
         paper.setField("title", `Drift resume paper ${index}`);
@@ -46,16 +51,29 @@ describe("workflow: long job resume", function () {
             itemId: paper.id,
             title: String(paper.getField("title")),
           })),
-          inputTokenCap: 40_000,
+          // Room for a third page of 12 papers: its 12 notes, one call each,
+          // pass the ordinary limit of a step once the page is read.
+          inputTokenCap: 120_000,
           stopAfterNotes: 20,
         });
         const report = JSON.stringify(result);
+
+        // A read page's notes went in one step of more calls than an
+        // ordinary step may make, and the host refused no step: a paper
+        // already read costs its write, not another read.
+        assert.isAbove(
+          Math.max(...result.first.noteSteps, ...result.second.noteSteps),
+          MAX_AGENT_TOOL_CALLS_PER_ROUND,
+          report,
+        );
+        assert.equal(result.first.overflows, 0, report);
+        assert.equal(result.second.overflows, 0, report);
 
         // The user's Stop ended the first turn midway, resumable.
         assert.equal(result.first.runStatus, "cancelled", report);
         assert.equal(result.first.end, "cancelled", report);
         assert.isAtLeast(result.first.noted.length, 20, report);
-        assert.isBelow(result.first.noted.length, 50, report);
+        assert.isBelow(result.first.noted.length, PAPER_COUNT, report);
         assert.isAbove(
           result.first.read,
           result.first.noted.length,
@@ -67,7 +85,7 @@ describe("workflow: long job resume", function () {
         const left = ids.filter((id) => !result.first.noted.includes(id));
         assert.include(
           result.second.resumeNote,
-          `“Save a note on each paper” ${result.first.noted.length} of 50 done`,
+          `“Save a note on each paper” ${result.first.noted.length} of ${PAPER_COUNT} done`,
           report,
         );
         assert.include(
@@ -104,7 +122,7 @@ describe("workflow: long job resume", function () {
     }
   });
 
-  it("stops a fifty-note batch while it writes, counts exactly the notes written, and continue writes only the rest", async function () {
+  it("stops a thirty-note batch while it writes, counts exactly the notes written, and continue writes only the rest", async function () {
     assert.match(
       Zotero.DataDirectory.dir,
       /(?:[/\\]zotero-dev|[/\\]\.scaffold[/\\]test[/\\]data)[/\\]?$/,
@@ -118,7 +136,7 @@ describe("workflow: long job resume", function () {
     await folder.saveTx();
     const papers: Zotero.Item[] = [];
     try {
-      for (let index = 1; index <= 50; index += 1) {
+      for (let index = 1; index <= PAPER_COUNT; index += 1) {
         const paper = new Zotero.Item("journalArticle");
         paper.libraryID = libraryID;
         paper.setField("title", `Drift batch paper ${index}`);
@@ -167,7 +185,7 @@ describe("workflow: long job resume", function () {
         const left = ids.filter((id) => !result.first.noted.includes(id));
         assert.include(
           result.second.resumeNote,
-          `“Write a short reading note on each paper” ${result.first.noted.length} of 50 done`,
+          `“Write a short reading note on each paper” ${result.first.noted.length} of ${PAPER_COUNT} done`,
           report,
         );
         assert.include(

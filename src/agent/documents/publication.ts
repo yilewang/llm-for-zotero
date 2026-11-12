@@ -35,6 +35,12 @@ export async function deliverPendingPlanDocumentMessage(params: {
   visibleMarkdown: string;
   messageTimestamp: number;
   documentId?: string;
+  /**
+   * Runs after the pending document is validated and before it is marked
+   * delivered. A failure here leaves the entry pending, so the next load
+   * retries it. Must be idempotent.
+   */
+  beforeDelivered?: (document: PlanDocument) => Promise<void>;
 }): Promise<PlanDocument | null> {
   const candidates = (
     await listPlanDocumentOutboxForConversation(params.conversationKey)
@@ -70,6 +76,7 @@ export async function deliverPendingPlanDocumentMessage(params: {
     );
   }
   if (outbox.status !== "pending" && outbox.status !== "delivered") return null;
+  await params.beforeDelivered?.(document);
   await Zotero.DB.executeTransaction(async () => {
     await markPlanDocumentDelivered({
       documentId: document.documentId,

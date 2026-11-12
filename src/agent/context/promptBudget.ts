@@ -516,6 +516,8 @@ function compactPaperMatch(record: unknown): Record<string, unknown> {
     "firstCreator",
     "year",
     "matchStatus",
+    "passageStatus",
+    "workGroupId",
     "score",
     "sourceKind",
     "evidenceCount",
@@ -690,13 +692,14 @@ function buildEvidenceCompactToolResult(params: {
   const tryPush = (
     key: "paperMatches" | "snippets" | "results" | "papers",
     value: Record<string, unknown>,
+    maxTokens = params.maxTokens,
   ): boolean => {
     (next[key] as Record<string, unknown>[]).push(value);
     (next.modelContextOmitted as Record<string, number>)[key] = Math.max(
       0,
       (next.modelContextOmitted as Record<string, number>)[key] - 1,
     );
-    if (estimateTextTokens(stableStringify(next)) <= params.maxTokens) {
+    if (estimateTextTokens(stableStringify(next)) <= maxTokens) {
       return true;
     }
     (next[key] as Record<string, unknown>[]).pop();
@@ -704,6 +707,19 @@ function buildEvidenceCompactToolResult(params: {
     return false;
   };
 
+  // Paper rows are short and name every paper the evidence covers, so they
+  // get room before the snippets: up to half of what the base leaves while
+  // snippets wait, and the rest once the snippets are in.
+  const baseTokens = estimateTextTokens(stableStringify(next));
+  const paperRowReserve = snippets.length
+    ? baseTokens + Math.max(0, params.maxTokens - baseTokens) / 2
+    : params.maxTokens;
+  let paperRowsPushed = 0;
+  for (const match of paperMatches) {
+    if (!tryPush("paperMatches", compactPaperMatch(match), paperRowReserve))
+      break;
+    paperRowsPushed += 1;
+  }
   for (const snippet of snippets) {
     if (
       !tryPush(
@@ -713,7 +729,7 @@ function buildEvidenceCompactToolResult(params: {
     )
       break;
   }
-  for (const match of paperMatches) {
+  for (const match of paperMatches.slice(paperRowsPushed)) {
     if (!tryPush("paperMatches", compactPaperMatch(match))) break;
   }
   for (const result of results) {

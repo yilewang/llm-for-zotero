@@ -35,8 +35,18 @@ export function providerGroupRequiresApiKey(
 }
 
 export function sortModelOptions(models: DiscoveredModel[]): DiscoveredModel[] {
-  return [...models].sort((left, right) =>
-    left.id.localeCompare(right.id, undefined, { sensitivity: "base" }),
+  const seen = new Set<string>();
+  const unique: DiscoveredModel[] = [];
+  for (const model of models) {
+    const id = typeof model.id === "string" ? model.id.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    unique.push(id === model.id ? model : { ...model, id });
+  }
+  return unique.sort(
+    (left, right) =>
+      left.id.localeCompare(right.id, undefined, { sensitivity: "base" }) ||
+      (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
   );
 }
 
@@ -171,6 +181,42 @@ export function resolveProviderModelFetchStatus(args: {
     total: models.length,
     stale: Boolean(args.snapshot?.error),
   };
+}
+
+/**
+ * Status hint for on-demand ModelDiscovery providers (e.g. SiliconFlow) that
+ * surfaces explicit loading and error states while preserving manual fallback.
+ */
+export function formatModelDiscoveryStatusHint(args: {
+  apiKey: string;
+  requiresApiKey?: boolean;
+  loading: boolean;
+  snapshot: {
+    models: DiscoveredModel[];
+    error?: string;
+    errorCode?: string;
+  } | null;
+}): { text: string; isError: boolean } | null {
+  const keyRequired = args.requiresApiKey !== false;
+  if (keyRequired && !args.apiKey.trim()) {
+    return {
+      text: "Enter the API key above to fetch this provider's models.",
+      isError: false,
+    };
+  }
+  if (args.loading) {
+    return {
+      text: "Fetching models…",
+      isError: false,
+    };
+  }
+  if (args.snapshot?.error) {
+    return {
+      text: args.snapshot.error,
+      isError: true,
+    };
+  }
+  return null;
 }
 
 /**

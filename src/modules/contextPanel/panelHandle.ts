@@ -1,3 +1,9 @@
+import type {
+  SeedPaperConversationInput,
+  SeedPaperConversationResult,
+} from "./seededConversation";
+import type { StandaloneConversationSwitchDecision } from "./standaloneConversationSwitch";
+
 /**
  * The typed surface a mounted panel publishes for code outside its setup
  * closure. setupHandlers publishes one handle per setup and unpublishes it at
@@ -6,8 +12,69 @@
 export type PanelHandle = {
   /** Re-derive the auto-loaded context source for the panel's current item. */
   refreshContextSourceForCurrentItem(): void;
+  /**
+   * Add Zotero items as default context to the panel's current conversation
+   * (no new conversation), the way Zotero's "Add as context" action does.
+   */
+  addItemsAsDefaultContext(items: Zotero.Item[]): Promise<void> | void;
+  /**
+   * Add text as a removable selected-text chip, sent with the panel's next
+   * message. Returns whether a chip was added (false for empty text, a
+   * duplicate, a full chip list, or a panel with no conversation).
+   * `question` is set as the chip's question, also on a duplicate chip.
+   */
+  addTextContext(
+    text: string,
+    opts: {
+      source: "model" | "sidechat" | "inlineask";
+      focusInput?: boolean;
+      question?: string;
+    },
+  ): boolean;
   /** Show the reasoning effort that the Claude runtime resolved. */
   applyResolvedClaudeEffort(effort: unknown): void;
+  /**
+   * Move a mounted paper chat to another paper's chat in place, after Zotero
+   * rebound the panel host to that paper. Returns false, changing nothing,
+   * when the panel is in a state only a full remount handles; the caller then
+   * rebuilds. On true the panel draws the new conversation itself, once;
+   * when it cannot, it calls `rebuild` for the host's full remount.
+   */
+  switchToPaperItem(
+    nextItem: Zotero.Item,
+    nextBasePaperItem: Zotero.Item | null,
+    rebuild: () => void,
+  ): boolean;
+  /**
+   * The standalone window's own panel: whether it can move to `nextItem`'s
+   * conversation in place, or why it needs a full remount
+   * (standaloneConversationSwitch.ts). Changes nothing.
+   */
+  resolveConversationSwitch(
+    nextItem: Zotero.Item,
+  ): StandaloneConversationSwitchDecision;
+  /**
+   * The standalone window's own panel: moves to `nextItem`'s conversation in
+   * place, through the panel's own history switch, and draws it once. The
+   * history reload after it does not tell the window's list (the window
+   * marks the row itself). Resolves false when the panel cannot move in
+   * place, a newer switch overtook this one, or the switch was refused; the
+   * caller then remounts if this is still its latest switch.
+   */
+  switchConversationInPlace(nextItem: Zotero.Item): Promise<boolean>;
+  /**
+   * Inline Ask's Continue in sidebar: opens a fresh paper chat for the
+   * panel's paper (a reused empty draft or a new one) that holds `turns` as
+   * real messages, the first question with the selection as its
+   * selected-text context, and titles it by that question. In a Claude Code
+   * chat the paper, page, passage and turns also go into the composer as a
+   * transcript chip, sent with the next message (a fresh Claude Code session
+   * gets no stored history). Refuses, changing nothing, while the panel's
+   * conversation is answering (`busy`).
+   */
+  startPaperConversationWithTurns(
+    input: SeedPaperConversationInput,
+  ): Promise<SeedPaperConversationResult>;
 };
 
 const panelHandles = new WeakMap<Element, PanelHandle>();

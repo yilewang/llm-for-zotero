@@ -43,7 +43,7 @@ const RETRY_MODEL = "workflow-retry-model";
 const FORCED_SKILL_ID = "workflow-forced-skill";
 const TAG_NAME = "workflow-turn-tag";
 // Streamed after the partial text has reached memory, then cut off within
-// 50 ms: well inside the 450 ms coalescer window, so it is still buffered.
+// 50 ms: inside the 120 ms coalescer window, so it is still buffered.
 const UNFLUSHED_TAIL = " unflushed tail";
 
 const SAVED_PREF_KEYS = [

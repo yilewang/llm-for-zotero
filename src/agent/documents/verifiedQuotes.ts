@@ -1,9 +1,10 @@
 import { Marked } from "marked";
 import type { DocumentCitationEvidence } from "./citationService";
-import type {
-  PlanCitationCluster,
-  PlanVerifiedQuote,
-  SubmitPlanDocumentInput,
+import {
+  isOutsideCitationSource,
+  type PlanCitationCluster,
+  type PlanVerifiedQuote,
+  type SubmitPlanDocumentInput,
 } from "./types";
 import { ToolInputRejection } from "../tools/execution/failure";
 import { getAllOpenReaders } from "../../services/pdf/zoteroReaderTabs";
@@ -254,6 +255,7 @@ export async function resolveVerifiedQuotes(params: {
   ) =>
     cluster.sources.some(
       (source) =>
+        !isOutsideCitationSource(source) &&
         source.libraryID === quote.libraryID &&
         source.itemKey === quote.itemKey,
     );

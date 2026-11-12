@@ -101,6 +101,19 @@ describe("workflow: standalone responsive chrome", function () {
             for (const button of Array.from(
               header.querySelectorAll(".llm-header-actions button"),
             ) as Element[]) {
+              // This fixture clones the standalone header, so it is
+              // Independent (the document has no data-llm-sidebar-layout).
+              // Two buttons may be hidden: More, which shows only when the
+              // Stacked row folds, and Task progress, which code hides with
+              // an inline display:none.
+              if (win.getComputedStyle(button)?.display === "none") {
+                assert.isTrue(
+                  button.id === "llm-header-more" ||
+                    (button as HTMLElement).style.display === "none",
+                  `Only More or a code-hidden button may be hidden: ${context}`,
+                );
+                continue;
+              }
               assert.closeTo(
                 button.getBoundingClientRect().width,
                 bounds.width <= 380 ? 24 : 28,

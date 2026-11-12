@@ -420,6 +420,32 @@ function expandSourceSpanStart(
   return cursor;
 }
 
+/**
+ * True when `offset` lies inside a `$...$` formula on its line: an odd number
+ * of unescaped single dollars precede it. Inline math never spans a line.
+ */
+function isInsideInlineMathOnLine(sourceText: string, offset: number): boolean {
+  const lineStart = sourceText.lastIndexOf("\n", offset - 1) + 1;
+  let dollars = 0;
+  for (let index = lineStart; index < offset; index += 1) {
+    if (sourceText[index] !== "$" || sourceText[index - 1] === "\\") continue;
+    if (sourceText[index + 1] === "$") {
+      index += 1;
+      continue;
+    }
+    dollars += 1;
+  }
+  return dollars % 2 === 1;
+}
+
+/**
+ * MinerU writes a formula's closing syntax with spaces: "^ { 2 }$ .", "5 \\%$",
+ * "( x )$". A bounded run of spaces, closing braces/brackets and spacing or
+ * percent commands up to the closing dollar belongs to the formula.
+ */
+const INLINE_MATH_CLOSING_RUN_PATTERN =
+  /^(?:[ \t\u0003]|[}\])]|\\[%,;:! ]){1,24}?\$/u;
+
 function expandSourceSpanEnd(sourceText: string, sourceEnd: number): number {
   let cursor = sourceEnd;
   while (cursor < sourceText.length) {
@@ -433,8 +459,30 @@ function expandSourceSpanEnd(sourceText: string, sourceEnd: number): number {
     const closingSyntax = sourceText
       .slice(cursor)
       .match(/^(?:<\/(?:sup|sub|span|b|em|i|strong)>|\\[)\]])/iu)?.[0];
-    if (!closingSyntax) break;
-    cursor += closingSyntax.length;
+    if (closingSyntax) {
+      cursor += closingSyntax.length;
+      continue;
+    }
+    const mathClosingRun = sourceText
+      .slice(cursor, cursor + 32)
+      .match(INLINE_MATH_CLOSING_RUN_PATTERN)?.[0];
+    // A run of spaces followed by "$" that opens the next formula
+    // ("neurons $x$") is not the closing syntax of the current one.
+    const opensNextMath =
+      /^[ \t\u0003]+\$$/u.test(mathClosingRun || "") &&
+      !/^(?:[ \t\u0003]|$)/u.test(
+        sourceText.slice(cursor + (mathClosingRun || "").length)[0] || "",
+      ) &&
+      sourceText[cursor + (mathClosingRun || "").length] !== "\n";
+    if (
+      mathClosingRun &&
+      !opensNextMath &&
+      isInsideInlineMathOnLine(sourceText, cursor)
+    ) {
+      cursor += mathClosingRun.length;
+      continue;
+    }
+    break;
   }
   return cursor;
 }
@@ -858,6 +906,17 @@ function matchCitationSuffix(params: {
   };
 }
 
+const LOST_LIGATURE_LETTERS = ["ff", "fi", "fl", "ffi", "ffl"];
+
+/** A one-character non-letter gap inside a word, where a ligature glyph was. */
+function isLigatureLossGap(gap: string, left: string, right: string): boolean {
+  return (
+    /^[!"#$%&'*+ \u00a0]$/u.test(gap) &&
+    /\p{L}$/u.test(left) &&
+    /^\p{L}/u.test(right)
+  );
+}
+
 function matchTokenAlignmentStep(params: {
   sourceIndex: QuoteTextIndex;
   queryIndex: QuoteTextIndex;
@@ -883,7 +942,20 @@ function matchTokenAlignmentStep(params: {
     };
   }
 
-  let sourceText = "";
+  // Every way the source fragments so far can spell a prefix of the query
+  // word. A lost ligature glyph leaves a one-character gap ("di!erent",
+  // 'su"cient', "su cient"); the gap may stand for ff/fi/fl/ffi/ffl only when
+  // the letters around it then spell the displayed word exactly.
+  // A word-initial ligature leaves its glyph before the word ("!ring").
+  const firstSourceStart = sourceToken.sourceStart;
+  const sourceBeforeFirst = params.sourceIndex.sourceText.slice(
+    Math.max(0, firstSourceStart - 2),
+    firstSourceStart,
+  );
+  let sourceSpellings = /(?:^|\s)!$/u.test(sourceBeforeFirst)
+    ? ["", ...LOST_LIGATURE_LETTERS]
+    : [""];
+  let previousSourceToken: QuoteTextToken | undefined;
   let lastMatchedSourceIndex = params.sourceTokenIndex - 1;
   for (
     let sourceCursor = params.sourceTokenIndex;
@@ -892,16 +964,38 @@ function matchTokenAlignmentStep(params: {
     sourceCursor += 1
   ) {
     if (isLikelyLayoutNumberToken(params.sourceIndex, sourceCursor)) continue;
-    sourceText += sourceTokens[sourceCursor].text;
+    const token = sourceTokens[sourceCursor];
+    const ligatureGap =
+      previousSourceToken !== undefined &&
+      isLigatureLossGap(
+        params.sourceIndex.sourceText.slice(
+          previousSourceToken.sourceEnd,
+          token.sourceStart,
+        ),
+        previousSourceToken.text,
+        token.text,
+      );
+    const nextSpellings: string[] = [];
+    for (const spelling of sourceSpellings) {
+      nextSpellings.push(spelling + token.text);
+      if (!ligatureGap) continue;
+      for (const ligature of LOST_LIGATURE_LETTERS) {
+        nextSpellings.push(spelling + ligature + token.text);
+      }
+    }
+    sourceSpellings = nextSpellings.filter((spelling) =>
+      queryToken.text.startsWith(spelling),
+    );
+    previousSourceToken = token;
     lastMatchedSourceIndex = sourceCursor;
-    if (sourceText === queryToken.text) {
+    if (sourceSpellings.includes(queryToken.text)) {
       return {
         nextSourceIndex: sourceCursor + 1,
         nextQueryIndex: params.queryTokenIndex + 1,
         lastMatchedSourceIndex,
       };
     }
-    if (sourceText.length >= queryToken.text.length) break;
+    if (!sourceSpellings.length) break;
   }
 
   let queryText = "";
@@ -1149,14 +1243,58 @@ export function findQuoteSourceSpansAllowingLayoutArtifacts(
   );
 }
 
+/**
+ * The displayed text without the one sentence-final mark after its last word,
+ * or null when it has none. "…sensory cortex." becomes "…sensory cortex".
+ */
+function withoutTrailingTerminalMark(
+  queryIndex: QuoteTextIndex,
+): string | null {
+  const lastToken = queryIndex.tokens[queryIndex.tokens.length - 1];
+  if (!lastToken) return null;
+  const tail = queryIndex.sourceText.slice(lastToken.sourceEnd);
+  const strippedTail = tail.replace(/[.!?。！？](?=[^.!?。！？]*$)/u, "");
+  if (strippedTail === tail) return null;
+  return queryIndex.sourceText.slice(0, lastToken.sourceEnd) + strippedTail;
+}
+
 export function findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
+  index: QuoteTextIndex,
+  queryIndex: QuoteTextIndex,
+): QuoteTextAlignedSourceSpan[] {
+  const spans = findStrictQuoteSourceSpansFromIndex(index, queryIndex);
+  if (spans.length || !queryRequiresTerminalSentenceBoundary(queryIndex)) {
+    return spans;
+  }
+  // A quote cut at a clause boundary often gets a period the source does not
+  // have there ("…sensory cortex." for "…sensory cortex, and …"). Retry once
+  // without that one mark. Every word must still match in order, and the
+  // source must end a clause there (comma, semicolon, colon, dash or closing
+  // bracket): "…increased." never matches "…increased during the trials".
+  // Callers see a span text that differs from the displayed quote, so the
+  // match is recorded as a normalized span, not an exact one.
+  const relaxedQuery = withoutTrailingTerminalMark(queryIndex);
+  if (relaxedQuery === null) return spans;
+  return findStrictQuoteSourceSpansFromIndex(
+    index,
+    buildQuoteTextIndex(relaxedQuery),
+  )
+    .filter(
+      (span) =>
+        /[,;:)\]]["'”’]?$/u.test(span.text) ||
+        /^[\s\u0003]*[—–]/u.test(index.sourceText.slice(span.sourceEnd)),
+    )
+    .map((span, occurrenceIndex) => ({ ...span, occurrenceIndex }));
+}
+
+function findStrictQuoteSourceSpansFromIndex(
   index: QuoteTextIndex,
   queryIndex: QuoteTextIndex,
 ): QuoteTextAlignedSourceSpan[] {
   const sourceView = quoteTextLayoutViews.get(index);
   const queryView = quoteTextLayoutViews.get(queryIndex);
   if (sourceView || queryView) {
-    return findQuoteSourceSpansAllowingLayoutArtifactsFromIndex(
+    return findStrictQuoteSourceSpansFromIndex(
       sourceView?.index || index,
       queryView?.index || queryIndex,
     ).map((span) => {

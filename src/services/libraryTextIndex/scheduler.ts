@@ -28,13 +28,16 @@ import {
   INDEX_PRIORITY,
   INDEX_RECENT_USE_PROTECT_MS,
   INDEX_RECONCILE_STAT_BATCH,
+  INDEX_REPOST_SLICE_MS,
+  INDEX_RETRY_BACKOFF_MS,
   INDEX_STOP_GRACE_MS,
   INDEX_URGENT_ADD_BATCH_MAX,
   INDEX_URGENT_MIN_PRIORITY,
-  LIBRARY_TEXT_INDEX_CHUNKER_VERSION,
+  isChunkerVersionStale,
 } from "./constants";
 import { isLibraryTextIndexClosedError } from "./db";
 import { indexAttachment } from "./indexer";
+import { runTokenizerUpgradeSlice } from "./tokenizerUpgrade";
 import {
   getLibraryTextIndexStore,
   type IndexDocumentRow,
@@ -203,6 +206,12 @@ export class LibraryTextIndexScheduler {
   private vectorSkipped = new Set<number>();
   private vectorFailuresInARow = 0;
   private vectorPaused = false;
+  private tokenizerUpgradeFailureLogged = false;
+  /** Re-post failures per attachment this session; see `INDEX_MAX_ATTEMPTS`. */
+  private repostFailures = new Map<number, number>();
+  /** No re-posting before this time after a failed slice (ms, env clock). */
+  private repostRetryAt = 0;
+  private repostedThisSession = 0;
 
   constructor(env: Partial<SchedulerEnv> = {}) {
     this.env = {
@@ -537,8 +546,8 @@ export class LibraryTextIndexScheduler {
   }
 
   private async staleReason(row: IndexDocumentRow): Promise<Reason | null> {
-    if (row.chunkerVersion !== LIBRARY_TEXT_INDEX_CHUNKER_VERSION)
-      return "chunkerVersion";
+    // Version 2 has the current chunk boundaries: the re-posting pass handles it.
+    if (isChunkerVersionStale(row.chunkerVersion)) return "chunkerVersion";
     if (
       row.sourceType !== "mineru" &&
       (await this.env.hasMineruCache(row.attachmentId))
@@ -707,6 +716,20 @@ export class LibraryTextIndexScheduler {
         now,
         minPriority: INDEX_URGENT_MIN_PRIORITY,
       });
+      if (
+        !job &&
+        this.env.now() >= this.repostRetryAt &&
+        (await this.isTokenizerUpgradePending(store))
+      ) {
+        // Between the urgent and prefetch lanes: it never waits for idle,
+        // and an urgent job still goes first at every step. Once done, this
+        // drain goes on to the lanes below.
+        const step = await this.runTokenizerUpgradeStep(store);
+        if (step !== "done") {
+          next = step;
+          return;
+        }
+      }
       let lane: "urgent" | "prefetch" = "urgent";
       const prefetchAllowed =
         !job &&
@@ -768,9 +791,69 @@ export class LibraryTextIndexScheduler {
     } finally {
       this.draining = false;
       if (next === null && this.rekick) next = 0;
+      // A failed re-post waits for its backoff; wake then instead of parking.
+      const repostWake = this.repostRetryAt - this.env.now();
+      if (next === null && repostWake > 0) next = repostWake;
       this.rekick = false;
       if (generation === this.generation && this.running && next !== null)
         this.kick(next);
+    }
+  }
+
+  /** The store caches a true answer, so this costs a query only until the pass ends. */
+  private async isTokenizerUpgradePending(
+    store: LibraryTextIndexStore,
+  ): Promise<boolean> {
+    return !(await store.isTokenizerVersionCurrent());
+  }
+
+  /**
+   * One slice of the re-posting pass (tokenizerUpgrade.ts). Returns "done"
+   * once every document is re-posted, else the delay until the next drain:
+   * the usual gap while documents remain, a retry backoff after a failure.
+   */
+  private async runTokenizerUpgradeStep(
+    store: LibraryTextIndexStore,
+  ): Promise<number | "done"> {
+    try {
+      const slice = await runTokenizerUpgradeSlice(store, {
+        sliceMs: INDEX_REPOST_SLICE_MS,
+        now: this.env.now,
+        failures: this.repostFailures,
+        maxAttempts: INDEX_MAX_ATTEMPTS,
+        onSkipped: (attachmentId, message) =>
+          appLogger.warn(
+            `LLM index: re-posting attachment ${attachmentId} failed ${INDEX_MAX_ATTEMPTS} times; leaving it with its old postings for this session. ${message}`,
+          ),
+      });
+      this.repostedThisSession += slice.reposted;
+      if (slice.failure) {
+        // A failed slice must not block the lanes below: back off, then go on.
+        this.lastError = slice.failure;
+        this.repostRetryAt = this.env.now() + INDEX_RETRY_BACKOFF_MS[0];
+        return "done";
+      }
+      if (slice.done) {
+        if (this.repostedThisSession)
+          appLogger.debug(
+            `LLM index: re-posted ${this.repostedThisSession} document(s) for the current tokenizer`,
+          );
+        return "done";
+      }
+      return retrievalActivity > 0
+        ? INDEX_DRAIN_GAP_BUSY_MS
+        : INDEX_DRAIN_GAP_MS;
+    } catch (error) {
+      if (isLibraryTextIndexClosedError(error)) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastError = message;
+      if (!this.tokenizerUpgradeFailureLogged) {
+        this.tokenizerUpgradeFailureLogged = true;
+        appLogger.warn(
+          `LLM index: re-posting for the new tokenizer failed; retrying later. ${message}`,
+        );
+      }
+      return INDEX_RETRY_BACKOFF_MS[0];
     }
   }
 
@@ -886,9 +969,8 @@ export class LibraryTextIndexScheduler {
     return {
       ...base,
       indexed: documents.length,
-      stale: documents.filter(
-        (d) => d.chunkerVersion !== LIBRARY_TEXT_INDEX_CHUNKER_VERSION,
-      ).length,
+      stale: documents.filter((d) => isChunkerVersionStale(d.chunkerVersion))
+        .length,
       queued: counts.queued,
       failed: counts.failed,
       building: this.draining || counts.queued > 0,
@@ -945,7 +1027,9 @@ export class LibraryTextIndexScheduler {
         .getStore()
         .then(async (store) => {
           if (!store) return done();
-          const runnable = await store.dequeueNext({ now: this.env.now() });
+          const runnable =
+            (await store.dequeueNext({ now: this.env.now() })) ||
+            (await this.isTokenizerUpgradePending(store));
           if (!runnable && !this.draining) done();
           // Otherwise the drain resolves the waiter when it next finds nothing to do.
           else this.kick();

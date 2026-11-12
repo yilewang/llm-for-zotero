@@ -6,6 +6,7 @@ import type {
   VerifiedReadSource,
 } from "../context/readObservationTypes";
 import type { AgentToolArtifact, AgentWorkCategory } from "../types";
+import type { OutsidePaperRecord } from "../context/outsidePaperRecords";
 
 export type ZoteroMcpToolActivityEvent = {
   requestId: string;
@@ -29,6 +30,16 @@ export type ZoteroMcpToolActivityEvent = {
   quoteCitations?: QuoteCitation[];
   verifiedReadSources?: VerifiedReadSource[];
   readObservations?: readonly TrustedReadObservation[];
+  /**
+   * The outside papers this successful literature_search or literature_read
+   * call returned, for the run's record of citable outside papers.
+   */
+  outsidePapers?: readonly OutsidePaperRecord[];
+  /**
+   * The id of the document version this successful library_import call
+   * published (kind:'document_citations'), so the host loads it for the turn.
+   */
+  publishedDocumentId?: string;
   /**
    * What this successful read call read from each paper, for the Task
    * progress view. Set only on a completed call inside a conversation.

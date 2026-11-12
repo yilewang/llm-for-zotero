@@ -27,7 +27,10 @@ import {
   usesOllamaCatalog,
 } from "./localCatalog";
 import { getAbortController } from "../utils/apiHelpers";
-import { isLocalModelApiBase } from "../utils/providerPresets";
+import {
+  detectProviderPreset,
+  isLocalModelApiBase,
+} from "../utils/providerPresets";
 import {
   normalizeProfileOverride,
   profileOverrideAppliesTo,
@@ -44,6 +47,14 @@ import {
   validateRegistry,
   validateReasoning,
 } from "./registry";
+import {
+  classifyModelDiscoveryHttpError,
+  getModelDiscoveryAdapter,
+  hasModelDiscoveryAdapter,
+  isDiscoveredChatModel,
+  MODEL_DISCOVERY_CACHE_TTL_MS,
+  type ModelDiscoveryErrorCode,
+} from "./modelDiscovery";
 import type {
   CapabilitySource,
   DiscoveredModel,
@@ -52,6 +63,7 @@ import type {
   ModelCapabilityProvider,
   ModelCapabilityRefreshOptions,
   ModelCatalogIdentity,
+  ModelCatalogStatus,
   ModelControlPatch,
   ModelReasoningCapability,
   ModelReasoningSelection,
@@ -62,15 +74,23 @@ import type {
 
 const REGISTRY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const PROVIDER_CATALOG_TTL_MS = 60 * 1000;
+// A failed fetch marks its snapshot stale, and stale snapshots bypass the TTL.
+// Without a retry floor every caller (each model-menu rebuild, each notify)
+// starts another request to an unreachable server.
+const FAILED_REFRESH_RETRY_MS = 60 * 1000;
+// A user may start a local server right after a failed catalog fetch, so
+// the catalog retries sooner than the registry.
+const FAILED_CATALOG_RETRY_MS = 10 * 1000;
 const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
 const FIRST_USE_PREFLIGHT_TIMEOUT_MS = 5_000;
 
-type CatalogSnapshot = {
-  models: DiscoveredModel[];
-  fetchedAt: number;
-  stale: boolean;
-  error?: string;
-};
+function getCatalogTtlMs(identity: ModelCatalogIdentity): number {
+  return hasModelDiscoveryAdapter(identity)
+    ? MODEL_DISCOVERY_CACHE_TTL_MS
+    : PROVIDER_CATALOG_TTL_MS;
+}
+
+type CatalogSnapshot = ModelCatalogStatus;
 
 type CapabilityRuntime = {
   fetch?: typeof fetch;
@@ -84,10 +104,15 @@ let activeRegistry = cloneRegistry(BUNDLED_MODEL_CAPABILITY_REGISTRY);
 let activeRegistrySource: CapabilitySource = "bundled";
 let registryLoadTask: Promise<void> | null = null;
 let registryFetchedAt = 0;
+/** Last registry fetch that failed to reach the server (0: none). */
+let registryFailedAt = 0;
 let registryRefreshTask: Promise<boolean> | null = null;
 const capabilityPreflightTasks = new Map<string, Promise<void>>();
 const catalogRefreshTasks = new Map<string, Promise<DiscoveredModel[]>>();
+const catalogFetchGenerations = new Map<string, number>();
+let nextCatalogFetchGeneration = 0;
 const catalogSnapshots = new Map<string, CatalogSnapshot>();
+const catalogAttemptedAt = new Map<string, number>();
 const capabilityListeners = new Set<() => void>();
 
 function now(): number {
@@ -96,6 +121,10 @@ function now(): number {
 
 function normalize(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function normalizeApiBase(value: unknown): string {
+  return normalize(value).replace(/\/+$/, "");
 }
 
 function getFetch(): typeof fetch | undefined {
@@ -131,7 +160,12 @@ function providerFromIdentity(
   identity: ModelCapabilityIdentity,
 ): ModelCapabilityProvider {
   const explicit = normalize(identity.provider);
-  if (explicit && explicit !== "customized" && explicit !== "unknown") {
+  if (
+    explicit &&
+    explicit !== "customized" &&
+    explicit !== "unknown" &&
+    explicit !== "siliconflow"
+  ) {
     return explicit as ModelCapabilityProvider;
   }
   if (
@@ -150,8 +184,22 @@ function providerFromIdentity(
     // provider for the same model, and a mismatch would key the live catalog
     // snapshot under one name while the capability lookup reads another.
     (isLocalModelApiBase(identity.apiBase || "") ? "local" : null) ??
+    (explicit === "siliconflow" ||
+    detectProviderPreset(identity.apiBase || "") === "siliconflow"
+      ? "siliconflow"
+      : null) ??
     "unknown"
   );
+}
+
+function catalogProviderFromIdentity(
+  identity: ModelCapabilityIdentity,
+): ModelCapabilityProvider {
+  const discoveryAdapter = getModelDiscoveryAdapter(identity);
+  if (discoveryAdapter) {
+    return discoveryAdapter.providerId as ModelCapabilityProvider;
+  }
+  return providerFromIdentity(identity);
 }
 
 /**
@@ -237,34 +285,158 @@ function legacyReasoningProfiles(
   if (provider === "mimo") getMimoReasoningProfileForModel(model);
 }
 
-function buildCatalogKey(identity: ModelCapabilityIdentity): string {
+function normalizeApiKey(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function buildCatalogKey(identity: ModelCatalogIdentity): string {
   return [
-    providerFromIdentity(identity),
-    normalize(identity.apiBase),
+    catalogProviderFromIdentity(identity),
+    normalizeApiBase(identity.apiBase),
     normalize(identity.protocol),
     normalize(identity.authMode),
     normalize(identity.scope),
+    normalizeApiKey(identity.apiKey),
   ].join("\u0000");
 }
 
 function buildCatalogBaseKey(identity: ModelCapabilityIdentity): string {
   return [
-    providerFromIdentity(identity),
-    normalize(identity.apiBase),
+    catalogProviderFromIdentity(identity),
+    normalizeApiBase(identity.apiBase),
     normalize(identity.protocol),
     normalize(identity.authMode),
   ].join("\u0000");
 }
 
+function isSameCatalogConfiguration(
+  existingKey: string,
+  identity: ModelCatalogIdentity,
+): boolean {
+  const parts = existingKey.split("\u0000");
+  const reqScope = normalize(identity.scope);
+  const existingScope = parts[4] || "";
+  if (existingScope !== reqScope) {
+    return false;
+  }
+  if (reqScope) {
+    return true;
+  }
+  const baseKey = buildCatalogBaseKey(identity);
+  const normalizedBase = normalizeApiBase(identity.apiBase);
+  const endpointTail = normalizedBase
+    ? [
+        normalizedBase,
+        normalize(identity.protocol),
+        normalize(identity.authMode),
+      ].join("\u0000")
+    : "";
+  const existingBaseKey = parts.slice(0, 4).join("\u0000");
+  const existingEndpointTail = parts.slice(1, 4).join("\u0000");
+  return (
+    existingBaseKey === baseKey ||
+    Boolean(endpointTail && existingEndpointTail === endpointTail)
+  );
+}
+
+/** Stores the snapshot; true when what readers can see changed. */
+function setCatalogSnapshot(
+  key: string,
+  identity: ModelCatalogIdentity,
+  snapshot: CatalogSnapshot,
+): boolean {
+  let changed = false;
+  for (const existingKey of Array.from(catalogSnapshots.keys())) {
+    if (existingKey === key) continue;
+    if (isSameCatalogConfiguration(existingKey, identity)) {
+      catalogSnapshots.delete(existingKey);
+      changed = true;
+    }
+  }
+  const previous = catalogSnapshots.get(key);
+  catalogSnapshots.set(key, snapshot);
+  return changed || !isSameCatalogContent(previous, snapshot);
+}
+
+// fetchedAt alone is not a material change: listeners rebuild open menus and
+// settings editors, and a refetch that returns the same list (or fails the
+// same way again) must not make them repaint.
+function isSameCatalogContent(
+  previous: CatalogSnapshot | undefined,
+  next: CatalogSnapshot,
+): boolean {
+  if (!previous) return false;
+  return (
+    previous.stale === next.stale &&
+    previous.error === next.error &&
+    previous.errorCode === next.errorCode &&
+    JSON.stringify(previous.models) === JSON.stringify(next.models)
+  );
+}
+
+/** setCatalogSnapshot, then notify listeners only on a material change. */
+function publishCatalogSnapshot(
+  key: string,
+  identity: ModelCatalogIdentity,
+  snapshot: CatalogSnapshot,
+): void {
+  if (setCatalogSnapshot(key, identity, snapshot)) notify();
+}
+
 function getCatalogSnapshot(
-  identity: ModelCapabilityIdentity,
+  identity: ModelCatalogIdentity,
 ): CatalogSnapshot | undefined {
   const exact = catalogSnapshots.get(buildCatalogKey(identity));
   if (exact) return exact;
+  const reqProtocol = normalize(identity.protocol);
+  const reqAuthMode = normalize(identity.authMode);
+  const reqScope = normalize(identity.scope);
+  const hasExplicitApiKey = identity.apiKey !== undefined;
+  const reqApiKey = normalizeApiKey(identity.apiKey);
+  const matchesSnapshotKey = (snapshotKey: string): boolean => {
+    const parts = snapshotKey.split("\u0000");
+    const snapshotProtocol = parts[2] || "";
+    const snapshotAuthMode = parts[3] || "";
+    const snapshotScope = parts[4] || "";
+    const snapshotApiKey = parts[5] || "";
+    if (reqProtocol && snapshotProtocol && snapshotProtocol !== reqProtocol) {
+      return false;
+    }
+    if (reqAuthMode && snapshotAuthMode && snapshotAuthMode !== reqAuthMode) {
+      return false;
+    }
+    if (reqScope && snapshotScope && snapshotScope !== reqScope) {
+      return false;
+    }
+    if (hasExplicitApiKey && snapshotApiKey !== reqApiKey) {
+      return false;
+    }
+    return true;
+  };
+  const entriesNewestFirst = Array.from(catalogSnapshots.entries()).reverse();
   const baseKey = buildCatalogBaseKey(identity);
-  for (const [snapshotKey, snapshot] of catalogSnapshots) {
+  for (const [snapshotKey, snapshot] of entriesNewestFirst) {
+    if (!matchesSnapshotKey(snapshotKey)) continue;
     if (snapshotKey.split("\u0000").slice(0, 4).join("\u0000") === baseKey) {
       return snapshot;
+    }
+  }
+  const catalogProvider = catalogProviderFromIdentity(identity);
+  const normalizedBase = normalizeApiBase(identity.apiBase);
+  for (const [snapshotKey, snapshot] of entriesNewestFirst) {
+    if (!matchesSnapshotKey(snapshotKey)) continue;
+    const parts = snapshotKey.split("\u0000");
+    if (parts[0] === catalogProvider && parts[1] === normalizedBase) {
+      return snapshot;
+    }
+  }
+  if (normalizedBase) {
+    for (const [snapshotKey, snapshot] of entriesNewestFirst) {
+      if (!matchesSnapshotKey(snapshotKey)) continue;
+      const parts = snapshotKey.split("\u0000");
+      if (parts[1] === normalizedBase) {
+        return snapshot;
+      }
     }
   }
   return undefined;
@@ -488,10 +660,13 @@ export async function ensureModelCapabilities(
         providerFromIdentity(identity),
         identity.model,
       );
-      await Promise.allSettled([
+      const preflightTasks: Array<Promise<unknown>> = [
         refreshModelCapabilityRegistry({ timeoutMs, force: registryProbe }),
-        refreshModelCatalog(identity, { timeoutMs }),
-      ]);
+      ];
+      if (!hasModelDiscoveryAdapter(identity)) {
+        preflightTasks.push(refreshModelCatalog(identity, { timeoutMs }));
+      }
+      await Promise.allSettled(preflightTasks);
     })();
     capabilityPreflightTasks.set(key, task);
     void task.then(
@@ -657,7 +832,10 @@ export function compileReasoningControls(
   const extra = sanitizeUserRequestBody(patched) || {};
   return {
     extra,
-    omitTemperature: Boolean(controls.omitTemperature),
+    // A model that rejects temperature rejects it whatever the option says.
+    omitTemperature:
+      Boolean(controls.omitTemperature) ||
+      capabilities.sampling.temperature !== "configurable",
   };
 }
 
@@ -808,6 +986,13 @@ export async function refreshModelCapabilityRegistry(
     return false;
   }
   if (registryRefreshTask) return registryRefreshTask;
+  if (
+    !options.force &&
+    registryFailedAt > 0 &&
+    now() - registryFailedAt < FAILED_REFRESH_RETRY_MS
+  ) {
+    return false;
+  }
   registryRefreshTask = (async () => {
     const fetchFn = getFetch();
     if (!fetchFn) return false;
@@ -826,7 +1011,11 @@ export async function refreshModelCapabilityRegistry(
         headers: { Accept: "application/json" },
         signal: controller?.signal,
       });
-      if (!response.ok) return false;
+      if (!response.ok) {
+        registryFailedAt = now();
+        return false;
+      }
+      registryFailedAt = 0;
       const text = await response.text();
       if (text.length > MODEL_CAPABILITY_REGISTRY_MAX_BYTES) return false;
       const parsed = validateRegistry(JSON.parse(text));
@@ -841,6 +1030,7 @@ export async function refreshModelCapabilityRegistry(
       notify();
       return true;
     } catch {
+      registryFailedAt = now();
       return false;
     } finally {
       if (timer !== null) clearTimeout(timer);
@@ -874,7 +1064,24 @@ function getAnthropicCompatCatalogEndpoint(
   return base.includes("anthropic") ? override : null;
 }
 
+class CatalogFetchError extends Error {
+  readonly code: ModelDiscoveryErrorCode;
+
+  constructor(code: ModelDiscoveryErrorCode, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
 function getCatalogEndpoint(identity: ModelCatalogIdentity): string | null {
+  const discoveryAdapter = getModelDiscoveryAdapter(identity);
+  if (discoveryAdapter) {
+    try {
+      return discoveryAdapter.buildEndpoint(identity.apiBase || "");
+    } catch {
+      return null;
+    }
+  }
   if (!identity.apiBase) return null;
   try {
     const url = new URL(identity.apiBase);
@@ -885,21 +1092,25 @@ function getCatalogEndpoint(identity: ModelCatalogIdentity): string | null {
       ).replace(/\/\/+/g, "/");
       return url.toString();
     }
-    if (path.endsWith("/models")) return url.toString();
-    const marker = ["/chat/completions", "/responses", "/embeddings"].find(
-      (suffix) => path.endsWith(suffix),
-    );
-    url.pathname = `${marker ? path.slice(0, -marker.length) : path}/models`
-      .replace(/\/\/+/g, "/")
-      .replace("https:/", "https://")
-      .replace("http:/", "http://");
+    if (!path.endsWith("/models")) {
+      const marker = ["/chat/completions", "/responses", "/embeddings"].find(
+        (suffix) => path.endsWith(suffix),
+      );
+      url.pathname = `${marker ? path.slice(0, -marker.length) : path}/models`
+        .replace(/\/\/+/g, "/")
+        .replace("https:/", "https://")
+        .replace("http:/", "http://");
+    }
     return url.toString();
   } catch {
     return null;
   }
 }
 
-function parseDiscoveredModels(value: unknown): DiscoveredModel[] {
+function parseDiscoveredModels(
+  value: unknown,
+  options?: { filterChatModels?: boolean },
+): DiscoveredModel[] {
   const rawModels =
     value &&
     typeof value === "object" &&
@@ -911,6 +1122,7 @@ function parseDiscoveredModels(value: unknown): DiscoveredModel[] {
         ? (value as { models: unknown[] }).models
         : [];
   const models: DiscoveredModel[] = [];
+  const seen = new Set<string>();
   for (const raw of rawModels) {
     if (models.length >= 4096) break;
     if (!raw || typeof raw !== "object") continue;
@@ -918,7 +1130,9 @@ function parseDiscoveredModels(value: unknown): DiscoveredModel[] {
     let id = typeof row.id === "string" ? row.id.trim() : "";
     if (!id && typeof row.name === "string")
       id = row.name.trim().replace(/^models\//, "");
-    if (!id || id.length > 256) continue;
+    if (!id || id.length > 256 || seen.has(id)) continue;
+    if (options?.filterChatModels && !isDiscoveredChatModel(row, id)) continue;
+    seen.add(id);
     // Local servers each name the context window differently:
     // LM Studio uses max_context_length / loaded_context_length, vLLM uses
     // max_model_len, and llama.cpp nests n_ctx / n_ctx_train under `meta`.
@@ -1005,10 +1219,19 @@ export async function refreshModelCatalog(
 ): Promise<DiscoveredModel[]> {
   const key = buildCatalogKey(identity);
   const cached = catalogSnapshots.get(key);
+  const ttlMs = getCatalogTtlMs(identity);
   if (
     cached &&
     !options.force &&
-    now() - cached.fetchedAt < PROVIDER_CATALOG_TTL_MS
+    !cached.stale &&
+    now() - cached.fetchedAt < ttlMs
+  ) {
+    return cached.models;
+  }
+  if (
+    cached?.stale &&
+    !options.force &&
+    now() - (catalogAttemptedAt.get(key) ?? 0) < FAILED_CATALOG_RETRY_MS
   ) {
     return cached.models;
   }
@@ -1031,6 +1254,20 @@ async function fetchModelCatalog(
   key: string,
   cached: CatalogSnapshot | undefined,
 ): Promise<DiscoveredModel[]> {
+  const generation = ++nextCatalogFetchGeneration;
+  catalogAttemptedAt.set(key, now());
+  for (const existingKey of Array.from(catalogFetchGenerations.keys())) {
+    if (
+      existingKey === key ||
+      isSameCatalogConfiguration(existingKey, identity)
+    ) {
+      catalogFetchGenerations.set(existingKey, generation);
+    }
+  }
+  catalogFetchGenerations.set(key, generation);
+  const isCurrentGeneration = () =>
+    catalogFetchGenerations.get(key) === generation;
+
   const fetchFn = getFetch();
   // Ollama's native metadata endpoints report the real context window plus
   // vision/tools/thinking, none of which its /v1/models mirror exposes.
@@ -1043,8 +1280,13 @@ async function fetchModelCatalog(
         detailModel: identity.model,
         timeoutMs: options.timeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
       });
-      catalogSnapshots.set(key, { models, fetchedAt: now(), stale: false });
-      notify();
+      if (isCurrentGeneration()) {
+        publishCatalogSnapshot(key, identity, {
+          models,
+          fetchedAt: now(),
+          stale: false,
+        });
+      }
       return models;
     } catch (error) {
       const snapshot: CatalogSnapshot = {
@@ -1053,75 +1295,210 @@ async function fetchModelCatalog(
         stale: true,
         error: error instanceof Error ? error.message : String(error),
       };
-      catalogSnapshots.set(key, snapshot);
+      if (isCurrentGeneration()) {
+        setCatalogSnapshot(key, identity, snapshot);
+      }
       return snapshot.models;
     }
   }
-  const compatEndpoint = getAnthropicCompatCatalogEndpoint(identity);
-  const endpoint = compatEndpoint || getCatalogEndpoint(identity);
-  if (!endpoint || !fetchFn) return cached?.models || [];
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  try {
-    const AbortControllerCtor = getAbortController();
-    const controller = AbortControllerCtor
-      ? new AbortControllerCtor()
-      : undefined;
-    timer = controller
-      ? setTimeout(
-          () => controller.abort(),
-          options.timeoutMs || DEFAULT_REFRESH_TIMEOUT_MS,
-        )
-      : null;
-    const headers: Record<string, string> = { Accept: "application/json" };
-    if (identity.apiKey && identity.authMode !== "codex_auth") {
-      if (identity.protocol === "gemini_native") {
-        // Header auth keeps the key out of URLs (and any proxy/server logs).
-        headers["x-goog-api-key"] = identity.apiKey;
-      } else if (
-        identity.protocol === "anthropic_messages" &&
-        !compatEndpoint
-      ) {
-        headers["x-api-key"] = identity.apiKey;
-        headers["anthropic-version"] = "2023-06-01";
-      } else {
-        headers.Authorization = `Bearer ${identity.apiKey}`;
-      }
-    }
-    const response = await fetchFn(endpoint, {
-      headers,
-      signal: controller?.signal,
-    });
-    if (!response.ok)
-      throw new Error(`catalog request failed: ${response.status}`);
-    const models = parseDiscoveredModels(await response.json());
-    catalogSnapshots.set(key, { models, fetchedAt: now(), stale: false });
-    notify();
-    return models;
-  } catch (error) {
+  const discoveryAdapter = getModelDiscoveryAdapter(identity);
+  if (discoveryAdapter && !normalizeApiKey(identity.apiKey)) {
     const snapshot: CatalogSnapshot = {
       models: cached?.models || [],
       fetchedAt: cached?.fetchedAt || 0,
       stale: true,
-      error: error instanceof Error ? error.message : String(error),
+      errorCode: "missing_api_key",
+      error: "Enter the API key above to fetch this provider's models.",
     };
-    catalogSnapshots.set(key, snapshot);
+    if (isCurrentGeneration()) {
+      publishCatalogSnapshot(key, identity, snapshot);
+    }
     return snapshot.models;
+  }
+  const compatEndpoint = getAnthropicCompatCatalogEndpoint(identity);
+  const endpoint = compatEndpoint || getCatalogEndpoint(identity);
+  if (!endpoint) {
+    if (discoveryAdapter) {
+      const snapshot: CatalogSnapshot = {
+        models: cached?.models || [],
+        fetchedAt: cached?.fetchedAt || 0,
+        stale: true,
+        errorCode: "network_error",
+        error: "Invalid API URL for models endpoint.",
+      };
+      if (isCurrentGeneration()) {
+        publishCatalogSnapshot(key, identity, snapshot);
+      }
+      return snapshot.models;
+    }
+    return cached?.models || [];
+  }
+  if (!fetchFn) return cached?.models || [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  let controller: AbortController | undefined;
+  try {
+    const AbortControllerCtor = getAbortController();
+    controller = AbortControllerCtor ? new AbortControllerCtor() : undefined;
+    const timeoutMs = options.timeoutMs || DEFAULT_REFRESH_TIMEOUT_MS;
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (identity.apiKey && identity.authMode !== "codex_auth") {
+      if (identity.protocol === "gemini_native") {
+        // Header auth keeps the key out of URLs (and any proxy/server logs).
+        headers["x-goog-api-key"] = identity.apiKey.trim();
+      } else if (
+        identity.protocol === "anthropic_messages" &&
+        !compatEndpoint
+      ) {
+        headers["x-api-key"] = identity.apiKey.trim();
+        headers["anthropic-version"] = "2023-06-01";
+      } else {
+        headers.Authorization = `Bearer ${identity.apiKey.trim()}`;
+      }
+    }
+    const response = await new Promise<Response>((resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller?.abort();
+        const abortErr = new Error("Request timed out while fetching models.");
+        abortErr.name = "AbortError";
+        reject(abortErr);
+      }, timeoutMs);
+      fetchFn(endpoint, {
+        headers,
+        signal: controller?.signal,
+      }).then(resolve, reject);
+    });
+    if (!response.ok) {
+      const classified = classifyModelDiscoveryHttpError(response.status);
+      throw new CatalogFetchError(classified.code, classified.message);
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new CatalogFetchError(
+        "invalid_json",
+        "Invalid JSON response from models endpoint.",
+      );
+    }
+    if (
+      discoveryAdapter &&
+      (!payload ||
+        typeof payload !== "object" ||
+        !Array.isArray((payload as { data?: unknown }).data))
+    ) {
+      throw new CatalogFetchError(
+        "invalid_json",
+        "Invalid JSON response from models endpoint.",
+      );
+    }
+    const parsedModels = parseDiscoveredModels(payload, {
+      filterChatModels: Boolean(discoveryAdapter),
+    });
+    const models = discoveryAdapter
+      ? discoveryAdapter.filterAndSortModels(parsedModels)
+      : parsedModels;
+    if (discoveryAdapter && models.length === 0) {
+      const emptySnapshot: CatalogSnapshot = {
+        models: [],
+        fetchedAt: 0,
+        stale: true,
+        errorCode: "empty_list",
+        error: "No available chat models returned by provider.",
+      };
+      if (isCurrentGeneration()) {
+        publishCatalogSnapshot(key, identity, emptySnapshot);
+        return [];
+      }
+      return catalogSnapshots.get(key)?.models || [];
+    }
+    if (isCurrentGeneration()) {
+      publishCatalogSnapshot(key, identity, {
+        models,
+        fetchedAt: now(),
+        stale: false,
+      });
+      return models;
+    }
+    return catalogSnapshots.get(key)?.models || models;
+  } catch (error) {
+    const isTimeout =
+      timedOut ||
+      Boolean(controller?.signal?.aborted) ||
+      (error instanceof Error &&
+        (error.name === "AbortError" ||
+          /abort|timed?\s*out/i.test(error.message)));
+    const errorCode: ModelDiscoveryErrorCode = isTimeout
+      ? "timeout"
+      : error instanceof CatalogFetchError
+        ? error.code
+        : "network_error";
+    const errorMessage = isTimeout
+      ? "Request timed out while fetching models."
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    const snapshot: CatalogSnapshot = {
+      models: cached?.models || [],
+      fetchedAt: cached?.fetchedAt || 0,
+      stale: true,
+      errorCode,
+      error: errorMessage,
+    };
+    if (isCurrentGeneration()) {
+      publishCatalogSnapshot(key, identity, snapshot);
+      return snapshot.models;
+    }
+    return catalogSnapshots.get(key)?.models || snapshot.models;
   } finally {
     if (timer !== null) clearTimeout(timer);
   }
 }
 
+export function invalidateModelCatalog(identity: ModelCatalogIdentity): void {
+  const invalidationGeneration = ++nextCatalogFetchGeneration;
+  for (const existingKey of Array.from(catalogFetchGenerations.keys())) {
+    if (isSameCatalogConfiguration(existingKey, identity)) {
+      catalogFetchGenerations.set(existingKey, invalidationGeneration);
+    }
+  }
+  let removed = false;
+  for (const existingKey of Array.from(catalogSnapshots.keys())) {
+    if (isSameCatalogConfiguration(existingKey, identity)) {
+      catalogSnapshots.delete(existingKey);
+      removed = true;
+    }
+  }
+  if (removed) {
+    notify();
+  }
+}
+
 export function getDiscoveredModels(
-  identity: ModelCapabilityIdentity,
+  identity: ModelCatalogIdentity,
 ): DiscoveredModel[] {
-  return clone(catalogSnapshots.get(buildCatalogKey(identity))?.models || []);
+  const snapshot =
+    catalogSnapshots.get(buildCatalogKey(identity)) ??
+    getCatalogSnapshot(identity);
+  return clone(snapshot?.models || []);
 }
 
 export function getModelCatalogStatus(
-  identity: ModelCapabilityIdentity,
+  identity: ModelCatalogIdentity,
 ): CatalogSnapshot | null {
-  const snapshot = catalogSnapshots.get(buildCatalogKey(identity));
+  const snapshot =
+    catalogSnapshots.get(buildCatalogKey(identity)) ??
+    getCatalogSnapshot(identity);
   return snapshot ? clone(snapshot) : null;
+}
+
+export function isModelCatalogExpired(identity: ModelCatalogIdentity): boolean {
+  const snapshot =
+    catalogSnapshots.get(buildCatalogKey(identity)) ??
+    getCatalogSnapshot(identity);
+  if (!snapshot || snapshot.stale || snapshot.fetchedAt <= 0) return true;
+  return now() - snapshot.fetchedAt >= getCatalogTtlMs(identity);
 }
 
 export async function refreshConfiguredModelCatalogs(
@@ -1138,10 +1515,14 @@ export function resetModelCapabilityStateForTests(): void {
   activeRegistrySource = "bundled";
   registryLoadTask = null;
   registryFetchedAt = 0;
+  registryFailedAt = 0;
   registryRefreshTask = null;
   capabilityPreflightTasks.clear();
   catalogRefreshTasks.clear();
+  catalogFetchGenerations.clear();
+  nextCatalogFetchGeneration = 0;
   catalogSnapshots.clear();
+  catalogAttemptedAt.clear();
   runtime = {};
 }
 

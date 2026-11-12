@@ -25,10 +25,11 @@ export type BlockStreamCoalescerOptions = {
   clearTimer?: (timer: unknown) => void;
 };
 
-const DEFAULT_MIN_BOUNDARY_CHARS = 180;
-const DEFAULT_TARGET_CHARS = 360;
-const DEFAULT_HARD_CAP_CHARS = 800;
-const DEFAULT_MAX_WAIT_MS = 450;
+// Release available text promptly, while fast streams can form larger blocks.
+const DEFAULT_MIN_BOUNDARY_CHARS = 300;
+const DEFAULT_TARGET_CHARS = 480;
+const DEFAULT_HARD_CAP_CHARS = 1200;
+const DEFAULT_MAX_WAIT_MS = 120;
 
 function defaultSetTimer(callback: () => void, delayMs: number): unknown {
   return setTimeout(callback, delayMs);

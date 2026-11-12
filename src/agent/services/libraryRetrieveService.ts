@@ -12,8 +12,11 @@ import {
 } from "../../services/retrieval/retrievalQueryPlan";
 import {
   extractCjkKeywordProbes,
+  findFirstIndexTermMatch,
   isCjkDominantText,
   stripTerminalPunctuation,
+  toRetrievalIndexTerm,
+  tokenizeRetrievalText,
 } from "../../services/retrieval/retrievalTokenizer";
 import type {
   PaperContextCandidate,
@@ -54,11 +57,19 @@ import {
   buildQuoteCitation,
   mergeQuoteCitations,
 } from "../../services/quotes/quoteCitations";
+import {
+  flattenText,
+  hasHeadingLine,
+  windowBodyRanges,
+  type TextRange,
+} from "../../services/quotes/sentenceSplit";
 import type {
+  EditableArticleCreator,
   EditableArticleMetadataSnapshot,
   LibraryItemTarget,
   ZoteroGateway,
 } from "./zoteroGateway";
+import { groupPaperWorks } from "./paperWorkIdentity";
 import type { PdfService } from "./pdfService";
 import type { ModelProfileOverride } from "../../modelCapabilities";
 import { libraryIndexService } from "../../services/libraryIndexService";
@@ -180,6 +191,19 @@ export type LibraryRetrievePaperMatch = {
   confidence: "high" | "medium" | "low";
   whyMatched: string;
   matchedQueryVariants?: string[];
+  /**
+   * Why the paper shows no passage. `not_returned_budget`: its text was
+   * available but the snippet cap was full before it was read, so its
+   * returned snippet count says nothing about its content.
+   * `no_pdf_attachment`: it has no full text to read, and no abstract
+   * passage matched (paper_read's word for the same state).
+   */
+  passageStatus?: "not_returned_budget" | "no_pdf_attachment";
+  /**
+   * Set only when another shortlisted item is a version of the same work
+   * (a preprint and its journal version, say); rows are marked, not merged.
+   */
+  workGroupId?: string;
 };
 
 export type LibraryRetrieveFrontier = {
@@ -234,6 +258,12 @@ export type LibraryRetrieveSnippet = {
   charEnd?: number;
   quoteCitationId?: string;
   snippet: string;
+  /**
+   * The text the snippet's window was cut from, so its quote can skip
+   * headings and cut formulas. Internal: removed before the result leaves
+   * the service.
+   */
+  quoteSource?: string;
   surroundingText?: string;
   score: number;
   whyMatched: string;
@@ -281,6 +311,11 @@ export type LibraryRetrieveResult = {
       fullTextSearched: number;
       snippetsReturned: number;
       evidencePapers: number;
+      /**
+       * Distinct works among the evidence papers: versions of one work
+       * (same workGroupId) count once. Caps still count items.
+       */
+      evidenceWorks: number;
       deepReadPapers: number;
     };
   };
@@ -335,16 +370,66 @@ function buildSnippetQuoteCitation(
     return undefined;
   }
   const citationLabel = snippet.sourceLabel || snippet.citationLabel;
-  return buildQuoteCitation({
-    quoteText: snippet.snippet,
-    citationLabel,
-    sourceMatchKind: snippet.matchMethod === "exact" ? "exact" : "trusted",
-    sourceMatchSource: "context-text",
-    sourceSectionLabel: snippet.sectionLabel,
-    sourceChunkKind: snippet.chunkKind,
-    contextItemId,
-    itemId,
-  });
+  for (const quoteText of snippetQuoteTexts(
+    snippet.snippet,
+    snippet.quoteSource ?? snippet.snippet,
+  )) {
+    const citation = buildQuoteCitation({
+      quoteText,
+      citationLabel,
+      sourceMatchKind: snippet.matchMethod === "exact" ? "exact" : "trusted",
+      sourceMatchSource: "context-text",
+      sourceSectionLabel: snippet.sectionLabel,
+      sourceChunkKind: snippet.chunkKind,
+      contextItemId,
+      itemId,
+    });
+    if (citation) return citation;
+  }
+  return undefined;
+}
+
+const SNIPPET_ELLIPSIS = "...";
+
+/**
+ * The texts a snippet's quote may be cut from, in text order; each is a
+ * substring of the snippet. `source` is the text its window was cut from.
+ * The quote is the window's body text (the shared window rule: never a
+ * heading, never a cut formula); a window that keeps all of it quotes the
+ * snippet itself.
+ */
+function snippetQuoteTexts(snippet: string, source: string): string[] {
+  const flatSource = flattenText(source);
+  const window = locateSnippetWindow(snippet, flatSource);
+  if (!window) return hasHeadingLine(source) ? [] : [snippet];
+  return windowBodyRanges(source, window).map((range) =>
+    range.start === window.start && range.end === window.end
+      ? snippet
+      : flatSource.slice(range.start, range.end).trim(),
+  );
+}
+
+/** Where the snippet's text, without its "..." cut marks, sits in the
+ * flattened source. */
+function locateSnippetWindow(
+  snippet: string,
+  flatSource: string,
+): TextRange | undefined {
+  const flat = flattenText(snippet);
+  const cutHead = flat.startsWith(SNIPPET_ELLIPSIS);
+  const cutTail = flat.endsWith(SNIPPET_ELLIPSIS);
+  const bodies = [flat];
+  if (cutHead) bodies.push(flat.slice(SNIPPET_ELLIPSIS.length));
+  if (cutTail) bodies.push(flat.slice(0, -SNIPPET_ELLIPSIS.length));
+  if (cutHead && cutTail) {
+    bodies.push(flat.slice(SNIPPET_ELLIPSIS.length, -SNIPPET_ELLIPSIS.length));
+  }
+  for (const candidate of bodies) {
+    const body = candidate.trim();
+    const start = body ? flatSource.indexOf(body) : -1;
+    if (start >= 0) return { start, end: start + body.length };
+  }
+  return undefined;
 }
 
 function attachQuoteCitationsToSnippets(
@@ -357,8 +442,13 @@ function attachQuoteCitationsToSnippets(
   if (!options.includeQuoteAnchors) {
     return {
       snippets: snippets.map((snippet) => {
-        const { quoteCitationId: _quoteCitationId, ...rest } = snippet;
+        const {
+          quoteCitationId: _quoteCitationId,
+          quoteSource: _quoteSource,
+          ...rest
+        } = snippet;
         void _quoteCitationId;
+        void _quoteSource;
         return rest;
       }),
       quoteCitations: [],
@@ -367,10 +457,12 @@ function attachQuoteCitationsToSnippets(
   const quoteCitations: QuoteCitation[] = [];
   const pairedSnippets = snippets.map((snippet) => {
     const citation = buildSnippetQuoteCitation(snippet);
-    if (!citation) return snippet;
+    const { quoteSource: _quoteSource, ...rest } = snippet;
+    void _quoteSource;
+    if (!citation) return rest;
     quoteCitations.push(citation);
     return {
-      ...snippet,
+      ...rest,
       quoteCitationId: citation.id,
     };
   });
@@ -942,7 +1034,9 @@ function snippetTextAround(
 /**
  * An index chunk's snippet: a window around the earliest occurrence of any
  * matched term (a chunk head would cut passages deep in the chunk), or the
- * chunk head when no term occurs, as for zero-score leading chunks.
+ * chunk head when no term occurs, as for zero-score leading chunks. A term
+ * occurs as a substring or, as BM25 counted it, as a word with the same
+ * index term ("error" for the query term "errors").
  */
 function indexSnippetText(text: string, terms: string[]): string {
   const lower = text.toLowerCase();
@@ -957,6 +1051,11 @@ function indexSnippetText(text: string, terms: string[]): string {
       end = at + needle.length;
     }
   }
+  const stemmed = findFirstIndexTermMatch(text, terms);
+  if (stemmed && (start < 0 || stemmed.start < start)) {
+    start = stemmed.start;
+    end = stemmed.end;
+  }
   return start >= 0
     ? snippetTextAround(text, start, end)
     : truncateText(text, 900);
@@ -966,6 +1065,27 @@ function truncateText(text: string, maxChars: number): string {
   const normalized = normalizeText(text);
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 3)).trim()}...`;
+}
+
+/**
+ * Index of `term` in `lower` as a whole word: not preceded or followed by a
+ * letter or digit (Unicode-aware). Terms with Han, Kana, or Hangul characters
+ * use plain indexOf, because CJK text has no word boundaries.
+ */
+function indexOfWholeTerm(lower: string, term: string): number {
+  if (!term) return -1;
+  if (
+    /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(
+      term,
+    )
+  )
+    return lower.indexOf(term);
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // A term ending in a letter may take an English plural ending (s or es).
+  const plural = /\p{L}$/u.test(term) ? "(?:s|es)?" : "";
+  return lower.search(
+    new RegExp(`(?<![\\p{L}\\p{N}])${escaped}${plural}(?![\\p{L}\\p{N}])`, "u"),
+  );
 }
 
 function findExactMatch(
@@ -982,7 +1102,7 @@ function findExactMatch(
   const lower = text.toLowerCase();
   const queryLower = query.toLowerCase();
   if (queryLower.length > 2) {
-    const phraseIndex = lower.indexOf(queryLower);
+    const phraseIndex = indexOfWholeTerm(lower, queryLower);
     if (phraseIndex >= 0) {
       return {
         start: phraseIndex,
@@ -994,7 +1114,7 @@ function findExactMatch(
     }
   }
   const hits = terms
-    .map((term) => ({ term, index: lower.indexOf(term) }))
+    .map((term) => ({ term, index: indexOfWholeTerm(lower, term) }))
     .filter((entry) => entry.index >= 0);
   if (!hits.length) return null;
   const requireAllTerms = terms.length <= 4;
@@ -1162,7 +1282,9 @@ function snippetBasisForRecord(
   for (const snippet of snippets) {
     // A leading passage was served because nothing in the paper matched.
     if (snippet.leadingPassage) continue;
-    if (snippet.matchMethod === "semantic") {
+    if (snippet.sourceKind === "abstract") {
+      basis.add("abstract");
+    } else if (snippet.matchMethod === "semantic") {
       basis.add("semantic");
     } else {
       basis.add("chunk_text");
@@ -1203,10 +1325,173 @@ function paperMatchConfidence(
   return "low";
 }
 
+/**
+ * Snippet slots per paper, in rank order: one for every full-text paper
+ * while the cap lasts, then one for each of the `abstractPapers` abstract-only
+ * papers, then the full-text papers topped up in rank order to each paper's
+ * own count. An abstract passage so never takes a full-text paper's first
+ * slot, but comes before any full-text paper's second.
+ */
+function allocateSnippetSlots(
+  available: readonly number[],
+  maxTotal: number,
+  abstractPapers = 0,
+): { slots: number[]; abstractSlots: number } {
+  const slots = available.map(() => 0);
+  let left = Math.max(0, maxTotal);
+  for (let index = 0; index < available.length && left > 0; index += 1) {
+    if (available[index] <= 0) continue;
+    slots[index] = 1;
+    left -= 1;
+  }
+  const abstractSlots = Math.min(left, Math.max(0, abstractPapers));
+  left -= abstractSlots;
+  for (let index = 0; index < available.length && left > 0; index += 1) {
+    const extra = Math.min(left, available[index] - slots[index]);
+    if (extra <= 0) continue;
+    slots[index] += extra;
+    left -= extra;
+  }
+  return { slots, abstractSlots };
+}
+
+/**
+ * The passage a paper without full text gets from its abstract: in verify
+ * mode only when the abstract holds an exact match (the same test a body
+ * chunk passes), otherwise when the abstract holds at least two distinct query terms as whole
+ * tokens (one, if the plan has only one). It has no
+ * attachment, so it carries no quote anchor and is never body evidence.
+ */
+function buildAbstractSnippet(
+  record: ResourceRecord,
+  input: NormalizedLibraryRetrieveInput,
+): LibraryRetrieveSnippet | null {
+  const abstractText = record.abstractText;
+  if (record.paperContext || !abstractText) return null;
+  const lower = abstractText.toLowerCase();
+  // The exact match decides only in verify mode; elsewhere the whole-token
+  // rule below applies.
+  const exact = input.requireExact
+    ? findExactMatchForQueryPlan(abstractText, input.queryPlan)
+    : null;
+  let match: {
+    start: number;
+    end: number;
+    score: number;
+    reason: string;
+    matchedQueryVariant?: string;
+  } | null = exact;
+  if (!match && !input.requireExact) {
+    const planTerms = Array.from(
+      new Set(
+        input.queryPlan.lexicalTerms
+          .map((term) => term.toLowerCase())
+          .filter(Boolean),
+      ),
+    );
+    const abstractTokens = new Set(
+      tokenizeRetrievalText(abstractText, { filterStopwords: false }),
+    );
+    const hits = planTerms
+      .filter((term) => {
+        const termTokens = tokenizeRetrievalText(term, {
+          filterStopwords: false,
+        });
+        return (
+          termTokens.length > 0 &&
+          termTokens.every((token) => abstractTokens.has(token))
+        );
+      })
+      .map((term) => ({ term, index: indexOfWholeTerm(lower, term) }))
+      .filter((hit) => hit.index >= 0)
+      .sort((left, right) => left.index - right.index);
+    // One generic term is weak: ask for two distinct terms when the plan has two.
+    const needed = Math.min(2, planTerms.length);
+    if (hits.length > 0 && hits.length >= needed) {
+      match = {
+        start: hits[0].index,
+        end: hits[0].index + hits[0].term.length,
+        score: hits.length,
+        reason: `Abstract keyword match: ${hits
+          .slice(0, 5)
+          .map((hit) => hit.term)
+          .join(", ")}`,
+      };
+    }
+  }
+  if (!match) return null;
+  // Labels only: a no-PDF record has no attachment, so the reference names
+  // the parent item and no contextItemId reaches the passage.
+  const labelRef: PaperContextRef = {
+    itemId: record.target.itemId,
+    contextItemId: 0,
+    title: record.target.title,
+    firstCreator: record.target.firstCreator,
+    year: record.target.year,
+  };
+  const itemId = String(record.target.itemId);
+  return {
+    snippetId: `lr_${itemId}_abstract`,
+    itemId,
+    title: record.target.title,
+    citationLabel: formatPaperCitationLabel(labelRef),
+    sourceLabel: formatPaperSourceLabel(labelRef),
+    sourceKind: "abstract",
+    matchMethod: "metadata",
+    sectionLabel: "Abstract",
+    chunkKind: "abstract",
+    snippet:
+      abstractText.length <= 900
+        ? abstractText
+        : snippetTextAround(abstractText, match.start, match.end),
+    surroundingText: truncateText(abstractText, 1200),
+    score: Number((record.score + match.score).toFixed(3)),
+    whyMatched: `Abstract only (no PDF attachment): ${match.reason}`,
+    ...(match.matchedQueryVariant
+      ? { matchedQueryVariant: match.matchedQueryVariant }
+      : {}),
+  };
+}
+
+function lastNameOf(creator: EditableArticleCreator | undefined): string {
+  if (!creator) return "";
+  const lastName = normalizeText(creator.lastName);
+  if (lastName) return lastName;
+  return normalizeText(creator.name).split(" ").pop() || "";
+}
+
+/** Work group ids for the shortlisted records that share a work. */
+function workGroupsFor(
+  records: readonly ResourceRecord[],
+): Map<number, string> {
+  return groupPaperWorks(
+    records.map((record) => {
+      const creators = record.metadata?.creators || [];
+      const fields = record.metadata?.fields;
+      return {
+        itemId: record.target.itemId,
+        title: record.target.title,
+        firstCreatorLastName: lastNameOf(
+          creators.find((creator) => creator.creatorType === "author") ||
+            creators[0],
+        ),
+        year: record.target.year || fields?.date,
+        doi: fields?.DOI,
+        url: fields?.url,
+        extra: fields?.extra,
+      };
+    }),
+  );
+}
+
 function buildPaperMatches(params: {
   records: ResourceRecord[];
   snippets: LibraryRetrieveSnippet[];
   maxMatches: number;
+  /** Item ids of papers the snippet cap left without a passage. */
+  budgetCutItemIds?: ReadonlySet<string>;
+  /** Work group ids of the records that share a work with another record. */
+  workGroups?: ReadonlyMap<number, string>;
 }): LibraryRetrievePaperMatch[] {
   const snippetsByItem = new Map<string, LibraryRetrieveSnippet[]>();
   for (const snippet of params.snippets) {
@@ -1240,6 +1525,15 @@ function buildPaperMatches(params: {
       record.metadataScore > 0 ||
       record.quicksearchMatched;
     if (!hasEvidence) continue;
+    const budgetCut =
+      !snippets.length &&
+      Boolean(params.budgetCutItemIds?.has(String(record.target.itemId)));
+    const passageStatus: LibraryRetrievePaperMatch["passageStatus"] = budgetCut
+      ? "not_returned_budget"
+      : !snippets.length && !record.paperContext
+        ? "no_pdf_attachment"
+        : undefined;
+    const workGroupId = params.workGroups?.get(record.target.itemId);
     matches.push({
       itemId: String(record.target.itemId),
       title: record.target.title,
@@ -1250,8 +1544,8 @@ function buildPaperMatches(params: {
       matchedQueryVariants: matchedQueryVariants.size
         ? Array.from(matchedQueryVariants)
         : undefined,
-      whyMatched:
-        record.why.length || snippets.length
+      whyMatched: [
+        record.why.length || snippets.length || budgetCut
           ? [
               ...record.why.slice(0, 3),
               ...snippets.slice(0, 2).map((snippet) => snippet.whyMatched),
@@ -1259,6 +1553,14 @@ function buildPaperMatches(params: {
               .filter(Boolean)
               .join("; ")
           : "Shortlisted but no direct evidence was found at this retrieval depth",
+        budgetCut
+          ? "Not returned because the passage budget was full; this is not evidence of absence"
+          : "",
+      ]
+        .filter(Boolean)
+        .join("; "),
+      ...(passageStatus ? { passageStatus } : {}),
+      ...(workGroupId ? { workGroupId } : {}),
     });
   }
   return matches
@@ -1370,6 +1672,8 @@ function buildReadStrategyDiagnostics(params: {
   candidateRecords: ResourceRecord[];
   snippets: LibraryRetrieveSnippet[];
   frontier: LibraryRetrieveFrontier;
+  /** Item ids of papers the snippet cap left without a passage. */
+  budgetCutItemIds?: ReadonlySet<string>;
 }): LibraryChatReadStrategyDiagnostics {
   const plannedRecords = params.candidateRecords;
   const snippetItemIds = new Set(
@@ -1386,6 +1690,12 @@ function buildReadStrategyDiagnostics(params: {
   const unreadableReasons: string[] = [];
   for (const record of plannedRecords) {
     const itemId = String(record.target.itemId);
+    if (params.budgetCutItemIds?.has(itemId)) {
+      unreadableReasons.push(
+        `${itemId}: not returned because the passage budget was full`,
+      );
+      continue;
+    }
     if (!record.paperContext) {
       unreadableReasons.push(`${itemId}: no full-text attachment available`);
       continue;
@@ -1492,7 +1802,7 @@ function buildAnswerContract(params: {
     unsafeClaims.push("Do not claim all full-text-only matches were found.");
   } else {
     unsafeClaims.push(
-      "Do not make full-text presence or absence claims from this result.",
+      "Do not make full-text presence or absence claims from this result; a title or author lookup with library_search can show that a paper is absent from the library.",
     );
   }
   if (
@@ -1978,7 +2288,13 @@ export class LibraryRetrieveService {
       if (right.score !== left.score) return right.score - left.score;
       if (left.paperContext && !right.paperContext) return -1;
       if (!left.paperContext && right.paperContext) return 1;
-      return left.target.title.localeCompare(right.target.title);
+      // Neutral, deterministic ties: raw lexical strength, then library id.
+      // Never the title: alphabetical order is not relevance and would favor
+      // some papers on every tied query.
+      if (right.bm25Score !== left.bm25Score) {
+        return right.bm25Score - left.bm25Score;
+      }
+      return left.target.itemId - right.target.itemId;
     });
 
     const matchedRecords = sorted.filter(recordMatchedQuery);
@@ -2160,6 +2476,7 @@ export class LibraryRetrieveService {
     }
 
     const snippets: LibraryRetrieveSnippet[] = [];
+    const budgetCutItemIds = new Set<string>();
     let snippetPapersExpanded = 0;
     let evidencePapers = 0;
     let fallbackRead = 0;
@@ -2183,10 +2500,19 @@ export class LibraryRetrieveService {
         Boolean(indexResult) &&
         input.depth === "evidence" &&
         !input.requireExact;
+      // Every paper read keeps at least one snippet, so reading stops once
+      // as many papers returned one as the cap allows; the rest are cut by
+      // the budget, not by their content.
+      const readPapers: Array<{
+        record: ResourceRecord;
+        paperSnippets: LibraryRetrieveSnippet[];
+      }> = [];
       for (const record of fullTextRecords) {
-        if (snippets.length >= input.maxTotalSnippets) break;
-        const remaining = input.maxTotalSnippets - snippets.length;
-        const maxSnippets = Math.min(input.perPaperTopK, remaining);
+        if (readPapers.length >= input.maxTotalSnippets) {
+          budgetCutItemIds.add(String(record.target.itemId));
+          continue;
+        }
+        const maxSnippets = input.perPaperTopK;
         let paperSnippets: LibraryRetrieveSnippet[];
         if (useIndexSnippets && record.indexed && record.paperContext) {
           const queryOverride =
@@ -2252,13 +2578,44 @@ export class LibraryRetrieveService {
         if (!record.queryState.has("content_loaded")) continue;
         snippetPapersExpanded += 1;
         record.resourceState.add("text_indexed");
-        if (paperSnippets.length) {
-          record.queryState.add("snippet_returned");
-          evidencePapers += 1;
-          snippets.push(...paperSnippets);
-        }
+        if (paperSnippets.length) readPapers.push({ record, paperSnippets });
       }
-      if (input.requireExact && snippets.length === 0) {
+      // Papers without full text answer from their abstract: one passage
+      // each, in rank order, outside the full-text paper count.
+      const abstractPapers = input.methods.includes("abstract")
+        ? candidateRecords.flatMap((record) => {
+            const snippet = buildAbstractSnippet(record, input);
+            return snippet ? [{ record, snippet }] : [];
+          })
+        : [];
+      const { slots, abstractSlots } = allocateSnippetSlots(
+        readPapers.map((paper) => paper.paperSnippets.length),
+        input.maxTotalSnippets,
+        abstractPapers.length,
+      );
+      abstractPapers.forEach(({ record, snippet }, index) => {
+        if (index >= abstractSlots) {
+          budgetCutItemIds.add(String(record.target.itemId));
+          return;
+        }
+        record.queryState.add("snippet_returned");
+        if (snippet.matchedQueryVariant)
+          record.matchedQueryVariants.add(snippet.matchedQueryVariant);
+        snippets.push(snippet);
+      });
+      readPapers.forEach(({ record, paperSnippets }, index) => {
+        // Invariant: reading stopped at maxTotalSnippets papers and each read
+        // paper holds at least one snippet, so every one gets a first slot
+        // (allocateSnippetSlots) and `kept` is never empty.
+        const kept = paperSnippets.slice(0, slots[index]);
+        record.queryState.add("snippet_returned");
+        evidencePapers += 1;
+        snippets.push(...kept);
+      });
+      if (
+        input.requireExact &&
+        !snippets.some((snippet) => snippet.sourceKind !== "abstract")
+      ) {
         warnings.push(
           "Verify mode found no exact passage snippets in the searched full-text candidates.",
         );
@@ -2319,10 +2676,18 @@ export class LibraryRetrieveService {
       ),
     );
     evidencePapers = snippetPaperKeys.size;
+    const workGroups = workGroupsFor(candidateRecords);
+    const evidenceWorks = new Set(
+      dedupedSnippets.map(
+        (snippet) => workGroups.get(Number(snippet.itemId)) || snippet.itemId,
+      ),
+    ).size;
     const paperMatches = buildPaperMatches({
       records: candidateRecords,
       snippets: dedupedSnippets,
       maxMatches: input.maxCandidatePapers,
+      budgetCutItemIds,
+      workGroups,
     });
     const snippetCapHit = dedupedSnippets.length >= input.maxTotalSnippets;
     const frontier = buildFrontier({
@@ -2339,6 +2704,7 @@ export class LibraryRetrieveService {
       candidateRecords,
       snippets: dedupedSnippets,
       frontier,
+      budgetCutItemIds,
     });
     const answerContract = buildAnswerContract({
       input,
@@ -2421,6 +2787,7 @@ export class LibraryRetrieveService {
           fullTextSearched: snippetPapersExpanded,
           snippetsReturned: dedupedSnippets.length,
           evidencePapers,
+          evidenceWorks,
           deepReadPapers: readStrategy.papersBodyRead,
         },
       },
@@ -2607,6 +2974,7 @@ export class LibraryRetrieveService {
           hit.text,
           hit.matchedTerms.length ? hit.matchedTerms : params.fallbackTerms,
         ),
+        quoteSource: hit.text,
         surroundingText: truncateText(hit.text, 1200),
         score: Number(
           (params.record.score + hit.evidenceScore * 10).toFixed(3),
@@ -2640,11 +3008,19 @@ export class LibraryRetrieveService {
         records.length,
         avgChunkLength || 1,
       );
-      const hits = queryPlan.lexicalTerms.filter((term) => stats.tf[term]);
+      // The corpus is keyed by index terms; one hit per index term, shown
+      // by its first surface term ("errors" and "error" are one hit).
+      const hitsByIndexTerm = new Map<string, string>();
+      for (const term of queryPlan.lexicalTerms) {
+        const indexTerm = toRetrievalIndexTerm(term);
+        if (stats.tf[indexTerm] && !hitsByIndexTerm.has(indexTerm))
+          hitsByIndexTerm.set(indexTerm, term);
+      }
+      const hits = [...hitsByIndexTerm.values()];
       record.bm25TermHits = hits.length;
       const distinctiveCeiling = Math.max(1, Math.floor(records.length / 2));
-      record.bm25DistinctiveHits = hits.filter(
-        (term) => (docFreq[term] || 0) <= distinctiveCeiling,
+      record.bm25DistinctiveHits = [...hitsByIndexTerm.keys()].filter(
+        (indexTerm) => (docFreq[indexTerm] || 0) <= distinctiveCeiling,
       ).length;
       if (recordBm25Matched(record)) {
         // The "abstract " prefix keeps recordHasAbstractMatch attributing
@@ -3139,6 +3515,7 @@ export class LibraryRetrieveService {
           ),
           chunkKind: candidate.chunkKind,
           snippet: truncateText(candidate.chunkText, 900),
+          quoteSource: candidate.chunkText,
           surroundingText: truncateText(candidate.chunkText, 1200),
           score: Number(
             (params.record.score + candidate.evidenceScore * 10).toFixed(3),
@@ -3205,12 +3582,13 @@ export class LibraryRetrieveService {
   }): LibraryRetrieveSnippet[] {
     const snippets: LibraryRetrieveSnippet[] = [];
     const chunkMeta = params.pdfContext.chunkMeta || [];
+    // Walk every chunk (bounded by the paper's chunk count, ~77 on average):
+    // stopping at the first maxSnippets matches would keep the earliest, not
+    // the strongest, ones.
     for (let index = 0; index < params.pdfContext.chunks.length; index += 1) {
-      if (snippets.length >= params.maxSnippets) break;
       const chunk = params.pdfContext.chunks[index] || "";
       const match = findExactMatchForQueryPlan(chunk, params.queryPlan);
       if (!match) continue;
-      params.record.matchedQueryVariants.add(match.matchedQueryVariant);
       const meta = chunkMeta[index];
       snippets.push({
         snippetId: `lr_${params.paperContext.itemId}_${params.paperContext.contextItemId}_${index}_exact`,
@@ -3231,13 +3609,21 @@ export class LibraryRetrieveService {
         charStart: match.start,
         charEnd: match.end,
         snippet: snippetTextAround(chunk, match.start, match.end),
+        quoteSource: chunk,
         surroundingText: truncateText(chunk, 1200),
         score: Number((params.record.score + match.score).toFixed(3)),
         whyMatched: match.reason,
         matchedQueryVariant: match.matchedQueryVariant,
       });
     }
-    return snippets.sort((left, right) => right.score - left.score);
+    // Stable sort: equal scores keep document order (earlier chunk first).
+    const top = snippets
+      .sort((left, right) => right.score - left.score)
+      .slice(0, Math.max(0, params.maxSnippets));
+    for (const snippet of top) {
+      params.record.matchedQueryVariants.add(snippet.matchedQueryVariant!);
+    }
+    return top;
   }
 
   private dedupeAndRankSnippets(

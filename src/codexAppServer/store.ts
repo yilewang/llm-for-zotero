@@ -82,6 +82,7 @@ const CODEX_MESSAGE_COPY_COLUMNS = [
   "quote_citations_json",
   "collection_contexts_json",
   "tag_contexts_json",
+  "attached_conversations_json",
   "screenshot_images",
   "attachments_json",
   "generated_images_json",
@@ -433,6 +434,12 @@ export async function repairMisroutedCodexConversationRows(): Promise<void> {
       "tag_contexts_json",
       "tag_contexts_json TEXT",
     );
+    await ensureColumn(
+      tableName,
+      columns,
+      "attached_conversations_json",
+      "attached_conversations_json TEXT",
+    );
   }
   await ensureColumn(
     CODEX_MESSAGES_TABLE,
@@ -518,6 +525,12 @@ export async function updateLatestCodexAssistantMessage(
   ...args: Parameters<typeof store.updateLatestAssistantMessage>
 ) {
   return store.updateLatestAssistantMessage(...args);
+}
+
+export async function updateCodexAssistantMessageQuoteLocations(
+  ...args: Parameters<typeof store.updateAssistantMessageQuoteLocations>
+) {
+  return store.updateAssistantMessageQuoteLocations(...args);
 }
 
 export async function getCodexConversationSummary(

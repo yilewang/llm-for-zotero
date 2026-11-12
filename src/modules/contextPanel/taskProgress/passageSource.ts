@@ -21,6 +21,12 @@ export type TaskPaperPassageTarget = {
   cleanedSnippet: string;
   /** For display; a page is found by it only when `pageIndex` is absent. */
   label: string;
+  /**
+   * The printed page the passage names when `label` does not (a citation's
+   * recorded page): a bare label such as "7" or "iv". Used as a page named
+   * by `label` is, only when `pageIndex` is absent.
+   */
+  pageLabel?: string;
   /** The page index the read came from, when the ledger recorded one. */
   pageIndex?: number;
   granularity: TaskPaperReadGranularity;
@@ -39,18 +45,99 @@ export function taskPaperPassagePageLabel(label: string | undefined): string {
 }
 
 /**
+ * The printed page a target falls back to: the one it names outright, else
+ * the one its label names. Empty when neither names a page.
+ */
+export function taskPaperPassageTargetPageLabel(
+  target: Pick<TaskPaperPassageTarget, "label" | "pageLabel">,
+): string {
+  return (
+    (target.pageLabel || "").trim() || taskPaperPassagePageLabel(target.label)
+  );
+}
+
+/**
  * A read the card offers to open: a whole-paper read (opens the paper), some
  * text to find, or a page to go to. Never a host digest: its summary is not
  * the paper's text (its evidence passages are, and open).
+ *
+ * A paper_read that stopped short is not a host digest; it records its reach
+ * with the same `digest` granularity, and it opens the paper.
  */
 export function canOpenTaskPaperPassage(read: TaskPaperReadEvent): boolean {
-  if (read.granularity === "digest") return false;
+  // A paper_read that stopped short opens the paper, as a full one does.
+  if (read.granularity === "digest") return Boolean(taskPaperReadReach(read));
   if (read.granularity === "full") return true;
   if ((read.snippet || "").trim()) return true;
   return (
     read.granularity === "page" &&
     Boolean(taskPaperPassagePageLabel(read.label))
   );
+}
+
+/**
+ * How far one paper_read went into the paper: all of its text, or part.
+ * `counts` is the read's own tally ("30/32 chunks"), empty when it recorded
+ * none.
+ */
+export type TaskPaperReach = {
+  part: boolean;
+  counts: string;
+  /** Chunks reached over chunks in the paper; -1 when no tally was kept. */
+  fraction: number;
+};
+
+const CHUNK_COUNTS = /^(\d+)\/(\d+) chunks$/u;
+
+/**
+ * The reach of a paper_read that took the paper as a whole: a `full` read, or
+ * one that stopped short (recorded with `digest` granularity, which no host
+ * digest shares with this tool). A `full` record that carries a partial tally
+ * was saved before the read told the two apart, and counts as part. Null for
+ * every other read, so other tools keep their own wording.
+ */
+export function taskPaperReadReach(
+  read: Pick<TaskPaperReadEvent, "toolName" | "granularity" | "label">,
+): TaskPaperReach | null {
+  if (read.toolName !== "paper_read") return null;
+  if (read.granularity !== "full" && read.granularity !== "digest") return null;
+  const counts = (read.label || "").trim();
+  const match = CHUNK_COUNTS.exec(counts);
+  const reached = match ? Number(match[1]) : 0;
+  const total = match ? Number(match[2]) : 0;
+  const tallied = Boolean(match) && total > 0;
+  return {
+    part: read.granularity === "digest" || (tallied && reached < total),
+    counts: tallied ? counts : "",
+    fraction: tallied ? reached / total : -1,
+  };
+}
+
+/**
+ * The one reach a paper shows for a question: the whole read first, then the
+ * partial read that got furthest; a tally beats none. The first of equals.
+ */
+export function bestTaskPaperReach<T extends TaskPaperReadEvent>(
+  reads: readonly T[],
+): { read: T; reach: TaskPaperReach } | null {
+  let best: { read: T; reach: TaskPaperReach } | null = null;
+  const score = (reach: TaskPaperReach) => [
+    reach.part ? 0 : 1,
+    reach.fraction,
+    reach.counts ? 1 : 0,
+  ];
+  for (const read of reads) {
+    const reach = taskPaperReadReach(read);
+    if (!reach) continue;
+    if (best) {
+      const now = score(reach);
+      const was = score(best.reach);
+      const better = now.findIndex((value, index) => value !== was[index]);
+      if (better < 0 || now[better] < was[better]) continue;
+    }
+    best = { read, reach };
+  }
+  return best;
 }
 
 function oneLine(value: string): string {

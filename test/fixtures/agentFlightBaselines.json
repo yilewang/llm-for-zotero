@@ -141,6 +141,141 @@
         "render.refreshesPerKChar": "Repaints per thousand characters of answer. It stays between 2 and 3.5 across delta sizes because the answer's paragraph structure decides where blocks end, not the provider's chunk size.",
         "render.delta16Stalled": "The ceiling: when the stall timer fires after every delta, every delta is released as its own block, so 125 deltas cost 125 repaints. Anything a flowing stream measures has to be read against this."
       }
+    },
+    {
+      "phase": "faster-readable-block-streaming",
+      "commit": "40d72afa+working-tree",
+      "source": "scripted",
+      "journeys": {
+        "directMaterial": {
+          "modelCallsPerTurn": [1, 2, 1],
+          "modelCallsTotal": 4,
+          "modelCallsPerBatchItem": null,
+          "toolCallsByStage": {
+            "generation": 1,
+            "zotero_action": 1
+          },
+          "nativeWrites": 1,
+          "nativeSaves": 1,
+          "duplicateNativeWrites": 0,
+          "batchItems": {
+            "written": 0,
+            "announcedNotWritten": 0,
+            "failed": 0
+          },
+          "materialFinalized": 1,
+          "retrieval": {
+            "toolCalls": 0,
+            "candidateBuilds": 0,
+            "paperContextEnsures": 0,
+            "repeatedCallsForSameItem": 0,
+            "cacheHitRate": null
+          }
+        },
+        "batchMaterial": {
+          "modelCallsPerTurn": [2, 2, 2],
+          "modelCallsTotal": 6,
+          "modelCallsPerBatchItem": 1.33,
+          "toolCallsByStage": {
+            "zotero_action": 3
+          },
+          "nativeWrites": 3,
+          "nativeSaves": 3,
+          "duplicateNativeWrites": 0,
+          "batchItems": {
+            "written": 3,
+            "announcedNotWritten": 2,
+            "failed": 1
+          },
+          "materialFinalized": 0,
+          "retrieval": {
+            "toolCalls": 0,
+            "candidateBuilds": 0,
+            "paperContextEnsures": 0,
+            "repeatedCallsForSameItem": 0,
+            "cacheHitRate": null
+          }
+        },
+        "retrieval": {
+          "modelCallsPerTurn": [4],
+          "modelCallsTotal": 4,
+          "modelCallsPerBatchItem": null,
+          "toolCallsByStage": {
+            "retrieval": 3
+          },
+          "nativeWrites": 0,
+          "nativeSaves": 0,
+          "duplicateNativeWrites": 0,
+          "batchItems": {
+            "written": 0,
+            "announcedNotWritten": 0,
+            "failed": 0
+          },
+          "materialFinalized": 0,
+          "retrieval": {
+            "toolCalls": 3,
+            "candidateBuilds": 2,
+            "paperContextEnsures": 6,
+            "repeatedCallsForSameItem": 1,
+            "cacheHitRate": 0.33
+          }
+        },
+        "render": {
+          "delta1": {
+            "deltaChars": 1,
+            "deltas": 2000,
+            "charsPushed": 2000,
+            "blocksReleased": 5,
+            "refreshesScheduled": 5,
+            "refreshesPerKChar": 2.5,
+            "stallTimerFires": false
+          },
+          "delta16": {
+            "deltaChars": 16,
+            "deltas": 125,
+            "charsPushed": 2000,
+            "blocksReleased": 4,
+            "refreshesScheduled": 4,
+            "refreshesPerKChar": 2,
+            "stallTimerFires": false
+          },
+          "delta128": {
+            "deltaChars": 128,
+            "deltas": 16,
+            "charsPushed": 2000,
+            "blocksReleased": 3,
+            "refreshesScheduled": 3,
+            "refreshesPerKChar": 1.5,
+            "stallTimerFires": false
+          },
+          "delta16Stalled": {
+            "deltaChars": 16,
+            "deltas": 125,
+            "charsPushed": 2000,
+            "blocksReleased": 125,
+            "refreshesScheduled": 125,
+            "refreshesPerKChar": 62.5,
+            "stallTimerFires": true
+          }
+        }
+      },
+      "notes": {
+        "source": "Measured by test/agentFlightBaselines.test.ts against the scripted adapter and the sqlite fakes: no live model, so the model-call counts measure the harness contract (how many generation steps the journey needs), not model behavior.",
+        "batchMaterial.modelCallsPerBatchItem": "Four model calls over three items: only the two turns that carried batch work are charged. The undo turn's two calls are real work but not the batch's cost, and modelCallsTotal (6) still reports them.",
+        "batchMaterial.nativeWrites": "Counts only notes proved by receipt FACTS (created_note: / native_note: content read-backs), by distinct note id across the whole flight. Three: the batch takes the library-mutation receipt branch, which is verified against the captured post-state of the whole set, and beside that its receipt now names each note the call physically created with the read-back that creation forced -- two notes on the first turn, the refused one on the resume. It is a per-note count, not a per-call one: the resume proves only the row it wrote, and the two rows it skipped keep the proof the first turn already recorded.",
+        "batchMaterial.duplicateNativeWrites": "Zero: every physical write the journey made is accounted for by a receipt fact (nativeSaves 3, nativeWrites 3). A number above zero here would mean notes reached the library that no receipt proves -- duplicate writes, or writes whose content was never read back. Read it together with batchItems.written.",
+        "batchMaterial.announcedNotWritten": "The resume announces all three rows it holds and names the one it wrote, so two rows are announced without being written.",
+        "retrieval": "One scripted turn that reads the same paper twice with the same question and then reads a second paper, driven by test/helpers/retrievalJourney.ts. The runtime, the registry, the paper_read tool (targeted mode) and RetrievalService are real; the two seams that would otherwise open a PDF are counting fakes. Measured when this journey was added, later than this row's commit field: that field names the measurement point of the two material journeys and is left where it was.",
+        "retrieval.retrieval.cacheHitRate": "Three retrieval calls cost two candidate-ranking passes, so one call in three was answered from the evidence cache. That cache is keyed on the paper's context item and the query plan, lives on the RetrievalService instance, and never expires -- so it is process-lifetime, not per-run: a second run of the same three reads on the same instance builds nothing at all, and only clearEvidenceCache() makes it pay again.",
+        "retrieval.retrieval.repeatedCallsForSameItem": "A repeat means the same ITEM, not the same question. This journey happens to repeat both -- it asks one question of paper 40 twice -- which is why its one repeat is also its one cache hit. They are not the same measurement: the evidence cache is keyed on the paper's context item AND the normalized query plan, so a second call on the same paper asking something else would be counted here and would still build candidates. Read this number against candidateBuilds rather than as a prediction of it.",
+        "retrieval.retrieval.repeatedCallsForSameItem.floor": "It is a floor, not a total. Items are read from the identity fields a call's own arguments carry, and paper_read targeted (like every paper tool) may be called with no target at all, in which case resolveDefaultTargets falls back to the conversation's papers. Such a call names no item in its arguments: it is counted in toolCalls but can never be shown to repeat one. This journey names every target explicitly, so its count is exact; a real flight repeats at least this often and possibly more.",
+        "retrieval.retrieval.paperContextEnsures": "Six ensures for three calls: every retrieval call ensures its paper's context twice -- once in paper_read targeted's outline pass and once inside retrieveEvidence, which ensures before it checks the evidence cache. The cache therefore saves the ranking pass but never the ensure. It is also what proves the repeated call really executed rather than being dropped before it ran.",
+        "directMaterial.retrieval": "Zero, pinned rather than omitted: the two material journeys retrieve nothing, and a retrieval call appearing in a write journey is exactly the kind of drift this fixture exists to catch.",
+        "render": "Measured with a 120 ms maximum wait and larger readable block thresholds. The other journey baselines are retained and checked by the same acceptance tests.",
+        "render.rig": "The synchronous rig holds the block timer still, or fires it once after each delta. These counts describe the synthetic schedule, not live frame rate or latency.",
+        "render.refreshesPerKChar": "Repaints per thousand characters in the synchronous rig range from 1.5 to 2.5 across the measured delta sizes. Live timing and compositor cost are not measured here.",
+        "render.delta16Stalled": "The ceiling: when the stall timer fires after every delta, every delta is released as its own block, so 125 deltas cost 125 repaints. Anything a flowing stream measures has to be read against this."
+      }
     }
   ]
 }

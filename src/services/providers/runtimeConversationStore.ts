@@ -8,8 +8,13 @@ import {
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
+  normalizeAttachedConversationRefs,
 } from "../context/normalizers";
 import { normalizeQuoteCitations } from "../quotes/quoteCitations";
+import {
+  mergeQuoteLocationWritesIntoStoredJson,
+  type QuoteLocationWrite,
+} from "../../shared/quoteLocationStorage";
 import { serializeForcedSkillIds } from "../../shared/skillIds";
 import {
   buildUserRowExistsQuery,
@@ -276,6 +281,7 @@ export const RUNTIME_MESSAGE_SELECT_COLUMNS_SQL = `id,
             quote_citations_json AS quoteCitationsJson,
             collection_contexts_json AS collectionContextsJson,
             tag_contexts_json AS tagContextsJson,
+            attached_conversations_json AS attachedConversationsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
             generated_images_json AS generatedImagesJson,
@@ -1073,6 +1079,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     const selectedTagContexts = normalizeTagContextRefs(
       message.selectedTagContexts,
     );
+    const attachedConversations = normalizeAttachedConversationRefs(
+      message.attachedConversations,
+    );
     const screenshotImages = Array.isArray(message.screenshotImages)
       ? message.screenshotImages.filter(
           (entry): entry is string =>
@@ -1128,8 +1137,8 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
           const identityPlaceholder = identityAvailable ? ", ?" : "";
           await Zotero.DB.queryAsync(
             `INSERT INTO ${tables.messages}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window, document_id${identityColumn})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, attached_conversations_json, screenshot_images, attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, compact_marker, context_tokens, context_window, document_id${identityColumn})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
             [
               conversationID,
               normalizedKey,
@@ -1169,6 +1178,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
                 : null,
               selectedTagContexts.length
                 ? JSON.stringify(selectedTagContexts)
+                : null,
+              attachedConversations.length
+                ? JSON.stringify(attachedConversations)
                 : null,
               screenshotImages.length ? JSON.stringify(screenshotImages) : null,
               attachments.length ? JSON.stringify(attachments) : null,
@@ -1378,6 +1390,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       | "citationPaperContexts"
       | "selectedCollectionContexts"
       | "selectedTagContexts"
+      | "attachedConversations"
       | "screenshotImages"
       | "attachments"
     >,
@@ -1409,6 +1422,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     );
     const selectedTagContexts = normalizeTagContextRefs(
       message.selectedTagContexts,
+    );
+    const attachedConversations = normalizeAttachedConversationRefs(
+      message.attachedConversations,
     );
     const messageTimestamp = Number.isFinite(message.timestamp)
       ? Math.floor(message.timestamp)
@@ -1449,6 +1465,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
            citation_paper_contexts_json = ?,
            collection_contexts_json = ?,
            tag_contexts_json = ?,
+           attached_conversations_json = ?,
            screenshot_images = ?,
            attachments_json = ?
        WHERE id = (
@@ -1507,6 +1524,9 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
             : null,
           selectedTagContexts.length
             ? JSON.stringify(selectedTagContexts)
+            : null,
+          attachedConversations.length
+            ? JSON.stringify(attachedConversations)
             : null,
           message.screenshotImages?.length
             ? JSON.stringify(message.screenshotImages)
@@ -1655,6 +1675,57 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     await refreshSearchIndex(normalizedKey);
     notifyConversationCatalogChanged("turns", normalizedKey);
     return true;
+  }
+
+  /**
+   * Save quote locations that the display gate verified into one stored
+   * assistant row. Only `quote_citations_json` of the row at
+   * `target.timestamp` (and `target.messageId`, when known) changes; the
+   * records the writes do not name, every other column, and the catalog stay
+   * as they were. Returns false when nothing was written.
+   */
+  async function updateAssistantMessageQuoteLocations(
+    conversationKey: number,
+    target: { timestamp: number; messageId?: number },
+    writes: readonly QuoteLocationWrite[],
+  ): Promise<boolean> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return false;
+    const timestamp = Number(target.timestamp);
+    if (!Number.isFinite(timestamp) || !writes.length) return false;
+    const messageId = Math.floor(Number(target.messageId));
+    const idFilter = Number.isFinite(messageId) && messageId > 0;
+    const selector =
+      await resolveRepairingMessageConversationSelector(normalizedKey);
+    let written = false;
+    await Zotero.DB.executeTransaction(async () => {
+      const rows = (await Zotero.DB.queryAsync(
+        `SELECT id, quote_citations_json AS quoteCitationsJson
+         FROM ${tables.messages}
+         WHERE ${selector.whereSql} AND role = 'assistant' AND timestamp = ?${
+           idFilter ? " AND id = ?" : ""
+         }
+         LIMIT 2`,
+        [
+          ...selector.params,
+          Math.floor(timestamp),
+          ...(idFilter ? [messageId] : []),
+        ],
+      )) as Array<{ id: unknown; quoteCitationsJson: unknown }> | undefined;
+      // Two rows at one timestamp cannot be told apart without the row id.
+      if (rows?.length !== 1) return;
+      const nextJson = mergeQuoteLocationWritesIntoStoredJson(
+        rows[0].quoteCitationsJson,
+        writes,
+      );
+      if (nextJson === null) return;
+      await Zotero.DB.queryAsync(
+        `UPDATE ${tables.messages} SET quote_citations_json = ? WHERE id = ?`,
+        [nextJson, rows[0].id],
+      );
+      written = true;
+    });
+    return written;
   }
 
   async function upsertSummary(params: {
@@ -2397,6 +2468,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
         quote_citations_json TEXT,
         collection_contexts_json TEXT,
         tag_contexts_json TEXT,
+        attached_conversations_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
         generated_images_json TEXT,
@@ -2507,6 +2579,12 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
         columns,
         "tag_contexts_json",
         "tag_contexts_json TEXT",
+      );
+      await ensureColumn(
+        tables.messages,
+        columns,
+        "attached_conversations_json",
+        "attached_conversations_json TEXT",
       );
       await ensureColumn(
         tables.messages,
@@ -2869,6 +2947,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     pruneConversation,
     updateLatestUserMessage,
     updateLatestAssistantMessage,
+    updateAssistantMessageQuoteLocations,
     getSummary,
     upsertSummary,
     listGlobalConversations,

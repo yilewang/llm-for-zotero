@@ -9,6 +9,11 @@ import type {
 import type { MaterialRef } from "../documents/materialRef";
 import type { TrustedReadObservation } from "../context/readObservationTypes";
 import {
+  outsidePaperRecordsFromToolResult,
+  prefetchOutsidePaperLookups,
+  rememberOutsidePapers,
+} from "../context/outsidePaperRecords";
+import {
   buildArtifactFollowupMessage,
   filterFollowupMessageForCapabilities,
   type ToolWorkflowDelivery,
@@ -18,6 +23,7 @@ import { resolveCapabilitiesContentInputs } from "../model/contentCapabilities";
 import {
   attestAndRecordRead,
   buildPaperLedgerUpdateEvent,
+  recordTaskPaperDecisions,
 } from "../context/taskPaperLedgerRecorder";
 import {
   readObservationSourceKey,
@@ -93,6 +99,11 @@ export type ToolExecutionRecord = {
   input?: unknown;
   content?: unknown;
   actionReceipts?: AgentActionReceipt[];
+  /**
+   * For paper_read: whether the read added evidence the turn lacked. A read
+   * that added none is navigation, not progress (`turnBoundary.ts`).
+   */
+  frontier?: "advanced" | "unchanged" | "unavailable";
 };
 
 /**
@@ -894,6 +905,29 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
           sourceFingerprint: observation.sourceFingerprint,
         }));
       }
+    } else if (toolResult.ok && toolResult.paperDecisions?.length) {
+      // A call that states paper decisions (record_paper_decisions, or the
+      // papers a document or a part leaves out): the same recorder makes its
+      // delta, emitted at the same place as a read's.
+      paperLedgerDelta = recordTaskPaperDecisions({
+        toolName: toolResult.name,
+        callId: toolResult.callId,
+        decisions: toolResult.paperDecisions,
+        conversationKey: deps.request.conversationKey,
+        runId: deps.runId,
+      });
+    }
+    // The outside papers a document of this run may cite: what
+    // literature_search and literature_read returned. The DOIs of papers
+    // read past their metadata are looked up in the background, for the
+    // citations of a document that cites them.
+    if (toolResult.ok) {
+      const outsidePapers = outsidePaperRecordsFromToolResult(
+        toolResult.name,
+        toolResult.content,
+      );
+      rememberOutsidePapers(deps.request, outsidePapers);
+      prefetchOutsidePaperLookups(deps.request, outsidePapers);
     }
     let paperEvidenceFrontierState:
       | "advanced"
@@ -925,6 +959,9 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
       input: executedCall.input,
       content: toolResult.content,
       actionReceipts: toolResult.actionReceipts,
+      ...(paperEvidenceFrontierState
+        ? { frontier: paperEvidenceFrontierState }
+        : {}),
     });
     if (toolResult.ok) {
       if (paperEvidenceFrontierState !== "unchanged") {
@@ -1203,18 +1240,26 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
       modelView,
     } = executedCall;
     const deliveryCallId = options.modelCallId || call.id;
+    // The fields the tool keeps from the model leave only its delivery; the
+    // event emitted above carried the whole result.
+    const modelContent =
+      !modelView && toolResult.ok && toolDefinition?.modelContent
+        ? toolDefinition.modelContent(toolResult.content, input as never)
+        : toolResult.content;
     const contentForModel =
       modelView ||
       (documentEvidenceRefs?.length
-        ? toolResult.content &&
-          typeof toolResult.content === "object" &&
-          !Array.isArray(toolResult.content)
+        ? modelContent &&
+          typeof modelContent === "object" &&
+          !Array.isArray(modelContent)
           ? {
-              ...(toolResult.content as Record<string, unknown>),
+              ...(modelContent as Record<string, unknown>),
               documentEvidenceRefs,
             }
-          : { content: toolResult.content, documentEvidenceRefs }
-        : undefined);
+          : { content: modelContent, documentEvidenceRefs }
+        : modelContent !== toolResult.content
+          ? modelContent
+          : undefined);
     // A call that ran while the user pressed Stop is recorded and delivered,
     // and nothing more: no terminal answer and no review card, so the run
     // ends as the user stopped it.
@@ -1390,6 +1435,27 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
             toolResult: chainedOutcome.toolResult,
             stopRun: true,
             finalText,
+          };
+        }
+        // The run continues: the model reads the call's result with the
+        // review's next step.
+        const delivery = chainedOutcome.delivery;
+        const delivered = delivery?.content;
+        if (
+          reviewOutcome.nextStep &&
+          chainedOutcome.toolResult.ok &&
+          delivery &&
+          delivered &&
+          typeof delivered === "object" &&
+          !Array.isArray(delivered) &&
+          !("nextStep" in delivered)
+        ) {
+          return {
+            ...chainedOutcome,
+            delivery: {
+              ...delivery,
+              content: { ...delivered, nextStep: reviewOutcome.nextStep },
+            },
           };
         }
         return chainedOutcome;

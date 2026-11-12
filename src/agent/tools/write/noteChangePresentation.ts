@@ -1,4 +1,5 @@
 import { noteHtmlMatches } from "../../../utils/noteHtml";
+import { findMissingNoteEmbeds } from "../../../utils/noteEmbeds";
 import { ToolExecutionFailure } from "../execution/failure";
 import { innermostToolResult } from "../../contracts/toolResultEnvelope";
 import { storeRecoveryText } from "../../store/journalRecoveryBlobStore";
@@ -16,6 +17,9 @@ export async function captureNoteChange(
     storeRecoveryText(beforeHtml),
     storeRecoveryText(afterHtml),
   ]);
+  // Counted from the verified native note, so an item the user deleted in
+  // the review box is reported as surely as one the model was asked to remove.
+  const deleted = findMissingNoteEmbeds(beforeHtml, afterHtml).length;
   return {
     title: note.getNoteTitle?.() || "Note",
     note: { itemId: note.id, libraryID: note.libraryID, key: note.key },
@@ -25,7 +29,11 @@ export async function captureNoteChange(
     after,
     description: noteHtmlMatches(beforeHtml, afterHtml)
       ? "No changes were needed."
-      : "The note was updated and verified in Zotero.",
+      : `The note was updated and verified in Zotero.${
+          deleted
+            ? ` This edit deleted ${deleted} embedded item${deleted === 1 ? "" : "s"}.`
+            : ""
+        }`,
   };
 }
 

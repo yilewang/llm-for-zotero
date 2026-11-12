@@ -3,10 +3,15 @@
  * paper's PDF in the reader and highlights the passage through the same
  * pipeline a quote card's jump uses; a passage not in the PDF's text falls
  * back to the page its label names; a paper with no PDF says so; a
- * whole-paper read opens the paper at its first page without a search. The
+ * whole-paper read opens the paper at its first page without a search. A
+ * quote the answer cites lists under "Cited" and opens in its paper the
+ * same way from the answer's quote cards, one after another on one page.
+ * The paper chat's own paper is a row until the answer cites it; then it
+ * lists in its "Cited" card, its reads the answer did not cite folded. The
  * card stays as it was (the paper expanded, the drawer open).
  */
 import { assert } from "chai";
+import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
 import { getReaderContextPanelForTab } from "../src/modules/contextPanel/readerPopupPanelRouting";
 import type {
   WorkflowTestApi,
@@ -16,6 +21,8 @@ import type {
 /** As the PDF's text layer has it: the symbol set in plain text. */
 const SENTENCE =
   "Turnover of dendritic spines s(t) predicts the rate at which place fields reorganize over two weeks of recording in the same animals.";
+/** Also on page 2, after SENTENCE: a second quote with one match there. */
+const SAME_PAGE_SENTENCE = "These changes were stable across sessions.";
 /**
  * As MinerU's Markdown has it: a heading, the symbol in TeX, and the ledger's
  * clip mid-word. Neither the shown nor the stored text is in the PDF as is.
@@ -192,7 +199,7 @@ describe("workflow: task progress passage source", function () {
     const pages = [
       [
         "Introduction. Representational drift has been reported in many areas.",
-        `Results. ${SENTENCE} These changes were stable across sessions.`,
+        `Results. ${SENTENCE} ${SAME_PAGE_SENTENCE}`,
       ],
       [
         "Overview of the figures in this paper.",
@@ -319,24 +326,46 @@ describe("workflow: task progress passage source", function () {
         return !row.hidden;
       }, "the card shows for a folder turn");
       row.click();
+      const own = fixtures[0].parentItemId;
       const paper = (itemId: number) =>
         root.querySelector(
           `.llm-task-paper[data-item-id="${itemId}"]`,
         ) as HTMLElement | null;
+      // The paper chat's own paper, once the answer cites it.
+      const citedCard = () =>
+        root.querySelector(
+          '.llm-task-card[data-card="cited"]',
+        ) as HTMLElement | null;
       await until(() => {
         api.flushTaskProgress();
-        return Boolean(paper(fixtures[0].parentItemId));
-      }, "the paper lists");
+        return Boolean(paper(own)) && Boolean(paper(fixtures[1].parentItemId));
+      }, "the papers list");
+      assert.isTrue(
+        !citedCard() || citedCard()!.hidden,
+        "nothing is cited yet: no Cited card",
+      );
       const expand = (itemId: number) => {
         const summary = paper(itemId)!.querySelector(
           ".llm-task-paper-summary",
         ) as HTMLElement;
         if (summary.getAttribute("aria-expanded") !== "true") summary.click();
+        // Nothing is cited yet: every read is under "Read, not cited".
+        const fold = paper(itemId)!.querySelector(
+          ".llm-task-cited-fold .llm-task-fold",
+        ) as HTMLElement | null;
+        assert.isOk(fold, `the reads of ${itemId} fold`);
+        if (fold!.getAttribute("aria-expanded") !== "true") fold!.click();
         const source = paper(itemId)!.querySelector(
-          ".llm-task-paper-open",
+          ".llm-task-cited-fold-body .llm-task-paper-open",
         ) as HTMLButtonElement | null;
         assert.isOk(source, `the passage of ${itemId} offers Source`);
-        return { summary, source: source! };
+        return {
+          summary: () =>
+            paper(itemId)!.querySelector(
+              ".llm-task-paper-summary",
+            ) as HTMLElement,
+          source: source!,
+        };
       };
 
       // 1. A MinerU-style snippet (heading, TeX, clipped): the reader opens
@@ -361,7 +390,7 @@ describe("workflow: task progress passage source", function () {
         () => `the reader shows page 2 (${readerPageIndex(reader)})`,
       );
       assert.equal(
-        first.summary.getAttribute("aria-expanded"),
+        first.summary().getAttribute("aria-expanded"),
         "true",
         "the paper stays expanded",
       );
@@ -406,8 +435,9 @@ describe("workflow: task progress passage source", function () {
       );
       assert.equal(activeReader()?.itemID, fixtures[1].pdfAttachmentId);
 
-      // 4. A whole-paper read: the row says "Full text", and Source opens the
-      // paper at its first page without searching for the snippet.
+      // 4. A whole-paper read: a heading line says "Full" over the paper's
+      // reads, not among "Read, not cited", and Source opens the paper at its
+      // first page without searching for the snippet.
       await handle.emit({
         type: "paper_ledger_update",
         callId: "overview-1",
@@ -439,31 +469,47 @@ describe("workflow: task progress passage source", function () {
           ],
         },
       } as never);
-      const fullRead = (): HTMLElement | undefined => {
-        const reads = (paper(fixtures[0].parentItemId)?.querySelectorAll(
-          ".llm-task-paper-read",
-        ) || []) as unknown as ArrayLike<HTMLElement>;
-        return Array.from(reads).find(
-          (node) =>
-            node.querySelector(".llm-task-paper-how")?.textContent ===
-            "Full text",
-        );
-      };
+      const fullRead = (): HTMLElement | null =>
+        paper(fixtures[0].parentItemId)?.querySelector(
+          ".llm-task-reach",
+        ) as HTMLElement | null;
       await until(() => {
         api.flushTaskProgress();
         return Boolean(fullRead());
-      }, "the full-text read lists under its paper");
+      }, "the whole-paper read heads its paper");
       assert.equal(
-        paper(fixtures[0].parentItemId)!
-          .querySelector(".llm-task-paper-tail")
-          ?.textContent?.trim(),
+        fullRead()!.querySelector(".llm-task-paper-how")?.textContent,
+        "Full",
+        "no chunk tally was recorded: Full alone",
+      );
+      assert.notInclude(
+        paper(fixtures[0].parentItemId)!.textContent || "",
         "Full text",
-        "the row says Full text, not a passage count",
+      );
+      assert.isNull(
+        fullRead()!.closest(".llm-task-cited-fold"),
+        "not under Read, not cited",
+      );
+      const foldOfPaper = paper(fixtures[0].parentItemId)!.querySelector(
+        ".llm-task-cited-fold",
+      );
+      if (foldOfPaper)
+        assert.isTrue(
+          Boolean(
+            fullRead()!.compareDocumentPosition(foldOfPaper) &
+            win.Node.DOCUMENT_POSITION_FOLLOWING,
+          ),
+          "the heading comes before the folded reads",
+        );
+      assert.equal(
+        fullRead()!.parentElement!.firstElementChild,
+        fullRead(),
+        "the first line of the paper's details",
       );
       const fullSource = fullRead()!.querySelector(
         ".llm-task-paper-open",
       ) as HTMLButtonElement;
-      assert.isOk(fullSource, "a full-text read offers Source");
+      assert.isOk(fullSource, "the heading offers Source");
       fullSource.click();
       await until(
         () => status() === "Opened the paper",
@@ -475,6 +521,104 @@ describe("workflow: task progress passage source", function () {
       await until(
         () => readerPageIndex(fullReader) === 0,
         () => `the paper opens at page 1 (${readerPageIndex(fullReader)})`,
+      );
+
+      // 5. Quotes the answer cites: "Cited" lists each passage the answer
+      // quotes as a card (without a number), with its own "Show in answer".
+      // The quotes open from the answer's own cards (step 6).
+      const cite = (quote: string) =>
+        buildQuoteCitation({
+          quoteText: quote,
+          citationLabel: "(Spine, 2021)",
+          sourceMatchText: quote,
+          sourceMatchKind: "exact",
+          sourceMatchSource: "context-text",
+          itemId: fixtures[0].parentItemId,
+          contextItemId: fixtures[0].pdfAttachmentId,
+        })!;
+      const quoteA = cite(SENTENCE);
+      const quoteB = cite(SAME_PAGE_SENTENCE);
+      await handle.emit({
+        type: "final",
+        text:
+          `> ${SENTENCE}\n\n(Spine, 2021)\n\n[[quote:${quoteA.id}]] ` +
+          `Drift follows turnover.\n\n> ${SAME_PAGE_SENTENCE}\n\n` +
+          `(Spine, 2021)\n\n[[quote:${quoteB.id}]] It persists.`,
+        quoteCitations: [quoteA, quoteB],
+      } as never);
+      const citedBlocks = () =>
+        (
+          Array.from(
+            citedCard()?.querySelectorAll(
+              ".llm-task-cited-item:not(.llm-task-cited-named)",
+            ) || [],
+          ) as HTMLElement[]
+        ).filter((node) => !node.closest(".llm-task-cited-fold-body"));
+      await until(() => {
+        api.flushTaskProgress();
+        return citedBlocks().length >= 2;
+      }, "the answer's passages list under Cited");
+      assert.isNull(paper(own), "cited: the paper leaves the list");
+      assert.deepEqual(
+        citedBlocks().map((block) => [
+          block.querySelector(".llm-task-paper-snippet")?.textContent,
+          Boolean(block.querySelector(".llm-task-cited-number")),
+          Boolean(
+            block.querySelector(".llm-task-cited-foot .llm-task-source-link"),
+          ),
+        ]),
+        [
+          [SENTENCE, false, true],
+          [SAME_PAGE_SENTENCE, false, true],
+        ],
+        "each quoted passage, without a number, with Show in answer",
+      );
+      const statusLine = root.querySelector("#llm-status") as HTMLElement;
+      assert.notEqual(
+        (root.querySelector("#llm-task-progress-drawer") as HTMLElement).dataset
+          .state,
+        "closed",
+        "the drawer stays open",
+      );
+      assert.equal(
+        citedCard()!
+          .querySelector(".llm-task-card-head")
+          ?.getAttribute("aria-expanded"),
+        "true",
+        "the paper's card stays open",
+      );
+
+      // 6. The answer's own quote cards, one after the other on one page.
+      const chip = (quote: string): HTMLElement | null =>
+        (
+          Array.from(
+            root.querySelectorAll(".llm-citation-icon"),
+          ) as HTMLElement[]
+        ).find((node) => (node.title || "").startsWith(quote.slice(0, 30))) ||
+        null;
+      const openChip = async (quote: string, label: string) => {
+        await until(() => Boolean(chip(quote)), `${label}: the card renders`);
+        await until(
+          () => chip(quote)!.dataset.loading !== "true",
+          `${label}: the card is free`,
+        );
+        statusLine.textContent = "";
+        const startedAt = Date.now();
+        chip(quote)!.dispatchEvent(
+          new win.MouseEvent("mousedown", { bubbles: true, button: 0 }),
+        );
+        await until(
+          () => /^Jumped to cited source/.test(status()),
+          () => `${label}: the quote is highlighted: status "${status()}"`,
+          30000,
+        );
+        assert.match(status(), /paragraph matched/, label);
+        assert.isBelow(Date.now() - startedAt, 5000, `${label}: no wait`);
+      };
+      await openChip(SENTENCE, "the first quote card");
+      await openChip(
+        SAME_PAGE_SENTENCE,
+        "a second quote card on the same page",
       );
     } finally {
       handle.finish();
@@ -503,6 +647,11 @@ describe("workflow: task progress passage source", function () {
       (root?.querySelector(
         `.llm-task-paper[data-item-id="${fixtures[0].parentItemId}"]`,
       ) || null) as HTMLElement | null;
+    // The current question's fold of papers its answer did not use.
+    const foldOf = (root: HTMLElement | null) =>
+      (root?.querySelector(
+        ".llm-task-progress-question-section .llm-task-fold-slot .llm-task-fold",
+      ) || null) as HTMLElement | null;
     const stateOf = (root: HTMLElement | null) => {
       const drawer = root?.querySelector(
         "#llm-task-progress-drawer",
@@ -515,6 +664,7 @@ describe("workflow: task progress passage source", function () {
         conversation: root?.dataset.itemId,
         kind: root?.dataset.conversationKind,
         drawer: drawer?.dataset.state,
+        fold: foldOf(root)?.getAttribute("aria-expanded"),
         expanded: paper
           ?.querySelector(".llm-task-paper-summary")
           ?.getAttribute("aria-expanded"),
@@ -529,6 +679,7 @@ describe("workflow: task progress passage source", function () {
       conversation,
       kind: "global",
       drawer: "open",
+      fold: "true",
       expanded: "true",
       details: true,
     };
@@ -573,6 +724,13 @@ describe("workflow: task progress passage source", function () {
         return !row.hidden;
       }, "the card shows in Library chat");
       row.click();
+      // The paper was not used in the answer: it sits under a fold.
+      await until(() => {
+        api.flushTaskProgress();
+        return Boolean(foldOf(rootOf()));
+      }, "the unused papers sit under a fold");
+      assert.isNull(paperOf(rootOf()), "the paper is folded");
+      foldOf(rootOf())!.click();
       await until(() => Boolean(paperOf(rootOf())), "the paper lists");
       (
         paperOf(rootOf())!.querySelector(
@@ -584,8 +742,16 @@ describe("workflow: task progress passage source", function () {
         () => `the drawer opens: ${JSON.stringify(stateOf(rootOf()))}`,
       );
 
+      // The answer cited none of its reads: they sit under "Read, not cited".
       (
-        paperOf(rootOf())!.querySelector(".llm-task-paper-open") as HTMLElement
+        paperOf(rootOf())!.querySelector(
+          ".llm-task-cited-fold .llm-task-fold",
+        ) as HTMLElement
+      ).click();
+      (
+        paperOf(rootOf())!.querySelector(
+          ".llm-task-cited-fold-body .llm-task-paper-open",
+        ) as HTMLElement
       ).click();
       await until(
         () => activeReader()?.itemID === fixtures[0].pdfAttachmentId,

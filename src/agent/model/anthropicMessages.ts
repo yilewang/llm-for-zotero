@@ -27,6 +27,7 @@ import { estimateWirePayloadTokens } from "../../utils/modelInputCap";
 import {
   buildAgentRecoveryInstruction,
   resolveAgentRecoverableCompletion,
+  ModelStreamInterruptedError,
 } from "./completion";
 import type { ModelTurnCompletion } from "../../shared/llm";
 import {
@@ -38,7 +39,10 @@ import {
   groupToolContinuationMessages,
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
-import { extractContextCacheUsage } from "../../contextCache/manager";
+import {
+  anthropicPromptTokens,
+  extractContextCacheUsage,
+} from "../../contextCache/manager";
 import type { AnthropicPromptCacheControl } from "../../contextCache/manager";
 import { createMalformedToolArgumentsDiagnostic } from "../toolArgumentDiagnostics";
 
@@ -412,10 +416,17 @@ function buildAnthropicSystemPayload(
   const firstStableIndex = blocks.findIndex(
     (block) => block.cachePolicy === "stable-prefix",
   );
+  // With a single stable block (no paper blocks), the second breakpoint goes
+  // on the fixed prompt in front of it, so it stays reusable when the stable
+  // block changes with the active item.
+  const fixedPromptIndex =
+    firstStableIndex === targetIndex && targetIndex > 0 ? 0 : -1;
   return blocks.map((block, index) => ({
     type: "text",
     text: block.text,
-    ...(index === targetIndex || index === firstStableIndex
+    ...(index === targetIndex ||
+    index === firstStableIndex ||
+    index === fixedPromptIndex
       ? { cache_control: cacheControl }
       : {}),
   }));
@@ -510,6 +521,13 @@ async function parseAnthropicStepStream(
   let text = "";
   let completion: ModelTurnCompletion = { status: "complete" };
   let receivedTerminal = false;
+  // Whether the provider said why the message ended, and the content blocks
+  // started and not yet stopped. A stream that closes inside a block, with
+  // neither a stop reason nor message_stop, was cut off, not finished; one
+  // that closes between blocks is taken as finished, as some
+  // Anthropic-compatible providers end their streams that way.
+  let stopReasonSeen = false;
+  const openBlocks = new Set<number>();
   const contentBlocks = new Map<number, AnthropicStreamBlockState>();
 
   const handleFrame = async (payload: string) => {
@@ -541,11 +559,10 @@ async function parseAnthropicStepStream(
     const stopReason = parsed.delta?.stop_reason ?? parsed.message?.stop_reason;
     if (typeof stopReason === "string") {
       completion = normalizeProviderCompletion(stopReason);
+      stopReasonSeen = true;
     }
     if (onUsage && eventType === "message_start" && parsed.message?.usage) {
-      const inputTokens = anthropicTokenCount(
-        parsed.message.usage.input_tokens,
-      );
+      const inputTokens = anthropicPromptTokens(parsed.message.usage);
       const outputTokens = anthropicTokenCount(
         parsed.message.usage.output_tokens,
       );
@@ -577,7 +594,29 @@ async function parseAnthropicStepStream(
       receivedTerminal = true;
       return;
     }
+    if (eventType === "error") {
+      // The provider ended the stream with an error event: an overloaded or
+      // internal error is a broken stream the runtime may retry; any other
+      // error is reported as it is.
+      const error = (
+        parsed as { error?: { type?: unknown; message?: unknown } }
+      ).error;
+      const errorType = typeof error?.type === "string" ? error.type : "";
+      const message =
+        typeof error?.message === "string" ? error.message : errorType;
+      if (errorType === "overloaded_error" || errorType === "api_error")
+        throw new ModelStreamInterruptedError(
+          `Anthropic stream error: ${message || errorType}`,
+          errorType === "overloaded_error" ? 529 : 500,
+        );
+      throw new Error(`Anthropic stream error: ${message || "unknown error"}`);
+    }
+    if (eventType === "content_block_stop" && index >= 0) {
+      openBlocks.delete(index);
+      return;
+    }
     if (eventType === "content_block_start" && index >= 0) {
+      openBlocks.add(index);
       const contentBlock = normalizeAnthropicContentBlock(parsed.content_block);
       if (contentBlock) {
         const state: AnthropicStreamBlockState = { block: contentBlock };
@@ -674,7 +713,21 @@ async function parseAnthropicStepStream(
 
   try {
     while (!receivedTerminal) {
-      const { value, done } = await reader.read();
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        // The same classification as openaiCompatible.ts: the connection
+        // broke mid-stream. Nothing of the step is kept, so the runtime may
+        // send the same request again.
+        if (
+          /^(?:Error: )?Error in input stream$/.test(String(error)) ||
+          /NetworkError/.test(String(error))
+        )
+          throw new ModelStreamInterruptedError(String(error));
+        throw error;
+      }
+      const { value, done } = chunk;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       while (!receivedTerminal) {
@@ -698,6 +751,10 @@ async function parseAnthropicStepStream(
     }
     reader.releaseLock();
   }
+  if (!receivedTerminal && !stopReasonSeen && openBlocks.size)
+    throw new ModelStreamInterruptedError(
+      "Anthropic stream closed inside a content block",
+    );
 
   const responseBlocks = Array.from(contentBlocks.entries())
     .sort((left, right) => left[0] - right[0])
@@ -729,7 +786,7 @@ async function reportAnthropicResponseUsage(
   onUsage: AgentStepParams["onUsage"],
 ): Promise<void> {
   if (!onUsage || !data?.usage) return;
-  const inputTokens = anthropicTokenCount(data.usage.input_tokens);
+  const inputTokens = anthropicPromptTokens(data.usage);
   const outputTokens = anthropicTokenCount(data.usage.output_tokens);
   const totalTokens = inputTokens + outputTokens;
   if (totalTokens <= 0) return;
@@ -789,6 +846,19 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
   }
 
   async runStep(params: AgentStepParams): Promise<AgentModelStep> {
+    const cached = this.conversationMessages;
+    try {
+      return await this.runStepOnce(params);
+    } catch (error) {
+      // A step that failed keeps nothing: the first step of a conversation
+      // leaves no cached messages behind, so a retry of it starts from the
+      // same input instead of adding its continuation twice.
+      if (!cached) this.resetState();
+      throw error;
+    }
+  }
+
+  private async runStepOnce(params: AgentStepParams): Promise<AgentModelStep> {
     const request = params.request;
     const buildOptions = {
       contentInputs: resolveRequestContentInputs(request),
@@ -868,7 +938,7 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
         messages,
         system,
         tools: toolsPayload,
-        tool_choice: { type: "auto" },
+        tool_choice: { type: params.toolChoice === "none" ? "none" : "auto" },
         ...(requestCacheControl ? { cache_control: requestCacheControl } : {}),
         stream: true,
         ...reasoningPayload.extra,
@@ -943,10 +1013,22 @@ export class AnthropicMessagesAgentAdapter implements AgentModelAdapter {
         },
       };
     }
-    this.conversationMessages = [
-      ...messages,
-      buildAssistantConversationMessage(normalized),
-    ];
+    // A reply with no text and no tool call (empty, or thinking only) is
+    // not kept: Anthropic rejects an empty assistant turn, and such a turn
+    // carries nothing the next request needs.
+    const assistantMessage = buildAssistantConversationMessage(normalized);
+    const keepsAssistant =
+      Array.isArray(assistantMessage.content) &&
+      assistantMessage.content.some((block) => {
+        const type = String(block.type).toLowerCase();
+        return (
+          (type === "text" && Boolean(String(block.text || "").trim())) ||
+          type === "tool_use"
+        );
+      });
+    this.conversationMessages = keepsAssistant
+      ? [...messages, assistantMessage]
+      : messages;
     if (normalized.toolCalls.length) {
       return {
         kind: "tool_calls",

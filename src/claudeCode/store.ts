@@ -136,6 +136,12 @@ export async function updateLatestClaudeAssistantMessage(
   return store.updateLatestAssistantMessage(...args);
 }
 
+export async function updateClaudeAssistantMessageQuoteLocations(
+  ...args: Parameters<typeof store.updateAssistantMessageQuoteLocations>
+) {
+  return store.updateAssistantMessageQuoteLocations(...args);
+}
+
 export async function getClaudeConversationSummary(
   ...args: Parameters<typeof store.getSummary>
 ) {

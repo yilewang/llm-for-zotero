@@ -21,7 +21,7 @@ const sourceFiles = git("ls-files", "src", "addon", "package-lock.json").split(
 );
 sourceFiles.push(
   "src/modules/contextPanel/chatMemoryReplay.ts",
-  "test-perf/chatMemory.workflow.test.ts",
+  "test-isolated/perf/chatMemory.workflow.test.ts",
 );
 const hash = createHash("sha256");
 for (const file of [...new Set(sourceFiles)].sort())
@@ -56,7 +56,7 @@ for (let run = 1; run <= Number(count); run++) {
     env: {
       ...process.env,
       ZOTERO_PLUGIN_KILL_COMMAND: "true",
-      LLM_FOR_ZOTERO_TEST_ENTRIES: "test-perf",
+      LLM_FOR_ZOTERO_TEST_ENTRIES: "test-isolated/perf",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

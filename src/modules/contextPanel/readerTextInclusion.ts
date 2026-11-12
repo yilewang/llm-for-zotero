@@ -1,6 +1,6 @@
 import { t } from "../../utils/i18n";
 import {
-  appendSelectedTextContextForItem,
+  appendSelectedTextContextForItemDetailed,
   applySelectedTextPreview,
   updateSelectedTextContextLocationForItem,
   type SelectedTextPageLocation,
@@ -26,13 +26,18 @@ import {
 
 export type IncludeReaderSelectedTextOutcome =
   | "added"
+  /** The same text is already a chip on the same page; nothing changed. */
+  | "duplicate"
   | "no-selection"
+  /** The chip limit is reached. */
   | "not-added"
   | "invalid-target";
 
 export type IncludeReaderSelectedTextResult = {
   outcome: IncludeReaderSelectedTextOutcome;
   added: boolean;
+  /** Normalized text used for the chip; "" before normalization ran. */
+  selectedText: string;
   location: SelectedTextPageLocation | null;
   locationEnriched: boolean;
 };
@@ -63,7 +68,11 @@ function getPanelConversationKey(body: Element): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
-function refreshSelectedTextPanels(
+/**
+ * Repaints the selected-text preview in `primaryBody` and in every other
+ * mounted panel showing `conversationKey`.
+ */
+export function refreshSelectedTextPanels(
   primaryBody: Element,
   conversationKey: number,
 ): void {
@@ -126,6 +135,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "invalid-target",
       added: false,
+      selectedText: "",
       location: null,
       locationEnriched: false,
     };
@@ -169,6 +179,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "invalid-target",
       added: false,
+      selectedText: "",
       location: null,
       locationEnriched: false,
     };
@@ -178,6 +189,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "invalid-target",
       added: false,
+      selectedText: "",
       location: null,
       locationEnriched: false,
     };
@@ -193,6 +205,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "no-selection",
       added: false,
+      selectedText: "",
       location: null,
       locationEnriched: false,
     };
@@ -214,14 +227,27 @@ export async function includeReaderSelectedText(
       ? { contextItemId: readerContextItemId }
       : null;
 
-  const added = appendSelectedTextContextForItem(
+  const appendOutcome = appendSelectedTextContextForItemDetailed(
     conversationKey,
     selectedText,
     "pdf",
     input.paperContext,
     initialLocation,
   );
-  if (!added) {
+  if (appendOutcome === "duplicate") {
+    if (status) {
+      setStatus(status, t("Selected text already included"), "ready");
+    }
+    input.log?.("LLM addText: selected text is already a chip");
+    return {
+      outcome: "duplicate",
+      added: false,
+      selectedText,
+      location: initialLocation,
+      locationEnriched: false,
+    };
+  }
+  if (appendOutcome !== "added") {
     if (status) {
       setStatus(status, t("Text Context up to 5"), "error");
     }
@@ -229,6 +255,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "not-added",
       added: false,
+      selectedText,
       location: initialLocation,
       locationEnriched: false,
     };
@@ -249,6 +276,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "added",
       added: true,
+      selectedText,
       location: initialLocation,
       locationEnriched: false,
     };
@@ -271,6 +299,7 @@ export async function includeReaderSelectedText(
       return {
         outcome: "added",
         added: true,
+        selectedText,
         location: initialLocation,
         locationEnriched: false,
       };
@@ -279,6 +308,7 @@ export async function includeReaderSelectedText(
       return {
         outcome: "added",
         added: true,
+        selectedText,
         location: initialLocation,
         locationEnriched: false,
       };
@@ -296,6 +326,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "added",
       added: true,
+      selectedText,
       location: updated ? resolvedLocation : initialLocation,
       locationEnriched: updated,
     };
@@ -304,6 +335,7 @@ export async function includeReaderSelectedText(
     return {
       outcome: "added",
       added: true,
+      selectedText,
       location: initialLocation,
       locationEnriched: false,
     };

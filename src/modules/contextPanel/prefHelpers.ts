@@ -50,6 +50,19 @@ import {
   STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
 } from "./standaloneWindowSizing";
 import {
+  parsePinnedPaperIDs,
+  serializePinnedPaperIDs,
+} from "./standalonePinnedPapers";
+import {
+  parseStandaloneSidebarGroupKeys,
+  parseStandaloneSidebarGroupOrder,
+  parseStandaloneSidebarSectionOptions,
+  serializeStandaloneSidebarGroupOrder,
+  serializeStandaloneSidebarSectionOptions,
+  type StandaloneSidebarGroupKey,
+  type StandaloneSidebarSectionOptions,
+} from "./standaloneSidebarSort";
+import {
   forgetPaperRestoreTarget,
   getPaperRestoreTarget,
   rememberPaperRestoreTarget,
@@ -70,6 +83,34 @@ function getZoteroPrefs(): ZoteroPrefsAPI | null {
 export function getStringPref(key: string): string {
   const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);
   return typeof value === "string" ? value : "";
+}
+
+export function setStringPref(key: string, value: string): void {
+  getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, value, true);
+}
+
+export function getNumberPref(key: string): number | null {
+  const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function setNumberPref(key: string, value: number): void {
+  getZoteroPrefs()?.set?.(`${config.prefsPrefix}.${key}`, value, true);
+}
+
+/** Clears a user value so the pref reads its default again. */
+export function clearPref(key: string): void {
+  const prefs = getZoteroPrefs();
+  const prefName = `${config.prefsPrefix}.${key}`;
+  if (typeof prefs?.clear === "function") {
+    try {
+      prefs.clear(prefName, true);
+      return;
+    } catch {
+      // Fall through: test stubs and older APIs take an empty value.
+    }
+  }
+  prefs?.set?.(prefName, "", true);
 }
 
 export function getBoolPref(key: string, defaultValue = false): boolean {
@@ -99,7 +140,16 @@ const LAST_REASONING_EXPANDED_PREF_KEY = "lastReasoningExpanded";
 const LAST_CONVERSATION_MODE_MAP_PREF_KEY = "lastUsedConversationModeMap";
 const LAST_GLOBAL_CONVERSATION_MAP_PREF_KEY = "lastUsedGlobalConversationMap";
 const PANEL_FONT_SCALE_PREF_KEY = "panelFontScale";
+const SIDE_READER_TEXT_SIZE_PREF_KEY = "sideReaderTextSize";
 const STANDALONE_SIDEBAR_WIDTH_PREF_KEY = "standaloneSidebarWidth";
+const STANDALONE_PINNED_PAPERS_PREF_KEY = "standalonePinnedPapers";
+const STANDALONE_SIDEBAR_GROUP_ORDER_PREF_KEY = "standaloneSidebarGroupOrder";
+const STANDALONE_SIDEBAR_SECTION_OPTIONS_PREF_KEY =
+  "standaloneSidebarSectionOptions";
+const STANDALONE_SIDEBAR_PINNED_COLLAPSED_PREF_KEY =
+  "standaloneSidebarPinnedCollapsed";
+const STANDALONE_SIDEBAR_COLLAPSED_GROUPS_PREF_KEY =
+  "standaloneSidebarCollapsedGroups";
 const SHORTCUT_DEFAULTS_MIGRATION_PREF_KEY = "shortcutDefaultsMigrationVersion";
 const SHORTCUT_DEFAULTS_MIGRATION_VERSION = 2;
 const MESSAGE_LINE_SPACING_PREF_KEY = "messageLineSpacing";
@@ -570,6 +620,41 @@ export function setFontScalePref(value: number): void {
   );
 }
 
+/** A document read in the side panel: its text size, in percent. */
+export const SIDE_READER_TEXT_SIZE_DEFAULT_PERCENT = 100;
+export const SIDE_READER_TEXT_SIZE_MIN_PERCENT = 70;
+export const SIDE_READER_TEXT_SIZE_MAX_PERCENT = 200;
+export const SIDE_READER_TEXT_SIZE_STEP_PERCENT = 10;
+
+function clampSideReaderTextSize(value: number): number {
+  return Math.max(
+    SIDE_READER_TEXT_SIZE_MIN_PERCENT,
+    Math.min(Math.round(value), SIDE_READER_TEXT_SIZE_MAX_PERCENT),
+  );
+}
+
+export function getSideReaderTextSizePref(): number {
+  const raw = Number(
+    getZoteroPrefs()?.get?.(
+      `${config.prefsPrefix}.${SIDE_READER_TEXT_SIZE_PREF_KEY}`,
+      true,
+    ),
+  );
+  if (!Number.isFinite(raw) || raw <= 0)
+    return SIDE_READER_TEXT_SIZE_DEFAULT_PERCENT;
+  return clampSideReaderTextSize(raw);
+}
+
+export function setSideReaderTextSizePref(value: number): number {
+  const clamped = clampSideReaderTextSize(value);
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${SIDE_READER_TEXT_SIZE_PREF_KEY}`,
+    clamped,
+    true,
+  );
+  return clamped;
+}
+
 export function getStandaloneSidebarWidthPref(): number {
   const raw = getZoteroPrefs()?.get?.(
     `${config.prefsPrefix}.${STANDALONE_SIDEBAR_WIDTH_PREF_KEY}`,
@@ -587,6 +672,103 @@ export function setStandaloneSidebarWidthPref(value: number): void {
   getZoteroPrefs()?.set?.(
     `${config.prefsPrefix}.${STANDALONE_SIDEBAR_WIDTH_PREF_KEY}`,
     clampStandaloneSidebarPreferredWidth(value),
+    true,
+  );
+}
+
+/** The standalone window's pinned papers (item IDs), oldest first. */
+export function getStandalonePinnedPapersPref(): number[] {
+  return parsePinnedPaperIDs(
+    getZoteroPrefs()?.get?.(
+      `${config.prefsPrefix}.${STANDALONE_PINNED_PAPERS_PREF_KEY}`,
+      true,
+    ),
+  );
+}
+
+export function setStandalonePinnedPapersPref(ids: readonly number[]): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${STANDALONE_PINNED_PAPERS_PREF_KEY}`,
+    serializePinnedPaperIDs(ids),
+    true,
+  );
+}
+
+/** Each "Conversations" section's own order and "Show dates" choice. */
+export function getStandaloneSidebarSectionOptionsPref(): Map<
+  StandaloneSidebarGroupKey,
+  StandaloneSidebarSectionOptions
+> {
+  return parseStandaloneSidebarSectionOptions(
+    getZoteroPrefs()?.get?.(
+      `${config.prefsPrefix}.${STANDALONE_SIDEBAR_SECTION_OPTIONS_PREF_KEY}`,
+      true,
+    ),
+  );
+}
+
+export function setStandaloneSidebarSectionOptionsPref(
+  options: ReadonlyMap<
+    StandaloneSidebarGroupKey,
+    StandaloneSidebarSectionOptions
+  >,
+): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${STANDALONE_SIDEBAR_SECTION_OPTIONS_PREF_KEY}`,
+    serializeStandaloneSidebarSectionOptions(options),
+    true,
+  );
+}
+
+/** Whether the "Pinned" section is folded closed. */
+export function getStandaloneSidebarPinnedCollapsedPref(): boolean {
+  return getBoolPref(STANDALONE_SIDEBAR_PINNED_COLLAPSED_PREF_KEY, false);
+}
+
+export function setStandaloneSidebarPinnedCollapsedPref(value: boolean): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${STANDALONE_SIDEBAR_PINNED_COLLAPSED_PREF_KEY}`,
+    Boolean(value),
+    true,
+  );
+}
+
+/** The order of those sections, as the user last dragged them. */
+export function getStandaloneSidebarGroupOrderPref(): StandaloneSidebarGroupKey[] {
+  return parseStandaloneSidebarGroupOrder(
+    getZoteroPrefs()?.get?.(
+      `${config.prefsPrefix}.${STANDALONE_SIDEBAR_GROUP_ORDER_PREF_KEY}`,
+      true,
+    ),
+  );
+}
+
+export function setStandaloneSidebarGroupOrderPref(
+  order: readonly StandaloneSidebarGroupKey[],
+): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${STANDALONE_SIDEBAR_GROUP_ORDER_PREF_KEY}`,
+    serializeStandaloneSidebarGroupOrder(order),
+    true,
+  );
+}
+
+/** The "Group by agent" sections the user folded closed. */
+export function getStandaloneSidebarCollapsedGroupsPref(): StandaloneSidebarGroupKey[] {
+  return parseStandaloneSidebarGroupKeys(
+    getZoteroPrefs()?.get?.(
+      `${config.prefsPrefix}.${STANDALONE_SIDEBAR_COLLAPSED_GROUPS_PREF_KEY}`,
+      true,
+    ),
+  );
+}
+
+export function setStandaloneSidebarCollapsedGroupsPref(
+  keys: readonly StandaloneSidebarGroupKey[],
+): void {
+  getZoteroPrefs()?.set?.(
+    `${config.prefsPrefix}.${STANDALONE_SIDEBAR_COLLAPSED_GROUPS_PREF_KEY}`,
+    parseStandaloneSidebarGroupKeys(keys.join(",")).join(","),
     true,
   );
 }
@@ -754,7 +936,7 @@ export const getShortcutOrder = () => getStringArrayPref("shortcutOrder");
 export const setShortcutOrder = (v: string[]) =>
   setStringArrayPref("shortcutOrder", v);
 
-function getStringArrayPref(key: string): string[] {
+export function getStringArrayPref(key: string): string[] {
   const raw =
     (Zotero.Prefs.get(`${config.prefsPrefix}.${key}`, true) as string) || "";
   if (!raw) return [];
@@ -770,7 +952,7 @@ function getStringArrayPref(key: string): string[] {
   }
 }
 
-function setStringArrayPref(key: string, value: string[]): void {
+export function setStringArrayPref(key: string, value: string[]): void {
   Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
 }
 

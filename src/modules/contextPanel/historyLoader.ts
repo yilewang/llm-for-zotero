@@ -32,6 +32,15 @@ function normalizeTitle(raw: unknown, isDraft: boolean): string {
   return normalizeHistoryTitle(raw) || (isDraft ? "New chat" : "Untitled chat");
 }
 
+/** The built-in runtime's history title and draft rules for one catalog row. */
+export function toUpstreamHistoryRowShape(summary: {
+  title?: unknown;
+  userTurnCount?: unknown;
+}): { title: string; isDraft: boolean } {
+  const isDraft = isDraftSummary(summary);
+  return { title: normalizeTitle(summary.title, isDraft), isDraft };
+}
+
 function isDraftSummary(summary: {
   title?: unknown;
   userTurnCount?: unknown;

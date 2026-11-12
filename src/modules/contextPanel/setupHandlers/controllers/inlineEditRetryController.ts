@@ -5,7 +5,9 @@ import type {
   SelectedTextSource,
   NoteContextRef,
   TagContextRef,
+  AttachedConversationRef,
 } from "../../types";
+import { resolvePromptText } from "../../textUtils";
 
 export type InlineEditRetryContextSnapshot = {
   selectedTexts: string[];
@@ -14,12 +16,15 @@ export type InlineEditRetryContextSnapshot = {
   selectedTextNoteContexts: (NoteContextRef | undefined)[];
   selectedCollectionContexts: CollectionContextRef[];
   selectedTagContexts: TagContextRef[];
+  /** Always an array: an empty list tells the edit to drop earlier chips. */
+  attachedConversations: AttachedConversationRef[];
 };
 
 export function buildInlineEditRetryContextSnapshot(params: {
   selectedContexts?: SelectedTextContext[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  attachedConversations?: AttachedConversationRef[];
 }): InlineEditRetryContextSnapshot {
   const selectedContexts = Array.isArray(params.selectedContexts)
     ? params.selectedContexts
@@ -40,5 +45,23 @@ export function buildInlineEditRetryContextSnapshot(params: {
     selectedTagContexts: Array.isArray(params.selectedTagContexts)
       ? params.selectedTagContexts.slice()
       : [],
+    attachedConversations: Array.isArray(params.attachedConversations)
+      ? params.attachedConversations.slice()
+      : [],
   };
+}
+
+/**
+ * The text an inline edit submits; "" means there is nothing to submit.
+ * Typed composer text wins. With an empty composer, the questions on the
+ * current chips make a valid edit, as in an empty-composer send
+ * (resolvePromptText); chips without questions do not.
+ */
+export function resolveInlineEditSubmitText(
+  composerText: string,
+  selectedContexts?: readonly SelectedTextContext[],
+): string {
+  const typed = composerText.trim();
+  if (typed) return typed;
+  return resolvePromptText("", "", false, selectedContexts);
 }

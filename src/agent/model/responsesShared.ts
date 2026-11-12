@@ -11,6 +11,7 @@ import {
   type UsageStats,
 } from "../../utils/llmClient";
 import type { ModelTurnCompletion } from "../../shared/llm";
+import { ModelStreamInterruptedError } from "./completion";
 import { extractContextCacheUsage } from "../../contextCache/manager";
 import type {
   AgentModelContentPart,
@@ -441,6 +442,101 @@ export function normalizeResponsesStepFromPayload(
   };
 }
 
+/** Error codes after which the same request may succeed when sent again. */
+const RETRYABLE_STREAM_ERROR_CODES: ReadonlySet<string> = new Set([
+  "server_error",
+  "api_error",
+  "internal_error",
+  "rate_limit_exceeded",
+  "rate_limit_error",
+  "slow_down",
+  "unknown_error",
+  "overloaded",
+  "overloaded_error",
+  "service_unavailable",
+  "server_overloaded",
+]);
+
+/** The HTTP-equivalent status of a retryable stream error code. */
+function streamErrorStatus(code: string): number | undefined {
+  if (!code) return undefined;
+  if (code.startsWith("rate_limit") || code === "slow_down") return 429;
+  if (code.includes("overload")) return 529;
+  if (/^5\d\d$/.test(code)) return Number(code);
+  return code.includes("unavailable") ? 503 : 500;
+}
+
+/**
+ * The error a `response.failed` or `error` event ends the step with. A
+ * server error, rate limit or an error without a code is a broken stream the
+ * runtime may retry (`turnBoundary.ts`, Rule 4); any other code is reported
+ * as `${code}: ${message}`, so a context-length code still reads as a prompt
+ * that is too long.
+ */
+function responsesStreamError(error: unknown): Error {
+  const row =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; message?: unknown; type?: unknown })
+      : {};
+  // Without a code, the error's type names the kind (for example
+  // `invalid_request_error`). The event's own type, "error", names nothing.
+  const kind =
+    typeof row.type === "string" &&
+    row.type.trim() &&
+    row.type.trim().toLowerCase() !== "error"
+      ? row.type.trim()
+      : "";
+  const code =
+    typeof row.code === "string" && row.code.trim() ? row.code.trim() : kind;
+  const message =
+    typeof row.message === "string" && row.message.trim()
+      ? row.message.trim()
+      : "";
+  const lowerCode = code.toLowerCase();
+  if (
+    !code ||
+    RETRYABLE_STREAM_ERROR_CODES.has(lowerCode) ||
+    /overload|unavailable|^5\d\d$/.test(lowerCode)
+  ) {
+    const detail = [code, message].filter(Boolean).join(": ");
+    return new ModelStreamInterruptedError(
+      `The model stream ended with an error${detail ? ` (${detail})` : ""}.`,
+      streamErrorStatus(lowerCode),
+    );
+  }
+  return new Error(message ? `${code}: ${message}` : code);
+}
+
+/** The step's output items without the reasoning items at their end. */
+export function withoutTrailingReasoningItems(
+  items: readonly unknown[],
+): unknown[] {
+  let end = items.length;
+  while (end > 0) {
+    const item = items[end - 1];
+    const type =
+      item && typeof item === "object"
+        ? String((item as { type?: unknown }).type ?? "").toLowerCase()
+        : "";
+    if (type !== "reasoning") break;
+    end -= 1;
+  }
+  return items.slice(0, end);
+}
+
+/**
+ * The output items the next request replays after this step. A step with
+ * no text and no tool call keeps no trailing reasoning item: a reasoning
+ * item sent without the item that followed it is a request error.
+ */
+export function replayableResponsesOutputItems(
+  step: Pick<NormalizedResponsesStep, "text" | "toolCalls" | "outputItems">,
+): unknown[] {
+  return step.text || step.toolCalls.length
+    ? step.outputItems
+    : withoutTrailingReasoningItems(step.outputItems);
+}
+
 export async function parseResponsesStepStream(
   stream: ReadableStream<Uint8Array>,
   onTextDelta?: (delta: string) => void | Promise<void>,
@@ -461,6 +557,9 @@ export async function parseResponsesStepStream(
   let sawSummaryFinal = false;
   let sawDetailsDelta = false;
   let sawDetailsFinal = false;
+  // Set by a `response.failed` or `error` event; thrown after the read
+  // loop, outside the per-event parse guard that skips malformed lines.
+  let streamError: Error | null = null;
 
   const mergeOutputItem = (item: unknown) => {
     if (!item || typeof item !== "object") return;
@@ -542,10 +641,17 @@ export async function parseResponsesStepStream(
   try {
     while (true) {
       const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      // At the end of the stream the unfinished line is the last line: a
+      // final event without a trailing newline is still an event.
+      let lines: string[];
+      if (done) {
+        lines = [buffer + decoder.decode()];
+        buffer = "";
+      } else {
+        buffer += decoder.decode(value, { stream: true });
+        lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+      }
 
       for (const line of lines) {
         const trimmed = line.trim();
@@ -572,6 +678,21 @@ export async function parseResponsesStepStream(
           const eventType =
             typeof parsed.type === "string" ? parsed.type.toLowerCase() : "";
           if (eventType) eventTypesSeen.add(eventType);
+          if (eventType === "response.failed") {
+            streamError = responsesStreamError(
+              (parsed.response as { error?: unknown } | undefined)?.error,
+            );
+            break;
+          }
+          if (eventType === "error") {
+            const row = parsed as { code?: unknown; error?: unknown };
+            streamError = responsesStreamError(
+              row.code == null && row.error && typeof row.error === "object"
+                ? row.error
+                : parsed,
+            );
+            break;
+          }
           if (eventType === "response.output_text.delta") {
             await emitAnswer(parsed.delta, "delta");
             continue;
@@ -818,10 +939,13 @@ export async function parseResponsesStepStream(
           continue;
         }
       }
+      if (streamError || done) break;
     }
   } finally {
+    if (streamError) void reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
+  if (streamError) throw streamError;
 
   if (latestPayload) {
     const normalized = normalizeResponsesStepFromPayload(latestPayload);
@@ -866,9 +990,12 @@ export async function parseResponsesStepStream(
   const toolCalls = extractToolCallsFromOutputs(streamedOutputs);
   const finalText =
     streamedText.trim() || extractOutputText(streamedOutputs).trim();
-  if (!finalText && (streamedOutputs.length || eventTypesSeen.size > 0)) {
+  if (!finalText && !toolCalls.length) {
+    // No completed response and nothing to use (reasoning at most): the
+    // stream broke before the step finished. Some relays never send
+    // `response.completed`, so a stream with text or a tool call is kept.
     logEmptyResponse(
-      "LLM Agent: Empty responses step without completed payload",
+      "LLM Agent: Responses stream ended before the response finished",
       {
         responseId,
         eventTypes: Array.from(eventTypesSeen),
@@ -876,6 +1003,9 @@ export async function parseResponsesStepStream(
           .map((item) => item.type)
           .filter(Boolean),
       },
+    );
+    throw new ModelStreamInterruptedError(
+      "The model stream ended before the response finished.",
     );
   }
   return {

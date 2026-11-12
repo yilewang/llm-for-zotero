@@ -12,13 +12,19 @@ import { clearCodexZoteroMcpPreflightCache } from "../codexAppServer/mcpSetup";
 import { getConversationWriteGeneration } from "../shared/conversationWriteFence";
 import { libraryIndexService } from "../services/libraryIndexService";
 import { createBuiltInActionRegistry, type ActionRegistry } from "./actions";
+import {
+  saveSelectionAnnotation,
+  type SaveSelectionAnnotationInput,
+} from "./actions/saveSelectionAnnotation";
 import { undoNoteChange } from "./actions/undoNoteChange";
 import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { initAgentCoverageStore } from "./context/coverageLedger";
 import { setLibraryOverviewGateway } from "./context/libraryOverview";
+import { setOutsidePaperPrefetchLookup } from "./context/outsidePaperRecords";
 import {
   resolveTaskPaperScopeSet,
   taskPaperScopeContextsOf,
+  withScopeItemKeys,
 } from "./context/taskPaperScopeListing";
 import { initPlanDocumentStore } from "./documents/store";
 import { registerMcpServer, unregisterMcpServer } from "./mcp/server";
@@ -26,6 +32,7 @@ import { createAgentModelAdapter } from "./model/factory";
 import { initDormantPlanTables } from "./store/dormantPlanTables";
 import { initDormantResearchTables } from "./store/dormantResearchTables";
 import { AgentRuntime } from "./runtime";
+import { LiteratureSearchService } from "./services/literatureSearchService";
 import { PdfPageService } from "./services/pdfPageService";
 import { PdfService } from "./services/pdfService";
 import { RetrievalService } from "./services/retrievalService";
@@ -118,9 +125,12 @@ async function createAgentSubsystemRuntime(
     resolveTurnScopePapers: async (request) => {
       const libraryID = request.turnPaperScope.libraryID || request.libraryID;
       if (!libraryID) return undefined;
-      return resolveTaskPaperScopeSet(
-        await libraryIndexService.getSnapshot(libraryID),
-        taskPaperScopeContextsOf(request.turnPaperScope),
+      return withScopeItemKeys(
+        resolveTaskPaperScopeSet(
+          await libraryIndexService.getSnapshot(libraryID),
+          taskPaperScopeContextsOf(request.turnPaperScope),
+        ),
+        (itemId) => zoteroGateway.getItem(itemId)?.key,
       );
     },
   });
@@ -156,6 +166,13 @@ async function createAgentSubsystemRuntime(
   // The prompt layer cannot import this module without creating a cycle,
   // so the gateway is pushed to it instead.
   setLibraryOverviewGateway(zoteroGateway);
+  // Recording an outside paper cannot import the search service without a
+  // cycle, so the lookup it starts in the background is installed here: the
+  // Crossref citation lookup submit_document uses by default.
+  const citationLookup = new LiteratureSearchService(zoteroGateway);
+  setOutsidePaperPrefetchLookup((doi) =>
+    citationLookup.lookupCitationMetadataByDoi(doi),
+  );
   _toolRegistry = toolRegistry;
   runtime = nextRuntime;
   _actionRegistry = actionRegistry;
@@ -191,6 +208,7 @@ export function shutdownAgentSubsystem(): void {
   runtime = null;
   _zoteroGateway = null;
   setLibraryOverviewGateway(null);
+  setOutsidePaperPrefetchLookup(null);
 }
 
 export function getCoreAgentRuntime(): AgentRuntime {
@@ -229,6 +247,17 @@ export function getAgentApi() {
         throw new Error("Agent subsystem is not initialized");
       return undoNoteChange(_toolRegistry, _zoteroGateway, card);
     },
+    /**
+     * Saves a reader selection as a highlight (Inline Ask's Save). The
+     * card's Save click confirms the payload it shows; authorization, the
+     * write lock and the change journal still apply. Resolves `ok` only for
+     * a verified receipt.
+     */
+    saveSelectionAnnotation: (input: SaveSelectionAnnotationInput) => {
+      if (!_toolRegistry || !_zoteroGateway)
+        throw new Error("Agent subsystem is not initialized");
+      return saveSelectionAnnotation(_toolRegistry, _zoteroGateway, input);
+    },
     // ── Core turn API ──────────────────────────────────────────────────────
     /**
      * Runs one agent turn. `options.signal` is the caller's Stop: aborting it
@@ -236,8 +265,19 @@ export function getAgentApi() {
      * "continue"). Without it the turn runs to its own end, as before.
      *
      * Resolves to a completed or fallback outcome. A stopped turn rejects
-     * with what the stopped run threw, or `Error("Aborted")`; a failed turn
-     * rejects with the error that failed it.
+     * with what the stopped run threw, or `Error("Aborted")`; a turn that an
+     * error escaped (a provider error the runtime does not retry, such as a
+     * 401 or a 400) rejects with that error.
+     *
+     * A turn the runtime ended by one of its own stop rules resolves with
+     * the stop text as `text`, not a verdict: `runStatus: "failed"` marks
+     * `connection_lost` (a network, rate-limit or 5xx error after its
+     * retries), `budget_reached` (a per-turn safety limit),
+     * `prompt_budget_exceeded`, and the failure rules such as
+     * `repeated_tool_errors` or `segment_without_progress`;
+     * `search_exhausted` resolves with `runStatus` unset and an answer that
+     * says what was not confirmed. The rule is the `agent_run_stop`
+     * provider event the turn emits (`payload.rule`), also in its trace.
      */
     runTurn: async (
       request: AgentRuntimeRequestInput,

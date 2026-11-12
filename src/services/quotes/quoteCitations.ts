@@ -12,8 +12,10 @@ import { isBodyEvidenceSection } from "../../shared/libraryChatEvidencePolicy";
 import { formatPaperSourceLabel } from "../paperContent/paperAttribution";
 import {
   extractLocatorTokens,
+  findLargestUniqueQuoteTextAnchorMatch,
   findQuoteTextAnchorMatches,
   normalizeLocatorText,
+  summarizeQuoteTextSupport,
   splitQuoteAtPairedInlineMath,
   splitQuoteAtEllipsisInOrder,
   stripBoundaryEllipsis,
@@ -28,6 +30,8 @@ import {
   normalizeQuoteTextCanonical,
   stripLikelyLayoutNumberArtifacts,
   stripPdfTextItemBoundaries,
+  collectQuoteTextAlignmentRunsAllowingLayoutFragments,
+  type AcademicQuoteAlignmentToken,
   type QuoteTextIndex,
 } from "./quoteTextNormalization";
 import { stripLeadingCitationSeparators } from "./citationText";
@@ -266,31 +270,251 @@ const STANDALONE_SOURCE_LABEL_TEXT_PATTERN =
   /^\(?[\p{L}'’.-]+(?:\s+(?:and|&)\s+[\p{L}'’.-]+|\s+et\s+al\.?)?,?\s+(?:19|20)\d{2}[a-z]?\)?$/iu;
 const JOURNAL_LABEL_TEXT_PATTERN =
   /^(?:science|nature|cell|pnas|nejm|lancet|elife|plos\s+one|current\s+biology|journal\s+of\s+neuroscience)$/i;
+const MONTH_NAME_SOURCE =
+  "(?:January|February|March|April|May|June|July|August|September|October|November|December)";
+/**
+ * Running page furniture that PDF and MinerU extraction glue onto body text:
+ * preprint servers' per-page notices, publishers' running headers and
+ * footers, and download stamps. It is removed only to judge whether the rest
+ * is a passage worth quoting; the stored quote text is never rewritten.
+ */
+const RUNNING_PAGE_FURNITURE_PATTERNS = [
+  /\b(?:bioRxiv|medRxiv)\s+preprint\s+(?:doi:\s*)?\S+\s+this\s+version\s+posted\s+[A-Z][a-z]+\.?\s+\d{1,2},?\s+\d{4}\.?/g,
+  /\bThe\s+copyright\s+holder\s+for\s+this(?:\s+(?:preprint|version))?(?:\s+\(which\s+was\s+not\s+certified\s+by\s+peer\s+review\))?(?:\s+is\s+the\s+author\/funder(?:,\s+who\s+has\s+granted\s+(?:bioRxiv|medRxiv)\s+a\s+license\s+to\s+display\s+the\s+preprint\s+in\s+perpetuity)?)?\.?/g,
+  /\bIt\s+is\s+mad[e]?\s+available\s+under\s+an?\s*CC[-\sA-Z0-9.]{0,24}?(?:International\s+)?license\.?/gi,
+  /\bAll\s+rights\s+reserved\.\s+No\s+reuse\s+allowed\s+without\s+permission\.?/g,
+  new RegExp(
+    String.raw`\b(?:Cell(?:\s+(?:Reports(?:\s+Medicine)?|Systems|Genomics|Metabolism|Chemical\s+Biology|Stem\s+Cell))?|Neuron|Current\s+Biology|iScience|Developmental\s+Cell|Molecular\s+Cell|Immunity|Patterns|Structure)\s+\d+,\s+[\d.e–-]+,\s+${MONTH_NAME_SOURCE}\s+\d{1,2},\s+\d{4}(?:\s+\d{1,3}\b)?(?:\s+(?:Article|Report|Review|Resource|Perspective)\b)?`,
+    "g",
+  ),
+  /\b(?:(?:Article|Report|Review|Resource|Perspective)\s+)?ll\s+OPEN\s+ACCESS\b(?:\s+(?:Article|Report|Review|Resource|Perspective)\b)?/g,
+  /\b(?:Nature(?:\s+[A-Z][a-z]+){0,2}|Scientific\s+Reports|Communications\s+[A-Z][a-z]+)\s+\|\s+\(?\d{4}\)?\s*\d+:\s*\d+(?:\s+\d{1,3}\b)?(?:\s+\|\s+https?:\/\/doi\.org\/\S+)?(?:\s+www\.nature\.com\/\S+)?/g,
+  /\bNature(?:\s+[A-Z][a-z]+){0,2}\s+\|\s+Volume\s+\d+\s+\|\s+[A-Z][a-z]+\s+\d{4}\s+\|\s+[\d–-]+(?:\s+\d{1,4}\b)?(?:\s+(?:nature\s+[a-z]+\s+)?(?:Article|Letter|Perspective|Review|Analysis|Resource)\s+https?:\/\/doi\.org\/\S+)?/g,
+  /\bDownloaded\s+from\s+\S+(?:\s+(?:by|at)\s+[^.]{1,100}?\s+on\s+(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2},\s+\d{4}))?(?:\s+from\s+IP\s+address\s+[\d.]*\d\.?)?/g,
+  /\bDownloaded\s+\d{1,2}\s+[A-Z][a-z]{2}\s+\d{4}\s+to\s+[\d.]*\d\.(?:\s+Redistribution\s+subject\s+to\s+[^;]{1,60};\s+see\s+\S+)?/g,
+];
+/** Metadata phrases that mark one sentence as publication metadata. */
 const PUBLISHER_METADATA_PATTERNS = [
-  /^(?:highlights?|in brief|graphical abstract|author summary|summary|keywords?)\b/i,
   /\bfull\s+article\b/i,
   /\bauthor\s+affiliations?\b/i,
   /\barticle\s+information\b/i,
   /\bpublication\s+history\b/i,
-  /\bpublished\s+by\b/i,
+  /\bpublished\s+by\b[^.]{0,60}?\b(?:Press|Society|Association|Publishing|Publishers?|Elsevier|Springer|Wiley|Frontiers|MDPI|Taylor|SAGE|Inc|Ltd|LLC|GmbH|B\.V)\b/i,
   /\bpublished\s+online\b/i,
-  /\bcopyright\b/i,
+  /\bcopyright\b|©|\\circledcirc\b/i,
   /\ball\s+rights\s+reserved\b/i,
   /\bcreative\s+commons\b/i,
-  /\bopen\s+access\b/i,
-  /\bsupplementary\s+(?:materials?|information)\b/i,
-  /^(?:references?|bibliography)(?:\s+and\s+notes?)?\b/i,
+  /\bopen\s+access\s+(?:article|journal|publication)\b/i,
+  /\bOPEN\s+ACCESS\b/,
+  /^supplementary\s+(?:materials?|information|data)\s*(?:$|[:\-–—]|for\b)/i,
+  /\bsupplementary\s+(?:materials?|information|data)\b[^.]{0,80}?\b(?:(?:is|are)\s+available|can\s+be\s+found|accompanies|associated\s+with\s+this|available\s+(?:at|online))/i,
+  /\bonline\s+version\b[^.]{0,40}?\bcontains\s+supplementary\b/i,
+  /\bpeer\s+review\s+information\b/i,
+  /\breprints\s+and\s+permissions\b/i,
+  /\bpublisher[’']s\s+note\b/i,
 ];
+/** A reference-list heading; checked against a whole short text only. */
+const REFERENCE_LIST_HEADING_PATTERN =
+  /^(?:references?|bibliography)(?:\s+and\s+notes?)?\b/i;
+/** A running title such as "Fink et al., Experience-dependent ...". */
+const RUNNING_TITLE_PATTERN = /^\p{Lu}[\p{L}'’-]+\s+et\s+al\.?,?\s+\p{Lu}/u;
+/**
+ * A section label at the very start of a text. A label followed by a
+ * separator is metadata anywhere; a label running straight into words is a
+ * metadata line only when the text is not prose ("Summary of task settings"
+ * and "In brief, calcium traces..." are prose).
+ */
+const LEADING_SECTION_LABEL_SOURCE =
+  "^(?:highlights?|in brief|graphical abstract|author summary|summary|keywords?)";
+const LEADING_SECTION_LABEL_WITH_SEPARATOR_PATTERN = new RegExp(
+  `${LEADING_SECTION_LABEL_SOURCE}\\s*(?:$|[:\\-–—•|·])`,
+  "i",
+);
+const LEADING_SECTION_LABEL_PATTERN = new RegExp(
+  `${LEADING_SECTION_LABEL_SOURCE}(?:\\s*(?:$|[:\\-–—•|·])|\\s+(?!(?:of|for|and|statistics|data)\\b)\\S)`,
+  "i",
+);
 const AFFILIATION_OR_ADDRESS_PATTERN =
   /\b(?:department|university|institute|school|faculty|center|centre|college|laborator(?:y|ies)|hospital|clinic|campus)\b/i;
 const LOCATION_OR_POSTAL_PATTERN =
   /\b(?:united kingdom|united states|usa|canada|china|japan|germany|france|australia|netherlands|switzerland|italy|spain|cambridge|boston|new york|california|massachusetts|[A-Z]{2}\s*\d[A-Z0-9]?\s*\d[A-Z]{2}|\d{5}(?:-\d{4})?)\b/i;
 const CORRESPONDENCE_METADATA_PATTERN =
-  /^(?:correspondence|corresponding author|contact)\b|(?:correspondence\s+should\s+be\s+addressed|addressed\s+to|e-?mail|email|@)/i;
+  /^(?:correspondence|corresponding author)\b|^contact\s*(?:$|[:\-–—]|information\b|details\b|e-?mail\b)|\brequests?\s+for\s+(?:materials|reagents|resources)\b[^.]{0,80}?\b(?:should\s+be\s+(?:addressed|directed)|will\s+be\s+fulfilled)|\bshould\s+be\s+directed\s+to\s+(?:and\s+will\s+be\s+fulfilled\s+by\s+)?the\s+lead\s+contact\b|\*\s*corresponding\s+author\b|correspondence\s+(?:and\s+requests\s+for\s+materials\s+)?should\s+be\s+addressed|\be-?mail(?:\s+address(?:es)?)?\s*:|\bfor\s+correspondence\b|[\w.+-]+\s?@\s?[\w-]+(?:\.\s?[\w-]+)+/i;
 const AUTHOR_BYLINE_FRAGMENT_PATTERN =
   /\b[A-Z][\p{L}'’.-]+[0-9*†‡§]*,\s+[A-Z][\p{L}'’.-]+(?:\s+[A-Z]\.?)?/u;
 const MULTI_AUTHOR_BYLINE_PATTERN =
   /\b[A-Z][\p{L}'’.-]+(?:[0-9*†‡§]+)?(?:,\s+[A-Z][\p{L}'’.-]+(?:[0-9*†‡§]+)?){2,}/u;
+const EDITORIAL_STATUS_SENTENCE_PATTERN =
+  /^(?:(?:Received|Accepted|Revised|Published(?:\s+online)?)\s*:?\s*(?:\d|January|February|March|April|May|June|July|August|September|October|November|December)|Edited by|Reviewed by|Lead contact|Present address|These authors\s+(?:contributed|jointly))\b/;
+const CAPITALIZED_AFFILIATION_PATTERN =
+  /\b(?:Department|University|Institute|School|Faculty|Center|Centre|College|Laborator(?:y|ies)|Hospital|Clinic|Campus)\b/;
+const PROSE_VERB_CUE_PATTERN =
+  /\b(?:is|are|was|were|be|been|being|has|have|had|can|could|may|might|will|would|should|must|does|did)\b|\b[a-z]{3,}(?:ed|ing)\b/;
+/** Minimum normalized length for a text to be judged sentence by sentence. */
+const MIN_PROSE_SHAPED_QUOTE_TEXT_CHARS = 240;
+/**
+ * Prose is rejected as metadata only when metadata-shaped sentences make up
+ * at least this fraction of its characters.
+ */
+const MIN_METADATA_SENTENCE_CHAR_FRACTION = 0.5;
+const SENTENCE_BOUNDARY_PATTERN = /[.!?](?=\s+["“'([]?[\p{Lu}\p{N}])/gu;
+const NON_TERMINAL_ABBREVIATION_PATTERN =
+  /(?:^|[\s(])(?:[A-Z]|al|Fig|Figs|Eq|Eqs|Ref|Refs|No|Nos|vs|e\.g|i\.e|cf|approx|ca|St|Dr|Mr|Ms|Prof|Inc|Ltd|Co|Corp|Vol|pp|Suppl|Ext|Sect|Proc|Natl|Acad|Sci|Nat|Rev|J)$/;
+
+function stripRunningPageFurniture(value: string): string {
+  let out = value;
+  for (const pattern of RUNNING_PAGE_FURNITURE_PATTERNS) {
+    pattern.lastIndex = 0;
+    out = out.replace(pattern, " ");
+  }
+  return out.replace(/\s+/g, " ").trim();
+}
+
+function splitMetadataTestSentences(value: string): string[] {
+  const sentences: string[] = [];
+  let start = 0;
+  SENTENCE_BOUNDARY_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SENTENCE_BOUNDARY_PATTERN.exec(value)) !== null) {
+    const end = match.index + 1;
+    if (
+      NON_TERMINAL_ABBREVIATION_PATTERN.test(value.slice(start, match.index))
+    ) {
+      continue;
+    }
+    const sentence = value.slice(start, end).trim();
+    if (sentence) sentences.push(sentence);
+    start = end;
+  }
+  const rest = value.slice(start).trim();
+  if (rest) sentences.push(rest);
+  return sentences;
+}
+
+/** Lower-case prose with a verb cue, unlike an address or a name list. */
+function readsAsProse(value: string): boolean {
+  const words = value.match(/\p{L}[\p{L}'’-]*/gu) || [];
+  if (words.length < 4) return false;
+  const lowercaseWords = words.filter((word) => /^\p{Ll}/u.test(word)).length;
+  return (
+    lowercaseWords / words.length >= 0.4 && PROSE_VERB_CUE_PATTERN.test(value)
+  );
+}
+
+/**
+ * A short sentence -- a run of lower-case words and sentence-final
+ * punctuation, no year -- unlike a byline ("Yixin Yuan1, Mikio C."), a
+ * running title or a reference entry. "Neurons in CA1 receive inputs from the
+ * DG, CA3 and EC." is a sentence even though capitalized names meet at commas.
+ */
+function readsAsCompleteSentence(value: string): boolean {
+  if (/\b(?:19|20)\d{2}[a-z]?\b/.test(value)) return false;
+  if (!/[.!?]["”’)\]]?$/u.test(value)) return false;
+  // A trailing lone capital initial ends a name ("Mikio C."), not a sentence.
+  if (/(?:^|[\s.])\p{Lu}\.$/u.test(value)) return false;
+  if (
+    !/\b\p{Ll}[\p{L}'’-]*\s+\p{Ll}[\p{L}'’-]*\s+\p{Ll}[\p{L}'’-]*\b/u.test(
+      value,
+    )
+  ) {
+    return false;
+  }
+  const words = value.match(/\p{L}[\p{L}'’-]*/gu) || [];
+  if (words.length < 6) return false;
+  const lowercaseWords = words.filter((word) => /^\p{Ll}/u.test(word)).length;
+  return lowercaseWords / words.length >= 0.5;
+}
+
+function isMetadataShapedText(
+  value: string,
+  options: { wholeText: boolean },
+): boolean {
+  if (
+    LEADING_SECTION_LABEL_WITH_SEPARATOR_PATTERN.test(value) ||
+    (options.wholeText &&
+      LEADING_SECTION_LABEL_PATTERN.test(value) &&
+      (!readsAsProse(value) || /\s[·•|]\s/.test(value))) ||
+    (options.wholeText && REFERENCE_LIST_HEADING_PATTERN.test(value))
+  ) {
+    return true;
+  }
+  if (PUBLISHER_METADATA_PATTERNS.some((pattern) => pattern.test(value))) {
+    return true;
+  }
+  if (CORRESPONDENCE_METADATA_PATTERN.test(value)) return true;
+  const prose = readsAsProse(value);
+  if (
+    options.wholeText &&
+    value.length <= 120 &&
+    !prose &&
+    RUNNING_TITLE_PATTERN.test(value)
+  ) {
+    return true;
+  }
+  const commaCount = (value.match(/,/g) || []).length;
+  if (
+    !prose &&
+    AFFILIATION_OR_ADDRESS_PATTERN.test(value) &&
+    (LOCATION_OR_POSTAL_PATTERN.test(value) || commaCount >= 2)
+  ) {
+    return true;
+  }
+  if (!options.wholeText) {
+    // Inside a longer passage, a sentence is metadata when it is an
+    // affiliation line, a dated editorial status line, or a name list that
+    // is neither prose nor a dated reference entry.
+    if (!prose && CAPITALIZED_AFFILIATION_PATTERN.test(value)) return true;
+    if (EDITORIAL_STATUS_SENTENCE_PATTERN.test(value)) return true;
+    if (
+      !prose &&
+      (AUTHOR_BYLINE_FRAGMENT_PATTERN.test(value) ||
+        MULTI_AUTHOR_BYLINE_PATTERN.test(value)) &&
+      !/\b(?:19|20)\d{2}[a-z]?\b/.test(value) &&
+      !readsAsCompleteSentence(value)
+    ) {
+      return true;
+    }
+  }
+  // Name lists are judged only as a whole short text; inside prose they are
+  // reference lists or citations, which the old whole-text rule also kept.
+  // A complete lower-case sentence ("In Drosophila, Kenyon cells fire
+  // sparsely.") is not a name list even when two capitalized words meet at a
+  // comma.
+  return (
+    options.wholeText &&
+    value.length <= 220 &&
+    (AUTHOR_BYLINE_FRAGMENT_PATTERN.test(value) ||
+      MULTI_AUTHOR_BYLINE_PATTERN.test(value)) &&
+    !readsAsCompleteSentence(value)
+  );
+}
+
+/**
+ * Judge a multi-sentence passage sentence by sentence, so one metadata
+ * keyword or one glued metadata sentence never discards real prose. Short
+ * texts and single sentences are judged whole.
+ */
+function isMetadataQuoteText(value: string): boolean {
+  const sentences = splitMetadataTestSentences(value);
+  if (
+    value.length < MIN_PROSE_SHAPED_QUOTE_TEXT_CHARS ||
+    sentences.length < 2
+  ) {
+    return isMetadataShapedText(value, { wholeText: true });
+  }
+  let totalChars = 0;
+  let metadataChars = 0;
+  for (const sentence of sentences) {
+    totalChars += sentence.length;
+    if (isMetadataShapedText(sentence, { wholeText: false })) {
+      metadataChars += sentence.length;
+    }
+  }
+  return (
+    metadataChars / Math.max(totalChars, 1) >=
+    MIN_METADATA_SENTENCE_CHAR_FRACTION
+  );
+}
 
 function collectMatchedRanges(
   value: string,
@@ -382,26 +606,12 @@ export function isQuoteWorthySourceText(
   }
   if (STANDALONE_SOURCE_LABEL_TEXT_PATTERN.test(strippedOuter)) return false;
   if (JOURNAL_LABEL_TEXT_PATTERN.test(strippedOuter)) return false;
-  if (PUBLISHER_METADATA_PATTERNS.some((pattern) => pattern.test(text))) {
-    return false;
-  }
-  const commaCount = (strippedOuter.match(/,/g) || []).length;
-  if (
-    AFFILIATION_OR_ADDRESS_PATTERN.test(strippedOuter) &&
-    (LOCATION_OR_POSTAL_PATTERN.test(strippedOuter) || commaCount >= 2)
-  ) {
-    return false;
-  }
-  if (CORRESPONDENCE_METADATA_PATTERN.test(strippedOuter)) return false;
-  if (
-    strippedOuter.length <= 220 &&
-    (AUTHOR_BYLINE_FRAGMENT_PATTERN.test(strippedOuter) ||
-      MULTI_AUTHOR_BYLINE_PATTERN.test(strippedOuter))
-  ) {
-    return false;
-  }
+  // Judge the passage without glued running headers and footers.
+  const candidate = stripRunningPageFurniture(strippedOuter);
+  if (!candidate) return false;
+  if (isMetadataQuoteText(candidate)) return false;
 
-  const locatorRanges = collectMatchedRanges(text, [
+  const locatorRanges = collectMatchedRanges(candidate, [
     URL_TEXT_PATTERN,
     DOI_TEXT_PATTERN,
     DOI_DOMAIN_PATTERN,
@@ -410,11 +620,11 @@ export function isQuoteWorthySourceText(
   if (!hasUrlOrDoi) {
     return (
       Boolean(options?.allowShortQuoteText) ||
-      isSubstantiveAutoTrustedQuoteText(strippedOuter)
+      isSubstantiveAutoTrustedQuoteText(candidate)
     );
   }
 
-  const withoutLocators = text
+  const withoutLocators = candidate
     .replace(URL_TEXT_PATTERN, " ")
     .replace(DOI_TEXT_PATTERN, " ")
     .replace(DOI_DOMAIN_PATTERN, " ")
@@ -428,7 +638,7 @@ export function isQuoteWorthySourceText(
   ) {
     return false;
   }
-  if (locatorChars > 0 && locatorChars / Math.max(text.length, 1) > 0.35) {
+  if (locatorChars > 0 && locatorChars / Math.max(candidate.length, 1) > 0.35) {
     return false;
   }
   return true;
@@ -950,6 +1160,50 @@ export function buildQuoteCitationId(input: {
   return `Q_${hashBase36(key)}`;
 }
 
+/**
+ * A citation as minted by `buildQuoteCitation`. `allowShortQuoteText` records
+ * that the minting tool vouched for a short anchor (paper_read chunk anchors),
+ * so re-validating the object in process -- merging, or re-reading it from
+ * tool output -- keeps it.
+ */
+export type MintedQuoteCitation = QuoteCitation & {
+  allowShortQuoteText?: true;
+};
+
+type QuoteCitationInput = Parameters<typeof buildQuoteCitation>[0];
+
+const MINTED_QUOTE_MATCH_KINDS = new Set([
+  "trusted",
+  "exact",
+  "ellipsis-segment",
+  "raw-prefix",
+  "raw-suffix",
+  "raw-middle",
+  "progressive",
+  "selected-text",
+  "normalized-span",
+]);
+
+/**
+ * Re-validate a citation that was already minted and stored (chat history,
+ * the in-memory message list). A token id plus match provenance (a source
+ * match kind, or the minted short-anchor marker) shows that a source matcher
+ * produced it, so only the structural checks run again: a later change to the
+ * quote-worthiness heuristics must never delete a citation the reader already
+ * saw. An id without provenance gets every filter.
+ */
+function rebuildMintedQuoteCitation(
+  input: QuoteCitationInput,
+): QuoteCitation | undefined {
+  const minted =
+    Boolean(normalizeQuoteTokenId(normalizeText(input.id))) &&
+    (input.allowShortQuoteText === true ||
+      MINTED_QUOTE_MATCH_KINDS.has(normalizeText(input.sourceMatchKind)));
+  return buildQuoteCitationWithPolicy(input, {
+    skipQuoteWorthiness: minted,
+  });
+}
+
 export function buildQuoteCitation(input: {
   quoteText?: unknown;
   displayQuoteText?: unknown;
@@ -973,6 +1227,13 @@ export function buildQuoteCitation(input: {
   id?: unknown;
   allowShortQuoteText?: unknown;
 }): QuoteCitation | undefined {
+  return buildQuoteCitationWithPolicy(input, { skipQuoteWorthiness: false });
+}
+
+function buildQuoteCitationWithPolicy(
+  input: QuoteCitationInput,
+  policy: { skipQuoteWorthiness: boolean },
+): QuoteCitation | undefined {
   const quoteText = normalizeMultilineText(input.quoteText);
   const citationLabel = normalizeCitationLabel(
     input.sourceLabel || input.citationLabel,
@@ -1011,7 +1272,8 @@ export function buildQuoteCitation(input: {
   if (
     !quoteText ||
     !citationLabel ||
-    (!allowsVerifiedSourceText &&
+    (!policy.skipQuoteWorthiness &&
+      !allowsVerifiedSourceText &&
       !isQuoteWorthySourceText(quoteText, {
         allowShortQuoteText: allowsShortQuoteText,
       })) ||
@@ -1058,7 +1320,7 @@ export function buildQuoteCitation(input: {
   ].includes(sourceMatchKind)
     ? (sourceMatchKind as QuoteCitation["sourceMatchKind"])
     : undefined;
-  return {
+  const citation: MintedQuoteCitation = {
     id:
       id ||
       buildQuoteCitationId({
@@ -1085,15 +1347,68 @@ export function buildQuoteCitation(input: {
     pageHintLabel,
     anchorMatch,
   };
+  if (input.allowShortQuoteText === true) citation.allowShortQuoteText = true;
+  return citation;
 }
 
+/**
+ * Normalize stored or in-memory citations for storage and display. Already
+ * minted entries (a quote token id plus match provenance) are kept even if
+ * today's worthiness heuristics would reject their text; see
+ * `rebuildMintedQuoteCitation`. That persisted provenance is what re-admits
+ * them on reload, so the in-process `allowShortQuoteText` marker is not
+ * written out and the stored citation format is unchanged.
+ */
 export function normalizeQuoteCitations(value: unknown): QuoteCitation[] {
+  if (!Array.isArray(value)) return [];
+  // One answer is drawn from the same stored array several times; reuse the
+  // result while the entries are unchanged. Callers get their own copies.
+  let signature: string | null = null;
+  try {
+    signature = JSON.stringify(value);
+  } catch {
+    signature = null;
+  }
+  const cached = signature ? normalizedQuoteCitationsCache.get(value) : null;
+  if (cached && cached.signature === signature) {
+    return cached.citations.map((citation) => ({ ...citation }));
+  }
+  const citations = normalizeQuoteCitationsWith(
+    value,
+    rebuildMintedQuoteCitation,
+  ).map((citation) => {
+    if (!(citation as MintedQuoteCitation).allowShortQuoteText) {
+      return citation;
+    }
+    const { allowShortQuoteText: _marker, ...stored } =
+      citation as MintedQuoteCitation;
+    void _marker;
+    return stored;
+  });
+  if (signature) {
+    normalizedQuoteCitationsCache.set(value, {
+      signature,
+      citations: citations.map((citation) => ({ ...citation })),
+    });
+  }
+  return citations;
+}
+
+const normalizedQuoteCitationsCache = new WeakMap<
+  unknown[],
+  { signature: string; citations: QuoteCitation[] }
+>();
+
+function normalizeQuoteCitationsWith(
+  value: unknown,
+  build: (input: QuoteCitationInput) => QuoteCitation | undefined,
+): QuoteCitation[] {
   const raw = Array.isArray(value) ? value : [];
   const out: QuoteCitation[] = [];
   const seen = new Set<string>();
   for (const entry of raw) {
     if (!entry || typeof entry !== "object") continue;
-    const citation = buildQuoteCitation(entry as Record<string, unknown>);
+    const citation = build(entry as Record<string, unknown>);
     if (!citation || seen.has(citation.id)) continue;
     seen.add(citation.id);
     out.push(citation);
@@ -1355,10 +1670,13 @@ export function bindQuoteCitationToDisplayedText(
     sourceMatchKind:
       matchedSourceText === sourceQuoteText ? "exact" : "normalized-span",
     sourceMatchSource: citation.sourceMatchSource || "context-text",
+    // Only evidence read from the PDF's own page text can name a copy on a
+    // page. A chunk that merely carries a page hint (MinerU text stamped with
+    // its section heading's page) proves no PDF location.
     sourceMatchPageOccurrence:
       citation.sourceMatchPageOccurrence ??
-      (citation.sourceMatchSource === "pdf-page-text" ||
-      citation.pageHintIndex !== undefined
+      (citation.sourceMatchSource === "pdf-page-text" &&
+      isPageTextSourceFingerprint(citation.sourceFingerprint)
         ? matchedSpan.occurrenceIndex
         : undefined),
     allowShortQuoteText: true,
@@ -1375,7 +1693,7 @@ function collectInvalidQuoteCitationIds(value: unknown): Set<string> {
     const record = entry as Record<string, unknown>;
     const id = normalizeQuoteTokenId(normalizeText(record.id));
     if (!id) continue;
-    if (!buildQuoteCitation(record)) ids.add(id);
+    if (!rebuildMintedQuoteCitation(record)) ids.add(id);
   }
   return ids;
 }
@@ -1388,7 +1706,9 @@ export function mergeQuoteCitations(
   for (const group of groups) {
     for (const entry of Array.isArray(group) ? group : []) {
       if (!entry || typeof entry !== "object") continue;
-      const citation = buildQuoteCitation(entry as Record<string, unknown>);
+      const citation = rebuildMintedQuoteCitation(
+        entry as Record<string, unknown>,
+      );
       if (!citation) continue;
       const existing = byId.get(citation.id);
       if (existing) {
@@ -1456,6 +1776,12 @@ export type QuoteSourceText = {
   requiresPageHint?: unknown;
   pageHintIndex?: unknown;
   pageHintLabel?: unknown;
+  /**
+   * The text is the item's own Zotero abstract field, read natively. It is
+   * evidence for a quote an abstract-kind citation names, even where a
+   * body-evidence review otherwise sets abstracts aside.
+   */
+  zoteroAbstractField?: unknown;
 };
 
 export type QuoteSourceIndexEntry = {
@@ -1472,6 +1798,8 @@ export type QuoteSourceIndexEntry = {
   requiresPageHint?: boolean;
   pageHintIndex?: number;
   pageHintLabel?: string;
+  /** See `QuoteSourceText.zoteroAbstractField`. */
+  zoteroAbstractField?: boolean;
 };
 
 export type QuoteSourceIndex = {
@@ -1493,18 +1821,53 @@ function isVerifiedQuoteCitation(citation: QuoteCitation): boolean {
   return Boolean(citation.sourceMatchKind || citation.sourceMatchSource);
 }
 
+/**
+ * The attachment page-text cache stamps its text `pdfjs:<fingerprint>` (read
+ * from an open viewer) or `page-text:<hash>` (extracted by the PDF worker).
+ * Chunk text from the paper text store (MinerU or Zotero full text) is
+ * stamped `fnv1a32-<hash>` and never proves where a passage sits on a page.
+ */
+export function isPageTextSourceFingerprint(value: unknown): boolean {
+  return /^(?:pdfjs|page-text):/.test(normalizeText(value));
+}
+
+function isChunkTextSourceFingerprint(value: unknown): boolean {
+  return /^fnv1a32-/.test(normalizeText(value));
+}
+
+const COMPLETE_PAGE_LOCATION_MATCH_KINDS = [
+  "exact",
+  "normalized-span",
+  "selected-text",
+  "ellipsis-segment",
+];
+
+/**
+ * A located span of a longer passage. Only the paragraph citation locator
+ * mints these on page text, after the passage passed the click-time
+ * navigator's own acceptance rule; the click then searches the span itself.
+ */
+const PARTIAL_PAGE_LOCATION_MATCH_KINDS = [
+  "raw-prefix",
+  "raw-suffix",
+  "raw-middle",
+  "progressive",
+];
+
 /** Retrieval metadata alone is not a verified PDF destination. */
 export function hasVerifiedQuoteLocation(citation: QuoteCitation): boolean {
+  const kind = citation.sourceMatchKind || "";
   return Boolean(
     citation.sourceMatchSource === "pdf-page-text" &&
     citation.sourceMatchText &&
     citation.sourceFingerprint &&
+    !isChunkTextSourceFingerprint(citation.sourceFingerprint) &&
     normalizePositiveInt(citation.contextItemId) &&
     normalizePageHintIndex(citation.pageHintIndex) !== undefined &&
     normalizeZeroBasedIndex(citation.sourceMatchPageOccurrence) !== undefined &&
-    ["exact", "normalized-span", "selected-text", "ellipsis-segment"].includes(
-      citation.sourceMatchKind || "",
-    ) &&
+    (COMPLETE_PAGE_LOCATION_MATCH_KINDS.includes(kind) ||
+      (PARTIAL_PAGE_LOCATION_MATCH_KINDS.includes(kind) &&
+        isPageTextSourceFingerprint(citation.sourceFingerprint))) &&
     bindQuoteCitationToDisplayedText(
       citation,
       citation.displayQuoteText || citation.quoteText,
@@ -1707,7 +2070,12 @@ function filterSourceIndexForBodyEvidenceQuotes(
       return shouldKeepEvidence(citation, isBodyQuoteCitation(citation));
     }),
     sources: sourceIndex.sources.filter((source) => {
-      return shouldKeepEvidence(source, isBodyQuoteSource(source));
+      // The Zotero abstract field is kept for the abstract-kind citation
+      // that names its item; it never makes the item's scope a body scope.
+      return shouldKeepEvidence(
+        source,
+        isBodyQuoteSource(source) || Boolean(source.zoteroAbstractField),
+      );
     }),
   };
 }
@@ -1810,6 +2178,7 @@ export function buildQuoteSourceIndex(params: {
         normalizeQuoteMatchSource(source.sourceMatchSource) === "pdf-page-text",
       pageHintIndex: normalizePageHintIndex(source.pageHintIndex),
       pageHintLabel: normalizePageHintLabel(source.pageHintLabel),
+      ...(source.zoteroAbstractField ? { zoteroAbstractField: true } : {}),
     });
   }
   return { quoteCitations, sources, metadataTexts: [...metadataTextSet] };
@@ -2052,6 +2421,298 @@ export function resolveExactDisplayedQuoteCitation(params: {
     pageHintIndex: selected.source.pageHintIndex,
     pageHintLabel: selected.source.pageHintLabel,
     allowShortQuoteText: hasAuthoritativePage,
+  });
+}
+
+/**
+ * The click-time navigator's bars for a passage it cannot align whole
+ * (`locatedResultIdentifiesQuoteSource` in quoteNavigator.ts): its query
+ * options, and the contiguous run it requires next to the shared coverage
+ * and supported-token minimums.
+ */
+const NAVIGABLE_PASSAGE_SEARCH_OPTIONS = {
+  minQueryLength: 24,
+  rejectWeakQueries: true,
+} as const;
+const MIN_NAVIGABLE_PASSAGE_RUN_TOKENS = 12;
+/**
+ * Pages searched for a partial location must share a run of this many
+ * passage tokens, checked at every third token, so every run of 8 or more
+ * tokens is seen. Searching every page of a long paper costs up to ~0.6 s per
+ * passage; the other pages can hold only short runs, so leaving them out can
+ * lower the measured coverage (keeping a card grey) but never raise it. A
+ * short anchor repeated only on a left-out page could look unique; the click
+ * then still lands on a copy of that text on the recorded page.
+ */
+const PARTIAL_LOCATION_PAGE_WINDOW_TOKENS = 6;
+const PARTIAL_LOCATION_PAGE_WINDOW_STRIDE = 3;
+
+function pagesSharingPassageRuns(
+  pageSources: QuoteSourceIndexEntry[],
+  passage: string,
+): QuoteSourceIndexEntry[] {
+  const tokens = buildQuoteTextIndex(passage).tokens.map((token) => token.text);
+  const windows: string[] = [];
+  for (
+    let start = 0;
+    start + PARTIAL_LOCATION_PAGE_WINDOW_TOKENS <= tokens.length;
+    start += PARTIAL_LOCATION_PAGE_WINDOW_STRIDE
+  ) {
+    windows.push(
+      ` ${tokens.slice(start, start + PARTIAL_LOCATION_PAGE_WINDOW_TOKENS).join(" ")} `,
+    );
+  }
+  return pageSources.filter((source) => {
+    const canonical = ` ${
+      (source.textIndex || buildQuoteTextIndex(source.sourceText)).canonicalText
+    } `;
+    return windows.some((window) => canonical.includes(window));
+  });
+}
+
+/**
+ * Locate a host-minted paragraph citation ([[cite:ID]]) on the PDF page text
+ * of its own attachment. Returns the same record, under the same id, with a
+ * verified page location; or undefined when the pages do not show it, in
+ * which case the caller keeps the record unverified (never "not a source":
+ * the host minted the passage from the paper itself).
+ *
+ * A passage is located when the whole passage matches one page exactly or
+ * after normalization, or when the navigator would accept it: the pages
+ * together hold >= 80% of its tokens, >= 7 of them, and one unique run of
+ * >= 12 tokens. Then that run is recorded with its partial match kind, so a
+ * click searches the run and lands on this passage.
+ */
+export function locateParagraphCitationOnPageText(params: {
+  citation: QuoteCitation;
+  sourceIndex: QuoteSourceIndex;
+}): QuoteCitation | undefined {
+  const steps = locateParagraphCitationSteps(params);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Same search as above, yielding to the main thread between its phases. */
+export async function locateParagraphCitationOnPageTextCooperatively(
+  params: { citation: QuoteCitation; sourceIndex: QuoteSourceIndex },
+  yieldToMain: () => Promise<void>,
+): Promise<QuoteCitation | undefined> {
+  const steps = locateParagraphCitationSteps(params);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+    await yieldToMain();
+  }
+}
+
+/**
+ * A record that already claims a partial page location is re-checked against
+ * the cached text of that page. A contradicted claim is dropped to context
+ * text so the locator may place it again; no page text means pass through.
+ */
+export function recheckPartialPageLocation(
+  citation: QuoteCitation,
+  sourceIndex: QuoteSourceIndex,
+): QuoteCitation {
+  if (
+    !PARTIAL_PAGE_LOCATION_MATCH_KINDS.includes(citation.sourceMatchKind || "")
+  ) {
+    return citation;
+  }
+  const page = sourceIndex.sources.find(
+    (source) =>
+      source.origin !== "quote-citation" &&
+      source.sourceMatchSource === "pdf-page-text" &&
+      source.pageHintIndex === citation.pageHintIndex &&
+      source.sourceFingerprint === citation.sourceFingerprint &&
+      normalizePositiveInt(source.contextItemId) ===
+        normalizePositiveInt(citation.contextItemId),
+  );
+  const span = normalizeMultilineText(citation.sourceMatchText).replace(
+    /\s+/g,
+    " ",
+  );
+  if (!page || !span) return citation;
+  if (page.sourceText.replace(/\s+/g, " ").includes(span)) return citation;
+  const { sourceMatchPageOccurrence: _drop, ...rest } = citation;
+  void _drop;
+  return (
+    rebuildMintedQuoteCitation({
+      ...rest,
+      sourceMatchSource: "context-text",
+    }) || citation
+  );
+}
+
+const PARAGRAPH_LOCATE_MISS_CACHE_LIMIT = 500;
+const paragraphLocateMisses = new Set<string>();
+let paragraphLocateSearchRuns = 0;
+
+/** Number of full searches run; tests read it to prove a miss was cached. */
+export function getParagraphLocateSearchRunCount(): number {
+  return paragraphLocateSearchRuns;
+}
+
+export function clearParagraphLocateMissCache(): void {
+  paragraphLocateMisses.clear();
+}
+
+function hashForMissCache(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) + hash + value.charCodeAt(i)) | 0;
+  }
+  return `${value.length}:${(hash >>> 0).toString(36)}`;
+}
+
+function* locateParagraphCitationSteps(params: {
+  citation: QuoteCitation;
+  sourceIndex: QuoteSourceIndex;
+}): Generator<void, QuoteCitation | undefined, void> {
+  const { citation } = params;
+  const contextItemId = normalizePositiveInt(citation.contextItemId);
+  const passage = normalizeMultilineText(citation.quoteText);
+  if (!contextItemId || !passage) return undefined;
+  const pageSources = params.sourceIndex.sources.filter(
+    (source) =>
+      source.origin !== "quote-citation" &&
+      source.sourceMatchSource === "pdf-page-text" &&
+      source.pageHintIndex !== undefined &&
+      normalizePositiveInt(source.contextItemId) === contextItemId &&
+      isPageTextSourceFingerprint(source.sourceFingerprint),
+  );
+  if (!pageSources.length) return undefined;
+  // A miss depends only on the passage and the page text, so the same pair
+  // is not searched again after a warm that added no pages.
+  const missKey = [
+    hashForMissCache(passage),
+    contextItemId,
+    hashForMissCache(
+      pageSources
+        .map((source) => `${source.pageHintIndex}:${source.sourceFingerprint}`)
+        .join("|"),
+    ),
+  ].join("/");
+  if (paragraphLocateMisses.has(missKey)) return undefined;
+  paragraphLocateSearchRuns++;
+  const result = yield* searchParagraphCitationOnPages({
+    citation,
+    sourceIndex: params.sourceIndex,
+    pageSources,
+    passage,
+    contextItemId,
+  });
+  if (!result) {
+    if (paragraphLocateMisses.size >= PARAGRAPH_LOCATE_MISS_CACHE_LIMIT) {
+      const oldest = paragraphLocateMisses.values().next().value;
+      if (oldest !== undefined) paragraphLocateMisses.delete(oldest);
+    }
+    paragraphLocateMisses.add(missKey);
+  }
+  return result;
+}
+
+function* searchParagraphCitationOnPages(params: {
+  citation: QuoteCitation;
+  sourceIndex: QuoteSourceIndex;
+  pageSources: QuoteSourceIndexEntry[];
+  passage: string;
+  contextItemId: number;
+}): Generator<void, QuoteCitation | undefined, void> {
+  const { citation, pageSources, passage, contextItemId } = params;
+  const located = (location: {
+    source: QuoteSourceIndexEntry;
+    sourceMatchText: string | undefined;
+    sourceMatchKind: QuoteCitation["sourceMatchKind"];
+    sourceMatchPageOccurrence: number | undefined;
+  }): QuoteCitation | undefined => {
+    const upgraded = rebuildMintedQuoteCitation({
+      ...citation,
+      id: citation.id,
+      sourceMatchText: location.sourceMatchText,
+      sourceMatchKind: location.sourceMatchKind,
+      sourceMatchSource: "pdf-page-text",
+      sourceFingerprint: location.source.sourceFingerprint,
+      sourceMatchPageOccurrence: location.sourceMatchPageOccurrence,
+      pageHintIndex: location.source.pageHintIndex,
+      pageHintLabel: location.source.pageHintLabel,
+    });
+    return upgraded &&
+      upgraded.id === citation.id &&
+      hasVerifiedQuoteLocation(upgraded)
+      ? upgraded
+      : undefined;
+  };
+
+  const pageIndex: QuoteSourceIndex = {
+    quoteCitations: [],
+    metadataTexts: params.sourceIndex.metadataTexts,
+    sources: pageSources,
+  };
+  const exact = resolveExactDisplayedQuoteCitation({
+    quoteText: passage,
+    sourceIndex: pageIndex,
+    preferredId: citation.id,
+    preferredContextItemId: contextItemId,
+  });
+  const exactSource =
+    exact &&
+    pageSources.find(
+      (source) =>
+        source.pageHintIndex === exact.pageHintIndex &&
+        source.sourceFingerprint === exact.sourceFingerprint,
+    );
+  if (exact && exactSource) {
+    const result = located({
+      source: exactSource,
+      sourceMatchText: exact.sourceMatchText,
+      sourceMatchKind: exact.sourceMatchKind,
+      sourceMatchPageOccurrence: exact.sourceMatchPageOccurrence,
+    });
+    if (result) return result;
+  }
+
+  yield;
+  const candidatePages = pagesSharingPassageRuns(pageSources, passage);
+  if (!candidatePages.length) return undefined;
+  const entries = candidatePages.map((source, index) => ({
+    id: `page-${index}`,
+    text: source.sourceText,
+    textIndex: source.textIndex,
+  }));
+  const anchor = findLargestUniqueQuoteTextAnchorMatch(
+    entries,
+    passage,
+    NAVIGABLE_PASSAGE_SEARCH_OPTIONS,
+  );
+  // A whole-passage anchor the exact resolver refused (a semantic or math
+  // conflict) is not a partial location.
+  if (!anchor || anchor.matchKind === "exact") return undefined;
+  const support = summarizeQuoteTextSupport(
+    entries,
+    passage,
+    NAVIGABLE_PASSAGE_SEARCH_OPTIONS,
+  );
+  if (
+    support.coverage < MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE ||
+    support.supportedQuoteTokenCount <
+      MIN_NEAR_COMPLETE_QUOTE_SUPPORTED_TOKENS ||
+    support.longestRunTokenCount < MIN_NAVIGABLE_PASSAGE_RUN_TOKENS
+  ) {
+    return undefined;
+  }
+  const source = candidatePages[Number(anchor.entryId.replace(/^page-/, ""))];
+  const sourceMatchText = normalizeMultilineText(anchor.query);
+  if (!source || !sourceMatchText) return undefined;
+  return located({
+    source,
+    sourceMatchText,
+    sourceMatchKind: anchor.matchKind,
+    // The span occurs once across the attachment's pages, so it is the
+    // first copy on its page (the navigator records the same).
+    sourceMatchPageOccurrence: 0,
   });
 }
 
@@ -3183,6 +3844,136 @@ function isHighConfidenceNonSourceQuote(params: {
   });
 }
 
+type BestQuoteAlignment = {
+  sourceText: string;
+  assessment: ReturnType<typeof assessAcademicQuoteAlignment>;
+  meaningful: AcademicQuoteAlignmentToken[];
+  supported: number;
+};
+
+/** Passages within this share of the best support are judged together. */
+const NEAR_BEST_QUOTE_SUPPORT_FRACTION = 0.8;
+
+/**
+ * Alignments of the passages that support the most displayed tokens, best
+ * first: the best one, the preferred (anchor) source, and any passage within
+ * `NEAR_BEST_QUOTE_SUPPORT_FRACTION` of the best support -- for example the
+ * MinerU and PDF text of the same paragraph. Before the costly alignment, a
+ * source is skipped when it shares fewer than half of the quote's words and
+ * fewer than the best-sharing source.
+ */
+function collectNearBestQuoteAlignments(
+  quoteText: string,
+  sources: readonly QuoteSourceIndexEntry[],
+  preferred?: QuoteSourceIndexEntry,
+): BestQuoteAlignment[] {
+  const quoteTokens = Array.from(
+    new Set(buildQuoteTextIndex(quoteText).tokens.map((token) => token.text)),
+  );
+  const sharedCounts = sources.map((source) => {
+    const sourceTokens = new Set(
+      (source.textIndex || buildQuoteTextIndex(source.sourceText)).tokens.map(
+        (token) => token.text,
+      ),
+    );
+    return quoteTokens.filter((token) => sourceTokens.has(token)).length;
+  });
+  const maxShared = Math.max(0, ...sharedCounts);
+  const evaluated: Array<BestQuoteAlignment & { preferred: boolean }> = [];
+  for (const [sourceOrdinal, source] of sources.entries()) {
+    const shared = sharedCounts[sourceOrdinal];
+    if (
+      source !== preferred &&
+      shared < maxShared &&
+      shared * 2 < quoteTokens.length
+    ) {
+      continue;
+    }
+    const assessment = assessAcademicQuoteAlignment(
+      source.sourceText,
+      quoteText,
+    );
+    const meaningful = assessment.displayedTokens.filter(
+      (token) =>
+        token.kind !== "formatting-syntax" &&
+        token.kind !== "extraction-artifact" &&
+        token.kind !== "operator",
+    );
+    const supported = meaningful.filter((token) => token.supported).length;
+    evaluated.push({
+      sourceText: source.sourceText,
+      assessment,
+      meaningful,
+      supported,
+      preferred: source === preferred,
+    });
+  }
+  const bestSupported = Math.max(
+    0,
+    ...evaluated.map((entry) => entry.supported),
+  );
+  return evaluated
+    .filter(
+      (entry) =>
+        entry.preferred ||
+        entry.supported >= bestSupported * NEAR_BEST_QUOTE_SUPPORT_FRACTION,
+    )
+    .sort(
+      (left, right) =>
+        right.supported - left.supported ||
+        Number(right.preferred) - Number(left.preferred),
+    );
+}
+
+/**
+ * True when the best-supporting passage differs from the quote in exactly one
+ * prose word that is not a negation, with every number and formula intact:
+ * the signature of extraction noise ("CAl" for "CA1", "um" for "μm") or an
+ * editorial insert ("[visual]"). Such a quote stays unresolved, not absent.
+ */
+function hasOnlyMinorQuoteDifference(params: {
+  quoteText: string;
+  sourceIndex: QuoteSourceIndex;
+}): boolean {
+  const quoteText = stripOuterQuoteDelimiters(params.quoteText);
+  const candidates = collectNearBestQuoteAlignments(
+    quoteText,
+    params.sourceIndex.sources,
+  );
+  const best = candidates[0];
+  if (
+    !best ||
+    candidates.some(
+      (candidate) =>
+        candidate.assessment.hasUnexplainedSemanticHardDifference &&
+        isAffirmativeQuoteMismatch(
+          candidate,
+          quoteText,
+          candidate.supported / Math.max(1, candidate.meaningful.length),
+        ),
+    )
+  ) {
+    return false;
+  }
+  if (!best.assessment.hasUnexplainedSemanticHardDifference) return false;
+  const unsupported = best.assessment.displayedTokens.filter(
+    (token) =>
+      !token.supported &&
+      token.kind !== "formatting-syntax" &&
+      token.kind !== "extraction-artifact",
+  );
+  const coverage = best.supported / Math.max(1, best.meaningful.length);
+  return (
+    unsupported.length === 1 &&
+    unsupported[0].kind === "prose" &&
+    !NEGATION_QUOTE_TOKENS.has(unsupported[0].text) &&
+    !isChangedDigitIdentifier(unsupported[0].text, best.sourceText) &&
+    coverage >= MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE &&
+    !hasNumberOrNegationOutsideAlignedPhrase(best.sourceText, quoteText) &&
+    !hasDroppedNegationInAlignedWindow(best.sourceText, quoteText)
+  );
+}
+
 function hasUniqueAffirmativeHardMismatch(params: {
   quoteText: string;
   sourceIndex: QuoteSourceIndex;
@@ -3229,21 +4020,179 @@ function hasUniqueAffirmativeHardMismatch(params: {
           source === resolved.source || source.pageHintIndex === undefined,
       )
     : params.sourceIndex.sources;
-  return sources.some((source) => {
-    const assessment = assessAcademicQuoteAlignment(
-      source.sourceText,
-      quoteText,
-    );
-    if (!assessment.hasUnexplainedSemanticHardDifference) return false;
-    const meaningful = assessment.displayedTokens.filter(
-      (token) =>
-        token.kind !== "formatting-syntax" &&
-        token.kind !== "extraction-artifact" &&
-        token.kind !== "operator",
-    );
-    const supported = meaningful.filter((token) => token.supported).length;
-    return supported >= 4 && supported / Math.max(1, meaningful.length) >= 0.35;
+  // Judge only the passages that support the quote about as well as the best
+  // one (the anchor's source always counts). An unrelated paragraph that
+  // merely shares words with the quote says nothing about whether the quote
+  // is in the paper.
+  return collectNearBestQuoteAlignments(
+    quoteText,
+    sources,
+    resolved?.source,
+  ).some((candidate) => {
+    if (!candidate.assessment.hasUnexplainedSemanticHardDifference) {
+      return false;
+    }
+    const coverage =
+      candidate.supported / Math.max(1, candidate.meaningful.length);
+    if (candidate.supported < 4 || coverage < 0.35) return false;
+    return isAffirmativeQuoteMismatch(candidate, quoteText, coverage);
   });
+}
+
+/** Words whose presence or absence reverses a claim. */
+const NEGATION_QUOTE_TOKENS = new Set([
+  "not",
+  "no",
+  "never",
+  "neither",
+  "nor",
+  "none",
+  "nothing",
+  "nobody",
+  "without",
+  "cannot",
+  "t",
+  "unable",
+  "absent",
+  "lack",
+  "lacked",
+  "lacks",
+  "lacking",
+  "fail",
+  "failed",
+  "fails",
+]);
+const MIN_ABSENT_UNSUPPORTED_PROSE_TOKENS = 2;
+const MIN_ALIGNED_PHRASE_TOKENS = 3;
+
+/**
+ * A number or negation word counts as present in the source only inside an
+ * aligned phrase of several words; the same "not" or "45" elsewhere on the
+ * page does not support "did not remap" or "54 neurons".
+ */
+function hasNumberOrNegationOutsideAlignedPhrase(
+  sourceText: string,
+  quoteText: string,
+): boolean {
+  const quoteIndex = buildQuoteTextIndex(quoteText);
+  const inPhrase = new Set<number>();
+  for (const run of collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+    buildQuoteTextIndex(sourceText),
+    quoteIndex,
+  )) {
+    if (run.queryTokenEnd - run.queryTokenStart < MIN_ALIGNED_PHRASE_TOKENS) {
+      continue;
+    }
+    for (let index = run.queryTokenStart; index < run.queryTokenEnd; index++) {
+      inPhrase.add(index);
+    }
+  }
+  const mathRanges = Array.from(quoteText.matchAll(/\$[^$\n]*\$/g), (match) => [
+    match.index || 0,
+    (match.index || 0) + match[0].length,
+  ]);
+  return quoteIndex.tokens.some(
+    (token, index) =>
+      !inPhrase.has(index) &&
+      (NEGATION_QUOTE_TOKENS.has(token.text) ||
+        (/^\p{N}+$/u.test(token.text) &&
+          !mathRanges.some(
+            ([start, end]) =>
+              token.sourceStart >= start && token.sourceStart < end,
+          ))),
+  );
+}
+
+/**
+ * True when the source's aligned window holds a negation word that the quote
+ * leaves out ("did not reduce" quoted as "did reduce").
+ */
+function hasDroppedNegationInAlignedWindow(
+  sourceText: string,
+  quoteText: string,
+): boolean {
+  const sourceIndex = buildQuoteTextIndex(sourceText);
+  const quoteIndex = buildQuoteTextIndex(quoteText);
+  let windowStart = Infinity;
+  let windowEnd = -Infinity;
+  for (const run of collectQuoteTextAlignmentRunsAllowingLayoutFragments(
+    sourceIndex,
+    quoteIndex,
+  )) {
+    if (run.queryTokenEnd - run.queryTokenStart < MIN_ALIGNED_PHRASE_TOKENS) {
+      continue;
+    }
+    windowStart = Math.min(windowStart, run.sourceTokenStart);
+    windowEnd = Math.max(windowEnd, run.sourceTokenEnd);
+  }
+  if (windowStart >= windowEnd) return false;
+  const quoteWords = new Set(quoteIndex.tokens.map((token) => token.text));
+  return sourceIndex.tokens
+    .slice(windowStart, windowEnd)
+    .some(
+      (token) =>
+        NEGATION_QUOTE_TOKENS.has(token.text) && !quoteWords.has(token.text),
+    );
+}
+
+/**
+ * A changed identifier that contains a digit ("CA3" for "CA1") is a hard
+ * difference, unless an OCR confusion (1/l, 0/o) maps it onto a source token
+ * ("CA1" quoted from OCR text "CAl").
+ */
+function isChangedDigitIdentifier(
+  tokenText: string,
+  sourceText: string,
+): boolean {
+  if (!/\d/.test(tokenText) || /^\p{N}+$/u.test(tokenText)) return false;
+  const confusable = tokenText.replace(/1/g, "l").replace(/0/g, "o");
+  const sourceWords = new Set(
+    buildQuoteTextIndex(sourceText).tokens.map((token) => token.text),
+  );
+  if (sourceWords.has(confusable)) return false;
+  const variants = [tokenText.replace(/1/g, "l"), tokenText.replace(/0/g, "o")];
+  return !variants.some((variant) => sourceWords.has(variant));
+}
+
+/**
+ * Decide whether the best-supporting passage contradicts the quote. A changed
+ * number, a changed formula or an added negation contradicts it outright.
+ * Other wording must differ in at least two prose tokens with coverage below
+ * the near-complete threshold: one differing token is usually extraction
+ * noise ("di!erent", "CAl" for "CA1", "um" for "μm") or an editorial insert
+ * such as "[visual]", so it leaves the quote unresolved instead.
+ */
+function isAffirmativeQuoteMismatch(
+  best: BestQuoteAlignment,
+  quoteText: string,
+  coverage: number,
+): boolean {
+  const assessment = best.assessment;
+  const unsupported = assessment.displayedTokens.filter(
+    (token) =>
+      !token.supported &&
+      token.kind !== "formatting-syntax" &&
+      token.kind !== "extraction-artifact",
+  );
+  if (
+    unsupported.some(
+      (token) =>
+        token.kind !== "prose" ||
+        NEGATION_QUOTE_TOKENS.has(token.text) ||
+        isChangedDigitIdentifier(token.text, best.sourceText),
+    ) ||
+    hasNumberOrNegationOutsideAlignedPhrase(best.sourceText, quoteText)
+  ) {
+    return true;
+  }
+  const unsupportedProse = unsupported.filter(
+    (token) => token.kind === "prose",
+  ).length;
+  if (!unsupportedProse && !unsupported.length) {
+    // Only the formula comparison disagrees.
+    return true;
+  }
+  return unsupportedProse >= MIN_ABSENT_UNSUPPORTED_PROSE_TOKENS;
 }
 
 export function classifyDisplayedQuoteSource(params: {
@@ -3403,7 +4352,11 @@ export function classifyDisplayedQuoteSource(params: {
     quoteText,
     sourceIndex: params.sourceIndex,
     sourceEvidenceComplete: params.sourceEvidenceComplete,
-  })
+  }) &&
+    !hasOnlyMinorQuoteDifference({
+      quoteText,
+      sourceIndex: params.secondarySourceIndex || params.sourceIndex,
+    })
     ? { kind: "absent" }
     : { kind: "defer" };
 }
@@ -3953,6 +4906,12 @@ export function collectDisplayedQuoteVerificationRequests(params: {
 export type AssistantQuoteCitationFinalizationResult = {
   markdown: string;
   quoteCitations: QuoteCitation[];
+  /**
+   * Paragraph citation ids ([[cite:...]]) removed from the answer because no
+   * quote record backs them, or because they were not ids at all. Present only
+   * when something was removed; diagnostic, never rendered.
+   */
+  droppedParagraphCitationIds?: string[];
 };
 
 function* finalizeAssistantQuoteCitationSteps(
@@ -4316,11 +5275,15 @@ function* finalizeAssistantQuoteCitationSteps(
       sanitizeSourceBackedBlocks: !params.quoteSourceReview,
     },
   );
+  const droppedParagraphCitationIds = new Set<string>();
   const cleanedMarkdown = normalizeParagraphCitations(
     cleanupRemovedMetadataQuoteArtifacts(
       cleanupEmptyCitationParentheticals(finalizedMarkdown),
     ),
     new Set(quoteCitations.map((citation) => citation.id)),
+    (ids) => {
+      for (const id of ids) droppedParagraphCitationIds.add(id);
+    },
   );
   QUOTE_CITATION_PATTERN.lastIndex = 0;
   const referencedCitationIds = new Set(
@@ -4339,6 +5302,9 @@ function* finalizeAssistantQuoteCitationSteps(
       ),
       finalizedSourceIndex.metadataTexts,
     ),
+    ...(droppedParagraphCitationIds.size
+      ? { droppedParagraphCitationIds: [...droppedParagraphCitationIds] }
+      : {}),
   };
 }
 
@@ -4395,8 +5361,8 @@ export function buildQuoteAnchorPromptBlock(
   if (!normalized.length) return [];
   const lines = [
     "Verified quote anchors:",
-    "- At the end of an explanatory paragraph, use [[cite:ID]] or [[cite:ID1,ID2]] for the exact passages supporting its claims. The app shows a small source footer with the original passages and PDF links. Cite at paragraph boundaries, not after every sentence.",
-    "- Use [[quote:ID]] on its own line only to recommend a passage the reader should read to address the question, or when showing exact wording helps. Avoid displaying the same passage as a card merely because it backs a paragraph.",
+    "- At the end of each sentence that a passage supports, just before its final punctuation, use one [[cite:ID]] or [[cite:ID1,ID2]] token for the exact passages supporting it. The app shows a small passage-number mark that opens the original passages and PDF links. A sentence that adds nothing from the paper gets no token.",
+    "- Use [[quote:ID]] on its own line only to recommend a passage the reader should read to address the question, or when showing exact wording helps. Avoid displaying the same passage as a card merely because it backs a sentence.",
     "- When you need to include one of these exact quotes, write only the matching token, e.g. [[quote:Q_x7a2]].",
     "- Do not manually copy the quote or sourceLabel when a quote anchor is available; the app will render the quote and clickable citation.",
     "- Quote text is provenance-locked source text: never translate or paraphrase it to match the user's language.",
@@ -4410,7 +5376,7 @@ export function buildQuoteAnchorPromptBlock(
       `- Quote anchor ${citation.id}:`,
       `  quoteText: ${jsonEscape(truncateForPrompt(citation.quoteText))}`,
       `  sourceLabel: ${jsonEscape(citation.citationLabel)}`,
-      `  Paragraph support: [[cite:${citation.id}]]. Reading recommendation: [[quote:${citation.id}]].`,
+      `  Sentence support: [[cite:${citation.id}]]. Reading recommendation: [[quote:${citation.id}]].`,
     );
   }
   return lines;
@@ -4673,6 +5639,21 @@ export function replaceQuoteCitationPlaceholdersForMarkdown(
   return cleanupEmptyCitationParentheticals(replacedMarkdown);
 }
 
+/**
+ * Tool JSON cannot claim a PDF page location: only the host's own matcher
+ * mints `pdf-page-text` records, so downgrade the claim to context text.
+ */
+function buildQuoteCitationFromToolRecord(
+  input: Record<string, unknown>,
+): QuoteCitation | undefined {
+  if (normalizeQuoteMatchSource(input.sourceMatchSource) !== "pdf-page-text") {
+    return buildQuoteCitation(input);
+  }
+  const { sourceMatchPageOccurrence: _drop, ...rest } = input;
+  void _drop;
+  return buildQuoteCitation({ ...rest, sourceMatchSource: "context-text" });
+}
+
 function extractFromUnknown(
   content: unknown,
   out: QuoteCitation[],
@@ -4697,10 +5678,19 @@ function extractFromUnknown(
   if (seenObjects.has(content)) return;
   seenObjects.add(content);
   const record = content as Record<string, unknown>;
-  const ownCitation = buildQuoteCitation(record);
+  // Tool output is an untrusted boundary: a citation-shaped object in it may
+  // carry text a model wrote, so every filter applies, including quote
+  // worthiness. A minted `allowShortQuoteText` marker only lifts the length
+  // minimum, which unlabelled objects already get.
+  const ownCitation = buildQuoteCitationFromToolRecord(record);
   if (ownCitation) out.push(ownCitation);
   if (Array.isArray(record.quoteCitations)) {
-    out.push(...normalizeQuoteCitations(record.quoteCitations));
+    out.push(
+      ...normalizeQuoteCitationsWith(
+        record.quoteCitations,
+        buildQuoteCitationFromToolRecord,
+      ),
+    );
   }
   for (const value of Object.values(record)) {
     extractFromUnknown(value, out, seenObjects);

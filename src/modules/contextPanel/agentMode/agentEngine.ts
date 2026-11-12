@@ -1,13 +1,16 @@
 import { scheduleChatContentScroll } from "../chatScrollSnapshots";
 import {
   applyTaskDocumentCitations,
+  applyTaskOutsideEvent,
   applyTaskPaperUpdate,
   beginTaskRun,
   completeTaskRun,
   endTaskRun,
   markTaskAnswering,
   markTaskWaiting,
+  setTaskChecklist,
   setTaskOutcomes,
+  syncTaskAnswerCitations,
   taskTurnIndexFor,
 } from "../taskProgress/store";
 /**
@@ -19,6 +22,10 @@ import {
  * mode can be read and edited without opening chat.ts.
  */
 import type { AgentRuntime } from "../../../agent/runtime";
+import {
+  injectAttachedPastChatsIntoAgentHistory,
+  resolveCurrentTurnDeliveredPastChats,
+} from "./pastChatHistory";
 import { ExecutionCheckpointFold } from "../../../agent/execution/checkpointEvents";
 import { unansweredTurnError } from "../../../agent/execution/unansweredTurn";
 import { taskProgressEffect } from "../taskProgress/runFold";
@@ -120,6 +127,7 @@ import type {
   SelectedTextContext,
   SelectedTextSource,
   TagContextRef,
+  AttachedConversationRef,
 } from "../../../shared/types";
 import type { ResolvedContextSource } from "../types";
 import {
@@ -143,6 +151,7 @@ import {
 import { synthesizeSelectedTextContexts } from "../../../services/context/normalizers";
 import { resolveSelectedTextAnchors } from "../selectedTextAnchors";
 import { getPanelHandle } from "../panelHandle";
+import { flushPendingChatRender } from "../progressiveChatRender";
 
 function readUsageNumber(record: Record<string, unknown>, key: string): number {
   const value = record[key];
@@ -354,10 +363,20 @@ export function createAgentTurnEventHandler(
           }),
           libraryID: runtimeRequest.libraryID,
         });
+        syncTaskAnswerCitations(conversationKey, { runId }, assistantMessage);
+        return;
+      case "codex_checklist":
+        // Claude Code's steps arrive as the event Codex's plan uses.
+        if (runId) {
+          setTaskChecklist(conversationKey, {
+            source: effect.source,
+            runId,
+            steps: effect.steps,
+          });
+        }
         return;
       default:
-        // A Codex plan or a retired plan event never reaches this engine's
-        // Task progress: native Codex turns are wired in the chat panel.
+        // A retired plan event never reaches this engine's Task progress.
         return;
     }
   };
@@ -366,6 +385,9 @@ export function createAgentTurnEventHandler(
     if (assistantMessage.agentRunId) {
       pushTraceEvent(assistantMessage.agentRunId, event);
     }
+    // Searches, reads and markers of outside sources (and library searches)
+    // fill the question's groups in Task progress.
+    applyTaskOutsideEvent(conversationKey, assistantMessage.agentRunId, event);
     if (event.type !== "message_delta") {
       flushMessageDeltas(event.type === "final" ? "final" : "event");
     }
@@ -474,6 +496,16 @@ export function createAgentTurnEventHandler(
         }
         break;
       }
+      case "codex_tool_activity":
+        // A Zotero MCP call Claude Code made: its passage citations join the
+        // answer's, as the Codex panel merges them from the same activity.
+        if (event.phase === "completed" && event.ok && event.quoteCitations) {
+          assistantMessage.quoteCitations = mergeQuoteCitations(
+            assistantMessage.quoteCitations,
+            event.quoteCitations,
+          );
+        }
+        break;
       case "tool_result": {
         if (!event.ok) break;
         mergeAgentToolResultQuoteCitations(assistantMessage, event);
@@ -538,6 +570,8 @@ export function createAgentTurnEventHandler(
           );
         }
         reasoningRefreshes.push(`${event.summary || ""}${event.details || ""}`);
+        if (event.summary || event.details)
+          setStatusSafely("Thinking…", "sending");
         return;
       }
       case "fallback":
@@ -584,6 +618,10 @@ export function createAgentTurnEventHandler(
         break;
       case "execution_checkpoint":
       case "execution_checkpoint_delta":
+        applyTaskProgress(event);
+        break;
+      case "codex_progress":
+        // Claude Code's steps; the trace shows no row for them.
         applyTaskProgress(event);
         break;
       case "message_rollback":
@@ -844,6 +882,11 @@ async function finalizeAgentTurnOutcome(ctx: {
     quoteCitations: assistantMessage.quoteCitations,
     libraryID: runtimeRequest.libraryID,
   });
+  syncTaskAnswerCitations(
+    conversationKey,
+    { runId: assistantMessage.agentRunId },
+    assistantMessage,
+  );
   if (!skipAssistantPersist) {
     await persistAssistantOnce();
   }
@@ -1064,6 +1107,8 @@ function findRenderedPendingActionCard(
   chatBox: HTMLElement,
   requestId: string,
 ): HTMLElement | null {
+  // The card's message may still be waiting to be drawn.
+  flushPendingChatRender(chatBox);
   const cards = Array.from(
     chatBox.querySelectorAll(".llm-agent-hitl-card[data-request-id]"),
   ) as HTMLElement[];
@@ -1518,6 +1563,7 @@ export async function sendAgentTurn(
     fullTextPaperContexts?: PaperContextRef[];
     selectedCollectionContexts?: CollectionContextRef[];
     selectedTagContexts?: TagContextRef[];
+    attachedConversations?: AttachedConversationRef[];
     attachments?: ChatAttachment[];
     modelAttachments?: ChatAttachment[];
     localDocuments?: readonly LocalDocumentResource[];
@@ -1552,6 +1598,7 @@ export async function sendAgentTurn(
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
+    attachedConversations,
     attachments,
     modelAttachments,
     localDocuments,
@@ -1621,6 +1668,17 @@ export async function sendAgentTurn(
         .slice(0, deps.maxSelectedImages)
     : [];
 
+  // The turn's messages must live in the array chatHistory holds: later
+  // writers of the user row (and past_chat_attach, which finds the message
+  // there) use that array. A conversation not in memory yet is loaded first,
+  // so the load cannot replace the array after the message is pushed.
+  if (!deps.chatHistory.has(conversationKey)) {
+    await deps.ensureConversationLoaded(item);
+  }
+  // When the load left nothing in memory (a frozen write generation, a web
+  // chat shown elsewhere), keep the earlier behaviour: a local array, so the
+  // load below still reads the stored history. past_chat_attach then
+  // refuses, as the message is not in chatHistory.
   const historyForRun = deps.chatHistory.get(conversationKey) || [];
   const isCompactCommand = /^\/compact(?:\s|$)/i.test(question.trim());
   const userMessage: Message = {
@@ -1669,6 +1727,9 @@ export async function sendAgentTurn(
     selectedTagContexts: selectedTagContexts?.length
       ? selectedTagContexts
       : undefined,
+    attachedConversations: attachedConversations?.length
+      ? attachedConversations
+      : undefined,
     forcedSkillIds: forcedSkillIds?.length ? forcedSkillIds.slice() : undefined,
   };
   if (modelAttachments !== undefined) {
@@ -1692,6 +1753,7 @@ export async function sendAgentTurn(
       pdfPaperContexts: userMessage.pdfPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       selectedTagContexts: userMessage.selectedTagContexts,
+      attachedConversations: userMessage.attachedConversations,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
       modelAttachments: userMessage.modelAttachments,
@@ -1785,9 +1847,26 @@ export async function sendAgentTurn(
   const history = deps.chatHistory.get(conversationKey) || [];
   // A turn queued for deletion is hidden from the user; a failed finalize
   // must not leak it into the prompt (see filterMessagesInPendingTurns).
-  const llmHistory = deps.buildLLMHistoryMessages(
-    filterMessagesInPendingTurns(conversationKey, history.slice(0, -2)),
+  const llmHistorySource = filterMessagesInPendingTurns(
+    conversationKey,
+    history.slice(0, -2),
   );
+  const llmHistory = await injectAttachedPastChatsIntoAgentHistory({
+    conversationKey,
+    conversationSystem: deps.getConversationSystem(),
+    libraryID: item.libraryID,
+    messages: llmHistorySource,
+    history: deps.buildLLMHistoryMessages(llmHistorySource),
+    effectiveRequestConfig,
+  });
+  const deliveredConversations = resolveCurrentTurnDeliveredPastChats({
+    conversationSystem: deps.getConversationSystem(),
+    history: llmHistorySource,
+    current: {
+      text: question,
+      attachedConversations: userMessage.attachedConversations,
+    },
+  });
   const normalizedPaperContexts = deps.normalizePaperContexts([
     ...(paperContexts || []),
   ]);
@@ -1841,6 +1920,7 @@ export async function sendAgentTurn(
       citationPaperContexts: userMessage.citationPaperContexts,
       selectedCollectionContexts: userMessage.selectedCollectionContexts,
       selectedTagContexts: userMessage.selectedTagContexts,
+      attachedConversations: userMessage.attachedConversations,
       screenshotImages: userMessage.screenshotImages,
       attachments: userMessage.attachments,
       modelAttachments: userMessage.modelAttachments,
@@ -1865,6 +1945,9 @@ export async function sendAgentTurn(
         citationPaperContexts: userMessage.citationPaperContexts,
         selectedCollectionContexts,
         selectedTagContexts,
+        attachedConversations: userMessage.attachedConversations,
+        // Claude Code only; other turns keep the request shape they had.
+        ...(deliveredConversations ? { deliveredConversations } : {}),
         attachments: modelAttachments ?? attachments,
         localDocuments,
         screenshots: images,
@@ -1922,6 +2005,7 @@ export async function sendAgentTurn(
         fullTextPaperContexts,
         selectedCollectionContexts,
         selectedTagContexts,
+        attachedConversations: userMessage.attachedConversations,
         attachments,
         modelAttachments,
         runtimeMode: "agent",
@@ -2414,9 +2498,23 @@ export async function retryAgentTurn(
     assistantMessage.quoteDisplayOverride = undefined;
   }
 
-  const historyForLLM = deps.buildLLMHistoryMessages(
-    history.slice(0, retryPair.userIndex),
-  );
+  const historyForLLMSource = history.slice(0, retryPair.userIndex);
+  const historyForLLM = await injectAttachedPastChatsIntoAgentHistory({
+    conversationKey,
+    conversationSystem,
+    libraryID: item.libraryID,
+    messages: historyForLLMSource,
+    history: deps.buildLLMHistoryMessages(historyForLLMSource),
+    effectiveRequestConfig,
+  });
+  const deliveredConversations = resolveCurrentTurnDeliveredPastChats({
+    conversationSystem,
+    history: historyForLLMSource,
+    current: {
+      text: question,
+      attachedConversations: retryPair.userMessage.attachedConversations,
+    },
+  });
   if (modelAttachmentsOverride !== undefined) {
     retryPair.userMessage.modelAttachments = modelAttachmentsOverride;
   }
@@ -2449,6 +2547,9 @@ export async function retryAgentTurn(
         citationPaperContexts: retryPair.userMessage.citationPaperContexts,
         selectedCollectionContexts,
         selectedTagContexts,
+        attachedConversations: retryPair.userMessage.attachedConversations,
+        // Claude Code only; other turns keep the request shape they had.
+        ...(deliveredConversations ? { deliveredConversations } : {}),
         attachments: retryModelAttachments,
         localDocuments: retryLocalDocuments,
         screenshots: screenshotImages,

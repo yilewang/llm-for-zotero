@@ -4,6 +4,7 @@ import {
   setStatus,
 } from "./textUtils";
 import { sanitizeText } from "../../utils/textSanitization";
+import { t } from "../../utils/i18n";
 import {
   buildNoteContextIdentityKey,
   normalizeNoteContextRef,
@@ -11,6 +12,7 @@ import {
   normalizePositiveInt,
   normalizeSelectedTextContexts,
   normalizeSelectedTextSource,
+  normalizeSelectedTextUserQuery,
 } from "../../services/context/normalizers";
 import { MAX_SELECTED_TEXT_CONTEXTS } from "./constants";
 import { recentReaderSelectionCache } from "./state";
@@ -42,6 +44,7 @@ import {
   isSupportedContextAttachment,
 } from "../../services/paperContent/contextAttachmentSupport";
 import { createContextIcon } from "./contextIcons";
+import { appendSelectedTextSections } from "./selectedTextPreviewSections";
 import {
   getFirstSelectionFromReader,
   getSelectionFromDocument,
@@ -430,7 +433,15 @@ function resolveContextSourceItemBase(
     };
   }
 
-  const activeItem = getActiveContextAttachmentFromTabs();
+  const activeTabItem = getActiveContextAttachmentFromTabs();
+  // A regular panel item (a torn-off window's paper) only accepts a reader
+  // that shows its own attachment, never another paper's.
+  const activeItem =
+    activeTabItem &&
+    (activeTabItem.id === panelItem.id ||
+      (panelParentItem && activeTabItem.parentID === panelParentItem.id))
+      ? activeTabItem
+      : null;
   if (activeItem) {
     const label = getContextItemLabel(activeItem);
     return {
@@ -552,7 +563,15 @@ async function resolveContextSourceItemAsyncBase(
     };
   }
 
-  const activeItem = getActiveContextAttachmentFromTabs();
+  const activeTabItem = getActiveContextAttachmentFromTabs();
+  // A regular panel item (a torn-off window's paper) only accepts a reader
+  // that shows its own attachment, never another paper's.
+  const activeItem =
+    activeTabItem &&
+    (activeTabItem.id === panelItem.id ||
+      (panelParentItem && activeTabItem.parentID === panelParentItem.id))
+      ? activeTabItem
+      : null;
   if (activeItem) {
     const label = getContextItemLabel(activeItem);
     return {
@@ -993,31 +1012,45 @@ export function syncSelectedTextContextForSource(
   return true;
 }
 
-export function appendSelectedTextContextForItem(
+/**
+ * Result of adding selected text as a chip: "duplicate" means a chip with the
+ * same text, source, paper, note, attachment, and page index already exists
+ * (the same text from another page is a new chip); "full" means the chip limit
+ * is reached; "empty" means nothing was left after normalization.
+ */
+export type AppendSelectedTextOutcome =
+  | "added"
+  | "duplicate"
+  | "full"
+  | "empty";
+
+/** Identity of a chip for duplicate detection, page index included. */
+function buildSelectedTextDedupeKey(entry: SelectedTextContext): string {
+  const sourceKey = entry.source;
+  const paperKey = entry.paperContext
+    ? `${entry.paperContext.itemId}:${entry.paperContext.contextItemId}`
+    : "-";
+  const noteKey = buildNoteContextIdentityKey(entry.noteContext) || "-";
+  const contextItemId = Number.isFinite(entry.contextItemId)
+    ? Math.floor(entry.contextItemId as number)
+    : 0;
+  const pageIndex = Number.isFinite(entry.pageIndex)
+    ? Math.floor(entry.pageIndex as number)
+    : -1;
+  return `${sourceKey}\u241f${noteKey}\u241f${entry.text}\u241f${paperKey}\u241f${contextItemId}\u241f${pageIndex}`;
+}
+
+export function appendSelectedTextContextForItemDetailed(
   itemId: number,
   text: string,
   source: SelectedTextSource = "pdf",
   paperContext?: PaperContextRef | null,
   location?: SelectedTextPageLocation | null,
   noteContext?: NoteContextRef | null,
-): boolean {
+): AppendSelectedTextOutcome {
   const normalizedText = normalizeSelectedText(text || "", source);
-  if (!normalizedText) return false;
+  if (!normalizedText) return "empty";
   const existingContexts = getSelectedTextContextEntries(itemId);
-  const dedupeKey = (entry: SelectedTextContext): string => {
-    const sourceKey = entry.source;
-    const paperKey = entry.paperContext
-      ? `${entry.paperContext.itemId}:${entry.paperContext.contextItemId}`
-      : "-";
-    const noteKey = buildNoteContextIdentityKey(entry.noteContext) || "-";
-    const contextItemId = Number.isFinite(entry.contextItemId)
-      ? Math.floor(entry.contextItemId as number)
-      : 0;
-    const pageIndex = Number.isFinite(entry.pageIndex)
-      ? Math.floor(entry.pageIndex as number)
-      : -1;
-    return `${sourceKey}\u241f${noteKey}\u241f${entry.text}\u241f${paperKey}\u241f${contextItemId}\u241f${pageIndex}`;
-  };
   const incomingEntry = buildSelectedTextContext(
     normalizedText,
     source,
@@ -1032,15 +1065,166 @@ export function appendSelectedTextContextForItem(
       (entry) => getSelectedNoteContextIdentityKey(entry) === incomingNoteKey,
     )
   ) {
-    return false;
+    return "duplicate";
   }
-  const incomingKey = dedupeKey(incomingEntry);
-  if (existingContexts.some((entry) => dedupeKey(entry) === incomingKey)) {
-    return false;
+  const incomingKey = buildSelectedTextDedupeKey(incomingEntry);
+  if (
+    existingContexts.some(
+      (entry) => buildSelectedTextDedupeKey(entry) === incomingKey,
+    )
+  ) {
+    return "duplicate";
   }
-  if (existingContexts.length >= MAX_SELECTED_TEXT_CONTEXTS) return false;
+  if (existingContexts.length >= MAX_SELECTED_TEXT_CONTEXTS) return "full";
   setSelectedTextContextEntries(itemId, [...existingContexts, incomingEntry]);
   composeContextStore.selectedTextExpandedIndex.delete(itemId);
+  return "added";
+}
+
+/** Boolean form for callers that only need to know whether a chip was added. */
+export function appendSelectedTextContextForItem(
+  itemId: number,
+  text: string,
+  source: SelectedTextSource = "pdf",
+  paperContext?: PaperContextRef | null,
+  location?: SelectedTextPageLocation | null,
+  noteContext?: NoteContextRef | null,
+): boolean {
+  return (
+    appendSelectedTextContextForItemDetailed(
+      itemId,
+      text,
+      source,
+      paperContext,
+      location,
+      noteContext,
+    ) === "added"
+  );
+}
+
+/**
+ * Index of the chip holding this text from this source and paper, or -1;
+ * `contextItemId`, when given, must match too. Among several matches, the
+ * chip on `pageIndex` wins, then a chip with no page (its page may arrive
+ * after the add), then the first match.
+ */
+export function findSelectedTextContextIndexForItem(
+  itemId: number,
+  text: string,
+  source: SelectedTextSource,
+  paperContext: PaperContextRef | null | undefined,
+  contextItemId?: number | null,
+  pageIndex?: number | null,
+): number {
+  const normalizedSource = normalizeSelectedTextSource(source);
+  const normalizedText = normalizeSelectedText(text || "", normalizedSource);
+  if (!normalizedText) return -1;
+  const normalizedPaperContext = normalizePaperContextRefs([paperContext])[0];
+  const expectedContextItemId = normalizePositiveInt(contextItemId);
+  const paperIdentity = (context?: PaperContextRef | null): string =>
+    context ? `${context.itemId}:${context.contextItemId}` : "";
+  const expectedPaperIdentity = paperIdentity(normalizedPaperContext);
+  const entries = getSelectedTextContextEntries(itemId);
+  const candidates: number[] = [];
+  entries.forEach((entry, index) => {
+    if (
+      entry.text === normalizedText &&
+      entry.source === normalizedSource &&
+      paperIdentity(entry.paperContext) === expectedPaperIdentity &&
+      (!expectedContextItemId || entry.contextItemId === expectedContextItemId)
+    ) {
+      candidates.push(index);
+    }
+  });
+  if (!candidates.length) return -1;
+  const rawPage = pageIndex == null ? NaN : Number(pageIndex);
+  if (Number.isFinite(rawPage) && rawPage >= 0) {
+    const expectedPage = Math.floor(rawPage);
+    const exact = candidates.find(
+      (index) => entries[index].pageIndex === expectedPage,
+    );
+    if (exact !== undefined) return exact;
+    const unpaged = candidates.find(
+      (index) => !Number.isFinite(entries[index].pageIndex),
+    );
+    if (unpaged !== undefined) return unpaged;
+  }
+  return candidates[0];
+}
+
+/**
+ * The question on the chip found by `findSelectedTextContextIndexForItem`;
+ * "" when that chip has none or no chip matches.
+ */
+export function getSelectedTextContextQueryForItem(
+  itemId: number,
+  text: string,
+  source: SelectedTextSource,
+  paperContext: PaperContextRef | null | undefined,
+  contextItemId?: number | null,
+  pageIndex?: number | null,
+): string {
+  const index = findSelectedTextContextIndexForItem(
+    itemId,
+    text,
+    source,
+    paperContext,
+    contextItemId,
+    pageIndex,
+  );
+  if (index < 0) return "";
+  return getSelectedTextContextEntries(itemId)[index]?.userQuery || "";
+}
+
+/**
+ * Sets the question on the chip found by `findSelectedTextContextIndexForItem`.
+ * The query is normalized like chip text (D1); an empty query removes it.
+ * Returns true when a matching chip was found (it now carries this query,
+ * even if it already did); false when no chip matches, and nothing changes.
+ */
+export function updateSelectedTextContextQueryForItem(
+  itemId: number,
+  text: string,
+  source: SelectedTextSource,
+  paperContext: PaperContextRef | null | undefined,
+  query: string,
+  contextItemId?: number | null,
+  pageIndex?: number | null,
+): boolean {
+  const index = findSelectedTextContextIndexForItem(
+    itemId,
+    text,
+    source,
+    paperContext,
+    contextItemId,
+    pageIndex,
+  );
+  if (index < 0) return false;
+  const contexts = getSelectedTextContextEntries(itemId);
+  const existing = contexts[index];
+  const userQuery = normalizeSelectedTextUserQuery(query, sanitizeText);
+  if ((existing.userQuery || "") === userQuery) return true;
+  const { userQuery: _previousQuery, ...rest } = existing;
+  const next: SelectedTextContext = userQuery ? { ...rest, userQuery } : rest;
+  setSelectedTextContextEntries(itemId, [
+    ...contexts.slice(0, index),
+    next,
+    ...contexts.slice(index + 1),
+  ]);
+  return true;
+}
+
+/**
+ * Removes every chip's question in the composer, keeping the chips. Returns
+ * true when a question was removed.
+ */
+export function stripSelectedTextQuestionsForItem(itemId: number): boolean {
+  const contexts = getSelectedTextContextEntries(itemId);
+  if (!contexts.some((entry) => entry.userQuery)) return false;
+  setSelectedTextContextEntries(
+    itemId,
+    contexts.map((entry) => ({ ...entry, userQuery: undefined })),
+  );
   return true;
 }
 
@@ -1158,17 +1342,17 @@ export function addSelectedTextContext(
   itemId: number,
   text: string,
   options: AddSelectedTextContextOptions = {},
-): boolean {
+): AppendSelectedTextOutcome {
   const normalizedText = normalizeSelectedText(text || "", options.source);
   const status = body.querySelector("#llm-status") as HTMLElement | null;
   if (!normalizedText) {
     if (status && options.noSelectionStatusText) {
       setStatus(status, options.noSelectionStatusText, "error");
     }
-    return false;
+    return "empty";
   }
 
-  const appended = appendSelectedTextContextForItem(
+  const outcome = appendSelectedTextContextForItemDetailed(
     itemId,
     normalizedText,
     options.source || "pdf",
@@ -1176,9 +1360,13 @@ export function addSelectedTextContext(
     options.location,
     options.noteContext,
   );
-  if (!appended) {
+  if (outcome === "duplicate") {
+    if (status) setStatus(status, t("Selected text already included"), "ready");
+    return outcome;
+  }
+  if (outcome !== "added") {
     if (status) setStatus(status, "Text Context up to 5", "error");
-    return false;
+    return outcome;
   }
   applySelectedTextPreview(body, itemId);
   if (status && options.successStatusText) {
@@ -1190,7 +1378,7 @@ export function addSelectedTextContext(
     ) as HTMLTextAreaElement | null;
     inputEl?.focus({ preventScroll: true });
   }
-  return true;
+  return "added";
 }
 
 function resolveNoteChipSnapshot(
@@ -1432,6 +1620,16 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
       if (selectedSource === "note-edit") {
         return "Editing";
       }
+      if (selectedSource === "sidechat") {
+        return selectedContexts.length > 1 && index > 0
+          ? `${t("Side chat")} (${index + 1})`
+          : t("Side chat");
+      }
+      if (selectedSource === "inlineask") {
+        return selectedContexts.length > 1 && index > 0
+          ? `${t("Inline Ask")} (${index + 1})`
+          : t("Inline Ask");
+      }
       if (selectedSource === "model") {
         return selectedContexts.length > 1 && index > 0
           ? `Model Response (${index + 1})`
@@ -1562,9 +1760,12 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
     previewExpanded.hidden = false;
     previewExpanded.style.display = "flex";
 
-    const previewText = ownerDoc.createElement("div");
-    previewText.className = "llm-selected-context-text";
-    previewText.textContent = selectedText;
+    appendSelectedTextSections(
+      ownerDoc,
+      previewExpanded,
+      selectedText,
+      selectedContext.userQuery,
+    );
 
     const previewWarning = ownerDoc.createElement("div");
     previewWarning.className = "llm-selected-context-warning";
@@ -1572,7 +1773,7 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
       "Recommend to use screenshots option for corrupted text";
     previewWarning.style.display = isCorrupted ? "block" : "none";
 
-    previewExpanded.append(previewText, previewWarning);
+    previewExpanded.append(previewWarning);
     previewBox.append(previewHeader, previewExpanded);
     previewList.appendChild(previewBox);
   }

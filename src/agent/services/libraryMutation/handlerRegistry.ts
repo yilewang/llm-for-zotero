@@ -1,5 +1,6 @@
 import type { LibraryMutationOperation } from "./contracts";
 import { canonicalJsonEqual } from "./canonicalJson";
+import { normalizeWebAddress } from "./valueTypes";
 import { renderMarkdownForNote } from "../../../utils/markdown";
 import { stripNoteHtml } from "../../../utils/noteText";
 import {
@@ -9,6 +10,7 @@ import {
 } from "./handlerDefinition";
 import {
   describeItemIds,
+  batchNoteMatcher,
   noteContentMatches,
   onePer,
   restoreCollectionState,
@@ -84,6 +86,37 @@ function filedAsAsked(
   return operation.from === "all"
     ? sameMembers(collectionIds, destinations as number[])
     : !collectionIds.includes(Number(operation.from));
+}
+
+/** Zotero's link modes, as `attachmentLinkMode` stores them. */
+const LINK_MODE = {
+  importedFile: 0,
+  importedUrl: 1,
+  linkedFile: 2,
+  linkedUrl: 3,
+} as const;
+
+/**
+ * The live attachments `state` holds under `parentItemId`. After an attach
+ * the state holds the created attachments only, and before it the parent
+ * only, so a postcondition that needs one of these never holds beforehand.
+ */
+function liveChildAttachments(
+  state: MutationStateView,
+  parentItemId: number,
+): NonNullable<MutationStateView["items"]> {
+  return (state.items || []).filter(
+    (item) =>
+      item.exists &&
+      item.deleted !== true &&
+      item.parentItemId === parentItemId &&
+      item.attachmentLinkMode !== undefined,
+  );
+}
+
+/** Trim and compose a comment the way Zotero stores it. */
+function storedComment(value: string | undefined): string {
+  return (value || "").trim().normalize();
 }
 
 const TOP_LEVEL_ONLY = "only top-level items can be filed into collections.";
@@ -186,6 +219,57 @@ export const libraryMutationHandlers = {
           : current.fields?.[field] === value,
       );
     },
+  }),
+  change_item_type: defineHandler("change_item_type", {
+    actionCapability: "zotero.metadata",
+    targetScope: "items",
+    targetItemIds: (operation) => [operation.itemId],
+    actionParameters: (operation) => ({
+      metadataFields: ["itemType", ...(operation.droppedFields || [])],
+      metadataValues: { itemType: operation.itemType },
+    }),
+    stateSections: ["items"],
+    replay: "state-aware",
+    // The type, then the exact fields and creators it had.
+    planInverse: (operation, state) => {
+      const item = state.item(operation.itemId);
+      return item?.exists && item.itemType && item.fields && item.creators
+        ? {
+            inverseOperations: [
+              {
+                type: "change_item_type",
+                itemId: operation.itemId,
+                itemType: item.itemType,
+                restore: { fields: item.fields, creators: item.creators },
+              },
+            ],
+          }
+        : {};
+    },
+    postconditionSatisfied: (operation, state) => {
+      const current = state.item(operation.itemId);
+      if (!current?.exists || current.itemType !== operation.itemType)
+        return false;
+      if (operation.restore)
+        return (
+          canonicalJsonEqual(current.fields, operation.restore.fields) &&
+          canonicalJsonEqual(current.creators, operation.restore.creators)
+        );
+      return (
+        (operation.expectedCreators === undefined ||
+          canonicalJsonEqual(current.creators, operation.expectedCreators)) &&
+        // A field the plan said would keep its value must still hold it; a
+        // value Zotero emptied would otherwise read as a verified change.
+        Object.entries(operation.expectedFields || {}).every(
+          ([field, value]) => current.fields?.[field] === value,
+        ) &&
+        (operation.droppedFields || []).every(
+          (field) => !current.fields?.[field],
+        )
+      );
+    },
+    affectedCount: (_operation, result) =>
+      resultStatus(result, "updated") || resultStatus(result, "restored"),
   }),
   apply_tags: defineHandler("apply_tags", {
     actionCapability: "zotero.tags",
@@ -418,7 +502,9 @@ export const libraryMutationHandlers = {
       operation.notes.map((entry) => entry.targetItemId),
     destinationCollectionIds: (operation) =>
       operation.notes.flatMap((entry) => entry.collections || []),
-    actionParameters: () => ({ noteMode: "create" }),
+    actionParameters: (operation) => ({
+      noteMode: operation.mode === "append" ? "append" : "create",
+    }),
     stateSections: ["items"],
     deferredInverse: () => true,
     createdItemIds: (result) =>
@@ -430,23 +516,53 @@ export const libraryMutationHandlers = {
       }),
     executionDomain: "notes-lifecycle",
     postconditionSatisfied: (operation, state) => {
+      // An append is judged on the note it named, not on a parent.
+      if (operation.mode === "append")
+        return operation.notes.every((expected) => {
+          const note = state.item(
+            expected.targetNoteId ?? expected.targetItemId,
+          );
+          return Boolean(
+            note?.exists &&
+            !note.deleted &&
+            batchNoteMatcher(
+              expected.content,
+              expected.targetNoteId ?? expected.targetItemId,
+            )(note.noteHtml),
+          );
+        });
       const notes = (state.items || []).filter((item) => item.exists);
+      // A standalone note has no parent; its targetItemId only names the
+      // library its citations resolve in.
+      const placed = (
+        actual: (typeof notes)[number],
+        expected: (typeof operation.notes)[number],
+      ) =>
+        operation.target === "standalone"
+          ? !actual.parentItemId
+          : actual.parentItemId === expected.targetItemId;
       return (
         notes.length >= operation.notes.length &&
-        operation.notes.every((expected) =>
-          notes.some(
+        operation.notes.every((expected) => {
+          const matches = batchNoteMatcher(
+            expected.content,
+            expected.targetItemId,
+          );
+          return notes.some(
             (actual) =>
-              actual.parentItemId === expected.targetItemId &&
-              noteContentMatches(actual.noteHtml, expected.content) &&
+              placed(actual, expected) &&
+              matches(actual.noteHtml) &&
               (expected.collections || []).every((collectionId) =>
                 (actual.collectionIds || []).includes(collectionId),
               ),
-          ),
-        )
+          );
+        })
       );
     },
     targetCount: (operation) => operation.notes.length,
-    affectedCount: (_operation, result) => resultCount(result, "createdCount"),
+    affectedCount: (_operation, result) =>
+      resultCount(result, "createdCount") +
+      resultCount(result, "appendedCount"),
     // A stopped batch reports how many of its notes it reached; they are the
     // first ones, in order, because it stops only between two notes.
     reached: (operation, result) => {
@@ -971,11 +1087,18 @@ export const libraryMutationHandlers = {
       reason:
         "Merging can move and deduplicate child objects, so it has no lossless inverse.",
     }),
+    // The master survives, and each duplicate is gone or trashed with no
+    // attachment or note left on it: Zotero moved them to the master.
     postconditionSatisfied: (operation, state) =>
       Boolean(state.item(operation.masterItemId)?.exists) &&
       operation.otherItemIds.every((itemId) => {
         const item = state.item(itemId);
-        return !item?.exists || item.deleted === true;
+        return (
+          !item?.exists ||
+          (item.deleted === true &&
+            !item.childAttachmentIds?.length &&
+            !item.childNoteIds?.length)
+        );
       }),
     targetCount: (operation) => operation.otherItemIds.length,
     affectedCount: (_operation, result) => resultCount(result, "mergedCount"),
@@ -1093,5 +1216,133 @@ export const libraryMutationHandlers = {
         ...operation,
         filePaths: [filePath],
       })),
+  }),
+  attach_file: defineHandler("attach_file", {
+    actionCapability: "zotero.attachments",
+    targetScope: "items",
+    targetItemIds: (operation) => [operation.parentItemId],
+    actionParameters: (operation) => ({
+      targetItemId: operation.parentItemId,
+      filePath: operation.filePath,
+      linkFile: Boolean(operation.link),
+    }),
+    stateSections: ["items"],
+    deferredInverse: () => true,
+    createdItemIds: (result) => resultIds(result, "attachmentIds"),
+    executionDomain: "attachments-imports",
+    postconditionSatisfied: (operation, state) =>
+      liveChildAttachments(state, operation.parentItemId).some(
+        (item) =>
+          item.attachmentLinkMode ===
+          (operation.link ? LINK_MODE.linkedFile : LINK_MODE.importedFile),
+      ),
+    affectedCount: (_operation, result) => resultStatus(result, "attached"),
+  }),
+  attach_url: defineHandler("attach_url", {
+    actionCapability: "zotero.attachments",
+    targetScope: "items",
+    targetItemIds: (operation) => [operation.parentItemId],
+    actionParameters: (operation) => ({
+      targetItemId: operation.parentItemId,
+      url: operation.url,
+    }),
+    stateSections: ["items"],
+    deferredInverse: () => true,
+    createdItemIds: (result) => resultIds(result, "attachmentIds"),
+    executionDomain: "attachments-imports",
+    // The user asked for both: a link to the address and a stored snapshot.
+    postconditionSatisfied: (operation, state) => {
+      const children = liveChildAttachments(state, operation.parentItemId);
+      return (
+        children.some(
+          (item) =>
+            item.attachmentLinkMode === LINK_MODE.linkedUrl &&
+            normalizeWebAddress(item.attachmentUrl) ===
+              normalizeWebAddress(operation.url),
+        ) &&
+        children.some(
+          (item) => item.attachmentLinkMode === LINK_MODE.importedUrl,
+        )
+      );
+    },
+    affectedCount: (_operation, result) => resultStatus(result, "attached"),
+  }),
+  find_pdf: defineHandler("find_pdf", {
+    actionCapability: "zotero.attachments",
+    targetScope: "items",
+    targetItemIds: (operation) => [operation.itemId],
+    actionParameters: (operation) => ({ targetItemId: operation.itemId }),
+    stateSections: ["items"],
+    deferredInverse: () => true,
+    createdItemIds: (result) => resultIds(result, "attachmentIds"),
+    executionDomain: "attachments-imports",
+    // A find holds when its file is a live child of the item.
+    postconditionSatisfied: (operation, state) =>
+      liveChildAttachments(state, operation.itemId).length > 0,
+    // Found nothing is an answer, proved when the item's live attachments
+    // after the search are the ones the state before it recorded.
+    noChangeOutcome: (operation, result, before, after) => {
+      const outcome = result as { status?: unknown; reason?: unknown } | null;
+      if (outcome?.status !== "not_found") return undefined;
+      const was = before.item(operation.itemId);
+      const now = after.item(operation.itemId);
+      return was?.exists &&
+        now?.exists &&
+        was.childAttachmentIds &&
+        now.childAttachmentIds &&
+        sameMembers(now.childAttachmentIds, was.childAttachmentIds)
+        ? `No change: ${String(outcome.reason || "No PDF found online.")}`
+        : undefined;
+    },
+    affectedCount: (_operation, result) => resultStatus(result, "found"),
+  }),
+  update_annotation: defineHandler("update_annotation", {
+    actionCapability: "zotero.annotations",
+    targetScope: "items",
+    targetItemIds: (operation) => [operation.annotationId],
+    actionParameters: (operation) => ({
+      ...(operation.comment === undefined
+        ? {}
+        : { annotationComment: operation.comment }),
+      ...(operation.color === undefined
+        ? {}
+        : { annotationColor: operation.color }),
+    }),
+    stateSections: ["items"],
+    replay: "state-aware",
+    executionDomain: "attachments-imports",
+    planInverse: (operation, state) => {
+      const previous = state.item(operation.annotationId)?.annotation;
+      return previous
+        ? {
+            inverseOperations: [
+              {
+                type: "update_annotation",
+                annotationId: operation.annotationId,
+                ...(operation.comment === undefined
+                  ? {}
+                  : { comment: previous.comment }),
+                ...(operation.color === undefined || !previous.color
+                  ? {}
+                  : { color: previous.color }),
+              },
+            ],
+          }
+        : { reason: "The annotation could not be read before the edit." };
+    },
+    postconditionSatisfied: (operation, state) => {
+      const current = state.item(operation.annotationId);
+      const annotation = current?.annotation;
+      return Boolean(
+        current?.exists &&
+        current.deleted !== true &&
+        annotation &&
+        (operation.comment === undefined ||
+          storedComment(annotation.comment) ===
+            storedComment(operation.comment)) &&
+        (operation.color === undefined || annotation.color === operation.color),
+      );
+    },
+    affectedCount: (_operation, result) => resultStatus(result, "updated"),
   }),
 } satisfies LibraryMutationHandlerRegistry;

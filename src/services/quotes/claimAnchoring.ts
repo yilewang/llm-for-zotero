@@ -5,6 +5,7 @@ import { buildQuoteCitation } from "./quoteCitations";
 import { quoteTokenPattern, quoteTokenSource } from "./quoteTokenIds";
 import {
   collectProseLines,
+  splitBodyBlocks,
   splitSentences,
   type SentenceSpan,
 } from "./sentenceSplit";
@@ -243,15 +244,9 @@ function passageCandidates(passageText: string): Candidate[] {
   const cleaned = passageText.replace(CHUNK_MARKER, "");
   const candidates: Candidate[] = [];
   let position = 0;
-  for (const block of cleaned.split(/\n{2,}/)) {
-    const flat = block
-      .split("\n")
-      .map((l) => l.replace(/^#{1,6}\s+/, "").trim())
-      .filter(Boolean)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!flat) continue;
+  // A heading ends a block and is dropped: it is not a sentence a claim can
+  // cite, and glued to the body it would join the text on both sides of it.
+  for (const flat of splitBodyBlocks(cleaned)) {
     const sentences = splitSentences(flat);
     for (let i = 0; i < sentences.length; i++) {
       let text = sentences[i].text;
@@ -301,7 +296,7 @@ export function reanchorQuoteCitationsToClaims(params: {
   const decisions: ClaimAnchorDecision[] = [];
   const quoteCitations = params.quoteCitations.map(
     (citation): QuoteCitation => {
-      // Paragraph footers disclose the exact source passage the model chose.
+      // A cited sentence's mark discloses the exact source passage the model chose.
       // A separate quote card must not silently change that shared evidence.
       if (paragraphIds.has(citation.id)) return citation;
       const claim = claims.get(citation.id);

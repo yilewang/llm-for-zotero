@@ -60,3 +60,22 @@ export function getCanonicalSkillDir(skillId: string): string {
 export function getCanonicalSkillFilePath(skillId: string): string {
   return joinLocalPath(getCanonicalSkillDir(skillId), NATIVE_SKILL_FILE_NAME);
 }
+
+/**
+ * Codex-only copies of the skills whose body has runtime sections
+ * (codexSkillProjection.ts): `<runtime root>/codex-skills/<id>/SKILL.md`.
+ * Outside `.agents/skills`, so Codex finds them only as the extra skill root
+ * the plugin registers with `skills/extraRoots/set`, never by cwd discovery.
+ * The plugin owns this folder and rewrites it; users edit the canonical copy.
+ */
+export function getCodexSkillProjectionDir(): string {
+  return joinLocalPath(getZoteroAgentRuntimeRootDir(), "codex-skills");
+}
+
+export function getCodexSkillProjectionFilePath(skillId: string): string {
+  return joinLocalPath(
+    getCodexSkillProjectionDir(),
+    skillId,
+    NATIVE_SKILL_FILE_NAME,
+  );
+}

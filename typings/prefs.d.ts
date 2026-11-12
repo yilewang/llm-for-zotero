@@ -11,6 +11,11 @@ declare namespace _ZoteroTypes {
       "logLevel": string;
       "sidebarLayout": string;
       "standaloneSidebarWidth": number;
+      "standalonePinnedPapers": string;
+      "standaloneSidebarSectionOptions": string;
+      "standaloneSidebarPinnedCollapsed": boolean;
+      "standaloneSidebarGroupOrder": string;
+      "standaloneSidebarCollapsedGroups": string;
       "input": string;
       "apiBase": string;
       "apiKey": string;
@@ -18,8 +23,17 @@ declare namespace _ZoteroTypes {
       "modelProviderGroups": string;
       "modelProviderGroupsMigrationVersion": number;
       "lastUsedModelEntryId": string;
+      "readerChoiceAgent": string;
+      "readerChoiceCodex": string;
+      "readerChoiceClaude": string;
       "systemPrompt": string;
       "showPopupAddText": boolean;
+      "showPopupInlineAsk": boolean;
+      "inlineAskPrompts": string;
+      "inlineAskDeletedPrompts": string;
+      "inlineAskModelEntryId": string;
+      "inlineAskReasoning": string;
+      "inlineAskTextSize": number;
       "semanticScholarApiKey": string;
       "temperaturePrimary": string;
       "maxTokensPrimary": string;
@@ -33,6 +47,12 @@ declare namespace _ZoteroTypes {
       "contextCacheTelemetry": string;
       "enableClaudeCodeMode": boolean;
       "agentBackendBridgeUrl": string;
+      "claudeCodeBridgeMode": string;
+      "claudeCodeNodePath": string;
+      "claudeCodeCliPath": string;
+      "claudeCodeBridgeExtraArgs": string;
+      "claudeCodeLegacyDaemonNoticeShown": boolean;
+      "claudeCodeLegacyDaemonCheck": boolean;
       "agentClaudeConfigSource": string;
       "agentPermissionMode": string;
       "claudeCodePermissionMode": string;
@@ -47,6 +67,7 @@ declare namespace _ZoteroTypes {
       "codexAppServerModel": string;
       "codexAppServerReasoning": string;
       "codexAppServerPath": string;
+      "codexHome": string;
       "codexAppServerConversationModeMap": string;
       "codexAppServerZoteroMcpToolsEnabled": boolean;
       "codexAppServerNativeApprovalsEnabled": boolean;
@@ -96,6 +117,7 @@ declare namespace _ZoteroTypes {
       "libraryTextIndexEnabled": boolean;
       "libraryTextIndexVectors": boolean;
       "libraryTextIndexBudgetMB": number;
+      "lastSeenVersion": string;
     };
   }
 }

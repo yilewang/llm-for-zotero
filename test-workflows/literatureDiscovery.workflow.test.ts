@@ -78,6 +78,8 @@ describe("workflow: expandable ranked discovery", function () {
         query: "discovery fixture",
         workflow: "answer",
         limit: 12,
+        need: "not_in_scope_or_library",
+        gap: "The library has no other papers on this topic.",
       });
       if (!searchInput.ok) throw new Error(searchInput.error);
       const candidates = (await search.execute(
@@ -310,6 +312,7 @@ describe("workflow: expandable ranked discovery", function () {
         `discovery-import-${stamp}`,
         "Find three papers relevant to this paper for me.",
       );
+      // A find-paper search states no reason (user decision 1a).
       const search = await run(discovery, "literature_search", {
         mode: "search",
         workflow: "review",
@@ -439,6 +442,8 @@ describe("workflow: expandable ranked discovery", function () {
         workflow: "answer",
         query: "discovery import fixture",
         limit: 12,
+        need: "not_in_scope_or_library",
+        gap: "The library has no other papers on this topic.",
       });
       assert.isFalse(
         (answer.content as { reviewRequired?: boolean }).reviewRequired,
@@ -451,6 +456,88 @@ describe("workflow: expandable ranked discovery", function () {
       assert.notOk(direct.inputRejected, JSON.stringify(direct.content));
       assert.isTrue(direct.ok, JSON.stringify(direct.content));
       assert.deepEqual(translated, [doi(3), doi(4), doi(7), doi(9)]);
+
+      // A literature review's card asks to import and cite or to cite
+      // without importing; Cite without importing imports nothing.
+      const reviewTurn = turn(
+        `review-cite-${stamp}`,
+        "Write a literature review on this topic.",
+      );
+      const reviewSearch = await run(reviewTurn, "literature_search", {
+        mode: "search",
+        workflow: "review",
+        forLiteratureReview: true,
+        query: "discovery import fixture",
+        limit: 12,
+      });
+      const reviewFound = reviewSearch.content as {
+        candidateSetId: string;
+        sessionId: string;
+        revision: number;
+      };
+      const citeArgs = {
+        sessionId: reviewFound.sessionId,
+        revision: reviewFound.revision,
+        count: 3,
+        selections: [2, 6, 8].map((candidateIndex) => ({
+          candidateSetId: reviewFound.candidateSetId,
+          candidateIndex,
+          reason: "Shares the measured population coding method.",
+        })),
+      };
+      const citeReviewed = await run(reviewTurn, "literature_review", citeArgs);
+      assert.isTrue(citeReviewed.ok, JSON.stringify(citeReviewed.content));
+      const citeParsed = review.validate(citeArgs);
+      if (!citeParsed.ok) throw new Error(citeParsed.error);
+      const citeAction = (await review.createResultReviewAction!(
+        citeParsed.value,
+        citeReviewed,
+        reviewTurn,
+      ))!;
+      const citeRequestId = `review-cite-card-${stamp}`;
+      const citeWaiting = api.renderPendingActionForPanel(panel.panelId, {
+        requestId: citeRequestId,
+        action: citeAction,
+      });
+      const citeCard =
+        Zotero.getMainWindow().document.querySelector<HTMLElement>(
+          `[data-request-id="${citeRequestId}"]`,
+        )!;
+      assert.exists(citeCard, "the review's selection card appears");
+      assert.notExists(
+        citeCard.querySelector('[data-kind="alternatives"]'),
+        "both choices are visible, none under Alternatives",
+      );
+      const citeRows = Array.from(
+        citeCard.querySelectorAll<HTMLInputElement>(
+          ".llm-search-results-list input[type=checkbox]",
+        ),
+      ) as HTMLInputElement[];
+      assert.lengthOf(citeRows, 3);
+      citeRows[0].click();
+      const citeButton = citeCard.querySelector<HTMLButtonElement>(
+        '[data-action-id="cite"]',
+      )!;
+      const importAndCite =
+        citeCard.querySelector<HTMLButtonElement>('[data-kind="save"]')!;
+      assert.equal(citeButton.textContent, "Cite 2 without importing");
+      assert.equal(importAndCite.textContent, "Import and cite 2 papers");
+      citeButton.click();
+      const citeResolution = await citeWaiting;
+      assert.equal(citeResolution.actionId, "cite");
+      const citeOutcome = await review.resolveResultReview!(
+        citeParsed.value,
+        citeReviewed,
+        citeResolution,
+        reviewTurn,
+      );
+      assert.equal(citeOutcome.kind, "deliver");
+      assert.lengthOf(reviewTurn.request.outsidePaperSelection || [], 2);
+      assert.deepEqual(
+        translated,
+        [doi(3), doi(4), doi(7), doi(9)],
+        "Cite without importing imports nothing",
+      );
     } finally {
       globalThis.fetch = originalFetch;
       native.Translate.Search = originalSearch;

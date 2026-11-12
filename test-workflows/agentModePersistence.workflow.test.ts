@@ -43,7 +43,7 @@ function getWorkflowTestApi(): WorkflowTestApi {
   return api as WorkflowTestApi;
 }
 
-describe("workflow: agent mode persistence", function () {
+describe("workflow: built-in runtime is always Agent", function () {
   this.timeout(30000);
 
   let api: WorkflowTestApi;
@@ -77,22 +77,8 @@ describe("workflow: agent mode persistence", function () {
       const paper = await createPaper("Agent Blank Footer Paper");
       const panel = await api.renderPanelForItem(paper.parentItemId);
 
-      const blankChat = await api.getDiagnostics(panel.panelId);
-      assert.isTrue(blankChat.startPageActive);
-      assert.isTrue(blankChat.statusBarVisible);
-      assert.closeTo(
-        blankChat.contextGaugeWidth || 0,
-        Number.parseFloat(blankChat.statusFontSize || "0"),
-        0.01,
-      );
-      assert.equal(blankChat.contextGaugeHeight, blankChat.contextGaugeWidth);
-      assert.equal(
-        blankChat.contextGaugeInnerBackground,
-        blankChat.panelBackground,
-      );
-      assert.isFalse(blankChat.permissionControlVisible);
-
-      const blankAgent = await api.clickPanelRuntimeModeToggle(panel.panelId);
+      // The built-in runtime opens in Agent mode with no toggle press.
+      const blankAgent = await api.getDiagnostics(panel.panelId);
       assert.equal(blankAgent.runtimeMode, "agent");
       assert.isTrue(blankAgent.startPageActive);
       assert.isTrue(blankAgent.statusBarVisible);
@@ -136,72 +122,71 @@ describe("workflow: agent mode persistence", function () {
     });
   });
 
-  it("carries an enabled agent mode to another paper and across a restart", async function () {
+  it("keeps the footer row one text line tall with 6px above the text", async function () {
     await withPrefs(AGENT_MODE_PREFS, async () => {
-      const firstPaper = await createPaper("Agent Persistence Paper One");
-      const secondPaper = await createPaper("Agent Persistence Paper Two");
+      const paper = await createPaper("Agent Footer Spacing Paper");
+      const panel = await api.renderPanelForItem(paper.parentItemId);
+
+      const footer = await api.measurePanelFooterLayout(panel.panelId, {
+        width: 360,
+        statusText: "Ready",
+      });
+      assert.isFalse(footer.statusWrapped);
+      assert.closeTo(footer.statusBarHeight, footer.statusLineHeight, 0.5);
+      assert.closeTo(footer.spaceAboveStatus, 6, 0.5);
+      assert.isTrue(footer.textGlyphsAligned);
+    });
+  });
+
+  it("opens every paper in agent mode and ignores the old saved mode", async function () {
+    await withPrefs(AGENT_MODE_PREFS, async () => {
+      // A mode saved by an older build must not change anything.
+      Zotero.Prefs.set(`${PREF_PREFIX}.lastUsedRuntimeMode`, "chat", true);
+      const firstPaper = await createPaper("Agent Default Paper One");
+      const secondPaper = await createPaper("Agent Default Paper Two");
 
       const firstPanel = await api.renderPanelForItem(firstPaper.parentItemId);
-      const initial = await api.getDiagnostics(firstPanel.panelId);
-      assert.equal(
-        initial.runtimeMode,
-        "chat",
-        "paper conversations still open in chat before any toggle",
-      );
-
-      const afterToggle = await api.clickPanelRuntimeModeToggle(
-        firstPanel.panelId,
-      );
-      assert.equal(afterToggle.runtimeMode, "agent");
+      const first = await api.getDiagnostics(firstPanel.panelId);
+      assert.equal(first.runtimeMode, "agent");
+      assert.equal(first.runtimeBadge?.label, "Agent");
 
       const secondPanel = await api.renderPanelForItem(
         secondPaper.parentItemId,
       );
-      const onSecondPaper = await api.getDiagnostics(secondPanel.panelId);
-      assert.equal(
-        onSecondPaper.runtimeMode,
-        "agent",
-        "switching papers keeps the agent mode the user turned on",
-      );
+      const second = await api.getDiagnostics(secondPanel.panelId);
+      assert.equal(second.runtimeMode, "agent");
 
       // reset() drops every in-memory per-conversation choice, which is what a
       // Zotero restart does to the panel state.
       await api.reset();
-
       const afterRestart = await api.renderPanelForItem(
         firstPaper.parentItemId,
       );
-      const restarted = await api.getDiagnostics(afterRestart.panelId);
       assert.equal(
-        restarted.runtimeMode,
+        (await api.getDiagnostics(afterRestart.panelId)).runtimeMode,
         "agent",
-        "agent mode survives a restart",
+      );
+      assert.equal(
+        Zotero.Prefs.get(`${PREF_PREFIX}.lastUsedRuntimeMode`, true),
+        "chat",
+        "nothing writes the old saved mode any more",
       );
     });
   });
 
-  it("carries a disabled agent mode across a restart without touching library chat", async function () {
-    await withPrefs(AGENT_MODE_PREFS, async () => {
-      const paper = await createPaper("Agent Persistence Paper Three");
-
-      const panel = await api.renderPanelForItem(paper.parentItemId);
-      assert.equal(
-        (await api.clickPanelRuntimeModeToggle(panel.panelId)).runtimeMode,
-        "agent",
-      );
-      assert.equal(
-        (await api.clickPanelRuntimeModeToggle(panel.panelId)).runtimeMode,
-        "chat",
-      );
-
-      await api.reset();
-
-      const afterRestart = await api.renderPanelForItem(paper.parentItemId);
-      assert.equal(
-        (await api.getDiagnostics(afterRestart.panelId)).runtimeMode,
-        "chat",
-        "turning agent mode off also sticks",
-      );
-    });
+  it("stays in chat and hides the badge when Agent, Codex and Claude are all off", async function () {
+    await withPrefs(
+      { ...AGENT_MODE_PREFS, enableAgentMode: false },
+      async () => {
+        const paper = await createPaper("Agent Off Paper");
+        const panel = await api.renderPanelForItem(paper.parentItemId);
+        const diagnostics = await api.getDiagnostics(panel.panelId);
+        assert.equal(diagnostics.runtimeMode, "chat");
+        assert.isFalse(
+          diagnostics.runtimeBadge?.visible,
+          "with Agent, Codex and Claude all off the badge is hidden",
+        );
+      },
+    );
   });
 });

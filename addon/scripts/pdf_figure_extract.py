@@ -43,7 +43,7 @@ DEFAULT_POPPLER_BIN_VALUE = os.environ.get("LLM_FOR_ZOTERO_POPPLER_BIN") or (
 DEFAULT_POPPLER_BIN = Path(DEFAULT_POPPLER_BIN_VALUE).expanduser()
 MIN_ACCEPTED_CONFIDENCE = 0.40
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 120
-DIRECT_EXTRACTOR_VERSION = "raw-pdf-evaluator-v7"
+DIRECT_EXTRACTOR_VERSION = "raw-pdf-evaluator-v8"
 
 CAPTION_PATTERN = re.compile(
     r"^\s*((?:Extended\s+Data\s+)?Fig(?:ure)?\.?\s*S?\d+[A-Za-z]?|"
@@ -909,6 +909,43 @@ def rendered_content_x_bounds(
     return left, right
 
 
+def is_same_row_label_neighbor(
+    rect: Rect,
+    other: Rect,
+    max_gap: float,
+    right_edge: bool,
+) -> bool:
+    overlap = min(rect.bottom, other.bottom) - max(rect.top, other.top)
+    if overlap < 0.5 * max(1.0, min(rect.height, other.height)):
+        return False
+    gap = rect.left - other.right if right_edge else other.left - rect.right
+    return -1.0 <= gap <= max_gap
+
+
+def drop_edge_figure_labels(
+    margin: list[Rect],
+    inner: list[Rect],
+    max_gap: float,
+    right_edge: bool,
+) -> list[Rect]:
+    """Return the margin boxes that are not part of a row of figure labels.
+
+    Axis tick labels at the page edge sit beside other short labels on the
+    same row ("80" next to "90"); vertical journal text in the margin has no
+    such neighbour. Boxes are linked from the inside out, so a run of edge
+    labels counts when its innermost member touches a label outside the margin.
+    """
+    ordered = sorted(margin, key=lambda rect: rect.left if right_edge else -rect.right)
+    labels = list(inner)
+    furniture: list[Rect] = []
+    for rect in ordered:
+        if any(is_same_row_label_neighbor(rect, other, max_gap, right_edge) for other in labels):
+            labels.append(rect)
+        else:
+            furniture.append(rect)
+    return furniture
+
+
 def mask_margin_furniture_text(
     mask: np.ndarray,
     page: dict[str, Any],
@@ -922,7 +959,14 @@ def mask_margin_furniture_text(
     ]
     left_margin = [rect for rect in narrow_boxes if rect.right <= page_width * 0.07]
     right_margin = [rect for rect in narrow_boxes if rect.left >= page_width * 0.93]
+    inner = [
+        rect
+        for rect in narrow_boxes
+        if page_width * 0.07 < rect.right and rect.left < page_width * 0.93
+    ]
     margin_padding = page_width * 0.035
+    left_margin = drop_edge_figure_labels(left_margin, inner, margin_padding, right_edge=False)
+    right_margin = drop_edge_figure_labels(right_margin, inner, margin_padding, right_edge=True)
     if left_margin:
         boundary = max(rect.right for rect in left_margin) + margin_padding
         mask[:, : min(mask.shape[1], int(math.ceil(boundary * sx)))] = False
@@ -2083,14 +2127,22 @@ def make_contact_sheet(
         draw.text((8, 8), label[:70], fill=(0, 0, 0))
         tiles.append(tile)
     gap = 16
-    rows = math.ceil(len(tiles) / cols)
     width = cols * thumb_w + (cols + 1) * gap
-    height = rows * (thumb_h + 42) + (rows + 1) * gap
-    canvas = Image.new("RGB", (width, height), (242, 242, 242))
-    for index, tile in enumerate(tiles):
-        row, col = divmod(index, cols)
-        canvas.paste(tile, (gap + col * (thumb_w + gap), gap + row * (thumb_h + 42 + gap)))
-    canvas.save(out_path, quality=92)
+    # JPEG caps each side at 65,535 px; a large sweep is split into numbered parts.
+    rows_per_sheet = max(1, (65000 - gap) // (thumb_h + 42 + gap))
+    per_sheet = rows_per_sheet * cols
+    sheets = [tiles[start : start + per_sheet] for start in range(0, len(tiles), per_sheet)]
+    for sheet_index, sheet_tiles in enumerate(sheets):
+        rows = math.ceil(len(sheet_tiles) / cols)
+        height = rows * (thumb_h + 42) + (rows + 1) * gap
+        canvas = Image.new("RGB", (width, height), (242, 242, 242))
+        for index, tile in enumerate(sheet_tiles):
+            row, col = divmod(index, cols)
+            canvas.paste(tile, (gap + col * (thumb_w + gap), gap + row * (thumb_h + 42 + gap)))
+        path = out_path if sheet_index == 0 else out_path.with_name(
+            f"{out_path.stem}_part{sheet_index + 1}{out_path.suffix}"
+        )
+        canvas.save(path, quality=92)
 
 
 def build_case_targets(
@@ -2399,6 +2451,7 @@ def main() -> None:
                         Path(overlay_path),
                     )
                 )
+    (out_dir / "summary.json").write_text(json.dumps(results, indent=2))
     make_contact_sheet(all_items, out_dir / "all_crops_contact_sheet.jpg", cols=5)
     make_contact_sheet(
         all_overlay_items,
@@ -2406,7 +2459,6 @@ def main() -> None:
         thumb_h=430,
         cols=4,
     )
-    (out_dir / "summary.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(
         {
             "pdfCount": len(results),

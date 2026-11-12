@@ -1,3 +1,4 @@
+import { porterStem } from "./porterStemmer";
 import { STOPWORDS } from "./stopwords";
 
 type SegmenterSegment = {
@@ -73,6 +74,85 @@ export const LATEX_FORMATTING_COMMANDS = new Set([
   "begin",
   "end",
   "displaystyle",
+]);
+
+/**
+ * Plain words the stemmer leaves whole. The tokenizer's own operator names
+ * come first; the rest are LaTeX command names a paper's source text keeps as
+ * words (`\infty` segments as "infty"). They are notation, not English:
+ * stemming would truncate them ("infty" → "infti") or merge them with an
+ * unrelated word ("times" → "time", "integral" → "integr", as "integrity").
+ */
+export const RETRIEVAL_STEM_EXCLUSIONS = new Set([
+  ...Object.values(MATH_SYMBOL_TOKENS),
+  "infty",
+  "times",
+  "cdot",
+  "cdots",
+  "ldots",
+  "vdots",
+  "ddots",
+  "otimes",
+  "oplus",
+  "odot",
+  "wedge",
+  "langle",
+  "rangle",
+  "lfloor",
+  "rfloor",
+  "lceil",
+  "rceil",
+  "forall",
+  "propto",
+  "approx",
+  "equiv",
+  "simeq",
+  "subseteq",
+  "supseteq",
+  "setminus",
+  "emptyset",
+  "mapsto",
+  "rightarrow",
+  "leftarrow",
+  "leftrightarrow",
+  "argmax",
+  "argmin",
+  "limsup",
+  "liminf",
+  "sinh",
+  "cosh",
+  "tanh",
+  "arcsin",
+  "arccos",
+  "arctan",
+  "hbar",
+  "frac",
+  "sqrt",
+  "prod",
+  "coprod",
+  "oint",
+  "iint",
+  "overline",
+  "underline",
+  "widehat",
+  "widetilde",
+  "alpha",
+  "beta",
+  "gamma",
+  "epsilon",
+  "varepsilon",
+  "zeta",
+  "theta",
+  "vartheta",
+  "iota",
+  "kappa",
+  "lambda",
+  "sigma",
+  "varsigma",
+  "upsilon",
+  "varphi",
+  "varrho",
+  "omega",
 ]);
 
 const MATH_SYMBOL_PATTERN = new RegExp(
@@ -204,12 +284,80 @@ function collectScriptBigrams(text: string): string[] {
   ];
 }
 
+const STEM_CACHE_LIMIT = 50_000;
+const stemCache = new Map<string, string>();
+
+/**
+ * The BM25 / index term of one surface token: its Porter stem for a plain
+ * English word (`PLAIN_ASCII_WORD_PATTERN`), the token itself for everything
+ * else — protected compounds ("il-6"), digits, Greek, CJK bigrams, and the
+ * notation names in `RETRIEVAL_STEM_EXCLUSIONS`. A compound's plain-word
+ * parts are separate tokens and are stemmed like any word.
+ *
+ * Pass surface tokens only: the stemmer is not idempotent ("agreed" →
+ * "agre", but "agre" → "agr"), so a stem must never be stemmed again.
+ */
+export function toRetrievalIndexTerm(token: string): string {
+  if (!PLAIN_ASCII_WORD_PATTERN.test(token)) return token;
+  if (RETRIEVAL_STEM_EXCLUSIONS.has(token)) return token;
+  const cached = stemCache.get(token);
+  if (cached !== undefined) return cached;
+  const stem = porterStem(token);
+  if (stemCache.size >= STEM_CACHE_LIMIT) stemCache.clear();
+  stemCache.set(token, stem);
+  return stem;
+}
+
+/** Surface query terms → their distinct index terms, in first-seen order. */
+export function toRetrievalIndexTerms(terms: readonly string[]): string[] {
+  return Array.from(new Set(terms.map(toRetrievalIndexTerm)));
+}
+
+const SURFACE_WORD_PATTERN = /[\p{L}\p{N}]+/gu;
+
+/**
+ * The first word of `text` that shares an index term with one of `terms`
+ * ("error" in the text for the query term "errors"), as offsets into `text`.
+ * Only plain English words take part; a compound or CJK term is found by the
+ * caller's own substring search. Offsets index `text.toLowerCase()`, the
+ * same convention as the callers' `indexOf` searches.
+ */
+export function findFirstIndexTermMatch(
+  text: string,
+  terms: readonly string[],
+): { start: number; end: number } | null {
+  const wanted = new Set<string>();
+  for (const term of terms) {
+    const normalized = normalizeRetrievalText(term).trim();
+    if (PLAIN_ASCII_WORD_PATTERN.test(normalized))
+      wanted.add(toRetrievalIndexTerm(normalized));
+  }
+  if (!wanted.size || !text) return null;
+  const lower = text.toLowerCase();
+  for (const match of lower.matchAll(SURFACE_WORD_PATTERN)) {
+    const word = match[0];
+    if (!PLAIN_ASCII_WORD_PATTERN.test(word)) continue;
+    if (wanted.has(toRetrievalIndexTerm(word))) {
+      const start = match.index || 0;
+      return { start, end: start + word.length };
+    }
+  }
+  return null;
+}
+
 export function tokenizeRetrievalText(
   text: string,
   options?: {
     filterStopwords?: boolean;
     fallbackToUnfilteredIfEmpty?: boolean;
     maxTokens?: number;
+    /**
+     * Emit index terms (`toRetrievalIndexTerm`) instead of surface tokens.
+     * On for BM25 term statistics and the library text index only; every
+     * caller that shows, matches or compares surface words leaves it off.
+     * Stopwords and short tokens are filtered on the surface form first.
+     */
+    stem?: boolean;
   },
 ): string[] {
   const normalized = normalizeRetrievalText(text);
@@ -228,10 +376,11 @@ export function tokenizeRetrievalText(
   const filtered = rawTokens.filter((token) =>
     shouldKeepToken(token, { filterStopwords }),
   );
-  const tokens =
+  const surface =
     filtered.length || !options?.fallbackToUnfilteredIfEmpty
       ? filtered
       : rawTokens.filter((token) => token);
+  const tokens = options?.stem ? surface.map(toRetrievalIndexTerm) : surface;
   const maxTokens = Number.isFinite(options?.maxTokens)
     ? Math.max(1, Math.floor(options?.maxTokens as number))
     : 0;

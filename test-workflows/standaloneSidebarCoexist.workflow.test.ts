@@ -14,6 +14,11 @@ import {
   installHeldChatProvider,
   type HeldChatProvider,
 } from "./helpers/heldChatProvider";
+import {
+  lastAssistantBubbleText,
+  startSharedConversationStream,
+  typeAndSend,
+} from "./helpers/sharedConversationStream";
 
 /**
  * The standalone chat window is an additional surface: opening it must not
@@ -89,13 +94,6 @@ function toKey(value: unknown): number {
 
 function textOf(node: Element | null | undefined): string {
   return (node?.textContent || "").replace(/\s+/gu, " ").trim();
-}
-
-function lastAssistantBubbleText(root: Element | null): string {
-  const bubbles = Array.from(
-    root?.querySelectorAll("#llm-chat-box .llm-bubble.assistant") || [],
-  );
-  return textOf(bubbles[bubbles.length - 1] as Element | undefined);
 }
 
 function bubbleContaining(root: Element | null, marker: string) {
@@ -344,17 +342,6 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     selectPanelModel(windowBody()!, entryId, model, "window");
 
   // ── Sending through a panel's own composer ───────────────────────────────
-
-  function typeAndSend(body: HTMLElement, text: string): void {
-    const win = body.ownerDocument.defaultView as any;
-    const input = body.querySelector("#llm-input") as HTMLTextAreaElement;
-    const send = body.querySelector("#llm-send") as HTMLButtonElement;
-    assert.isOk(input, "the composer has an input");
-    assert.isOk(send, "the composer has a Send button");
-    input.value = text;
-    input.dispatchEvent(new win.Event("input", { bubbles: true }));
-    send.click();
-  }
 
   function pressEnter(body: HTMLElement, text: string): void {
     const win = body.ownerDocument.defaultView as any;
@@ -780,7 +767,7 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
    * same conversation, starts a held answer there, and returns once the
    * window shows the first chunk.
    */
-  async function startSharedConversationStream(title: string) {
+  async function startWindowStreamOnSidebarChat(title: string) {
     const paper = await newFixture(title);
     await openSidebarChat(paper.parentItemId);
     await ensureSidebarPaperChat(paper.parentItemId);
@@ -791,14 +778,11 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
     await api.openStandaloneForItem(paper.parentItemId);
     await ensureWindowShowsConversation(key);
     const QUESTION = `${title} shared question MIRROR-Q`;
-    typeAndSend(windowBody()!, QUESTION);
-    const stream = await provider.waitForStream(QUESTION);
-    stream.push("MIRROR-PART-ONE ");
-    await until(
-      () => lastAssistantBubbleText(windowRoot()).includes("MIRROR-PART-ONE"),
-      () =>
-        `the window shows the partial answer: ${JSON.stringify(windowState())}`,
-    );
+    const stream = await startSharedConversationStream({
+      provider,
+      senderBody: windowBody,
+      question: QUESTION,
+    });
     return { paper, key, stream, question: QUESTION };
   }
 
@@ -827,7 +811,7 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
   }
 
   it("T3a: the same conversation in both surfaces mirrors a streaming answer to the end", async function () {
-    const { key, stream } = await startSharedConversationStream("Coexist T3a");
+    const { key, stream } = await startWindowStreamOnSidebarChat("Coexist T3a");
     await showConversationInSidebar(key);
     await until(
       () => lastAssistantBubbleText(sidebarRoot()).includes("MIRROR-PART-ONE"),
@@ -861,7 +845,7 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
   });
 
   it("T3b: a busy shared conversation refuses a second send from the sidebar, and the sidebar's Stop stops it for both", async function () {
-    const { key, stream } = await startSharedConversationStream("Coexist T3b");
+    const { key, stream } = await startWindowStreamOnSidebarChat("Coexist T3b");
     await showConversationInSidebar(key);
     await until(
       () => lastAssistantBubbleText(sidebarRoot()).includes("MIRROR-PART-ONE"),
@@ -932,6 +916,55 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       () =>
         "the window no longer offers Stop once the sidebar stopped the answer",
     );
+  });
+
+  it("T3z: closing the sending standalone window mid-stream still delivers the final answer to the sidebar", async function () {
+    const { key, stream } = await startWindowStreamOnSidebarChat("Coexist T3z");
+    await showConversationInSidebar(key);
+    await until(
+      () => lastAssistantBubbleText(sidebarRoot()).includes("MIRROR-PART-ONE"),
+      () =>
+        `the sidebar shows the partial answer started in the window: ${JSON.stringify(sidebarState())}`,
+    );
+    // The user closes the sending window itself, as with its close button.
+    const win = standaloneWin()!;
+    win.close();
+    await until(
+      () => win.closed && !standaloneWin(),
+      () => "the sending standalone window closes",
+    );
+    await Zotero.Promise.delay(300);
+    assert.isFalse(
+      stream.aborted,
+      "closing the sending window does not abort the answer",
+    );
+    stream.push("MIRROR-PART-TWO");
+    await until(
+      () => lastAssistantBubbleText(sidebarRoot()).includes("MIRROR-PART-TWO"),
+      () =>
+        `the sidebar keeps receiving streamed text: ${JSON.stringify(sidebarState())}`,
+    );
+    stream.finish();
+    await waitForAnswer(key, "MIRROR-PART-ONE MIRROR-PART-TWO");
+    await until(
+      () =>
+        !sidebarRoot()?.querySelector(".llm-bubble.assistant.streaming") &&
+        lastAssistantBubbleText(sidebarRoot()).includes(
+          "MIRROR-PART-ONE MIRROR-PART-TWO",
+        ),
+      () =>
+        `the sidebar ends with the final answer: ${lastAssistantBubbleText(sidebarRoot())}`,
+    );
+    const stored = await history(key);
+    assert.isTrue(
+      stored.stored.some(
+        (entry) =>
+          entry.role === "assistant" &&
+          entry.text.includes("MIRROR-PART-ONE MIRROR-PART-TWO"),
+      ),
+      `the final answer is stored: ${JSON.stringify(stored.stored)}`,
+    );
+    assertSidebarLive("after the sending window closed");
   });
 
   // ── T4 ───────────────────────────────────────────────────────────────────
@@ -1879,6 +1912,77 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       body.querySelector("#llm-chat-box"),
       chatBox,
       "the sidebar chat box is the same element",
+    );
+  });
+
+  it("T14: the window opens at the sidebar's reading place", async function () {
+    const longAnswer = Array.from(
+      { length: 60 },
+      (_, index) =>
+        `Paragraph ${index + 1} POPOUT-LONG: enough text to make the chat scroll.`,
+    ).join("\n\n");
+    const paper = await newFixture("Coexist T14");
+    await openSidebarChat(paper.parentItemId);
+    await ensureSidebarPaperChat(paper.parentItemId);
+    await completeSidebarTurn("Coexist T14 seed question", longAnswer);
+    const body = sidebarBody()!;
+    const chatBox = body.querySelector("#llm-chat-box") as HTMLElement;
+    const owner = body.ownerDocument.defaultView as any;
+    assert.isAbove(
+      chatBox.scrollHeight,
+      chatBox.clientHeight + 100,
+      "the sidebar chat is scrollable",
+    );
+    // A user scroll: wheel first so the chat leaves follow-bottom mode.
+    chatBox.dispatchEvent(new owner.WheelEvent("wheel", { deltaY: -100 }));
+    chatBox.scrollTop = Math.floor(
+      (chatBox.scrollHeight - chatBox.clientHeight) / 2,
+    );
+    chatBox.dispatchEvent(new owner.Event("scroll"));
+    await Zotero.Promise.delay(400);
+
+    const topParagraph = (box: HTMLElement): number => {
+      const top = box.getBoundingClientRect().top;
+      const paragraphs = Array.from(box.querySelectorAll("p")) as HTMLElement[];
+      for (const p of paragraphs) {
+        const match = /^Paragraph (\d+) POPOUT-LONG/.exec(p.textContent || "");
+        if (match && p.getBoundingClientRect().bottom > top + 1) {
+          return Number(match[1]);
+        }
+      }
+      return -1;
+    };
+    const expected = topParagraph(chatBox);
+    assert.isAbove(expected, 5, "the sidebar sits in the middle of the answer");
+
+    (body.querySelector("#llm-popout") as HTMLElement).click();
+    await until(
+      () => Boolean(windowRoot()?.dataset.handlersInitialized),
+      () => "the standalone window opens and mounts its chat",
+    );
+    const windowBox = () =>
+      windowBody()?.querySelector("#llm-chat-box") as HTMLElement | null;
+    await until(
+      () => {
+        const box = windowBox();
+        if (!box) return false;
+        const style = box.ownerDocument.defaultView!.getComputedStyle(box)!;
+        return (
+          style.overflowY === "auto" && box.scrollHeight > box.clientHeight
+        );
+      },
+      () => "the window chat is a scroll container",
+    );
+    await Zotero.Promise.delay(600);
+    const box = windowBox()!;
+    const max = box.scrollHeight - box.clientHeight;
+    assert.isAbove(box.scrollTop, 0, "the window chat is not at the top");
+    assert.isBelow(box.scrollTop, max - 2, "the window chat is not at the end");
+    assert.closeTo(
+      topParagraph(box),
+      expected,
+      1,
+      "the window shows the paragraph the sidebar had at the top",
     );
   });
 

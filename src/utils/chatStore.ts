@@ -6,6 +6,7 @@ import type {
   PaperContextRef,
   QuoteCitation,
   TagContextRef,
+  AttachedConversationRef,
   GeneratedChatImage,
   GlobalConversationSummary,
   PaperConversationSummary,
@@ -19,6 +20,7 @@ import {
   buildDefaultUpstreamGlobalConversationKey,
   isConversationKeyFor,
   isConversationKeyForKind,
+  isEphemeralConversationKey,
   UPSTREAM_GLOBAL_ALLOCATED_CONVERSATION_KEY_BASE,
   UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
 } from "../shared/conversationKeySpace";
@@ -92,8 +94,14 @@ import {
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
+  normalizeAttachedConversationRefs,
 } from "../services/context/normalizers";
 import { normalizeQuoteCitations } from "../services/quotes/quoteCitations";
+import {
+  mergeQuoteLocationWritesIntoStoredJson,
+  restoreQuoteSourceFileStates,
+  type QuoteLocationWrite,
+} from "../shared/quoteLocationStorage";
 import { pendingDeletionStore } from "../core/conversations/pendingDeletionStore";
 import { initRecentlyDeletedConversationTombstones } from "../core/conversations/recentlyDeletedConversations";
 import {
@@ -172,6 +180,7 @@ export type StoredChatMessage = {
   quoteCitations?: QuoteCitation[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  attachedConversations?: AttachedConversationRef[];
   screenshotImages?: string[];
   attachments?: StoredChatAttachment[];
   modelAttachments?: StoredChatAttachment[];
@@ -260,6 +269,7 @@ const CHAT_MESSAGE_SELECT_COLUMNS_SQL = `id,
             quote_citations_json AS quoteCitationsJson,
             collection_contexts_json AS collectionContextsJson,
             tag_contexts_json AS tagContextsJson,
+            attached_conversations_json AS attachedConversationsJson,
             screenshot_images AS screenshotImages,
             attachments_json AS attachmentsJson,
             model_attachments_json AS modelAttachmentsJson,
@@ -483,6 +493,7 @@ const CHAT_MESSAGE_COPY_COLUMNS = [
   "quote_citations_json",
   "collection_contexts_json",
   "tag_contexts_json",
+  "attached_conversations_json",
   "screenshot_images",
   "attachments_json",
   "model_attachments_json",
@@ -804,8 +815,16 @@ function isUpstreamPaperConversationKey(conversationKey: number): boolean {
   return isConversationKeyForKind("upstream", "paper", conversationKey);
 }
 
+/**
+ * Whether the upstream store owns rows for this key. A key from the reserved
+ * ephemeral band (a temporary side chat) never has rows: every read returns
+ * nothing and every write is skipped.
+ */
 function isUpstreamStoreConversationKey(conversationKey: number): boolean {
-  return isConversationKeyFor("upstream", conversationKey);
+  return (
+    isConversationKeyFor("upstream", conversationKey) &&
+    !isEphemeralConversationKey(conversationKey)
+  );
 }
 
 /** The upstream store as the shared deletion kernel sees it. */
@@ -970,6 +989,7 @@ async function getNextAvailableGlobalConversationKey(
     normalizedPreferred &&
     normalizedPreferred !== currentKey &&
     isUpstreamGlobalConversationKey(normalizedPreferred) &&
+    !isEphemeralConversationKey(normalizedPreferred) &&
     !(await getGlobalConversationKeyInUse(normalizedPreferred)) &&
     !(await getConversationKeyLedgerEntry(normalizedPreferred))
   ) {
@@ -1319,6 +1339,7 @@ export async function initChatStore(): Promise<void> {
         quote_citations_json TEXT,
         collection_contexts_json TEXT,
         tag_contexts_json TEXT,
+        attached_conversations_json TEXT,
         screenshot_images TEXT,
         attachments_json TEXT,
         model_attachments_json TEXT,
@@ -1593,6 +1614,12 @@ export async function initChatStore(): Promise<void> {
       messageColumns,
       "tag_contexts_json",
       "tag_contexts_json TEXT",
+    );
+    await ensureColumn(
+      CHAT_MESSAGES_TABLE,
+      messageColumns,
+      "attached_conversations_json",
+      "attached_conversations_json TEXT",
     );
     const hasScreenshotImagesColumn = Boolean(
       columns?.some((column) => column?.name === "screenshot_images"),
@@ -2140,6 +2167,7 @@ export async function loadConversation(
         quoteCitationsJson?: unknown;
         collectionContextsJson?: unknown;
         tagContextsJson?: unknown;
+        attachedConversationsJson?: unknown;
         screenshotImages?: unknown;
         attachmentsJson?: unknown;
         modelAttachmentsJson?: unknown;
@@ -2328,7 +2356,10 @@ export async function loadConversation(
     if (typeof row.quoteCitationsJson === "string" && row.quoteCitationsJson) {
       try {
         const parsed = JSON.parse(row.quoteCitationsJson) as unknown;
-        const normalized = normalizeQuoteCitations(parsed);
+        const normalized = restoreQuoteSourceFileStates(
+          parsed,
+          normalizeQuoteCitations(parsed),
+        );
         if (normalized.length) {
           quoteCitations = normalized;
         }
@@ -2361,6 +2392,21 @@ export async function loadConversation(
         }
       } catch (_err) {
         selectedTagContexts = undefined;
+      }
+    }
+    let attachedConversations: AttachedConversationRef[] | undefined;
+    if (
+      typeof row.attachedConversationsJson === "string" &&
+      row.attachedConversationsJson
+    ) {
+      try {
+        const parsed = JSON.parse(row.attachedConversationsJson) as unknown;
+        const normalized = normalizeAttachedConversationRefs(parsed);
+        if (normalized.length) {
+          attachedConversations = normalized;
+        }
+      } catch (_err) {
+        attachedConversations = undefined;
       }
     }
     let screenshotImages: string[] | undefined;
@@ -2459,6 +2505,7 @@ export async function loadConversation(
       quoteCitations,
       selectedCollectionContexts,
       selectedTagContexts,
+      attachedConversations,
       screenshotImages,
       attachments,
       modelAttachments,
@@ -2595,6 +2642,9 @@ export async function appendMessage(
   const selectedTagContexts = normalizeTagContextRefs(
     message.selectedTagContexts,
   );
+  const attachedConversations = normalizeAttachedConversationRefs(
+    message.attachedConversations,
+  );
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : [];
@@ -2644,8 +2694,8 @@ export async function appendMessage(
         const identityPlaceholder = identityAvailable ? ", ?" : "";
         await Zotero.DB.queryAsync(
           `INSERT INTO ${CHAT_MESSAGES_TABLE}
-        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id${identityColumn})
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
+        (conversation_id, conversation_key, role, text, timestamp, run_mode, agent_run_id, selected_text, selected_text_contexts_json, selected_texts_json, selected_text_sources_json, selected_text_paper_contexts_json, selected_text_note_contexts_json, forced_skill_ids_json, paper_contexts_json, pdf_paper_contexts_json, full_text_paper_contexts_json, citation_paper_contexts_json, quote_citations_json, collection_contexts_json, tag_contexts_json, attached_conversations_json, screenshot_images, attachments_json, model_attachments_json, generated_images_json, model_name, model_entry_id, model_provider_label, interrupted, completion_status, completion_reason, webchat_run_state, webchat_completion_reason, reasoning_summary, reasoning_details, context_tokens, context_window, document_id${identityColumn})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${identityPlaceholder})`,
           [
             conversationID,
             normalizedKey,
@@ -2685,6 +2735,9 @@ export async function appendMessage(
               : null,
             selectedTagContexts.length
               ? JSON.stringify(selectedTagContexts)
+              : null,
+            attachedConversations.length
+              ? JSON.stringify(attachedConversations)
               : null,
             screenshotImages.length ? JSON.stringify(screenshotImages) : null,
             attachments.length ? JSON.stringify(attachments) : null,
@@ -2765,6 +2818,7 @@ export async function updateLatestUserMessage(
     | "citationPaperContexts"
     | "selectedCollectionContexts"
     | "selectedTagContexts"
+    | "attachedConversations"
     | "screenshotImages"
     | "attachments"
     | "modelAttachments"
@@ -2816,6 +2870,9 @@ export async function updateLatestUserMessage(
   const selectedTagContexts = normalizeTagContextRefs(
     message.selectedTagContexts,
   );
+  const attachedConversations = normalizeAttachedConversationRefs(
+    message.attachedConversations,
+  );
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
     : [];
@@ -2862,6 +2919,7 @@ export async function updateLatestUserMessage(
            citation_paper_contexts_json = ?,
            collection_contexts_json = ?,
            tag_contexts_json = ?,
+           attached_conversations_json = ?,
            screenshot_images = ?,
            attachments_json = ?,
            model_attachments_json = ?,
@@ -2906,6 +2964,9 @@ export async function updateLatestUserMessage(
           ? JSON.stringify(selectedCollectionContexts)
           : null,
         selectedTagContexts.length ? JSON.stringify(selectedTagContexts) : null,
+        attachedConversations.length
+          ? JSON.stringify(attachedConversations)
+          : null,
         screenshotImages.length ? JSON.stringify(screenshotImages) : null,
         attachments.length ? JSON.stringify(attachments) : null,
         hasExplicitModelAttachments ? JSON.stringify(modelAttachments) : null,
@@ -3046,6 +3107,59 @@ export async function updateLatestAssistantMessage(
   await refreshUpstreamConversationSearchIndex(normalizedKey);
   notifyConversationCatalogChanged("turns", normalizedKey);
   return true;
+}
+
+/**
+ * Save quote locations that the display gate verified into one stored
+ * assistant row. Only `quote_citations_json` of the row at `target.timestamp`
+ * (and `target.messageId`, when known) changes; the records the writes do not
+ * name, every other column, and the catalog stay as they were. Returns false
+ * when nothing was written: no single matching row, no matching record, or
+ * the same values already stored.
+ */
+export async function updateAssistantMessageQuoteLocations(
+  conversationKey: number,
+  target: { timestamp: number; messageId?: number },
+  writes: readonly QuoteLocationWrite[],
+): Promise<boolean> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey))
+    return false;
+  const timestamp = Number(target.timestamp);
+  if (!Number.isFinite(timestamp) || !writes.length) return false;
+  const messageId = Math.floor(Number(target.messageId));
+  const idFilter = Number.isFinite(messageId) && messageId > 0;
+  const selector =
+    await resolveRepairingMessageConversationSelector(normalizedKey);
+  let written = false;
+  await Zotero.DB.executeTransaction(async () => {
+    const rows = (await Zotero.DB.queryAsync(
+      `SELECT id, quote_citations_json AS quoteCitationsJson
+       FROM ${CHAT_MESSAGES_TABLE}
+       WHERE ${selector.whereSql} AND role = 'assistant' AND timestamp = ?${
+         idFilter ? " AND id = ?" : ""
+       }
+       LIMIT 2`,
+      [
+        ...selector.params,
+        Math.floor(timestamp),
+        ...(idFilter ? [messageId] : []),
+      ],
+    )) as Array<{ id: unknown; quoteCitationsJson: unknown }> | undefined;
+    // Two rows at one timestamp cannot be told apart without the row id.
+    if (rows?.length !== 1) return;
+    const nextJson = mergeQuoteLocationWritesIntoStoredJson(
+      rows[0].quoteCitationsJson,
+      writes,
+    );
+    if (nextJson === null) return;
+    await Zotero.DB.queryAsync(
+      `UPDATE ${CHAT_MESSAGES_TABLE} SET quote_citations_json = ? WHERE id = ?`,
+      [nextJson, rows[0].id],
+    );
+    written = true;
+  });
+  return written;
 }
 
 export async function clearConversation(
@@ -3401,7 +3515,9 @@ export async function createPaperConversation(
     const preferredKey = normalizeConversationKey(options.conversationKey || 0);
     if (
       preferredKey &&
-      !isConversationKeyForKind("upstream", "paper", preferredKey)
+      (!isConversationKeyForKind("upstream", "paper", preferredKey) ||
+        // The reserved band holds never-persisted side-chat keys only.
+        isEphemeralConversationKey(preferredKey))
     ) {
       throw new Error(
         "Preferred upstream paper conversation key is outside its range",
@@ -3745,7 +3861,9 @@ export async function createGlobalConversation(
     const preferredKey = normalizeConversationKey(options.conversationKey || 0);
     if (
       preferredKey &&
-      !isConversationKeyForKind("upstream", "global", preferredKey)
+      (!isConversationKeyForKind("upstream", "global", preferredKey) ||
+        // The reserved band holds never-persisted side-chat keys only.
+        isEphemeralConversationKey(preferredKey))
     ) {
       throw new Error(
         "Preferred upstream global conversation key is outside its range",

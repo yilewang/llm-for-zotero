@@ -40,7 +40,10 @@ import type {
  *   text hint (`priorCost`); a paper the job only changes otherwise (files,
  *   tags, edits its record) is priced at its record.
  * The papers left fit one pass while they cost no more than B − P − c (one
- * paper of slack for the estimate).
+ * paper of slack for the estimate). A paper read since the prompt last
+ * restarted and still open (its note not yet written, say) has its text in P
+ * already: it costs only its write, priced at its record, and needs no slack.
+ * The same price holds where a page ends early and in a step's call limit.
  *
  * A page is the first K papers not yet settled, in frozen order, with
  * K = max(1, min(fit bound, cost bound)). Nothing else bounds a page.
@@ -397,6 +400,12 @@ export class LongJobPager {
    * what reading a paper costs, so they stay out of c.
    */
   private givenUp = new Set<string>();
+  /**
+   * The job's papers read since the measurement last started (a restart, a
+   * page): their text is in the prompt, so what they still need of the room
+   * is a write, priced at a paper's record, not another read.
+   */
+  private inPrompt = new Set<string>();
   private page: readonly string[] | null = null;
   private pages = 0;
   private digested = new Set<string>();
@@ -459,7 +468,9 @@ export class LongJobPager {
   /**
    * The tool calls one step may make while the turn has a job: one for each
    * of its papers still open (the open page's, or before paging those the
-   * room holds), and one more beside them, never fewer than `ordinary`.
+   * room holds), and one more beside them, never fewer than `ordinary`. An
+   * open paper already read needs only its write: the room holds it at its
+   * record, not at another read.
    */
   stepLimit(
     input: {
@@ -474,13 +485,42 @@ export class LongJobPager {
     const open = this.page
       ? this.page.filter((target) => !job.settled.has(target))
       : job.notDone;
-    const fits = Math.max(
-      1,
+    const room = input.budgetTokens - input.promptTokens;
+    const read = open.filter((target) => this.inPrompt.has(target)).length;
+    const writes = Math.min(
+      read,
+      Math.floor(Math.max(0, room) / PAPER_RECORD_PRIOR_TOKENS),
+    );
+    const reads = Math.min(
+      open.length - read,
       Math.floor(
-        (input.budgetTokens - input.promptTokens) / this.costPerPaper(job),
+        (room - writes * PAPER_RECORD_PRIOR_TOKENS) / this.costPerPaper(job),
       ),
     );
-    return Math.max(ordinary, Math.min(open.length, fits) + 1);
+    return Math.max(ordinary, Math.max(1, writes + reads) + 1);
+  }
+
+  /**
+   * What `targets` still need of the room: a read at `readCost` for each
+   * whose text is not in the prompt, and one paper of slack while any is; a
+   * paper's record for each whose text is, since only its write is left.
+   */
+  private need(
+    targets: readonly string[],
+    readCost: (target: string) => number,
+    slack: number,
+  ): number {
+    let tokens = 0;
+    let unread = 0;
+    for (const target of targets) {
+      if (this.inPrompt.has(target)) {
+        tokens += PAPER_RECORD_PRIOR_TOKENS;
+      } else {
+        tokens += readCost(target);
+        unread += 1;
+      }
+    }
+    return unread ? tokens + slack : tokens;
   }
 
   /**
@@ -541,6 +581,7 @@ export class LongJobPager {
     promptTokens: number,
   ): { promptTokens: number; settled: number } {
     this.baseline = { promptTokens, settled: this.measuredSettled(job) };
+    this.inPrompt.clear();
     return this.baseline;
   }
 
@@ -596,6 +637,7 @@ export class LongJobPager {
       !this.baseline || input.promptTokens < this.baseline.promptTokens
         ? this.rebaseline(job, input.promptTokens)
         : this.baseline;
+    for (const target of carried) this.inPrompt.add(target);
     const settledSince = Math.max(
       0,
       this.measuredSettled(job) - baseline.settled,
@@ -618,7 +660,8 @@ export class LongJobPager {
       // once some of its papers have settled.
       if (
         left.length &&
-        (left.length === this.page.length || left.length * cost <= room - cost)
+        (left.length === this.page.length ||
+          this.need(left, () => cost, cost) <= room)
       )
         return null;
       this.endPage(input.requests);
@@ -626,11 +669,14 @@ export class LongJobPager {
     }
     // One paper left is no job to page: a page could hold no less.
     if (job.notDone.length < 2) return null;
-    const leftCost =
+    const leftCost = this.need(
+      job.notDone,
       sinceBaseline.papers || this.measured.papers
-        ? job.notDone.length * cost
-        : job.notDone.reduce((sum, target) => sum + this.prior(job, target), 0);
-    if (leftCost <= room - cost) return null;
+        ? () => cost
+        : (target) => this.prior(job, target),
+      cost,
+    );
+    if (leftCost <= room) return null;
     this.partIds = [...job.partIds];
     return this.boundary(job, sinceBaseline, false);
   }
@@ -891,4 +937,22 @@ export function renderLongJobResume(
   return `Long job to resume: ${progress}. The ${left.length} ${
     left.length === 1 ? "paper" : "papers"
   } left, in order: ${left.join(", ")}. Go on from the first of them; a paper already done stays done, so do not redo it.`;
+}
+
+/**
+ * What the host adds to an accepted answer while the model's declared parts
+ * are still open: each one's progress, so the answer cannot read as
+ * complete while the run ends with them not done. Empty when none is open.
+ */
+export function renderUnfinishedParts(
+  open: readonly Task[],
+  noTextReason: string,
+): string {
+  if (!open.length) return "";
+  const parts = open.map((task) =>
+    task.targets?.length
+      ? partProgress(task, noTextReason)
+      : `“${task.description}”`,
+  );
+  return `Not done before this answer: ${parts.join("; ")}.`;
 }

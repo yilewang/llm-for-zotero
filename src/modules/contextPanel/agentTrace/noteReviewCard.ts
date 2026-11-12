@@ -4,11 +4,13 @@ import type {
   AgentPendingField,
 } from "../../../agent/types";
 import { createDocumentCardLayout } from "../documentCard";
+import { markStandaloneFlatScope } from "../contentChrome";
 import {
   parseSanitizedRenderedHtml,
   renderRenderedMarkdownInto,
 } from "../renderedMarkdown";
 import { normalizeNoteSourceText } from "../../../services/notes/noteRendering";
+import { decorateNoteEmbedBadges } from "./noteEmbedBadges";
 
 type ContentField = Extract<AgentPendingField, { type: "textarea" }>;
 type DiffField = Extract<AgentPendingField, { type: "diff_preview" }>;
@@ -57,6 +59,8 @@ export function renderNoteReviewCard(params: {
     statusKind: "awaiting_approval",
   });
   preview.classList.add("llm-note-review-preview");
+  // Flat code, tables and figures, but no side panel buttons inside the card.
+  markStandaloneFlatScope(preview);
   const description = doc.createElement("p");
   description.className = "llm-note-review-description";
   description.textContent =
@@ -97,7 +101,9 @@ export function renderNoteReviewCard(params: {
     } else {
       const before = doc.createElement("article");
       before.className = "llm-plan-markdown";
+      markStandaloneFlatScope(before);
       renderRenderedMarkdownInto(before, diff.before || "", doc);
+      decorateNoteEmbedBadges(before, doc);
       details.appendChild(before);
     }
     card.appendChild(details);
@@ -124,6 +130,9 @@ export function renderNoteReviewCard(params: {
     } else {
       renderRenderedMarkdownInto(preview, editor.value, doc);
     }
+    // The editor keeps placeholders, which are what is saved; the preview
+    // shows what each one is.
+    decorateNoteEmbedBadges(preview, doc);
     updateChanges?.(normalizeNoteSourceText(editor.value));
     approve.disabled = settled || !editor.value.trim();
   };

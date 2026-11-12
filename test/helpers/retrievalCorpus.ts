@@ -5,9 +5,6 @@
  * (a `##`-heading maths paper and a `#`-heading life-science paper). They exist
  * so the retrieval benchmark can measure section labelling and ranking on a
  * stable, offline corpus. No real paper text is stored in this repository.
- *
- * The in-memory `IOUtils` / `Zotero` stubs are copies of the ones in
- * `test/pdfContext.multiContext.test.ts` (that file keeps its own copies).
  */
 import fs from "node:fs";
 import path from "node:path";

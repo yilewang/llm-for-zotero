@@ -13,6 +13,7 @@ import {
   getMineruCloudModel,
   isMineruForceOcrEnabled,
   getMineruLocalApiBase,
+  getMineruLocalServerCommand,
   getMineruLocalBackend,
   getMineruMode,
   getMineruLocalOptions,
@@ -31,6 +32,10 @@ import {
   mineruErrorDetail,
 } from "./mineruLocalClient";
 import { buildMultipartRequest } from "./multipart";
+import {
+  ensureMineruLocalServerRunning,
+  acquireMineruServerJob,
+} from "./mineruServerManager";
 
 const MINERU_DIRECT_API_BASE = "https://mineru.net/api/v4";
 
@@ -2179,21 +2184,44 @@ export async function parsePdfWithMineruLocal(
   signal?: AbortSignal,
   forceOcr = DEFAULT_MINERU_FORCE_OCR,
   options = getMineruLocalOptions(),
+  serverCommand = getMineruLocalServerCommand(),
 ): Promise<MinerUResult> {
   const report = (stage: string) => {
     appLogger.debug(`MinerU local: ${stage}`);
     onProgress?.(stage);
   };
   try {
-    return await parsePdfViaLocalService(
-      pdfPath,
-      baseUrl,
-      backend,
-      options,
-      forceOcr,
-      report,
-      signal,
-    );
+    if (serverCommand) {
+      const started = await ensureMineruLocalServerRunning(
+        baseUrl,
+        report,
+        signal,
+      );
+      if (!started) {
+        if (signal?.aborted) {
+          throw new MineruCancelledError();
+        }
+        throw new Error(
+          t(
+            "Cannot reach the local MinerU service. Check its address and start the MinerU API server.",
+          ),
+        );
+      }
+    }
+    const releaseJob = acquireMineruServerJob();
+    try {
+      return await parsePdfViaLocalService(
+        pdfPath,
+        baseUrl,
+        backend,
+        options,
+        forceOcr,
+        report,
+        signal,
+      );
+    } finally {
+      releaseJob();
+    }
   } catch (e) {
     if (e instanceof MineruCancelledError) throw e;
     report(`Error: ${(e as Error).message}`);

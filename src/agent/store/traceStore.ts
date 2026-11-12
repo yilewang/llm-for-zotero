@@ -1,3 +1,4 @@
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import { appLogger } from "../../core/logging";
 import {
   deleteIfPresent,
@@ -407,6 +408,8 @@ export async function queueAgentTraceFileCleanupInTransaction(
 
 export async function createAgentRun(record: AgentRunRecord): Promise<void> {
   if (isConversationKeyRetiredInMemory(record.conversationKey)) return;
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(record.conversationKey)) return;
   const ledgerInitialized = isConversationKeyLedgerStoreInitialized();
   if (ledgerInitialized) {
     const ledgerBeforeWrite = await getConversationKeyLedgerEntry(

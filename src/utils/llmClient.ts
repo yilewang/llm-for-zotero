@@ -3,6 +3,7 @@
  *
  * Provides streaming and non-streaming API calls to OpenAI-compatible endpoints.
  */
+import { providerHttpError } from "./retryAfter";
 
 import { appLogger } from "../core/logging";
 import { config } from "../../package.json";
@@ -113,6 +114,7 @@ import {
 } from "./modelInputCap";
 import { resolveProviderCapabilities } from "../providers";
 import {
+  anthropicPromptTokens,
   extractContextCacheUsage,
   type ContextCachePlan,
 } from "../contextCache/manager";
@@ -2311,6 +2313,39 @@ function buildReasoningControlPayload(
   providerProtocol?: ProviderProtocol,
   options?: ReasoningPayloadOptions,
 ): { extra: Record<string, unknown>; omitTemperature: boolean } {
+  const payload = buildProviderReasoningControlPayload(
+    reasoning,
+    useResponses,
+    modelName,
+    apiBase,
+    providerProtocol,
+    options,
+  );
+  // One owner: a model whose registry entry forbids a temperature never gets
+  // one, whichever provider branch built the reasoning controls.
+  if (payload.omitTemperature) return payload;
+  const capabilities = getModelCapabilities({
+    provider: reasoning?.provider,
+    model: modelName || "",
+    apiBase,
+    protocol:
+      providerProtocol ||
+      (useResponses ? "responses_api" : "openai_chat_compat"),
+    profileOverride: options?.profileOverride,
+  });
+  return capabilities.sampling.temperature !== "configurable"
+    ? { ...payload, omitTemperature: true }
+    : payload;
+}
+
+function buildProviderReasoningControlPayload(
+  reasoning: ReasoningConfig | undefined,
+  useResponses: boolean,
+  modelName?: string,
+  apiBase?: string,
+  providerProtocol?: ProviderProtocol,
+  options?: ReasoningPayloadOptions,
+): { extra: Record<string, unknown>; omitTemperature: boolean } {
   const exactEffort = reasoning?.effort?.trim();
   if (
     exactEffort &&
@@ -2742,7 +2777,8 @@ async function parseAnthropicStreamResponse(
             parsed.message?.usage &&
             onUsage
           ) {
-            const inputTokens = parsed.message.usage.input_tokens ?? 0;
+            // input_tokens leaves out the cached tokens; the prompt is all three.
+            const inputTokens = anthropicPromptTokens(parsed.message.usage);
             const outputTokens = parsed.message.usage.output_tokens ?? 0;
             const totalTokens = inputTokens + outputTokens;
             if (inputTokens > 0 || totalTokens > 0) {
@@ -2996,6 +3032,7 @@ async function parseGeminiNativeStreamResponse(
             usageMetadata?: {
               promptTokenCount?: number;
               candidatesTokenCount?: number;
+              thoughtsTokenCount?: number;
               totalTokenCount?: number;
               cachedContentTokenCount?: number;
             };
@@ -3027,7 +3064,8 @@ async function parseGeminiNativeStreamResponse(
               onUsage({
                 promptTokens: parsed.usageMetadata.promptTokenCount ?? 0,
                 completionTokens:
-                  parsed.usageMetadata.candidatesTokenCount ?? 0,
+                  (parsed.usageMetadata.candidatesTokenCount ?? 0) +
+                  (parsed.usageMetadata.thoughtsTokenCount ?? 0),
                 totalTokens: total,
                 ...cacheUsage,
                 contextTokens: parsed.usageMetadata.promptTokenCount ?? 0,
@@ -3790,9 +3828,7 @@ async function postWithTemperatureFallback(params: {
       return res;
     }
     const secondErr = await res.text();
-    throw new Error(
-      `${res.status} ${res.statusText} (${params.url}) - ${secondErr}`,
-    );
+    throw providerHttpError(res, params.url, secondErr);
   }
   const retryCapKey = findOutputCapKey(requestPayload);
   const capRecovery = retryCapKey
@@ -3824,14 +3860,10 @@ async function postWithTemperatureFallback(params: {
       return res;
     }
     const secondErr = await res.text();
-    throw new Error(
-      `${res.status} ${res.statusText} (${params.url}) - ${secondErr}`,
-    );
+    throw providerHttpError(res, params.url, secondErr);
   }
 
-  throw new Error(
-    `${res.status} ${res.statusText} (${params.url}) - ${firstErr}`,
-  );
+  throw providerHttpError(res, params.url, firstErr);
 }
 
 export function parseStatusFromErrorMessage(message: string): number | null {

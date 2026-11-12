@@ -87,6 +87,12 @@ export type AnthropicReasoningProfile = {
   supportsAdaptiveThinking: boolean;
   supportsManualThinking: boolean;
   supportsDisabledThinking?: boolean;
+  /**
+   * The model thinks when a request omits `thinking`, and that thinking
+   * spends the request's max_tokens. Bounded utility calls must switch it off
+   * or leave it room.
+   */
+  thinkingOnWhenOmitted?: boolean;
 };
 export type QwenReasoningProfile = {
   defaultEnableThinking: boolean | null;
@@ -135,6 +141,7 @@ type ProviderProfile = {
     supportsAdaptiveThinking: boolean;
     supportsManualThinking: boolean;
     supportsDisabledThinking?: boolean;
+    thinkingOnWhenOmitted?: boolean;
   };
   qwen?: {
     defaultEnableThinking: boolean | null;
@@ -692,6 +699,17 @@ const ANTHROPIC_ADAPTIVE_ONLY_PROFILE: ProviderProfile = {
   },
 };
 
+// Mythos Preview thinks whether or not the request asks, and rejects
+// `disabled`. The unseen-model fallback keeps the same levels without that
+// claim, since older ids no rule names (claude-3-5-sonnet) land there too.
+const ANTHROPIC_MYTHOS_PREVIEW_PROFILE: ProviderProfile = {
+  ...ANTHROPIC_ADAPTIVE_ONLY_PROFILE,
+  anthropic: {
+    ...ANTHROPIC_ADAPTIVE_ONLY_PROFILE.anthropic!,
+    thinkingOnWhenOmitted: true,
+  },
+};
+
 // Disabled thinking is supported by these established profiles, but not
 // Mythos Preview: https://platform.claude.com/docs/en/docs/build-with-claude/extended-thinking
 const ANTHROPIC_OPUS_47_PROFILE: ProviderProfile = {
@@ -720,6 +738,37 @@ const ANTHROPIC_ADAPTIVE_ALL_PROFILE: ProviderProfile = {
     preferredMode: "adaptive",
     supportsAdaptiveThinking: true,
     supportsManualThinking: false,
+  },
+};
+
+// The 5.x line thinks when `thinking` is omitted. None of these get an Off
+// level: Opus 5.5, Sonnet 5.5 and Fable/Mythos reject `disabled`; Opus 5 and
+// Sonnet 5 accept it, but Opus 5 leaks thinking tags with it off, so both
+// keep the lowest effort instead (docs/plans/2026-10-14-haiku-agent-fixes.md).
+// https://platform.claude.com/docs/en/build-with-claude/thinking
+const ANTHROPIC_ADAPTIVE_DEFAULT_ON_PROFILE: ProviderProfile = {
+  ...ANTHROPIC_ADAPTIVE_ALL_PROFILE,
+  anthropic: {
+    ...ANTHROPIC_ADAPTIVE_ALL_PROFILE.anthropic!,
+    thinkingOnWhenOmitted: true,
+  },
+};
+
+// Haiku 5.5 thinks when `thinking` is omitted and accepts `disabled` at high
+// effort or below; Off sends no effort, so the model's medium default holds.
+const ANTHROPIC_HAIKU_55_PROFILE: ProviderProfile = {
+  supportsReasoning: true,
+  defaultLevel: "high",
+  options: ANTHROPIC_ADAPTIVE_MAX_OPTIONS,
+  anthropic: {
+    defaultBudgetTokens: 2000,
+    levelToBudgetTokens: ANTHROPIC_BUDGET_MAP,
+    levelToEffort: ANTHROPIC_EFFORT_MAP,
+    preferredMode: "adaptive",
+    supportsAdaptiveThinking: true,
+    supportsManualThinking: false,
+    supportsDisabledThinking: true,
+    thinkingOnWhenOmitted: true,
   },
 };
 
@@ -1025,13 +1074,23 @@ const PROFILE_RULES: Record<
     rules: [
       {
         match: /(^|[/:.])claude-mythos-preview(?:\b|[.-])/,
-        profile: ANTHROPIC_ADAPTIVE_ONLY_PROFILE,
+        profile: ANTHROPIC_MYTHOS_PREVIEW_PROFILE,
       },
       {
-        // Opus 5, Sonnet 5, Fable/Mythos 5.x and Opus 4.8 reject
+        match: /(^|[/:.])claude-haiku-5-5(?:\b|[.-])/,
+        profile: ANTHROPIC_HAIKU_55_PROFILE,
+      },
+      {
+        // Opus 5/5.5, Sonnet 5/5.5 and Fable/Mythos 5.x reject
         // thinking.type=enabled and steer with output_config.effort instead.
+        // Each 5.5 id is named, so it never rides on its 5 sibling's rule.
         match:
-          /(^|[/:.])claude-(?:opus-(?:5|4-8)|sonnet-5|fable-5(?:-1)?|mythos-5(?:-1)?)(?:\b|[.-])/,
+          /(^|[/:.])claude-(?:opus-5(?:-5)?|sonnet-5(?:-5)?|fable-5(?:-1)?|mythos-5(?:-1)?)(?:\b|[.-])/,
+        profile: ANTHROPIC_ADAPTIVE_DEFAULT_ON_PROFILE,
+      },
+      {
+        // Opus 4.8 steers the same way but keeps thinking off when omitted.
+        match: /(^|[/:.])claude-opus-4-8(?:\b|[.-])/,
         profile: ANTHROPIC_ADAPTIVE_ALL_PROFILE,
       },
       {
@@ -1052,7 +1111,7 @@ const PROFILE_RULES: Record<
         profile: ANTHROPIC_MANUAL_THINKING_PROFILE,
       },
     ],
-    // Opus 5 / Sonnet 5 / Fable 5.1 use adaptive thinking with
+    // Models without a rule above use adaptive thinking with
     // output_config.effort; `thinking.type: enabled` 400s on 4.7 and later.
     fallback: ANTHROPIC_ADAPTIVE_ONLY_PROFILE,
     fallbackIsAuthoritative: true,
@@ -1275,6 +1334,7 @@ export function getAnthropicReasoningProfileForModel(
     supportsDisabledThinking: Boolean(
       anthropicProfile?.supportsDisabledThinking,
     ),
+    thinkingOnWhenOmitted: Boolean(anthropicProfile?.thinkingOnWhenOmitted),
   };
 }
 

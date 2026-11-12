@@ -456,6 +456,51 @@ function normalizePositiveInt(value: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
+/**
+ * Every page of a range from 1, in order. No cap: a read too large for the
+ * context returns its page map, as a page list given as an array does.
+ */
+function expandPageRange(
+  start: number,
+  end: number,
+  pushPage: (pageNumber: number) => void,
+): void {
+  const lower = Math.max(1, Math.min(start, end));
+  const upper = Math.max(lower, Math.max(start, end));
+  for (let page = lower; page <= upper; page += 1) {
+    pushPage(page);
+  }
+}
+
+/** A page number from 1, or a range of them (hyphen or dash). */
+const BARE_PAGE_TOKEN = /^(\d+)(?:\s*[-–—]\s*(\d+))?$/;
+
+/**
+ * Pages written as bare numbers, as a tool argument gives them: "4",
+ * "4-5" (hyphen or dash), "4, 5", or a comma list of those. Null for any
+ * other text, or for a page 0.
+ */
+function parseBarePageList(text: string): ParsedPageSelection | null {
+  const tokens = sanitizeText(text)
+    .split(",")
+    .map((token) => token.trim());
+  if (!tokens.length || tokens.some((token) => !BARE_PAGE_TOKEN.test(token)))
+    return null;
+  const pages = new Set<number>();
+  for (const token of tokens) {
+    const [, from, to] = token.match(BARE_PAGE_TOKEN)!;
+    const start = Number.parseInt(from, 10);
+    const end = to === undefined ? start : Number.parseInt(to, 10);
+    if (start < 1 || end < 1) return null;
+    expandPageRange(start, end, (page) => pages.add(page - 1));
+  }
+  const pageIndexes = Array.from(pages).sort((left, right) => left - right);
+  return {
+    pageIndexes,
+    displayValue: formatPageSelectionValue(pageIndexes),
+  };
+}
+
 function extractNumericPageRanges(text: string): number[] {
   const normalized = sanitizeText(text).toLowerCase();
   if (!normalized) return [];
@@ -478,11 +523,7 @@ function extractNumericPageRanges(text: string): number[] {
       const start = Number.parseInt(rangeMatch[1], 10);
       const end = Number.parseInt(rangeMatch[2], 10);
       if (Number.isFinite(start) && Number.isFinite(end)) {
-        const lower = Math.max(1, Math.min(start, end));
-        const upper = Math.max(lower, Math.max(start, end));
-        for (let page = lower; page <= upper && page - lower < 12; page += 1) {
-          pushPage(page);
-        }
+        expandPageRange(start, end, pushPage);
       }
       return;
     }
@@ -514,6 +555,11 @@ export function parsePageSelectionText(
   };
 }
 
+/**
+ * Pages a tool argument names, as 0-based indexes: page numbers from 1 as
+ * an array, a number, bare text ("4", "4-5", "4, 5"), or text with a page
+ * prefix ("pages 4-5", "pp. 4-5"). Null when it names none.
+ */
 export function parsePageSelectionValue(
   value: unknown,
 ): ParsedPageSelection | null {
@@ -538,7 +584,7 @@ export function parsePageSelectionValue(
     };
   }
   if (typeof value !== "string") return null;
-  return parsePageSelectionText(value);
+  return parseBarePageList(value) ?? parsePageSelectionText(value);
 }
 
 export function formatPageSelectionValue(pageIndexes: number[]): string {
@@ -693,18 +739,64 @@ async function navigateReaderToPage(
   }
 }
 
-async function openReaderForItem(
+/** Where to open a reader: a page, or one annotation by its key. */
+export type ReaderOpenLocation = {
+  pageIndex?: number;
+  pageLabel?: string;
+  annotationKey?: string;
+};
+
+/**
+ * The `Zotero.Reader` location object for a requested location.
+ *
+ * Zotero's reader selects an annotation by `annotationID`, which holds the
+ * annotation item's key. The `annotationKey` field in zotero-types is not read
+ * by the reader (checked in a real reader, W5-A).
+ */
+function toReaderApiLocation(
+  location: ReaderOpenLocation,
+): _ZoteroTypes.Reader.Location | undefined {
+  if (location.annotationKey) {
+    return {
+      annotationID: location.annotationKey,
+    } as unknown as _ZoteroTypes.Reader.Location;
+  }
+  const pageLabel = sanitizeText(location.pageLabel);
+  if (location.pageIndex !== undefined) {
+    return {
+      pageIndex: Math.max(0, Math.floor(location.pageIndex)),
+      ...(pageLabel ? { pageLabel } : {}),
+    };
+  }
+  return pageLabel ? { pageLabel } : undefined;
+}
+
+async function navigateReaderToLocation(
+  reader: any,
+  location: ReaderOpenLocation,
+): Promise<boolean> {
+  if (location.pageIndex !== undefined) {
+    return navigateReaderToPage(reader, location.pageIndex, location.pageLabel);
+  }
+  const apiLocation = toReaderApiLocation(location);
+  if (!apiLocation || typeof reader?.navigate !== "function") return false;
+  try {
+    await reader.navigate(apiLocation);
+    return true;
+  } catch (_error) {
+    void _error;
+    return false;
+  }
+}
+
+export async function openReaderForItem(
   targetItemId: number,
-  location?: { pageIndex: number; pageLabel?: string },
+  location?: ReaderOpenLocation,
 ): Promise<any | null> {
   const activeReader = getActiveReaderForSelectedTab();
   if (getReaderItemId(activeReader) === Math.floor(targetItemId)) {
     if (location) {
-      await navigateReaderToPage(
-        activeReader,
-        location.pageIndex,
-        location.pageLabel,
-      );
+      await navigateReaderToLocation(activeReader, location);
     }
     return activeReader;
   }
@@ -719,22 +811,82 @@ async function openReaderForItem(
   if (typeof readerApi?.open === "function") {
     const opened = await readerApi.open(
       Math.floor(targetItemId),
-      location
-        ? {
-            pageIndex: Math.floor(location.pageIndex),
-            ...(location.pageLabel
-              ? { pageLabel: sanitizeText(location.pageLabel) }
-              : {}),
-          }
-        : undefined,
+      location ? toReaderApiLocation(location) : undefined,
     );
     if (opened) return opened;
   }
   const waited = await waitForReaderForItem(targetItemId);
   if (waited && location) {
-    await navigateReaderToPage(waited, location.pageIndex, location.pageLabel);
+    await navigateReaderToLocation(waited, location);
   }
   return waited;
+}
+
+/**
+ * The PDF's page count from Zotero's PDF worker, which parses the file (the
+ * extraction stops after page 1). Null when the worker cannot tell, or when
+ * it has not answered within `timeoutMs`: the worker runs one job at a time,
+ * so a long extraction ahead of this one would otherwise delay the reader.
+ */
+export async function getPdfAttachmentPageCount(
+  attachmentId: number,
+  timeoutMs = 1500,
+): Promise<number | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const worker = (
+      Zotero as unknown as {
+        PDFWorker?: {
+          getFullText?: (
+            itemID: number,
+            maxPages: number,
+            isPriority?: boolean,
+          ) => Promise<{ totalPages?: number } | null>;
+        };
+      }
+    ).PDFWorker;
+    const pending = worker?.getFullText?.(Math.floor(attachmentId), 1, true);
+    if (!pending) return null;
+    const result = await Promise.race([
+      pending,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+    const total = Number(result?.totalPages);
+    return Number.isFinite(total) && total > 0 ? Math.floor(total) : null;
+  } catch (_error) {
+    void _error;
+    return null;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Waits for the reader to show the page labelled `expected`, as the viewer
+ * names it (its page label, or the page number when the PDF has no labels).
+ * `shown` is the label on screen at the end, empty when the PDF never loaded.
+ */
+export async function waitForReaderPageLabel(
+  reader: any,
+  expected: string,
+  timeoutMs = 3000,
+): Promise<{ verified: boolean; shown: string }> {
+  const wanted = sanitizeText(expected);
+  const startedAt = Date.now();
+  let shown = "";
+  do {
+    const viewer = getPdfViewerApplication(reader)?.pdfViewer;
+    if (viewer && Number(viewer.pagesCount) > 0) {
+      shown = sanitizeText(
+        viewer.currentPageLabel ?? String(viewer.currentPageNumber),
+      );
+      if (shown === wanted) return { verified: true, shown };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  } while (Date.now() - startedAt < timeoutMs);
+  return { verified: false, shown };
 }
 
 /**

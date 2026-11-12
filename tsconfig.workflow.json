@@ -1,16 +1,8 @@
 {
-  "//": "Type-checks the live workflow suite (test-workflows/) and the adaptive-loop live suite (test-live-loop/). A separate, non-composite project because the workflow tests import unit-test helpers from test/, which a composite project would have to enumerate file by file.",
+  "//": "Type-checks the live workflow suite (test-workflows/) and the live suites (test-live/) and the isolated suites (test-isolated/). A separate, non-composite project because the workflow tests import shared fixtures and helpers from test/, which a composite project would have to enumerate file by file.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "composite": false
   },
-  "include": [
-    "src",
-    "typings",
-    "test-workflows",
-    "test-live-loop",
-    "test-live-mineru",
-    "test-live-runtimes",
-    "test-db-upgrade"
-  ]
+  "include": ["src", "typings", "test-workflows", "test-live", "test-isolated"]
 }

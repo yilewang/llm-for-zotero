@@ -6,12 +6,17 @@
  * a row the user hid stays hidden while another run declares its steps.
  * Another conversation is back on the automatic rule, and so is this one
  * when the window shows it again. The sidebar header has the same button,
- * left of Open in Window; the Stacked header drops it below its compact
- * width.
+ * left of Open in Window; the Stacked header keeps it until its tight stage.
  */
 import { assert } from "chai";
 import { executionCheckpointEvent } from "../src/agent/execution/checkpointEvents";
 import type { ExecutionCheckpoint } from "../src/agent/types";
+import {
+  chooseHeaderFit,
+  headerFitRequiredWidth,
+  type HeaderFit,
+  type HeaderFitInput,
+} from "../src/modules/contextPanel/setupHandlers/controllers/headerSpacing";
 import type {
   WorkflowTestApi,
   WorkflowTestFixture,
@@ -56,9 +61,14 @@ describe("workflow: task progress button", function () {
     return {
       win: standaloneWindow(),
       root,
-      actions: Array.from(
-        doc.querySelectorAll(".llm-standalone-content-title-actions > button"),
-      ) as HTMLButtonElement[],
+      // The buttons a person sees: Pin this paper is hidden in a Library chat.
+      actions: (
+        Array.from(
+          doc.querySelectorAll(
+            ".llm-standalone-content-title-actions > button",
+          ),
+        ) as HTMLButtonElement[]
+      ).filter((node) => !node.hidden),
       button: doc.querySelector(
         `.llm-standalone-content-title-actions ${BUTTON}`,
       ) as HTMLButtonElement,
@@ -245,14 +255,15 @@ describe("workflow: task progress button", function () {
         "llm-settings",
         "llm-export",
         "llm-clear",
+        "llm-header-more",
       ],
     );
     const button = body.querySelector(
       "#llm-task-progress-toggle",
     ) as HTMLButtonElement;
     const curtain = () =>
-      (body.querySelector(".llm-task-progress-curtain") as HTMLElement)
-        .dataset.curtain;
+      (body.querySelector(".llm-task-progress-curtain") as HTMLElement).dataset
+        .curtain;
     const settle = async (target: "open" | "closed", label: string) => {
       await until(() => {
         api.flushTaskProgress();
@@ -272,8 +283,7 @@ describe("workflow: task progress button", function () {
       Zotero.Prefs.set(layoutPref, value, true);
       await until(
         () =>
-          doc.documentElement.getAttribute("data-llm-sidebar-layout") ===
-          value,
+          doc.documentElement.getAttribute("data-llm-sidebar-layout") === value,
         `${value} layout applies`,
       );
     };
@@ -291,21 +301,85 @@ describe("workflow: task progress button", function () {
       header.style.width = "360px";
       await until(() => width() > 0, "Independent at 360px keeps it");
 
+      // Stacked keeps the button until the row's tightest stage, which folds
+      // it into More. The stage comes from the row's measured inputs, the
+      // way updateHeaderFit reads them; no width is assumed to give a stage.
       await layout("stacked");
-      await until(() => width() === 0, "Stacked at 360px drops it");
-      header.style.width = "420px";
-      await until(() => width() > 0, "Stacked at 420px shows it");
-      const actions = body
-        .querySelector(".llm-header-actions")!
-        .getBoundingClientRect();
-      const runtime = body
-        .querySelector(".llm-header-runtime-controls")!
-        .getBoundingClientRect();
-      assert.isAtMost(
-        runtime.right,
-        actions.left + 0.5,
-        "the runtime systems still clear the actions",
-      );
+      const navRow = body.querySelector(".llm-header-nav-row") as HTMLElement;
+      const widthOf = (selector: string) =>
+        body.querySelector(selector)!.getBoundingClientRect().width;
+      const fitInput = (): HeaderFitInput => {
+        const style = doc.defaultView!.getComputedStyle(navRow)!;
+        const count = (selectors: string[]) =>
+          selectors.filter((selector) => {
+            const node = navRow.querySelector<HTMLElement>(selector);
+            return Boolean(node) && node!.style.display !== "none";
+          }).length;
+        return {
+          available: navRow.getBoundingClientRect().width,
+          padding:
+            (parseFloat(style.paddingLeft) || 0) +
+            (parseFloat(style.paddingRight) || 0),
+          capsule: widthOf(".llm-header-runtime-controls"),
+          leftButtons: count(["#llm-history-new", "#llm-history-toggle"]),
+          pinnedRightButtons: count([
+            "#llm-task-progress-toggle",
+            "#llm-popout",
+          ]),
+          foldableRightButtons: count([
+            "#llm-settings",
+            "#llm-export",
+            "#llm-clear",
+          ]),
+        };
+      };
+      for (const stackedWidth of ["360px", "300px"]) {
+        header.style.width = stackedWidth;
+        // The fit runs on a frame after the resize: wait until the stage is
+        // set, the chooser keeps it for the measured inputs, and it holds.
+        let held = 0;
+        await until(() => {
+          const current = navRow.dataset.fit as HeaderFit | undefined;
+          const settled =
+            Boolean(current) &&
+            chooseHeaderFit(fitInput(), current as HeaderFit) === current;
+          held = settled ? held + 1 : 0;
+          return held >= 4;
+        }, `Stacked at ${stackedWidth}: the row settles on a stage`);
+        const fit = navRow.dataset.fit;
+        const folded = fit === "menu" || fit === "tight";
+        const tight = fit === "tight";
+        assert.equal(
+          width() > 0,
+          !tight,
+          `Stacked at ${stackedWidth} (${fit}): Task progress shows unless tight`,
+        );
+        assert.equal(
+          widthOf("#llm-settings") === 0,
+          folded,
+          `Stacked at ${stackedWidth} (${fit}): Settings folds with the row`,
+        );
+        assert.equal(
+          widthOf("#llm-header-more") > 0,
+          folded,
+          `Stacked at ${stackedWidth} (${fit}): More shows with the fold`,
+        );
+        if (
+          headerFitRequiredWidth("tight", fitInput()) <= fitInput().available
+        ) {
+          const actions = body
+            .querySelector(".llm-header-actions")!
+            .getBoundingClientRect();
+          const runtime = body
+            .querySelector(".llm-header-runtime-controls")!
+            .getBoundingClientRect();
+          assert.isAtMost(
+            runtime.right,
+            actions.left + 0.5,
+            `Stacked at ${stackedWidth} (${fit}): the runtime systems clear the actions`,
+          );
+        }
+      }
     } finally {
       header.style.width = "";
       if (savedLayout === undefined) Zotero.Prefs.clear(layoutPref, true);
@@ -321,14 +395,30 @@ describe("workflow: task progress button", function () {
       "the standalone window shows Library chat",
     );
     // A new Library chat (or the empty draft the button takes up again).
+    // Wait for a fresh completion announcement, not the kind, which is
+    // already "global": switching away from a heavy Library chat left by an
+    // earlier test can outlast a fixed delay, and a click on the old chat is
+    // then dropped when the switch lands.
     const win = standaloneWindow();
-    (rootOf().querySelector("#llm-history-new") as HTMLElement).dispatchEvent(
-      new win.MouseEvent("click", { bubbles: true, cancelable: true }),
-    );
-    await until(
-      () => rootOf()?.dataset.conversationKind === "global",
-      "a new Library chat opens",
-    );
+    const status = rootOf().querySelector("#llm-status")!;
+    let opened = false;
+    const observer = new win.MutationObserver(() => {
+      if (/^(Reused existing new|Started new)/.test(status.textContent || ""))
+        opened = true;
+    });
+    observer.observe(status, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+    try {
+      (rootOf().querySelector("#llm-history-new") as HTMLElement).dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      await until(() => opened, "a new Library chat opens");
+    } finally {
+      observer.disconnect();
+    }
     await Zotero.Promise.delay(300);
     await api.setTaskProgressComposerContexts({ surface: "standalone" });
     const library = conversationKey();

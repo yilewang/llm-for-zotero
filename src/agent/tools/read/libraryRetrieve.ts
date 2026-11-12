@@ -1,4 +1,4 @@
-import type { AgentToolDefinition } from "../../types";
+import type { AgentToolDefinition, AgentToolGuidance } from "../../types";
 import { buildLibraryRetrieveModelView } from "../../services/libraryRetrieveModelView";
 import { modelViewRoomTokens } from "./modelViewRoom";
 import { matchesLibraryLevelTurn } from "./librarySearch";
@@ -196,15 +196,14 @@ export function normalizeLibraryRetrieveArgs(
 }
 
 /** The single owner of library-evidence routing and coverage rules. */
-export const LIBRARY_RETRIEVE_GUIDANCE: NonNullable<
-  AgentToolDefinition["guidance"]
-> = {
+export const LIBRARY_RETRIEVE_GUIDANCE: AgentToolGuidance = {
   matches: matchesLibraryLevelTurn,
   instruction: [
     "Use library_search for catalog discovery, library_read for structured item state, library_retrieve for evidence search and synthesis across a collection or library, and paper_read for close reading known papers.",
     "For library_retrieve, preserve the returned coverage boundary and use paperMatches as the paper ledger. Query variants improve recall but are not evidence. Do not turn sampled, metadata-only, abstract-only, partial, or unreadable coverage into exhaustive claims.",
+    "A strong match is a candidate: check its title and authors against what was asked, and name it as a candidate with what matches and what does not. A passage search cannot show a claim is absent from a paper; a title or author lookup with library_search can show a paper is absent from the library.",
     `When the user asks about particular parts of papers, in any language, pass library_retrieve sections from: ${EVIDENCE_SECTION_KINDS.join(", ")}.`,
-    "For bounded collection or tag synthesis, require body evidence when readable papers are available (coverage papersBodyRead > 0), or answer by naming what is missing. Do not silently substitute titles or abstracts for requested paper-level synthesis.",
+    "Unless the user limited the reading to titles or abstracts, for bounded collection or tag synthesis, require body evidence when readable papers are available (coverage papersBodyRead > 0), or answer by naming what is missing. Do not silently substitute titles or abstracts for requested paper-level synthesis.",
     "If a references or bibliography section follows library_retrieve, either include all planned papers, or label the list as body-evidence references and separately identify metadata or abstract-only papers from the coverage frontier.",
   ].join("\n"),
 };
@@ -355,6 +354,7 @@ export function createLibraryRetrieveTool(
       }),
     presentation: {
       label: "Retrieve Library",
+      traceIcon: "library",
       summaries: {
         onCall: ({ args }) => {
           const record = validateObject<Record<string, unknown>>(args)

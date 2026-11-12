@@ -5,6 +5,8 @@ import {
   setModelProviderGroups,
 } from "../src/utils/modelProviders";
 import { resolveProviderTransportEndpoint } from "../src/utils/providerTransport";
+import type { ProviderProtocol } from "../src/utils/providerProtocol";
+import type { ProviderPresetId } from "../src/utils/providerPresets";
 
 const prefix = "extensions.zotero.llmforzotero";
 const groupId = "workflow-provider-selection";
@@ -169,6 +171,142 @@ describe("workflow: explicit provider selection", function () {
       }
     }
   });
+
+  for (const scenario of [
+    {
+      preset: "opencode",
+      url: "https://opencode.ai/zen/v1",
+      protocol: "anthropic_messages",
+      model: "claude-sonnet-4-6",
+      levels: ["low", "medium", "high", "max", "none"],
+    },
+    {
+      preset: "opencode_go",
+      url: "https://opencode.ai/zen/go/v1",
+      protocol: "anthropic_messages",
+      model: "claude-sonnet-4-6",
+      levels: ["low", "medium", "high", "max", "none"],
+    },
+    {
+      preset: "local_openai",
+      url: "http://localhost:1234/v1",
+      protocol: "openai_chat_compat",
+      model: "qwen3-8b",
+      levels: ["off", "on"],
+    },
+    {
+      preset: "ollama",
+      url: "http://localhost:11434",
+      protocol: "ollama_native",
+      model: "qwen3:8b",
+      levels: ["minimal", "default"],
+    },
+  ]) {
+    it(`preserves ${scenario.preset} reasoning levels when editing and reopening preferences`, async function () {
+      const keys = [
+        "modelProviderGroups",
+        "modelProviderGroupsMigrationVersion",
+        "lastUsedModelEntryId",
+        "outputTokenAutoMigrationNoticePending",
+      ];
+      const previous = new Map(
+        keys.map((key) => [key, Zotero.Prefs.get(`${prefix}.${key}`, true)]),
+      );
+      let win: Window | undefined;
+      try {
+        setModelProviderGroups([
+          {
+            id: groupId,
+            authMode: "api_key",
+            apiBase: scenario.url,
+            apiKey: "",
+            presetIdOverride: scenario.preset as ProviderPresetId,
+            providerProtocol: scenario.protocol as ProviderProtocol,
+            models: [
+              {
+                id: "workflow-reasoning-model",
+                model: scenario.model,
+                temperature: 0.3,
+                outputTokenLimit: { mode: "auto" },
+              },
+            ],
+          },
+        ]);
+        const openAdvanced = () => {
+          const row = win!.document.querySelector(
+            `[data-llm-provider-row="${groupId}"]`,
+          )!;
+          if (row.getAttribute("data-open") !== "true") {
+            row
+              .querySelector<HTMLButtonElement>(".llm-pref-row-toggle")!
+              .click();
+          }
+          const advanced = row.querySelector<HTMLElement>(
+            ".llm-pref-advanced-panel",
+          )!;
+          if (advanced.getAttribute("data-open") !== "true") {
+            row
+              .querySelector<HTMLButtonElement>(
+                'button[title="Advanced options"]',
+              )!
+              .click();
+          }
+          assert.equal(advanced.getAttribute("data-open"), "true");
+          assert.isAbove(advanced.getBoundingClientRect().height, 0);
+          return advanced;
+        };
+        const levels = (panel: HTMLElement) =>
+          (
+            Array.from(
+              panel.querySelectorAll<HTMLInputElement>(
+                'input[list^="llm-reasoning-levels-"]',
+              ),
+            ) as HTMLInputElement[]
+          ).map((input) => input.value);
+
+        win = await openPreferences();
+        const advanced = openAdvanced();
+        assert.sameMembers(
+          levels(advanced),
+          scenario.levels,
+          "detected model-family levels are visible without catalog metadata",
+        );
+        const modelInput = win.document.querySelector<HTMLInputElement>(
+          `[data-llm-provider-row="${groupId}"] .llm-pref-model-row input`,
+        )!;
+        assert.isOk(modelInput, "model input exists");
+        changeValue(modelInput, "workflow-unknown-model", "input");
+        assert.isEmpty(
+          levels(advanced),
+          "changing the model clears the previous family's levels",
+        );
+        changeValue(modelInput, scenario.model, "input");
+        assert.sameMembers(
+          levels(advanced),
+          scenario.levels,
+          "returning to the model restores its levels",
+        );
+        await closePreferences(win);
+        win = await openPreferences();
+        assert.sameMembers(
+          levels(openAdvanced()),
+          scenario.levels,
+          "levels survive reopening Preferences",
+        );
+        assert.notProperty(
+          getModelProviderGroups()[0].models[0],
+          "profileOverride",
+          "displaying detected levels does not persist an override",
+        );
+      } finally {
+        if (win && !win.closed) await closePreferences(win);
+        for (const [key, value] of previous) {
+          if (value === undefined) Zotero.Prefs.clear(`${prefix}.${key}`, true);
+          else Zotero.Prefs.set(`${prefix}.${key}`, value, true);
+        }
+      }
+    });
+  }
 
   for (const scenario of [
     {

@@ -35,7 +35,7 @@ for (const file of git(
   "src",
   "addon",
   "package-lock.json",
-  "test-perf",
+  "test-isolated/perf",
   "test/helpers/syntheticLibraryCorpus.ts",
 )
   .split("\n")
@@ -84,8 +84,8 @@ for (let run = 1; run <= Number(count); run++) {
       ...process.env,
       ZOTERO_PLUGIN_KILL_COMMAND: "true",
       // The scaffold globs each entry as a directory, so the workload lives
-      // in its own folder to keep the other test-perf workload out of the run.
-      LLM_FOR_ZOTERO_TEST_ENTRIES: "test-perf/librarySearch",
+      // in its own folder to keep the other test-isolated/perf workload out of the run.
+      LLM_FOR_ZOTERO_TEST_ENTRIES: "test-isolated/perf/librarySearch",
       LLM_FOR_ZOTERO_SEARCH_BENCH: "1",
       LLM_FOR_ZOTERO_SEARCH_BENCH_PAPERS: papers,
       LLM_FOR_ZOTERO_SEARCH_BENCH_LABEL: label,

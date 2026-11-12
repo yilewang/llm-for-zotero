@@ -45,6 +45,16 @@ export type ListCodexAppServerModelsFn = (
   params: ListCodexAppServerModelsParams,
 ) => Promise<unknown>;
 
+let catalogLoaderForTests:
+  | ((params: { codexPath?: string }) => Promise<CodexAppServerModelCatalog>)
+  | undefined;
+
+export function setCodexAppServerModelCatalogLoaderForTests(
+  loader?: typeof catalogLoaderForTests,
+): void {
+  catalogLoaderForTests = loader;
+}
+
 function normalizeString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -118,6 +128,9 @@ export async function loadCodexAppServerModelCatalog(params: {
   processKey?: string;
   listModels?: ListCodexAppServerModelsFn;
 }): Promise<CodexAppServerModelCatalog> {
+  if (catalogLoaderForTests && !params.listModels) {
+    return catalogLoaderForTests(params);
+  }
   const listModels = params.listModels || listCodexAppServerModels;
   const includeHidden = params.includeHidden === true;
   const limit = params.limit ?? DEFAULT_MODEL_LIST_LIMIT;

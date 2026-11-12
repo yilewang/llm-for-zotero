@@ -1,10 +1,13 @@
+import { isEphemeralConversationKey } from "../../../shared/conversationKeySpace";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import {
   createSearchLiteratureReviewAction,
   resolveSearchLiteratureReview,
 } from "../../reviewCards";
+import { setOutsidePaperSelection } from "../../context/outsidePaperRecords";
 import {
   type LiteratureReviewInput,
+  citeDiscoveredPapers,
   discoveryContent,
   getLiteratureDiscovery,
   MAX_DISCOVERY_COUNT,
@@ -98,11 +101,13 @@ const LITERATURE_REVIEW_SPEC: ToolSpec = {
 
 /**
  * Whether this caller can show the paper selection card. MCP never offers
- * literature_review, so its clients present candidates themselves.
+ * literature_review, so its clients present candidates themselves; a
+ * temporary side chat is read-only, so it never gets the card either.
  */
 export function canShowLiteratureReview(context: AgentToolContext): boolean {
   return (
-    !context.isToolVisible || context.isToolVisible(LITERATURE_REVIEW_SPEC)
+    !isEphemeralConversationKey(context.request.conversationKey) &&
+    (!context.isToolVisible || context.isToolVisible(LITERATURE_REVIEW_SPEC))
   );
 }
 
@@ -113,6 +118,7 @@ export function createLiteratureReviewTool(
     spec: LITERATURE_REVIEW_SPEC,
     presentation: {
       label: "Review relevant papers",
+      traceIcon: "library",
       summaries: {
         onCall: "Preparing ranked paper shortlist",
         onPending: "Choose papers to import",
@@ -237,33 +243,67 @@ export function createLiteratureReviewTool(
       return discoveryContent(discovery.record);
     },
     createResultReviewAction: (_input, result, context) =>
-      createSearchLiteratureReviewAction(result, context, result.content),
+      createSearchLiteratureReviewAction(
+        result,
+        context,
+        result.content,
+        gateway,
+      ),
     resolveResultReview: async (_input, result, resolution, context) => {
       const content = result.content as {
         sessionId?: string;
         revision?: number;
+        forLiteratureReview?: boolean;
       };
       const actionId =
         resolution.actionId || (resolution.approved ? "import" : "cancel");
-      if (!["find_more", "import", "cancel"].includes(actionId))
+      // Only a card for a literature review offers Cite without importing.
+      if (
+        !["find_more", "import", "cancel"].includes(actionId) &&
+        !(actionId === "cite" && content.forLiteratureReview)
+      )
         throw new Error("Unknown discovery action.");
       const action = !resolution.approved ? "cancel" : actionId;
+      const selectedPaperIds = (
+        resolution.data as { selectedPaperIds?: unknown } | undefined
+      )?.selectedPaperIds;
       const continuation = await resolveLiteratureDiscoveryReview(
         content,
         action,
-        (resolution.data as { selectedPaperIds?: unknown } | undefined)
-          ?.selectedPaperIds,
+        selectedPaperIds,
         context,
       );
       if (action === "find_more") {
         return { kind: "deliver", toolMessageContent: continuation };
       }
-      return resolveSearchLiteratureReview(
+      if (action === "cite") {
+        const chosen = Array.isArray(selectedPaperIds)
+          ? continuation.results.filter((paper) => paper.checked)
+          : [];
+        return {
+          kind: "deliver",
+          toolMessageContent: citeDiscoveredPapers(chosen, context),
+        };
+      }
+      const outcome = resolveSearchLiteratureReview(
         result.content as never,
         result,
         resolution,
         context,
+        gateway,
       );
+      if (action !== "import") return outcome;
+      // The imported papers are cited as Zotero items: no outside paper is.
+      setOutsidePaperSelection(context.request, []);
+      // Import and cite: the run goes on to read and cite the imports.
+      return content.forLiteratureReview && outcome.kind === "invoke_tool"
+        ? {
+            kind: "invoke_tool",
+            call: outcome.call,
+            nextStep:
+              "The user chose to import and cite these papers. Read the imported items with paper_read, then cite them in submit_document by libraryID and itemKey; cite no outside paper.",
+          }
+        : outcome;
     },
   };
 }

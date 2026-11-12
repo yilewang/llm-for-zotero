@@ -42,20 +42,66 @@
  */
 import {
   TASK_PAPER_DIGEST_LABEL_MAX_CHARS,
+  latestTaskPaperDecision,
+  type TaskPaperDecision,
   type TaskPaperLedgerEntry,
   type TaskPaperReadEvent,
   type TaskPaperState,
   type TaskPaperTextSource,
 } from "../../../agent/context/taskPaperLedger";
+import { requestedPartNames } from "../../../agent/digests/readScope";
 import type { TaskPaperScopeEntry } from "../../../agent/context/taskPaperScopeListing";
 import type { RunEndState } from "../../../agent/execution/types";
 import { t } from "../../../utils/i18n";
 import {
   canOpenTaskPaperPassage,
   taskPaperPassagePageLabel,
+  taskPaperReadReach,
   type TaskPaperPassageTarget,
 } from "./passageSource";
 import { renderChecklistSteps, resolveTaskPaperLabel } from "./planSteps";
+import {
+  TASK_PROGRESS_OFFER_EVENT,
+  TASK_PROGRESS_OPEN_SOURCE_EVENT,
+  TASK_PROGRESS_SHOW_IN_ANSWER_EVENT,
+  buildTaskOutsideGroups,
+  countTaskOutside,
+  createTaskCard,
+  createTaskGroupHeading,
+  createTaskGroupNote,
+  createTaskOffer,
+  createTaskShowAll,
+  createTaskSourceIcon,
+  createTaskSourceRow,
+  createTaskUnusedFold,
+  createTaskWhyOutside,
+  buildTaskCitedModel,
+  createTaskCitedBlocks,
+  createTaskReadEarlierBlock,
+  earlierTaskPaperReads,
+  findNamedInAnswer,
+  formatTaskCitedLabel,
+  formatTaskGroupCounts,
+  formatTaskPaperReach,
+  hasTaskCitedContent,
+  isTaskPaperHeadingOnlyRead,
+  patchTaskCard,
+  questionCitationIds,
+  taskSourceRowOpens,
+  type TaskCardRefs,
+  type TaskCitedHandlers,
+  type TaskCitedModel,
+  type TaskOutsideGroups,
+  type TaskSourceGroup,
+  type TaskProgressOfferDetail,
+  type TaskProgressOpenSourceDetail,
+  type TaskProgressShowInAnswerDetail,
+  type TaskSourceRow,
+} from "./outsideView";
+import type { TaskOutsideQuote } from "./outside";
+import type { TaskAnswerCitation } from "./answerCitations";
+import { copyTextToClipboard } from "../clipboard";
+import { launchInDefaultBrowser } from "../webSourcesSidePanel";
 import {
   displayedTaskRunState,
   getTaskProgress,
@@ -68,6 +114,7 @@ import {
   taskQuestionState,
   taskReadInDepth,
   type TaskProgressChecklist,
+  type TaskProgressViewMemo,
   type TaskProgressQuestion,
   type TaskProgressRecord,
   type TaskRunState,
@@ -84,8 +131,6 @@ import {
 export const TASK_PROGRESS_WINDOW = 80;
 /** Minimum spacing of store-driven repaints: at most four a second. */
 export const TASK_PROGRESS_REPAINT_MS = 250;
-/** How long a cited quote card stays highlighted after a jump. */
-export const TASK_PROGRESS_FLASH_MS = 1400;
 /** The least height a drag leaves the drawer (less only if less fits). */
 export const TASK_PROGRESS_DRAWER_MIN_PX = 96;
 /** One arrow-key step on the drag handle; Shift makes it four. */
@@ -104,8 +149,9 @@ const SHOWN_CLASS = "llm-task-progress-shown";
 export const TASK_PROGRESS_REMOVE_PAPER_EVENT =
   "llm-task-progress-remove-paper";
 /**
- * Dispatched (bubbling) when the user asks to see a passage in its paper;
- * the detail is a `TaskPaperPassageTarget`. The panel opens the reader.
+ * Dispatched (bubbling) when the user asks to see a passage in its paper
+ * ("Source" on a read, or a citation of the paper); the detail is a
+ * `TaskPaperPassageTarget`. The panel opens the reader.
  */
 export const TASK_PROGRESS_OPEN_PASSAGE_EVENT =
   "llm-task-progress-open-passage";
@@ -122,13 +168,38 @@ const ROW_SHOWN_ATTR = "data-task-progress-row";
 const DRAWER_MAX_VAR = "--llm-task-progress-drawer-max";
 /** The drawer's current height, for the shell's absolutely placed children. */
 const DRAWER_INSET_VAR = "--llm-task-progress-inset";
-const FLASH_CLASS = "llm-task-progress-flash";
 
 /**
  * The height the user dragged the drawer to, for this session only. Not a
  * pref: persisted state needs the user's sign-off.
  */
 let rememberedDrawerHeight: number | null = null;
+
+/**
+ * The visible Steps block of the current question section, or the visible
+ * top-level Steps block for a panel without sections.
+ */
+export function findCurrentTaskProgressSteps(
+  root: ParentNode,
+): HTMLElement | null {
+  const inSection = (
+    Array.from(
+      root.querySelectorAll(
+        ".llm-task-progress-question-section .llm-task-progress-steps",
+      ),
+    ) as HTMLElement[]
+  ).find((node) => !node.hidden);
+  if (inSection) return inSection;
+  const top = (
+    Array.from(
+      root.querySelectorAll(".llm-task-progress-steps"),
+    ) as HTMLElement[]
+  ).find(
+    (node) =>
+      !node.hidden && !node.closest(".llm-task-progress-question-section"),
+  );
+  return top || null;
+}
 
 export function getRememberedTaskProgressDrawerHeight(): number | null {
   return rememberedDrawerHeight;
@@ -167,6 +238,13 @@ export type TaskProgressPaperRow = {
   state: TaskPaperState;
   /** State in the latest question alone: what the counts add up. */
   turnState: TaskPaperState;
+  /**
+   * Where the answer names the paper without citing a passage (docked):
+   * the sentence or table row. The row is tagged "Named".
+   */
+  named?: string;
+  /** The question whose answer names it. */
+  namedTurn?: number;
 };
 
 /** The turn a row summarizes: the latest run's, or every turn before any. */
@@ -183,11 +261,15 @@ export function paperStateForTurn(
   return entry.turns[turn]?.state || "listed";
 }
 
-/** Whether question `turn` read, cited or found the paper. */
+/** Whether question `turn` read, cited, found or decided on the paper. */
 function touchedInTurn(entry: TaskPaperLedgerEntry, turn: number): boolean {
   const own = entry.turns[turn];
   return Boolean(
-    own && (own.state !== "listed" || own.reads.length || own.citations.length),
+    own &&
+    (own.state !== "listed" ||
+      own.reads.length ||
+      own.citations.length ||
+      own.decision),
   );
 }
 
@@ -285,7 +367,21 @@ export type TaskProgressCounts = {
   cited: number;
   /** Papers whose text a read took in (`isInDepthRead`), of `matched`. */
   inDepth: number;
+  /** Papers the agent decided to exclude in the latest question. */
+  excluded: number;
 };
+
+/**
+ * The paper's decision in question `turn`, or its latest one over every
+ * question before any (`turn` 0): the scope its read state uses.
+ */
+function decisionForTurn(
+  entry: TaskPaperLedgerEntry | undefined,
+  turn: number,
+): TaskPaperDecision | undefined {
+  if (!entry) return undefined;
+  return turn ? entry.turns[turn]?.decision : latestTaskPaperDecision(entry);
+}
 
 const STATE_RANK: Record<TaskPaperState, number> = {
   listed: 0,
@@ -320,8 +416,11 @@ export function countTaskProgress(
     read: 0,
     cited: 0,
     inDepth: 0,
+    excluded: 0,
   };
   for (const row of rows) {
+    if (decisionForTurn(row.entry, turn)?.value === "exclude")
+      counts.excluded += 1;
     const rank = STATE_RANK[row.turnState];
     if (rank >= STATE_RANK.matched) counts.matched += 1;
     if (rank >= STATE_RANK.skimmed) counts.read += 1;
@@ -411,12 +510,38 @@ function papersInScopeText(count: number): string {
 }
 
 /**
+ * Whether a finished follow-up was answered without reading any paper: the
+ * agent answered from what earlier questions read. Every paper would show as
+ * unread, so the row says "No new reads" and the drawer says why in one line.
+ */
+export function answeredWithoutReads(
+  record: TaskProgressRecord | null,
+  recordsReads: boolean,
+  counts: TaskProgressCounts = countTaskProgress(record),
+): boolean {
+  if (!record || !recordsReads || (record.questions?.length || 0) < 2)
+    return false;
+  if (record.runState !== "completed") return false;
+  if (record.checklist?.source === "action" || scopeWidePapers(record))
+    return false;
+  // A scholarly paper or web page it opened or found is a new read.
+  if (countTaskOutside(record, record.turnIndex).total) return false;
+  if (counts.total <= 0 || counts.matched !== 0) return false;
+  // A question that only screened papers did work: it decided them.
+  const turn = summaryTurn(record);
+  return !buildTaskProgressPaperRows(record).some((row) =>
+    decisionForTurn(row.entry, turn),
+  );
+}
+
+/**
  * The row's count text, e.g. "37 of 200 read · 12 cited". A run with a part
  * over every paper of its scope counts those papers on the part's own row,
  * so this names the scope the part froze: "2/4 steps · 212 papers in scope".
  * With nothing attached, the papers read in depth and those only found are
  * counted apart, a zero left out: "2/2 steps · 3 read in depth · 15 found ·
- * 2 cited".
+ * 2 cited". The papers the agent decided to exclude close the line, a zero
+ * left out: "... · 290 excluded".
  */
 export function formatTaskProgressCount(
   record: TaskProgressRecord | null,
@@ -443,15 +568,31 @@ export function formatTaskProgressCount(
     const parts = state === "answering" ? [t("Answering…")] : [];
     if (stepsText) parts.push(stepsText);
     parts.push(papersInScopeText(scopePapers));
+    if (counts.excluded)
+      parts.push(format("{count} excluded", { count: counts.excluded }));
     return parts.join(" · ");
   }
-  const papersKnown = counts.total > 0;
-  if (!papersKnown) {
+  // The question's scholarly papers and web pages count with its papers.
+  const outside = countTaskOutside(record, record?.turnIndex || 0);
+  const papersKnown = counts.total > 0 || outside.total > 0;
+  if (!papersKnown && !outside.cited) {
     return stepsText;
   }
   if (!recordsReads || state === "idle") {
     const inScope = papersInScopeText(counts.total);
     return stepsText ? `${stepsText} · ${inScope}` : inScope;
+  }
+  if (
+    answeredWithoutReads(record, recordsReads, counts) ||
+    (!papersKnown && outside.cited)
+  ) {
+    const none = [
+      t("No new reads"),
+      outside.cited ? format("{count} cited", { count: outside.cited }) : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return stepsText ? `${stepsText} · ${none}` : none;
   }
   const parts: string[] = [];
   if (state === "answering") parts.push(t("Answering…"));
@@ -459,25 +600,29 @@ export function formatTaskProgressCount(
   if (record?.scope?.listing?.wholeLibrary) {
     // Nothing attached: the agent chose its papers, so the row tells the
     // papers it read in depth from those its searches only found.
-    const found = counts.matched - counts.inDepth;
-    if (counts.inDepth)
-      parts.push(format("{count} read in depth", { count: counts.inDepth }));
+    const inDepth = counts.inDepth + outside.read;
+    const found = counts.matched - counts.inDepth + outside.found;
+    if (inDepth)
+      parts.push(format("{count} read in depth", { count: inDepth }));
     if (found) parts.push(format("{count} found", { count: found }));
   } else {
     parts.push(
       format("{read} of {total} read", {
-        read: counts.read,
-        total: counts.total,
+        read: counts.read + outside.read,
+        total: counts.total + outside.total,
       }),
     );
   }
-  if (counts.cited)
-    parts.push(format("{count} cited", { count: counts.cited }));
+  const cited = counts.cited + outside.cited;
+  if (cited) parts.push(format("{count} cited", { count: cited }));
+  if (counts.excluded)
+    parts.push(format("{count} excluded", { count: counts.excluded }));
   return parts.join(" · ");
 }
 
 const GRANULARITY_LABELS: Record<TaskPaperReadEvent["granularity"], string> = {
   metadata: "Title/abstract match",
+  notes: "Notes",
   abstract: "Abstract",
   outline: "Outline",
   section: "Passage",
@@ -504,6 +649,9 @@ export function formatTaskPaperPassageLabel(
   read: TaskPaperReadEvent,
   paperTitle = "",
 ): string {
+  // A paper_read of the paper as a whole says how far it went, not "Full text".
+  const reach = taskPaperReadReach(read);
+  if (reach) return formatTaskPaperReach(reach);
   const kind = t(GRANULARITY_LABELS[read.granularity] || "Passage");
   const label = (read.label || "").trim();
   const title = looseText(paperTitle);
@@ -517,6 +665,99 @@ export function formatTaskPaperPassageLabel(
   if (!label || repeatsTitle || read.granularity === "full") return kind;
   if (read.granularity === "outline") return `${kind}: ${label}`;
   return label;
+}
+
+/** A scoped digest's depth, for one saved before its scope was named. */
+const SCOPED_DIGEST_DEPTH_LABELS: Partial<
+  Record<TaskPaperReadEvent["granularity"], string>
+> = {
+  abstract: "Abstract",
+  section: "Sections",
+  page: "Pages",
+  notes: "Notes",
+  metadata: "Record",
+  full: "Full",
+};
+
+/** The covered names that are depths, shown in the plugin's language. */
+const SCOPE_TOKEN_LABELS: Record<string, string> = {
+  abstract: "Abstract",
+  notes: "Notes",
+  metadata: "Record",
+};
+
+/** A pages read's covered name: "pages 3–5" (`selectPageScope`). */
+const PAGES_TOKEN = /^(pages?) (\S+)$/i;
+
+/** The labels of a scope, split at ", " outside parentheses. */
+function splitScopeLabel(scopeLabel: string): string[] {
+  const tokens: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let at = 0; at < scopeLabel.length; at += 1) {
+    const char = scopeLabel[at];
+    if (char === "(") depth += 1;
+    else if (char === ")") depth = Math.max(0, depth - 1);
+    else if (char === "," && depth === 0 && scopeLabel[at + 1] === " ") {
+      tokens.push(scopeLabel.slice(start, at));
+      start = at + 2;
+    }
+  }
+  tokens.push(scopeLabel.slice(start));
+  return tokens;
+}
+
+/**
+ * A scope as the user reads it: the parts they asked for ("Abstract,
+ * Results"), not the headings, pages or places found for them. A scope saved
+ * with "(for: name)" suffixes is reduced to those names here; a pages read's
+ * range stays, in the plugin's language.
+ */
+function translateScopeLabel(scopeLabel: string): string {
+  return requestedPartNames(splitScopeLabel(scopeLabel))
+    .map((token) => {
+      const label = SCOPE_TOKEN_LABELS[token.trim().toLowerCase()];
+      if (label) return t(label);
+      const pages = PAGES_TOKEN.exec(token.trim());
+      return pages
+        ? t(
+            pages[1].toLowerCase() === "page"
+              ? "page {range}"
+              : "pages {range}",
+          ).replace("{range}", pages[2])
+        : token;
+    })
+    .join(", ");
+}
+
+/**
+ * How much of the paper a digest read, beside its heading: "Full" when the
+ * reader read every character of its text, "Part" when it read less of
+ * it, and what it read for a read of named parts ("Abstract, Results"),
+ * never "Full". Empty for a failed digest and a read saved before it was
+ * recorded.
+ */
+export function formatTaskPaperDigestDepth(read: TaskPaperReadEvent): string {
+  if (read.granularity !== "digest" || !read.snippet) return "";
+  if (read.scopeLabel) return translateScopeLabel(read.scopeLabel);
+  if (read.depth) return t(SCOPED_DIGEST_DEPTH_LABELS[read.depth] || "Part");
+  if (read.complete === true) return t("Full");
+  if (read.complete === false) return t("Part");
+  return "";
+}
+
+/**
+ * Whether a cited quote is only the paper's title: there is no passage to
+ * find, and the title stands on the paper's first page.
+ */
+export function isTaskPaperTitleQuote(quote: string, title: string): boolean {
+  const words = (text: string) =>
+    text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim();
+  const shown = words(quote);
+  return shown !== "" && shown === words(title);
 }
 
 /**
@@ -533,14 +774,24 @@ export function cleanTaskPaperSnippet(snippet: string): string {
 }
 
 /**
- * The reads worth listing: what was actually read, once each. A host
- * digest shows in its part's own block (`paperDigests`), not as a read.
+ * A host digest of the paper: a `digest` read of the digest worker, not a
+ * full paper_read that stopped short (which records its reach the same
+ * way).
+ */
+function isHostDigestRead(read: TaskPaperReadEvent): boolean {
+  return read.granularity === "digest" && read.toolName !== "paper_read";
+}
+
+/**
+ * The reads worth listing: what was actually read, once each, and not a
+ * bare heading. A host digest shows in its part's own block
+ * (`paperDigests`), not as a read.
  */
 function visibleReads(reads: readonly TaskPaperReadEvent[]) {
   const seen = new Set<string>();
   return reads.filter((read) => {
-    if (read.granularity === "metadata" || read.granularity === "digest")
-      return false;
+    if (read.granularity === "metadata" || isHostDigestRead(read)) return false;
+    if (isTaskPaperHeadingOnlyRead(read)) return false;
     const key = `${read.granularity}\u0000${read.label || ""}\u0000${read.snippet || ""}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -566,26 +817,6 @@ function metaText(row: TaskProgressPaperRow): string {
     .join(" · ");
 }
 
-/** Section names a targeted read gave: neither a page nor the paper's title. */
-function readSectionLabel(
-  read: TaskPaperReadEvent,
-  paperTitle: string,
-): string {
-  if (read.granularity !== "section" && read.granularity !== "passage")
-    return "";
-  const label = (read.label || "").trim();
-  if (!label || taskPaperPassagePageLabel(label)) return "";
-  const title = looseText(paperTitle);
-  const loose = looseText(label);
-  if (
-    title &&
-    loose &&
-    (loose === title || title.startsWith(loose) || loose.startsWith(title))
-  )
-    return "";
-  return label;
-}
-
 /**
  * The paper's newest host digest over every part: the latest one with an
  * answer, else the latest failure (no answer; `whyMatched` holds the host's
@@ -597,7 +828,7 @@ function paperDigest(
   let failed: TaskPaperReadEvent | null = null;
   let done: TaskPaperReadEvent | null = null;
   for (const read of reads) {
-    if (read.granularity !== "digest") continue;
+    if (!isHostDigestRead(read)) continue;
     if (read.snippet) done = read;
     else failed = read;
   }
@@ -615,7 +846,7 @@ function paperDigests(
 ): TaskPaperReadEvent[] {
   const parts = new Map<string, TaskPaperReadEvent[]>();
   for (const read of reads) {
-    if (read.granularity !== "digest") continue;
+    if (!isHostDigestRead(read)) continue;
     const part = parts.get(read.partId || "");
     if (part) part.push(read);
     else parts.set(read.partId || "", [read]);
@@ -667,67 +898,21 @@ function digestJudgmentText(
   return why ? `${t(word)} — ${why}` : t(word);
 }
 
-/** Section names the tail lists before it says "…". */
-const TAIL_SECTIONS = 3;
-
 /**
- * The row's tail over every question: "Full text" for a whole-paper read;
- * for a paper the host digested, its evidence passage count (when no
- * evidence survived, the label of the part whose answer came last, or
- * "Summary"); else the sections a targeted read named ("Methods,
- * Results"), else a passage count; then "cited N". A paper whose digests
- * all failed and that nothing else read says "<label> failed" ("Summary
- * failed"). Never a byte size or a section count.
+ * The few grey words at a paper row's end: "found" for a search hit,
+ * "skimmed" for a skim, a failed digest's reason, and nothing once the paper
+ * was read, so the title keeps the room. What was read lists under the
+ * opened row; a cited paper says so with its "Cited" tag.
  */
 export function formatTaskPaperTail(row: TaskProgressPaperRow): string {
-  if (row.state === "listed") return "";
-  const turns = Object.values(row.entry?.turns || {});
-  const reads = turns.flatMap((entry) => entry.reads);
-  const digest = paperDigest(reads);
   if (row.state === "matched") {
-    return digest && !digest.snippet
-      ? digestFailedText(digest)
-      : t("title/abstract");
-  }
-  const citations = turns.flatMap((entry) => entry.citations);
-  // The digest's summary is the host's words, not a passage of the paper.
-  // The same passage read again (another question, a retry) counts once.
-  const passages = new Set(
-    reads
-      .filter((read) => read.snippet && read.granularity !== "digest")
-      .map((read) => read.snippet),
-  ).size;
-  const passageCount = () =>
-    passages === 1
-      ? t("1 passage")
-      : format("{count} passages", { count: passages });
-  const parts: string[] = [];
-  const sections = [
-    ...new Set(
-      reads.map((read) => readSectionLabel(read, row.title)).filter(Boolean),
-    ),
-  ];
-  if (reads.some((read) => read.granularity === "full")) {
-    parts.push(t("Full text"));
-  } else if (digest?.snippet) {
-    parts.push(
-      passages ? passageCount() : digestPartLabel(digest) || t("Summary"),
+    const reads = Object.values(row.entry?.turns || {}).flatMap(
+      (entry) => entry.reads,
     );
-  } else if (sections.length) {
-    parts.push(
-      sections.slice(0, TAIL_SECTIONS).join(", ") +
-        (sections.length > TAIL_SECTIONS ? "…" : ""),
-    );
-  } else if (passages) {
-    parts.push(passageCount());
-  } else if (row.state === "skimmed") {
-    const last = reads[reads.length - 1];
-    parts.push(last?.granularity === "outline" ? t("outline") : t("abstract"));
+    const digest = paperDigest(reads);
+    return digest && !digest.snippet ? digestFailedText(digest) : t("found");
   }
-  if (citations.length) {
-    parts.push(format("cited {count}", { count: citations.length }));
-  }
-  return parts.join(" · ");
+  return row.state === "skimmed" ? t("skimmed") : "";
 }
 
 /**
@@ -899,6 +1084,10 @@ function questionRows(
  */
 export function buildTaskProgressSections(
   record: TaskProgressRecord | null,
+  options: {
+    /** Keep an earlier question with no steps and no papers (docked). */
+    keepEmpty?: boolean;
+  } = {},
 ): TaskProgressSection[] {
   const questions = record?.questions || [];
   if (!record || !questions.length) return [];
@@ -934,7 +1123,14 @@ export function buildTaskProgressSections(
             keysByTurn.get(question.turn) || [],
             scopeEntries,
           );
-    if (!current && !checklist && !rows.length) continue;
+    if (
+      !current &&
+      !checklist &&
+      !rows.length &&
+      !options.keepEmpty &&
+      !record.outside?.[question.turn]
+    )
+      continue;
     sections.push({
       id: sectionId(question),
       question,
@@ -948,8 +1144,27 @@ export function buildTaskProgressSections(
   return sections;
 }
 
+/**
+ * A paper chat's question counts: "4 cited", the passages its answer cites
+ * (the ledger's answer citations on a record kept before they were listed);
+ * empty when it cites none.
+ */
+export function formatTaskPaperChatCounts(
+  record: TaskProgressRecord | null,
+  question: TaskProgressQuestion,
+): string {
+  const count =
+    question.answerCitations?.length ??
+    (record ? questionCitationIds(record, question.turn).length : 0);
+  return count ? format("{count} cited", { count }) : "";
+}
+
 /** An earlier question's counts: "2/2 steps · 8 papers", a zero left out. */
-export function formatTaskQuestionCounts(section: TaskProgressSection): string {
+export function formatTaskQuestionCounts(
+  section: TaskProgressSection,
+  /** The question's scholarly papers and web pages. */
+  outside: { papers: number; pages: number } = { papers: 0, pages: 0 },
+): string {
   const parts: string[] = [];
   const checklist = section.checklist;
   if (checklist && checklist.total > 0) {
@@ -960,7 +1175,7 @@ export function formatTaskQuestionCounts(section: TaskProgressSection): string {
       }),
     );
   }
-  const papers = section.rows.length;
+  const papers = section.rows.length + outside.papers;
   if (papers) {
     parts.push(
       format(papers === 1 ? "{count} paper" : "{count} papers", {
@@ -968,7 +1183,34 @@ export function formatTaskQuestionCounts(section: TaskProgressSection): string {
       }),
     );
   }
+  if (outside.pages) {
+    parts.push(
+      format(outside.pages === 1 ? "{count} web page" : "{count} web pages", {
+        count: outside.pages,
+      }),
+    );
+  }
   return parts.join(" · ");
+}
+
+/**
+ * The decision words: the row's tag and the opened row's line. Both name only
+ * a paper left out or put off; an included paper shows neither.
+ */
+const DECISION_WORDS: Record<
+  Exclude<TaskPaperDecision["value"], "include">,
+  string
+> = {
+  exclude: "Excluded",
+  defer: "Deferred",
+};
+
+/** The row's decision tag: "Excluded" or "Deferred", none for "include". */
+function decisionTag(row: TaskProgressPaperRow): string {
+  const value = latestTaskPaperDecision(row.entry)?.value;
+  return value === "exclude" || value === "defer"
+    ? t(DECISION_WORDS[value])
+    : "";
 }
 
 const STATE_LABELS: Record<TaskPaperState, string> = {
@@ -1164,9 +1406,11 @@ export function createTaskProgressDrawer(doc: Document): HTMLElement {
   const list = el(doc, "ol", "llm-task-progress-list");
   list.setAttribute("role", "list");
   list.setAttribute("aria-label", t("Papers in scope"));
+  const quiet = el(doc, "div", "llm-task-progress-quiet");
+  quiet.hidden = true;
   const more = el(doc, "div", "llm-task-progress-more");
   more.hidden = true;
-  body.append(head, note, steps, list, more);
+  body.append(head, note, steps, list, quiet, more);
   const grip = el(doc, "div", "llm-task-progress-drawer-grip");
   grip.tabIndex = 0;
   grip.title = t("Drag to resize Task progress");
@@ -1192,6 +1436,8 @@ type PaperRowRefs = {
   summary: HTMLButtonElement;
   index: HTMLElement;
   title: HTMLElement;
+  /** "Cited": shown once the answer cites the paper. */
+  cite: HTMLElement;
   tail: HTMLElement;
   meta: HTMLElement;
   source: HTMLElement;
@@ -1217,12 +1463,77 @@ type SectionRefs = QuestionHeadRefs & {
   id: string;
   root: HTMLElement;
   head: HTMLButtonElement;
+  /** Docked: this is the question the row describes (shown unrolled). */
+  current: boolean;
   body: {
     root: HTMLElement;
     steps: HTMLElement;
     papersTitle: HTMLElement;
     list: PaperList;
+    quiet: HTMLElement;
+    groups: GroupSlot;
+    /** Docked: the question's sections as cards. */
+    cards: DockedCards | null;
   } | null;
+};
+
+/** A source group's card, rebuilt when what it shows changes. */
+type OutsideCard = TaskCardRefs & { signature: string };
+
+/**
+ * Docked, a question's body is a column of soft cards: its steps, then its
+ * library papers, scholarly papers and web pages, the groups the answer used
+ * most first. Each card folds; in each group the rows the answer did not use
+ * fold into one line.
+ */
+type DockedCards = {
+  steps: TaskCardRefs;
+  /** Paper chat: the chat's own paper's "Cited" list. */
+  cited: TaskCardRefs;
+  citedSignature: string;
+  library: TaskCardRefs;
+  /** Library papers cited from an earlier question's reading. */
+  reused: HTMLElement;
+  reusedSignature: string;
+  fold: HTMLElement;
+  unused: PaperList;
+  more: HTMLElement;
+  paper: OutsideCard;
+  web: OutsideCard;
+  offer: HTMLElement;
+  offerSignature: string;
+};
+
+/** A docked question's library rows: those the answer used first. */
+type DockedLibrary = {
+  /** The answer is in: rows split by whether it used them. */
+  settled: boolean;
+  used: TaskProgressPaperRow[];
+  unused: TaskProgressPaperRow[];
+  reused: TaskSourceRow[];
+};
+
+/** How many of a group the answer used, and how many there are. */
+type DockedGroupStat = {
+  key: "library" | "paper" | "web";
+  used: number;
+  total: number;
+};
+
+/** Rows an opened fold shows before "Show all". */
+const FOLD_FIRST_ROWS = 25;
+
+/**
+ * Where a question's groups go: before its library list (earlier questions,
+ * the library's heading) and after it (scholarly search, web, the offer).
+ */
+type GroupSlot = {
+  before: HTMLElement;
+  after: HTMLElement;
+  /** What the slot shows now; unchanged, it is not rebuilt. */
+  signature: string;
+  /** Before its rows' keys in the expanded set. */
+  scope: string;
 };
 
 export type TaskProgressViewDeps = {
@@ -1234,8 +1545,6 @@ export type TaskProgressViewDeps = {
     libraryID: number;
     itemId: number;
   }) => Promise<boolean>;
-  /** Scroll the chat to a quote card; defaults to `scrollIntoView`. */
-  navigateToCitation?: (card: HTMLElement) => void;
   /** Live layout; without it (unit tests) the drawer settles at once. */
   layout?: TaskProgressLayout;
   /** A paper's "(creator, year)" label; defaults to reading it from Zotero. */
@@ -1287,10 +1596,29 @@ export type TaskProgressView = {
   curtainState: () => TaskProgressCurtainState;
   /** Repaint now, skipping the coalescing delay. */
   flush: () => void;
+  /**
+   * Take the conversation's card as the other view left it (moved between
+   * the chat and the side panel tab): the same questions, rows and folds
+   * open, and the same row at the top.
+   */
+  resume: () => void;
   dispose: () => void;
   /** Paper rows currently in the DOM. */
   renderedRowCount: () => number;
+  /**
+   * Show a question's sources: its block open, the rows lit, a single row
+   * opened, scrolled into view.
+   */
+  reveal: (target: { turn: number; keys: readonly string[] }) => void;
 };
+
+function createGroupSlot(doc: Document, scope: string): GroupSlot {
+  const before = el(doc, "div", "llm-task-group-before");
+  const after = el(doc, "div", "llm-task-group-after");
+  before.hidden = true;
+  after.hidden = true;
+  return { before, after, signature: "", scope };
+}
 
 export function mountTaskProgressView(params: {
   doc: Document;
@@ -1301,8 +1629,15 @@ export function mountTaskProgressView(params: {
   /** Receives Escape while focus is anywhere in the panel. */
   keyTarget: HTMLElement;
   deps: TaskProgressViewDeps;
+  /**
+   * Docked in the standalone window's side panel tab: the drawer is always
+   * open and fills the tab, the row is its heading, and how it is left is
+   * not remembered for the chat's own card.
+   */
+  docked?: boolean;
 }): TaskProgressView {
   const { doc, row, drawer, shell, chatBox, keyTarget, deps } = params;
+  const docked = params.docked === true;
   // A not-done row's paper labels, read once per item while the view lives,
   // so a repaint never looks them up again.
   const readPaperLabel = deps.resolvePaperLabel || resolveTaskPaperLabel;
@@ -1323,6 +1658,9 @@ export function mountTaskProgressView(params: {
   const steps = drawer.querySelector(".llm-task-progress-steps") as HTMLElement;
   const list = drawer.querySelector(".llm-task-progress-list") as HTMLElement;
   const more = drawer.querySelector(".llm-task-progress-more") as HTMLElement;
+  const quiet = drawer.querySelector(
+    ".llm-task-progress-quiet",
+  ) as HTMLElement | null;
   const countEl = row.querySelector(".llm-task-progress-count") as HTMLElement;
   const pillEl = row.querySelector(
     ".llm-task-progress-pill",
@@ -1360,14 +1698,28 @@ export function mountTaskProgressView(params: {
     ordered: [],
     scope: "",
   };
+  /** The current question's groups, around the drawer's own list. */
+  const mainSlot: GroupSlot = createGroupSlot(doc, "");
+  /** Rows a marker asked to show: lit under their question. */
+  let highlight: { turn: number; keys: Set<string> } | null = null;
   let expanded = new Set<string>();
   /** Earlier questions the user unrolled, by section id. */
   let unrolled = new Set<string>();
+  /** Docked: current questions the user folded, by section id. */
+  let foldedCurrent = new Set<string>();
+  /** Docked: section cards the user folded, by question scope and card. */
+  let closedCards = new Set<string>();
+  /** Docked: groups whose unused rows are unfolded, and those showing all. */
+  let openFolds = new Set<string>();
+  let showAllFolds = new Set<string>();
+  /** Docked: where each answer names each paper, by turn and paper. */
+  const namedCache = new Map<
+    string,
+    { answer: string; quote: string | null }
+  >();
   /** Some list holds rows past the window: scrolling down grows it. */
   let rowsPastWindow = false;
   /** The drawer's history, built while it shows more than one question. */
-  let currentHead: QuestionHeadRefs | null = null;
-  let papersTitle: HTMLElement | null = null;
   let historyHost: HTMLElement | null = null;
   let sectionRefs = new Map<string, SectionRefs>();
   /** The sections a record version builds, kept until the record changes. */
@@ -1378,11 +1730,37 @@ export function mountTaskProgressView(params: {
   } | null = null;
   /** The conversation's remembered card was open: reopen it once shown. */
   let restorePending = false;
+  /**
+   * Until when a remembered place may still be applied: a list laid out
+   * later than that, or one the reader already used, keeps its own place.
+   */
+  let restoreUntil = 0;
+  const RESTORE_WINDOW_MS = 1000;
+  const startRestore = (pending: boolean) => {
+    restorePending = pending;
+    restoreUntil = pending ? deps.now() + RESTORE_WINDOW_MS : 0;
+  };
+  /** Docked: put the list at its remembered place once it is laid out. */
+  const restoreDockedPlace = (attempt = 0) => {
+    if (!restorePending || disposed) return;
+    if (deps.now() > restoreUntil) {
+      restorePending = false;
+      return;
+    }
+    if (!(Number(body.clientHeight) > 0) || !record()) {
+      // Not laid out yet (the tab is still being shown): try again shortly.
+      if (attempt < 10)
+        deps.setTimeout(() => restoreDockedPlace(attempt + 1), 50);
+      return;
+    }
+    restorePending = false;
+    const memo = getTaskProgressViewMemo(input.conversationKey || 0);
+    if (memo) restorePlace(memo);
+  };
   /** The record the local state belongs to; 0 before there is one. */
   let seenEpoch = 0;
   const mineruKnown = new Set<string>();
   const mineruAsked = new Set<string>();
-  const flashTimers = new Set<unknown>();
 
   const record = () =>
     input.conversationKey ? getTaskProgress(input.conversationKey) : null;
@@ -1398,7 +1776,7 @@ export function mountTaskProgressView(params: {
       sectionsCache = {
         record: current,
         version: current.version,
-        sections: buildTaskProgressSections(current),
+        sections: buildTaskProgressSections(current, { keepEmpty: true }),
       };
     }
     return sectionsCache.sections;
@@ -1412,11 +1790,7 @@ export function mountTaskProgressView(params: {
 
   /** Drop the history's nodes: none shows, or another record's did. */
   const clearHistory = () => {
-    currentHead?.head.remove();
-    papersTitle?.remove();
     historyHost?.remove();
-    currentHead = null;
-    papersTitle = null;
     historyHost = null;
     sectionRefs = new Map();
   };
@@ -1432,6 +1806,10 @@ export function mountTaskProgressView(params: {
     if (seenEpoch) {
       expanded = new Set();
       unrolled = new Set();
+      closedCards = new Set();
+      openFolds = new Set();
+      showAllFolds = new Set();
+      namedCache.clear();
       limit = TASK_PROGRESS_WINDOW;
       clearList(mainList);
       clearHistory();
@@ -1446,24 +1824,102 @@ export function mountTaskProgressView(params: {
   const remember = () => {
     const key = input.conversationKey;
     if (!key || disposed) return;
+    // A list that is not laid out (a tab in the background) has no place.
+    const placed = open && Number(body.clientHeight) > 0;
+    const top = placed ? topOfList() : null;
     rememberTaskProgressView(key, {
-      open,
+      // Docked, the list is always open: moved back, the chat's opens.
+      open: docked || open,
       expanded: Array.from(expanded),
+      openFolds: Array.from(openFolds),
       questions: Array.from(unrolled),
+      foldedCurrent: Array.from(foldedCurrent),
+      closedCards: Array.from(closedCards),
+      showAllFolds: Array.from(showAllFolds),
       limit,
       collapseSeq: seenCollapseSeq,
       // A closed drawer keeps the place it was left at.
-      ...(open ? { scrollTop: Math.round(Number(body.scrollTop) || 0) } : {}),
+      ...(placed ? { scrollTop: Math.round(Number(body.scrollTop) || 0) } : {}),
+      ...(top ? { top } : {}),
     });
   };
 
+  /** A question's header or a row, by its question and key. */
+  const placeIdOf = (node: HTMLElement): string => {
+    const section =
+      (node.closest("[data-section-id]") as HTMLElement | null)?.dataset
+        .sectionId || "";
+    return node.matches("li")
+      ? `${section}\u0000row\u0000${node.dataset.key || ""}`
+      : `${section}\u0000head`;
+  };
+  const placeCandidates = () =>
+    Array.from(
+      body.querySelectorAll(
+        ".llm-task-progress-question-section > .llm-task-progress-dock-question, .llm-task-progress-question-section li[data-key]",
+      ),
+    ) as HTMLElement[];
+
+  /** The first header or row whose box reaches below the list's top. */
+  const topOfList = (): { id: string; offset: number } | null => {
+    // Without layout (no boxes to measure) the scroll offset stands alone.
+    if (typeof body.getBoundingClientRect !== "function") return null;
+    const listTop = body.getBoundingClientRect().top;
+    for (const node of placeCandidates()) {
+      const rect = node.getBoundingClientRect();
+      if (!rect.height || rect.bottom <= listTop + 1) continue;
+      return { id: placeIdOf(node), offset: Math.round(rect.top - listTop) };
+    }
+    return null;
+  };
+
+  /** Scroll the list so the remembered header or row is where it was. */
+  const restorePlace = (memo: {
+    scrollTop: number;
+    top?: { id: string; offset: number };
+  }) => {
+    const found = memo.top
+      ? placeCandidates().find((node) => placeIdOf(node) === memo.top!.id)
+      : undefined;
+    if (
+      !found ||
+      !memo.top ||
+      typeof body.getBoundingClientRect !== "function"
+    ) {
+      body.scrollTop = memo.scrollTop;
+      return;
+    }
+    const listTop = body.getBoundingClientRect().top;
+    body.scrollTop +=
+      found.getBoundingClientRect().top - listTop - memo.top.offset;
+  };
+
+  /** The conversation's card as it was left, in this view's own state. */
+  const adoptMemo = (memo: TaskProgressViewMemo | null) => {
+    expanded = new Set(memo?.expanded || []);
+    unrolled = new Set(memo?.questions || []);
+    foldedCurrent = new Set(memo?.foldedCurrent || []);
+    closedCards = new Set(memo?.closedCards || []);
+    openFolds = new Set(memo?.openFolds || []);
+    showAllFolds = new Set(memo?.showAllFolds || []);
+    limit = Math.max(TASK_PROGRESS_WINDOW, memo?.limit || 0);
+  };
+
+  /** Docked, it shows for any paper or library chat (not WebChat, a note). */
+  const dockedApplies = () =>
+    (input.visibility.conversationKind === "global" ||
+      input.visibility.conversationKind === "paper") &&
+    !input.visibility.isWebChat &&
+    !input.visibility.isNoteSession;
   const computeVisible = (current: TaskProgressRecord | null) =>
     Boolean(input.conversationKey) &&
-    shouldShowTaskProgress({
-      ...input.visibility,
-      planSeen: Boolean(current?.planSeen),
-      readInDepth: taskReadInDepth(current),
-    });
+    (docked
+      ? dockedApplies()
+      : shouldShowTaskProgress({
+          ...input.visibility,
+          planSeen: Boolean(current?.planSeen),
+          readInDepth: taskReadInDepth(current),
+        }));
 
   /** What this paint stands on: how the next change of the row moves. */
   const rowFrame = (
@@ -1830,34 +2286,139 @@ export function mountTaskProgressView(params: {
     event.stopPropagation?.();
   };
 
-  /** "Source": open the paper at this passage (the panel does the work). */
-  const openPassageButton = (
-    model: TaskProgressPaperRow,
+  /** What "Source" on a read opens: the read's passage (the panel does the work). */
+  const readPassageTarget = (
     read: TaskPaperReadEvent,
-    cleanedSnippet: string,
-  ) => {
-    const button = el(doc, "button", "llm-task-paper-open", t("Source"));
-    button.type = "button";
-    button.title = t("Open this passage in the paper");
-    button.setAttribute("aria-label", t("Open this passage in the paper"));
-    button.addEventListener("click", (event: Event) => {
-      event.preventDefault?.();
-      event.stopPropagation?.();
-      if (button.disabled) return;
-      dispatchOpenPassage(button, model, {
-        rawSnippet: read.snippet || "",
-        cleanedSnippet,
-        label: read.label || "",
-        ...(read.pageIndex !== undefined ? { pageIndex: read.pageIndex } : {}),
-        granularity: read.granularity,
-      });
+  ): Omit<TaskPaperPassageTarget, "itemId" | "libraryID"> => ({
+    rawSnippet: read.snippet || "",
+    cleanedSnippet: read.snippet ? cleanTaskPaperSnippet(read.snippet) : "",
+    label: read.label || "",
+    ...(read.pageIndex !== undefined ? { pageIndex: read.pageIndex } : {}),
+    // A read of the paper as a whole, even a partial one, opens the paper.
+    granularity: taskPaperReadReach(read) ? "full" : read.granularity,
+  });
+
+  /**
+   * What "Source" on a cited passage opens: the passage in its own
+   * attachment, falling back to its recorded page; one recorded without its
+   * words, or with only the paper's title, opens the paper at its start.
+   */
+  const citedPassageTarget = (
+    passage: TaskAnswerCitation,
+    title: string,
+  ): Omit<TaskPaperPassageTarget, "itemId" | "libraryID"> => {
+    const wholePaper =
+      !passage.quote || isTaskPaperTitleQuote(passage.quote, title);
+    return {
+      rawSnippet: passage.quote,
+      cleanedSnippet: passage.quote,
+      label: formatTaskCitedLabel(passage),
+      ...(passage.pageLabel ? { pageLabel: passage.pageLabel } : {}),
+      ...(passage.pageIndex !== undefined
+        ? { pageIndex: passage.pageIndex }
+        : {}),
+      ...(passage.contextItemId
+        ? { contextItemId: passage.contextItemId }
+        : {}),
+      granularity: wholePaper ? "full" : "passage",
+    };
+  };
+
+  /**
+   * A library paper's "Cited" list's links: Source opens the passage or read
+   * in the paper, Show in answer lights the sentences of the question's
+   * answer (`runId`) that cite the passage, or that name the paper.
+   */
+  const citedHandlers = (
+    model: Pick<
+      TaskProgressPaperRow,
+      "key" | "itemId" | "libraryID" | "title"
+    > & { entry?: Pick<TaskPaperLedgerEntry, "contextItemIds"> },
+    runId: string | undefined,
+    from: () => HTMLElement,
+    fold: { open: boolean; toggle: () => void },
+  ): TaskCitedHandlers => {
+    const showDetail = (): TaskProgressShowInAnswerDetail => ({
+      ...(runId ? { runId } : {}),
+      key: model.key,
+      // Its citation chip, when the sentence's words are not found.
+      ...(model.itemId > 0 ? { itemId: model.itemId } : {}),
     });
-    return button;
+    return {
+      readLabel: (read) => formatTaskPaperPassageLabel(read, model.title),
+      readText: (read) =>
+        read.snippet ? cleanTaskPaperSnippet(read.snippet) : "",
+      onOpenPassage: (passage, button) =>
+        dispatchOpenPassage(
+          button,
+          model,
+          citedPassageTarget(passage, model.title),
+        ),
+      onOpenRead: (read, button) =>
+        dispatchOpenPassage(button, model, readPassageTarget(read)),
+      onShowPassage: (passage) =>
+        dispatchFrom(from(), TASK_PROGRESS_SHOW_IN_ANSWER_EVENT, {
+          ...showDetail(),
+          citationId: passage.id,
+          texts: [...passage.sentences],
+        }),
+      onShowNamed: (quote) =>
+        dispatchFrom(from(), TASK_PROGRESS_SHOW_IN_ANSWER_EVENT, {
+          ...showDetail(),
+          text: quote.text,
+        }),
+      foldOpen: fold.open,
+      onToggleFold: fold.toggle,
+    };
+  };
+
+  /** Open or close a "Read, not cited" fold, kept with the expanded rows. */
+  const toggleCitedFold = (key: string) => {
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    remember();
+  };
+
+  /**
+   * One question's part of its answer for a library paper: its cited
+   * passages, the sentences naming it, and its reads the answer did not cite.
+   */
+  const paperAnswerModel = (
+    paper: {
+      itemId: number;
+      contextItemIds: readonly number[];
+      creator: string;
+      year: string;
+      title: string;
+    },
+    turn: number,
+    own: TaskPaperLedgerEntry["turns"][number] | undefined,
+    /** An earlier question's reads, for a question that read none. */
+    earlierReads?: readonly TaskPaperReadEvent[],
+  ): TaskCitedModel => {
+    const current = record();
+    return buildTaskCitedModel({
+      answerCitations: current?.questions.find(
+        (question) => question.turn === turn,
+      )?.answerCitations,
+      ledgerCitations: own?.citations || [],
+      questionCitationIds: current ? questionCitationIds(current, turn) : [],
+      reads: earlierReads
+        ? visibleReads(earlierReads)
+        : own
+          ? visibleReads(own.reads)
+          : [],
+      droppedReads: earlierReads ? 0 : own?.droppedReads || 0,
+      answer: current?.outside?.[turn]?.answer || "",
+      paper,
+    });
   };
 
   const dispatchOpenPassage = (
     from: HTMLElement,
-    model: TaskProgressPaperRow,
+    model: Pick<TaskProgressPaperRow, "itemId" | "libraryID"> & {
+      entry?: Pick<TaskPaperLedgerEntry, "contextItemIds">;
+    },
     detail: Omit<TaskPaperPassageTarget, "itemId" | "libraryID">,
   ) => {
     const View = (doc.defaultView as any)?.CustomEvent;
@@ -1867,7 +2428,9 @@ export function mountTaskProgressView(params: {
       libraryID: model.libraryID,
       ...detail,
     };
-    const contextItemId = model.entry?.contextItemIds?.[0];
+    // The passage's own attachment when known; else the paper's first.
+    const contextItemId =
+      detail.contextItemId || model.entry?.contextItemIds?.[0];
     if (contextItemId) target.contextItemId = contextItemId;
     from.dispatchEvent(
       new View(TASK_PROGRESS_OPEN_PASSAGE_EVENT, {
@@ -1892,6 +2455,7 @@ export function mountTaskProgressView(params: {
     link.addEventListener("click", (event: Event) => {
       event.preventDefault?.();
       event.stopPropagation?.();
+      if (link.disabled) return;
       dispatchOpenPassage(link, model, {
         rawSnippet: "",
         cleanedSnippet: "",
@@ -1909,11 +2473,7 @@ export function mountTaskProgressView(params: {
       .map(Number)
       .filter((turn) => Number.isFinite(turn))
       .sort((a, b) => a - b);
-    const citations: Array<{ id: string; quote: string; turn: number }> = [];
     const documentSections: string[] = [];
-    const readsByTurn = new Map(
-      turns.map((turn) => [turn, visibleReads(model.entry!.turns[turn].reads)]),
-    );
     // The host's digests of the paper lead, one block per part: its label,
     // the relevance and stance it judged, and its answer, or why it failed.
     const digests = paperDigests(
@@ -1927,11 +2487,14 @@ export function mountTaskProgressView(params: {
         : "";
       // A row saved before parts were recorded keeps its "Summary" heading,
       // and its failure says why under it, as it did.
-      const heading = !label
+      const title = !label
         ? t("Summary")
         : digest.snippet
           ? label
           : digestFailedText(digest);
+      // "Full" only when the reader read every character of the text.
+      const depth = formatTaskPaperDigestDepth(digest);
+      const heading = depth ? `${title} · ${depth}` : title;
       block.append(el(doc, "div", "llm-task-paper-turn", heading));
       for (const line of [
         digestJudgmentText(
@@ -1959,62 +2522,51 @@ export function mountTaskProgressView(params: {
       }
       children.push(block);
     }
-    // Question headings only help when more than one question read it.
-    const headed =
-      turns.filter((turn) => readsByTurn.get(turn)!.length).length > 1;
-    for (const turn of turns) {
-      const turnRecord = model.entry!.turns[turn];
-      const reads = readsByTurn.get(turn)!;
-      if (reads.length) {
-        if (headed && turn > 0) {
-          children.push(
-            el(
-              doc,
-              "div",
-              "llm-task-paper-turn",
-              format("Question {number}", { number: turn }),
-            ),
-          );
-        }
-        for (const read of reads) {
-          const item = el(doc, "div", "llm-task-paper-read");
-          const snippet = read.snippet
-            ? cleanTaskPaperSnippet(read.snippet)
-            : "";
-          const head = el(doc, "div", "llm-task-paper-read-head");
-          head.append(
-            el(
-              doc,
-              "div",
-              "llm-task-paper-how",
-              formatTaskPaperPassageLabel(read, model.title),
-            ),
-          );
-          if (canOpenTaskPaperPassage(read)) {
-            head.append(openPassageButton(model, read, snippet));
-          }
-          item.append(head);
-          if (snippet) {
-            item.append(
-              el(doc, "blockquote", "llm-task-paper-snippet", snippet),
-            );
-          }
-          children.push(item);
-        }
-        if (turnRecord.droppedReads) {
-          children.push(
-            el(
-              doc,
-              "div",
-              "llm-task-paper-empty",
-              format("and {count} more reads", {
-                count: turnRecord.droppedReads,
-              }),
-            ),
-          );
-        }
+    // Each question's part of its answer: the passages it cites, the
+    // sentences that only name the paper, and the reads it did not cite.
+    const paper = {
+      itemId: model.itemId,
+      contextItemIds: model.entry?.contextItemIds || [],
+      creator: model.creator,
+      year: model.year,
+      title: model.title,
+    };
+    const parts = turns
+      .map((turn) => ({
+        turn,
+        answer: paperAnswerModel(paper, turn, model.entry!.turns[turn]),
+      }))
+      .filter((part) => hasTaskCitedContent(part.answer));
+    // Question headings only help when more than one question used it.
+    const headed = parts.length > 1;
+    for (const { turn, answer } of parts) {
+      if (headed && turn > 0) {
+        children.push(
+          el(
+            doc,
+            "div",
+            "llm-task-paper-turn",
+            format("Question {number}", { number: turn }),
+          ),
+        );
       }
-      for (const citation of turnRecord.citations) {
+      const runId = record()?.questions.find(
+        (question) => question.turn === turn,
+      )?.runId;
+      const foldKey = `${expandKey(refs)}\u0000cited:${turn}`;
+      children.push(
+        ...createTaskCitedBlocks(
+          doc,
+          answer,
+          citedHandlers(model, runId, () => details, {
+            open: expanded.has(foldKey),
+            toggle: () => toggleCitedFold(foldKey),
+          }),
+        ),
+      );
+    }
+    for (const turn of turns) {
+      for (const citation of model.entry!.turns[turn].citations) {
         if (citation.source === "document") {
           const sections = citation.sectionLabels?.length
             ? citation.sectionLabels
@@ -2024,13 +2576,7 @@ export function mountTaskProgressView(params: {
             if (!documentSections.includes(section))
               documentSections.push(section);
           }
-          continue;
         }
-        citations.push({
-          id: citation.citationId,
-          quote: citation.quote || citation.label || citation.citationId,
-          turn,
-        });
       }
     }
     const state = model.state;
@@ -2062,28 +2608,20 @@ export function mountTaskProgressView(params: {
         ),
       );
     }
-    if (citations.length) {
-      const citedIn = el(doc, "div", "llm-task-paper-cited");
-      citedIn.append(
-        el(doc, "div", "llm-task-paper-turn", t("Cited in answer")),
-      );
-      for (const citation of citations) {
-        const link = el(
+    const decision = latestTaskPaperDecision(model.entry);
+    if (decision && decision.value !== "include") {
+      // The agent's claim, kept apart from the reads above.
+      const block = el(doc, "div", "llm-task-paper-read");
+      block.append(
+        el(doc, "div", "llm-task-paper-turn", t("Decision")),
+        el(
           doc,
-          "button",
-          "llm-task-paper-citation",
-          `↳ “${citation.quote}”`,
-        );
-        link.type = "button";
-        link.dataset.citationId = citation.id;
-        link.addEventListener("click", (event: Event) => {
-          event.preventDefault?.();
-          event.stopPropagation?.();
-          jumpToCitation(citation.id);
-        });
-        citedIn.append(link);
-      }
-      children.push(citedIn);
+          "div",
+          "llm-task-paper-how",
+          digestJudgmentText(DECISION_WORDS[decision.value], decision.reason),
+        ),
+      );
+      children.push(block);
     }
     if (documentSections.length) {
       const citedIn = el(doc, "div", "llm-task-paper-cited");
@@ -2111,6 +2649,18 @@ export function mountTaskProgressView(params: {
     }
     const tail = formatTaskPaperTail(model);
     if (refs.tail.textContent !== tail) refs.tail.textContent = tail;
+    const tag =
+      model.state === "cited"
+        ? t("Cited")
+        : model.named
+          ? t("Named")
+          : decisionTag(model);
+    if (refs.cite.hidden !== !tag) refs.cite.hidden = !tag;
+    if (tag && refs.cite.textContent !== tag) refs.cite.textContent = tag;
+    refs.cite.classList.toggle(
+      "llm-task-paper-cite-named",
+      tag !== "" && model.state !== "cited",
+    );
     const meta = metaText(model);
     const metaTextEl = refs.meta.firstChild as HTMLElement;
     if (metaTextEl.textContent !== meta) metaTextEl.textContent = meta;
@@ -2152,6 +2702,10 @@ export function mountTaskProgressView(params: {
         const lists = [
           mainList,
           ...Array.from(sectionRefs.values(), (section) => section.body?.list),
+          ...Array.from(
+            sectionRefs.values(),
+            (section) => section.body?.cards?.unused,
+          ),
         ];
         for (const owner of lists) {
           const current = owner?.rowsByKey.get(model.key);
@@ -2176,6 +2730,14 @@ export function mountTaskProgressView(params: {
     const dot = el(doc, "span", "llm-task-paper-dot");
     dot.setAttribute("aria-hidden", "true");
     const title = el(doc, "span", "llm-task-paper-title");
+    // The "Cited" tag follows the title, which gives way only when the row
+    // is too narrow for both.
+    const name = el(doc, "span", "llm-task-paper-name");
+    const cite = el(doc, "span", "llm-task-paper-cite", t("Cited"));
+    cite.hidden = true;
+    // The page icon library papers show, as scholarly papers and web pages
+    // show their site's.
+    name.append(createTaskSourceIcon(doc, "library"), title, cite);
     const tail = el(doc, "span", "llm-task-paper-tail");
     const meta = el(doc, "span", "llm-task-paper-meta");
     const source = el(doc, "span", "llm-task-paper-source");
@@ -2202,7 +2764,7 @@ export function mountTaskProgressView(params: {
       ),
     );
     const grid = el(doc, "span", "llm-task-paper-grid");
-    grid.append(dot, index, title, tail, chevron, meta);
+    grid.append(dot, index, name, tail, chevron, meta);
     summary.append(grid);
     const details = el(doc, "div", "llm-task-paper-details");
     details.hidden = true;
@@ -2246,6 +2808,7 @@ export function mountTaskProgressView(params: {
       summary,
       index,
       title,
+      cite,
       tail,
       meta,
       source,
@@ -2306,6 +2869,8 @@ export function mountTaskProgressView(params: {
     current: TaskProgressRecord | null,
     sections: TaskProgressSection[],
   ): TaskProgressPaperRow[] => {
+    // Answered from earlier reading: every paper would show as unread.
+    if (answeredWithoutReads(current, input.recordsReads)) return [];
     if (sections.length < 2) return listedTaskProgressPaperRows(current);
     return listedTaskProgressPaperRows(
       current,
@@ -2319,127 +2884,1128 @@ export function mountTaskProgressView(params: {
   const renderList = (current: TaskProgressRecord | null) => {
     const sections = sectionsOf(current);
     rowsPastWindow = false;
-    const rows = currentRows(current, sections);
+    if (sections.length) {
+      // Each question's block lists its own papers, in the chat's card as in
+      // the side panel tab.
+      clearList(mainList);
+      paintGroups(mainSlot, null, 0, false);
+      more.hidden = true;
+      setQuiet(quiet, false);
+      renderDockedQuestions(sections);
+      return;
+    }
+    const groups = sections.length ? groupsFor(sections[0]) : null;
+    const rows = groupedRows(currentRows(current, sections), groups);
+    if (mainSlot.before.nextSibling !== list)
+      body.insertBefore(mainSlot.before, list);
+    if (mainSlot.after.previousSibling !== more)
+      body.insertBefore(mainSlot.after, more.nextSibling);
     const shown = renderRows(mainList, rows);
+    const noReads = answeredWithoutReads(current, input.recordsReads);
+    setQuiet(quiet, noReads && !(groups && drawerLists(groups).earlier.length));
+    paintGroups(mainSlot, groups, rows.length, noReads);
     const truncated = current?.scope?.listing?.truncated
       ? current.scope.listing.totalItems - current.scope.listing.listedItems
       : 0;
     const hiddenRows = rows.length - shown;
-    more.hidden = !truncated || hiddenRows > 0;
+    more.hidden = noReads || !truncated || hiddenRows > 0;
     if (!more.hidden) {
       more.textContent = format("and {count} more", { count: truncated });
     }
-    renderHistory(sections, rows.length);
+    renderDockedQuestions(sections);
   };
 
-  /** "Papers (3)": a question's list heading, while the drawer shows a history. */
-  const setPapersTitle = (node: HTMLElement, count: number) => {
-    const text = count ? format("Papers ({count})", { count }) : "";
-    if (node.textContent !== text) node.textContent = text;
-    if (node.hidden !== !count) node.hidden = !count;
+  /** A question's scholarly papers and web pages, for its counts. */
+  const outsideCountsOf = (section: TaskProgressSection) => {
+    const sources = record()?.outside?.[section.question.turn]?.sources || [];
+    return {
+      papers: sources.filter((source) => source.kind === "paper").length,
+      pages: sources.filter((source) => source.kind === "web").length,
+    };
   };
 
-  const createQuestionHead = (
-    tag: "div" | "button",
-    className: string,
-    folded: boolean,
-  ): QuestionHeadRefs => {
-    const node = el(doc, tag, `llm-task-progress-question ${className}`);
-    const grid = el(doc, "span", "llm-task-paper-grid");
-    const label = el(
-      doc,
-      "span",
-      "llm-task-paper-title llm-task-progress-question-label",
+  /** A question's groups, when its run searched or cited outside sources. */
+  const groupsFor = (
+    section: TaskProgressSection,
+  ): TaskOutsideGroups | null => {
+    if (!input.recordsReads) return null;
+    const groups = buildTaskOutsideGroups(record(), section.question.turn, {
+      completed: section.state === "completed",
+      passageLabel: formatTaskPaperPassageLabel,
+    });
+    return groups;
+  };
+
+  /**
+   * The drawer's lists of a question's groups: what earlier questions read,
+   * then the scholarly search's and the web's.
+   */
+  const drawerLists = (groups: TaskOutsideGroups) => {
+    const all = (group: TaskSourceGroup) => [...group.used, ...group.unused];
+    const reused = [...all(groups.scholarly), ...all(groups.web)].filter(
+      (row) => row.fromTurn,
     );
-    const name = el(doc, "span", "llm-task-progress-question-name");
-    const words = el(doc, "span", "llm-task-progress-question-words");
-    label.append(name, words);
-    const tail = el(doc, "span", "llm-task-paper-tail");
-    const pill = el(doc, "span", "llm-task-progress-pill");
-    pill.hidden = true;
-    tail.append(pill);
-    let counts: HTMLElement | null = null;
-    if (folded) {
-      counts = el(doc, "span", "llm-task-progress-question-counts");
-      tail.append(counts);
+    return {
+      earlier: [...reused, ...groups.earlierLibrary],
+      scholarly: all(groups.scholarly).filter((row) => !row.fromTurn),
+      web: all(groups.web).filter((row) => !row.fromTurn),
+    };
+  };
+
+  /**
+   * The library rows under their group: without the papers listed under
+   * "From earlier questions", numbered after those.
+   */
+  const groupedRows = (
+    rows: TaskProgressPaperRow[],
+    groups: TaskOutsideGroups | null,
+  ): TaskProgressPaperRow[] => {
+    if (!groups) return rows;
+    const offset = 0;
+    return rows
+      .filter((row) => !groups.earlierLibraryKeys.has(row.key))
+      .map((row, index) =>
+        row.index === offset + index + 1
+          ? row
+          : { ...row, index: offset + index + 1 },
+      );
+  };
+
+  const dispatchFrom = (from: HTMLElement, type: string, detail: unknown) => {
+    const View = (doc.defaultView as any)?.CustomEvent;
+    if (typeof View !== "function") return;
+    (from.isConnected ? from : drawer).dispatchEvent(
+      new View(type, { bubbles: true, detail }),
+    );
+  };
+
+  /** Open a question's block, light its rows, open a single one, scroll there. */
+  const reveal = (target: { turn: number; keys: readonly string[] }) => {
+    const current = record();
+    const sections = sectionsOf(current);
+    const section = sections.find(
+      (entry) => entry.question.turn === target.turn,
+    );
+    if (!section) return;
+    highlight = { turn: target.turn, keys: new Set(target.keys) };
+    const owner = sectionRefs.get(section.id);
+    const scope = owner?.body?.groups.scope || `${section.id}\u0000`;
+    const groups = groupsFor(section);
+    if (groups) {
+      // Docked: open the cards holding the rows, and their folds.
+      const hit = (row: TaskSourceRow) =>
+        row.keys.some((key) => target.keys.includes(key));
+      for (const kind of ["paper", "web"] as const) {
+        const group = kind === "paper" ? groups.scholarly : groups.web;
+        const rows = [...group.used, ...group.unused];
+        if (!rows.some(hit)) continue;
+        closedCards.delete(cardKey(scope, kind));
+        const index = group.unused.findIndex(hit);
+        if (index >= 0) openFolds.add(foldKey(scope, kind));
+        if (index >= FOLD_FIRST_ROWS) showAllFolds.add(foldKey(scope, kind));
+        const single = target.keys.length === 1 ? rows.find(hit) : undefined;
+        if (single && taskSourceRowOpens(single))
+          expanded.add(`${scope}src:${single.key}`);
+      }
+    } else if (target.keys.length === 1) {
+      expanded.add(`${scope}src:${target.keys[0]}`);
     }
-    grid.append(label, tail);
-    if (folded) {
-      const chevron = el(doc, "span", "llm-task-paper-chevron");
-      chevron.setAttribute("aria-hidden", "true");
-      chevron.append(
-        svg(
-          doc,
-          "svg",
+    // Paper chat: the chat's own paper is its "Cited" card when it shows.
+    const ownKey = ownPaperCited(section)
+      ? ownPaperAnswer(section)?.paper.key
+      : undefined;
+    if (ownKey && target.keys.includes(ownKey))
+      closedCards.delete(cardKey(scope, "cited"));
+    if (section.current) foldedCurrent.delete(section.id);
+    else if (!section.current) unrolled.add(section.id);
+    if (!docked && !open) setOpen(true);
+    renderList(current);
+    remember();
+    const run = () => {
+      const lit = drawer.querySelector(
+        ".llm-task-source-highlighted",
+      ) as HTMLElement | null;
+      lit?.scrollIntoView?.({ block: "center" });
+    };
+    const win = doc.defaultView;
+    if (typeof win?.requestAnimationFrame === "function")
+      win.requestAnimationFrame(run);
+    else run();
+  };
+
+  const sourceRowContext = (
+    slot: { scope: string; host: HTMLElement },
+    groups: TaskOutsideGroups,
+    row: TaskSourceRow,
+  ) => {
+    const key = `${slot.scope}src:${row.key}`;
+    const from = () => slot.host;
+    return {
+      doc,
+      expanded: expanded.has(key),
+      highlighted: Boolean(
+        highlight?.turn === groups.turn &&
+        row.keys.some((entry) => highlight!.keys.has(entry)),
+      ),
+      onToggle: () => {
+        if (expanded.has(key)) expanded.delete(key);
+        else expanded.add(key);
+        renderList(record());
+        remember();
+      },
+      onOpenPage: () => {
+        if (!row.source) return;
+        const phrases = row.quotes.flatMap((quote) =>
+          quote.phrase ? [quote.phrase] : [],
+        );
+        const detail: TaskProgressOpenSourceDetail = {
+          turn: row.fromTurn || groups.turn,
+          runId: groups.runId,
+          source: row.source,
+          ...(phrases.length ? { phrases } : {}),
+        };
+        dispatchFrom(from(), TASK_PROGRESS_OPEN_SOURCE_EVENT, detail);
+      },
+      onShowInAnswer: (quote: TaskOutsideQuote) => {
+        const detail: TaskProgressShowInAnswerDetail = {
+          runId: groups.runId,
+          key: row.key,
+          ...(row.library ? { itemId: row.library.itemId } : {}),
+          ...(quote.anchor >= 0 ? { anchor: quote.anchor } : {}),
+          text: quote.text,
+        };
+        dispatchFrom(from(), TASK_PROGRESS_SHOW_IN_ANSWER_EVENT, detail);
+      },
+      onGoToQuestion: (turn: number) => reveal({ turn, keys: [row.key] }),
+      onOpenLibraryRead: (read: TaskPaperReadEvent) => {
+        if (!row.library) return;
+        const snippet = read.snippet ? cleanTaskPaperSnippet(read.snippet) : "";
+        dispatchOpenPassage(
+          from(),
           {
-            width: "14",
-            height: "14",
-            viewBox: "0 0 24 24",
-            fill: "none",
-            stroke: "currentColor",
-            "stroke-width": "2.2",
-            "stroke-linecap": "round",
-            "stroke-linejoin": "round",
+            itemId: row.library.itemId,
+            libraryID: row.library.libraryID,
+            entry: { contextItemIds: row.library.contextItemIds },
           },
-          [svg(doc, "path", { d: "M6 9l6 6 6-6" })],
+          {
+            rawSnippet: read.snippet || "",
+            cleanedSnippet: snippet,
+            label: read.label || "",
+            ...(read.pageIndex !== undefined
+              ? { pageIndex: read.pageIndex }
+              : {}),
+            granularity: read.granularity,
+          },
+        );
+      },
+      onCopyLink: (url: string) => {
+        void copyTextToClipboard(from(), url);
+      },
+      onOpenInBrowser: (url: string) => {
+        launchInDefaultBrowser(url);
+      },
+      ...(row.library
+        ? libraryRowCited(row, row.library, key, groups, from)
+        : {}),
+    };
+  };
+
+  /** A reused library row's "Cited" list: as a library row's own. */
+  const libraryRowCited = (
+    row: TaskSourceRow,
+    library: NonNullable<TaskSourceRow["library"]>,
+    key: string,
+    groups: TaskOutsideGroups,
+    from: () => HTMLElement,
+  ) => {
+    const foldKey = `${key}\u0000cited`;
+    const handlers = citedHandlers(
+      {
+        key: row.key,
+        itemId: library.itemId,
+        libraryID: library.libraryID,
+        title: row.title,
+        entry: { contextItemIds: library.contextItemIds },
+      },
+      groups.runId,
+      from,
+      {
+        open: expanded.has(foldKey),
+        toggle: () => {
+          toggleCitedFold(foldKey);
+          renderList(record());
+        },
+      },
+    );
+    return {
+      onOpenCitedPassage: handlers.onOpenPassage,
+      onShowPassage: handlers.onShowPassage,
+      citedFoldOpen: handlers.foldOpen,
+      onToggleCitedFold: handlers.onToggleFold,
+    };
+  };
+
+  /**
+   * A question's groups around its library list: from earlier questions and
+   * the library's heading before it, the scholarly search, the web and the
+   * offer after it. Nothing without groups.
+   */
+  const paintGroups = (
+    slot: GroupSlot,
+    groups: TaskOutsideGroups | null,
+    libraryCount: number,
+    fromEarlier: boolean,
+  ) => {
+    const lists = groups ? drawerLists(groups) : null;
+    const signature = groups
+      ? JSON.stringify([
+          lists,
+          groups.why,
+          groups.empty,
+          groups.librarySearched,
+          groups.offer,
+          libraryCount,
+          fromEarlier,
+          [...expanded].filter((key) => key.startsWith(`${slot.scope}src:`)),
+          highlight?.turn === groups.turn ? [...highlight.keys] : null,
+        ])
+      : "";
+    if (signature === slot.signature) return;
+    slot.signature = signature;
+    if (!groups) {
+      slot.before.replaceChildren();
+      slot.after.replaceChildren();
+      slot.before.hidden = true;
+      slot.after.hidden = true;
+      return;
+    }
+    const list = (rows: TaskSourceRow[]) => {
+      const ol = el(doc, "ol", "llm-task-progress-list llm-task-group-list");
+      ol.setAttribute("role", "list");
+      for (const row of rows) {
+        ol.append(
+          createTaskSourceRow(
+            row,
+            sourceRowContext(
+              { scope: slot.scope, host: slot.after },
+              groups,
+              row,
+            ),
+          ),
+        );
+      }
+      return ol;
+    };
+    const { earlier, scholarly, web } = lists!;
+    const before: HTMLElement[] = [];
+    const after: HTMLElement[] = [];
+    if (earlier.length) {
+      before.push(
+        createTaskGroupHeading(
+          doc,
+          t("From earlier questions"),
+          earlier.length,
         ),
       );
-      grid.append(chevron);
+      if (fromEarlier)
+        before.push(
+          createTaskGroupNote(
+            doc,
+            "llm-task-group-note",
+            t("Answered from earlier reading. No papers were opened again."),
+          ),
+        );
+      before.push(list(earlier));
     }
-    node.append(grid);
-    return { head: node, label, name, words, pill, counts };
+    if (libraryCount) {
+      before.push(
+        createTaskGroupHeading(doc, t("In your library"), libraryCount),
+      );
+    } else if (groups.librarySearched) {
+      before.push(
+        createTaskGroupHeading(doc, t("In your library")),
+        createTaskGroupNote(
+          doc,
+          "llm-task-group-empty",
+          t("Searched. Nothing relevant to this question."),
+        ),
+      );
+    }
+    const outsideGroups: Array<["paper" | "web", string, TaskSourceRow[]]> = [
+      ["paper", t("Scholarly search"), scholarly],
+      ["web", t("Web"), web],
+    ];
+    for (const [kind, label, rows] of outsideGroups) {
+      if (!rows.length) {
+        if (groups.empty.includes(kind))
+          after.push(
+            createTaskGroupHeading(doc, label),
+            createTaskGroupNote(
+              doc,
+              "llm-task-group-empty",
+              t("Searched. Nothing relevant to this question."),
+            ),
+          );
+        continue;
+      }
+      after.push(createTaskGroupHeading(doc, label, rows.length));
+      const why = groups.why[kind];
+      if (why) after.push(createTaskWhyOutside(doc, why));
+      after.push(list(rows));
+    }
+    if (groups.offer) {
+      after.push(
+        createTaskOffer(doc, (what) => {
+          const detail: TaskProgressOfferDetail = { what };
+          dispatchFrom(slot.after, TASK_PROGRESS_OFFER_EVENT, detail);
+        }),
+      );
+    }
+    slot.before.replaceChildren(...before);
+    slot.after.replaceChildren(...after);
+    slot.before.hidden = !before.length;
+    slot.after.hidden = !after.length;
   };
 
-  const patchQuestionHead = (
+  /** The one line a question answered from earlier reading shows instead of its papers. */
+  const setQuiet = (node: HTMLElement | null, shown: boolean) => {
+    if (!node) return;
+    const text = shown
+      ? t("Answered from earlier reading. No papers were opened again.")
+      : "";
+    if (node.textContent !== text) node.textContent = text;
+    if (node.hidden !== !shown) node.hidden = !shown;
+  };
+
+  /** Whether a question was answered from what earlier questions read. */
+  const isAnsweredFromEarlier = (section: TaskProgressSection) =>
+    section.current
+      ? answeredWithoutReads(record(), input.recordsReads)
+      : input.recordsReads &&
+        section.question.turn > 1 &&
+        section.state === "completed" &&
+        !section.rows.length &&
+        !countTaskOutside(record(), section.question.turn).total;
+
+  /**
+   * Docked, every question is the same block: its status ring, its words (up
+   * to two lines), a chevron, and one line under the words naming it, how it
+   * stands and its counts.
+   */
+  const createDockedQuestionHead = (): QuestionHeadRefs => {
+    const node = el(
+      doc,
+      "button",
+      "llm-task-progress-question llm-task-progress-dock-question",
+    );
+    const label = el(doc, "span", "llm-task-progress-dock-question-words");
+    const meta = el(doc, "span", "llm-task-progress-dock-question-meta");
+    const name = el(doc, "span", "llm-task-progress-question-name");
+    const pill = el(doc, "span", "llm-task-progress-dock-question-status");
+    const counts = el(doc, "span", "llm-task-progress-question-counts");
+    meta.append(name, pill, counts);
+    const chevron = el(doc, "span", "llm-task-paper-chevron");
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.append(
+      svg(
+        doc,
+        "svg",
+        {
+          width: "14",
+          height: "14",
+          viewBox: "0 0 24 24",
+          fill: "none",
+          stroke: "currentColor",
+          "stroke-width": "2.2",
+          "stroke-linecap": "round",
+          "stroke-linejoin": "round",
+        },
+        [svg(doc, "path", { d: "M6 9l6 6 6-6" })],
+      ),
+    );
+    // Gecko lays a button's children out in an anonymous block, so the grid
+    // that keeps the ring on the words' first line lives on an inner span.
+    const grid = el(doc, "span", "llm-task-progress-dock-question-grid");
+    grid.append(createStatusRing(doc), label, chevron, meta);
+    node.append(grid);
+    return { head: node, label, name, words: label, pill, counts };
+  };
+
+  /** Docked: the words in full (two lines at most), the name under them. */
+  const patchDockedQuestionHead = (
     refs: QuestionHeadRefs,
     section: TaskProgressSection,
   ) => {
-    // The name stays whole; only the words give way in a narrow drawer.
-    const [name, words] = splitTaskQuestionLabel(section.question);
-    if (refs.name.textContent !== name) refs.name.textContent = name;
+    const question = section.question;
+    const name =
+      question.turn > 0
+        ? format("Question {number}", { number: question.turn })
+        : "";
+    const words =
+      `${question.text ?? ""}`.replace(/\s+/g, " ").trim() ||
+      question.title ||
+      name;
     if (refs.words.textContent !== words) refs.words.textContent = words;
+    const nameText = words === name ? "" : name || question.title || "";
+    if (refs.name.textContent !== nameText) refs.name.textContent = nameText;
     const pillText = taskRunStatePill(section.state);
     if (refs.pill.textContent !== pillText) refs.pill.textContent = pillText;
-    if (refs.pill.hidden !== !pillText) refs.pill.hidden = !pillText;
     if (refs.pill.dataset.tone !== section.state)
       refs.pill.dataset.tone = section.state;
-    const countsText = refs.counts ? formatTaskQuestionCounts(section) : "";
+    if (refs.head.dataset.state !== section.state)
+      refs.head.dataset.state = section.state;
+    // What the question opened and what its answer used.
+    const countsText =
+      dockedCounts(section) ||
+      (isAnsweredFromEarlier(section) ? t("No new reads") : "");
     if (refs.counts && refs.counts.textContent !== countsText)
       refs.counts.textContent = countsText;
-    const ariaLabel = [section.label, pillText, countsText]
+    const ariaLabel = [words, nameText, pillText, countsText]
       .filter(Boolean)
       .join(", ");
     if (refs.head.getAttribute("aria-label") !== ariaLabel)
       refs.head.setAttribute("aria-label", ariaLabel);
   };
 
+  /** Whether a question's steps and papers show under its header. */
+  const isUnrolled = (refs: SectionRefs) =>
+    refs.current ? !foldedCurrent.has(refs.id) : unrolled.has(refs.id);
+
   const createSectionRefs = (section: TaskProgressSection): SectionRefs => {
     const root = el(doc, "section", "llm-task-progress-question-section");
     root.dataset.sectionId = section.id;
-    const head = createQuestionHead(
-      "button",
-      "llm-task-paper-summary",
-      true,
-    ) as QuestionHeadRefs & { head: HTMLButtonElement };
+    const head = createDockedQuestionHead() as QuestionHeadRefs & {
+      head: HTMLButtonElement;
+    };
     head.head.type = "button";
     head.head.setAttribute("aria-expanded", "false");
     root.append(head.head);
-    const refs: SectionRefs = { ...head, id: section.id, root, body: null };
+    const refs: SectionRefs = {
+      ...head,
+      id: section.id,
+      root,
+      current: section.current,
+      body: null,
+    };
     head.head.addEventListener("click", (event: Event) => {
       event.preventDefault?.();
-      if (unrolled.has(refs.id)) unrolled.delete(refs.id);
-      else unrolled.add(refs.id);
-      const shown = sectionsOf(record()).find((next) => next.id === refs.id);
-      if (shown) patchSection(refs, shown);
+      const folds = refs.current ? foldedCurrent : unrolled;
+      if (folds.has(refs.id)) folds.delete(refs.id);
+      else folds.add(refs.id);
+      renderList(record());
       remember();
     });
     return refs;
   };
 
+  /** Where a question's answer names a library paper, remembered per answer. */
+  const namedQuote = (
+    turn: number,
+    row: TaskProgressPaperRow,
+    answer: string,
+  ): string | null => {
+    const key = `${turn}\u0000${row.key}`;
+    const known = namedCache.get(key);
+    if (known && known.answer === answer) return known.quote;
+    const quote = findNamedInAnswer(answer, row);
+    namedCache.set(key, { answer, quote });
+    return quote;
+  };
+
+  /**
+   * A docked question's library papers: those the answer cites, then those
+   * it names, then the rest.
+   */
+  const dockedLibrary = (
+    section: TaskProgressSection,
+    groups: TaskOutsideGroups | null,
+  ): DockedLibrary => {
+    // Paper chat: the chat's own paper has its own card, not a library row,
+    // for a question whose answer cites or names it.
+    const ownPaper = ownPaperCited(section) ? ownPaperItemId() : 0;
+    const rows = groupedRows(section.rows, groups).filter(
+      (row) => !ownPaper || row.itemId !== ownPaper,
+    );
+    const answer = groups?.answer || "";
+    const reused = (groups?.earlierLibrary || []).filter(
+      (row) => !ownPaper || row.library?.itemId !== ownPaper,
+    );
+    // Until the answer is in, nothing is "used" yet: every row shows.
+    const live =
+      section.state === "working" ||
+      section.state === "answering" ||
+      section.state === "waiting";
+    if (live && !answer.trim())
+      return { settled: false, used: [], unused: rows, reused };
+    const cited: TaskProgressPaperRow[] = [];
+    const named: TaskProgressPaperRow[] = [];
+    const unused: TaskProgressPaperRow[] = [];
+    for (const row of rows) {
+      if (row.state === "cited") {
+        cited.push(row);
+        continue;
+      }
+      const quote = answer
+        ? namedQuote(section.question.turn, row, answer)
+        : null;
+      if (quote)
+        named.push({
+          ...row,
+          named: quote,
+          namedTurn: section.question.turn,
+        });
+      else unused.push(row);
+    }
+    return { settled: true, used: [...cited, ...named], unused, reused };
+  };
+
+  /** A docked question's groups, the ones the answer used most first. */
+  const dockedStats = (
+    library: DockedLibrary,
+    groups: TaskOutsideGroups | null,
+  ): DockedGroupStat[] => {
+    const stats: DockedGroupStat[] = [
+      {
+        key: "library",
+        used: library.used.length + library.reused.length,
+        total:
+          library.used.length + library.reused.length + library.unused.length,
+      },
+    ];
+    if (groups) {
+      for (const [key, group] of [
+        ["paper", groups.scholarly],
+        ["web", groups.web],
+      ] as const) {
+        stats.push({
+          key,
+          used: group.used.length,
+          total: group.used.length + group.unused.length,
+        });
+      }
+    }
+    // Most used first; then most found; groups with nothing go last.
+    return stats.sort(
+      (a, b) =>
+        Number(b.total > 0) - Number(a.total > 0) ||
+        b.used - a.used ||
+        b.total - a.total,
+    );
+  };
+
+  /**
+   * "12 read · 3 cited": what a docked question opened and used; in a paper
+   * chat, "4 cited": the passages its answer cites.
+   */
+  const dockedCounts = (section: TaskProgressSection): string => {
+    if (ownPaperItemId())
+      return formatTaskPaperChatCounts(record(), section.question);
+    const groups = groupsFor(section);
+    const library = dockedLibrary(section, groups);
+    const opened = (state: string) => state !== "listed" && state !== "matched";
+    let read =
+      library.used.filter((row) => opened(row.state)).length +
+      library.unused.filter((row) => opened(row.state)).length +
+      library.reused.length;
+    let cited = library.used.length + library.reused.length;
+    if (groups) {
+      for (const group of [groups.scholarly, groups.web]) {
+        read += [...group.used, ...group.unused].filter(
+          (row) => row.state !== "found",
+        ).length;
+        cited += group.used.length;
+      }
+    }
+    if (!read && !cited) return "";
+    return format("{read} read · {cited} cited", { read, cited });
+  };
+
+  /** Paper chat: the chat's own paper; 0 elsewhere. */
+  const ownPaperItemId = (): number =>
+    input.visibility.conversationKind === "paper" && input.recordsReads
+      ? input.basePaperItemId || 0
+      : 0;
+
+  /**
+   * Paper chat: the chat's own paper's part of a question's answer, the
+   * "Cited" card's list: the passages the answer cites, the sentences that
+   * name it, and its reads the answer did not cite. Null elsewhere.
+   */
+  const ownPaperAnswer = (section: TaskProgressSection) => {
+    const itemId = ownPaperItemId();
+    const current = record();
+    const turn = section.question.turn;
+    if (!itemId || !current || !(turn > 0)) return null;
+    const row = section.rows.find((entry) => entry.itemId === itemId);
+    const entry =
+      row?.entry ||
+      current.ledger.order
+        .map((key) => current.ledger.papers[key])
+        .find((paper) => paper?.itemId === itemId);
+    const libraryID =
+      row?.libraryID ?? entry?.libraryID ?? current.scope?.libraryID ?? 0;
+    const paper = {
+      key: row?.key || entry?.key || `${libraryID}:${itemId}`,
+      itemId,
+      libraryID,
+      title: row?.title || entry?.title || "",
+      creator: row?.creator || entry?.creator || "",
+      year: row?.year || entry?.year || "",
+      contextItemIds: entry?.contextItemIds || [],
+      ...(entry ? { entry } : {}),
+    };
+    const own = entry?.turns[turn];
+    const answer = paperAnswerModel(paper, turn, own);
+    // Cited or named, but read only in an earlier question: that question's
+    // reads, as a library paper reused from it lists them.
+    // The ledger's entry, every question's turns (a row's has its own).
+    const ledgerEntry = current.ledger.papers[paper.key] || entry;
+    const earlier =
+      ledgerEntry && (answer.cited.length || answer.named.length)
+        ? earlierTaskPaperReads(ledgerEntry, turn)
+        : null;
+    if (!earlier) return { paper, answer };
+    return {
+      paper,
+      answer: paperAnswerModel(paper, turn, own, earlier.reads),
+      fromTurn: earlier.from,
+    };
+  };
+
+  /**
+   * Paper chat: whether a question's answer cites or names the chat's own
+   * paper. Only then does it leave the list for its "Cited" card; else it
+   * is a row like any other paper.
+   */
+  const hasOwnCitedCard = (answer: TaskCitedModel): boolean =>
+    Boolean(answer.cited.length || answer.named.length);
+  const ownPaperCited = (section: TaskProgressSection): boolean => {
+    const own = ownPaperAnswer(section);
+    return Boolean(own && hasOwnCitedCard(own.answer));
+  };
+
+  /** Paper chat: build or patch a question's "Cited" card. */
+  const paintOwnPaperCard = (
+    cards: DockedCards,
+    scope: string,
+    section: TaskProgressSection,
+  ) => {
+    const own = ownPaperAnswer(section);
+    const shown = Boolean(own && hasOwnCitedCard(own.answer));
+    if (cards.cited.root.hidden !== !shown) cards.cited.root.hidden = !shown;
+    if (!own || !shown) return;
+    const count = own.answer.cited.length;
+    patchTaskCard(cards.cited, {
+      title: t("Cited"),
+      counts: count ? String(count) : "",
+      open: !closedCards.has(cardKey(scope, "cited")),
+      empty: false,
+    });
+    if (cards.cited.body.hidden) return;
+    const foldKey = `${scope}cited\u0000fold`;
+    const runId = section.question.runId;
+    // The fold opens and closes in place: its state is read when the list
+    // is built, not a reason to build it again.
+    const signature = JSON.stringify([
+      own.paper.key,
+      own.answer,
+      own.fromTurn,
+      runId,
+    ]);
+    if (signature === cards.citedSignature) return;
+    cards.citedSignature = signature;
+    const list = el(doc, "div", "llm-task-paper-details llm-task-cited-list");
+    const from = own.fromTurn;
+    const paperKey = own.paper.key;
+    if (from)
+      list.append(
+        createTaskReadEarlierBlock(doc, from, () =>
+          reveal({ turn: from, keys: [paperKey] }),
+        ),
+      );
+    list.append(
+      ...createTaskCitedBlocks(
+        doc,
+        own.answer,
+        citedHandlers(own.paper, runId, () => list, {
+          open: expanded.has(foldKey),
+          toggle: () => toggleCitedFold(foldKey),
+        }),
+        // The card's own header already reads "Cited".
+        { heading: false },
+      ),
+    );
+    cards.cited.body.replaceChildren(list);
+  };
+
+  const cardKey = (scope: string, key: string) => `${scope}card:${key}`;
+  const foldKey = (scope: string, key: string) => `${scope}fold:${key}`;
+
+  const createDockedCards = (scope: string, root: HTMLElement) => {
+    const card = (key: string) => {
+      const refs = createTaskCard(doc, key);
+      refs.head.addEventListener("click", (event: Event) => {
+        event.preventDefault?.();
+        const id = cardKey(scope, key);
+        if (closedCards.has(id)) closedCards.delete(id);
+        else closedCards.add(id);
+        renderList(record());
+        remember();
+      });
+      return refs;
+    };
+    const steps = card("steps");
+    const cited = card("cited");
+    cited.root.classList.add("llm-task-cited-card");
+    cited.root.hidden = true;
+    const library = card("library");
+    const reused = el(doc, "ol", "llm-task-progress-list llm-task-group-list");
+    reused.setAttribute("role", "list");
+    const fold = el(doc, "div", "llm-task-fold-slot");
+    const unusedHost = el(
+      doc,
+      "ol",
+      "llm-task-progress-list llm-task-fold-rows",
+    );
+    unusedHost.setAttribute("role", "list");
+    const more = el(doc, "div", "llm-task-fold-slot");
+    const offer = el(doc, "div", "llm-task-offer-slot");
+    const cards: DockedCards = {
+      steps,
+      cited,
+      citedSignature: "",
+      library,
+      reused,
+      reusedSignature: "",
+      fold,
+      unused: {
+        host: unusedHost,
+        rowsByKey: new Map(),
+        ordered: [],
+        scope,
+      },
+      more,
+      paper: { ...card("paper"), signature: "" },
+      web: { ...card("web"), signature: "" },
+      offer,
+      offerSignature: "",
+    };
+    root.append(
+      steps.root,
+      cited.root,
+      library.root,
+      cards.paper.root,
+      cards.web.root,
+      offer,
+    );
+    return cards;
+  };
+
+  /** Build or patch a docked question's cards. */
+  const paintDockedCards = (
+    parts: NonNullable<SectionRefs["body"]>,
+    section: TaskProgressSection,
+  ) => {
+    const cards = parts.cards!;
+    const scope = parts.list.scope;
+    // Steps first.
+    const checklist = section.checklist;
+    cards.steps.root.hidden = !checklist;
+    if (checklist) {
+      patchTaskCard(cards.steps, {
+        title: t("Steps"),
+        counts:
+          checklist.total > 0
+            ? format("{done}/{total} steps", {
+                done: checklist.done,
+                total: checklist.total,
+              })
+            : "",
+        open: !closedCards.has(cardKey(scope, "steps")),
+        empty: false,
+      });
+      if (!cards.steps.body.hidden) {
+        if (parts.steps.parentElement !== cards.steps.body)
+          cards.steps.body.append(parts.steps);
+        parts.steps.hidden = false;
+        renderChecklistSteps(doc, parts.steps, checklist, {
+          resolvePaperLabel,
+          inStepsCard: true,
+        });
+      }
+    }
+    paintOwnPaperCard(cards, scope, section);
+    const groups = groupsFor(section);
+    const library = dockedLibrary(section, groups);
+    const fromEarlier = isAnsweredFromEarlier(section);
+    setQuiet(parts.quiet, fromEarlier && !library.reused.length);
+    // The library's card. In a paper chat, not when its only row was the
+    // chat's own paper, moved to its "Cited" card.
+    const libraryStat = dockedStats(library, null)[0];
+    const librarySearched = Boolean(groups?.librarySearched);
+    const ownMovedOnly =
+      ownPaperCited(section) &&
+      section.rows.some((row) => row.itemId === ownPaperItemId());
+    cards.library.root.hidden =
+      !libraryStat.total &&
+      (ownMovedOnly || !(groups?.searchedAny && !fromEarlier));
+    const libraryOpen = !closedCards.has(cardKey(scope, "library"));
+    patchTaskCard(cards.library, {
+      title: t("In your library"),
+      counts:
+        !library.settled && libraryStat.total
+          ? format("{count} so far", { count: libraryStat.total })
+          : libraryStat.total
+            ? formatTaskGroupCounts(
+                libraryStat.used,
+                libraryStat.total - libraryStat.used,
+              )
+            : librarySearched
+              ? t("Searched. Nothing relevant.")
+              : t("Not searched."),
+      open: libraryOpen,
+      empty: !libraryStat.total,
+    });
+    if (!cards.library.body.hidden) {
+      const reusedSignature = groups
+        ? JSON.stringify([
+            library.reused,
+            [...expanded].filter((key) => key.startsWith(`${scope}src:`)),
+          ])
+        : "";
+      if (reusedSignature !== cards.reused.dataset.signature) {
+        cards.reused.dataset.signature = reusedSignature;
+        cards.reused.replaceChildren(
+          ...library.reused.map((row) =>
+            createTaskSourceRow(
+              row,
+              sourceRowContext(
+                { scope, host: cards.library.body },
+                groups!,
+                row,
+              ),
+            ),
+          ),
+        );
+      }
+      const body = cards.library.body;
+      const order = [
+        cards.reused,
+        parts.list.host,
+        cards.fold,
+        cards.unused.host,
+        cards.more,
+      ];
+      if (order.some((node, index) => body.children[index] !== node))
+        body.replaceChildren(...order);
+      cards.reused.hidden = !library.reused.length;
+      const listed = library.settled ? library.used : library.unused;
+      renderRows(parts.list, listed);
+      parts.list.host.hidden = !listed.length;
+      paintUnused(
+        scope,
+        "library",
+        library.used.length + library.reused.length,
+        library.settled ? library.unused.length : 0,
+        cards.fold,
+        cards.more,
+        (shown) => {
+          renderRows(cards.unused, shown);
+          cards.unused.host.hidden = !shown.length;
+        },
+        library.settled ? library.unused : [],
+      );
+    }
+    // The scholarly search's and the web's cards.
+    for (const kind of ["paper", "web"] as const) {
+      paintOutsideCard(cards[kind], kind, scope, groups, library.settled);
+    }
+    // Most used first.
+    const order = dockedStats(library, groups).map((stat) =>
+      stat.key === "library" ? cards.library.root : cards[stat.key].root,
+    );
+    const wanted = [cards.steps.root, cards.cited.root, ...order, cards.offer];
+    let cursor = cards.steps.root as HTMLElement | null;
+    for (const node of wanted) {
+      if (node !== cursor) parts.root.insertBefore(node, cursor);
+      else cursor = cursor.nextSibling as HTMLElement | null;
+    }
+    // Only the library was searched: offer the other two.
+    const offerSignature = groups?.offer ? "offer" : "";
+    if (offerSignature !== cards.offerSignature) {
+      cards.offerSignature = offerSignature;
+      cards.offer.replaceChildren(
+        ...(groups?.offer
+          ? [
+              createTaskOffer(doc, (what) => {
+                const detail: TaskProgressOfferDetail = { what };
+                dispatchFrom(cards.offer, TASK_PROGRESS_OFFER_EVENT, detail);
+              }),
+            ]
+          : []),
+      );
+    }
+    cards.offer.hidden = !offerSignature;
+  };
+
+  /**
+   * The rows the answer did not use: one line that unfolds them, the first
+   * few at a time.
+   */
+  const paintUnused = <Row>(
+    scope: string,
+    key: string,
+    used: number,
+    count: number,
+    foldSlot: HTMLElement,
+    moreSlot: HTMLElement,
+    show: (rows: Row[]) => void,
+    rows: Row[],
+  ) => {
+    const id = foldKey(scope, key);
+    const open = openFolds.has(id);
+    const shown = !open
+      ? []
+      : showAllFolds.has(id)
+        ? rows
+        : rows.slice(0, FOLD_FIRST_ROWS);
+    const foldSignature = count ? `${open}:${used}:${count}` : "";
+    if (foldSlot.dataset.signature !== foldSignature) {
+      foldSlot.dataset.signature = foldSignature;
+      // The line is rebuilt open or closed: keep the keyboard on it.
+      const focused =
+        !!doc.activeElement && foldSlot.contains(doc.activeElement);
+      foldSlot.replaceChildren(
+        ...(count
+          ? [
+              createTaskUnusedFold(doc, { used, unused: count, open }, () => {
+                if (openFolds.has(id)) openFolds.delete(id);
+                else openFolds.add(id);
+                renderList(record());
+                remember();
+              }),
+            ]
+          : []),
+      );
+      if (focused) (foldSlot.firstChild as HTMLElement | null)?.focus?.();
+    }
+    foldSlot.hidden = !count;
+    show(shown);
+    const moreSignature =
+      open && shown.length < rows.length ? String(rows.length) : "";
+    if (moreSlot.dataset.signature !== moreSignature) {
+      moreSlot.dataset.signature = moreSignature;
+      moreSlot.replaceChildren(
+        ...(moreSignature
+          ? [
+              createTaskShowAll(doc, rows.length, () => {
+                showAllFolds.add(id);
+                renderList(record());
+                remember();
+              }),
+            ]
+          : []),
+      );
+    }
+    moreSlot.hidden = !moreSignature;
+  };
+
+  /** A scholarly or web card: rebuilt when what it shows changes. */
+  const paintOutsideCard = (
+    card: OutsideCard,
+    kind: "paper" | "web",
+    scope: string,
+    groups: TaskOutsideGroups | null,
+    settled: boolean,
+  ) => {
+    const group = groups
+      ? kind === "paper"
+        ? groups.scholarly
+        : groups.web
+      : null;
+    const total = group ? group.used.length + group.unused.length : 0;
+    const searched = Boolean(groups?.searched.includes(kind));
+    card.root.hidden = !group || (!total && !groups!.searchedAny);
+    if (card.root.hidden || !group || !groups) return;
+    const open = !closedCards.has(cardKey(scope, kind));
+    patchTaskCard(card, {
+      title: kind === "paper" ? t("Scholarly search") : t("Web"),
+      counts:
+        !settled && total
+          ? format("{count} so far", { count: total })
+          : total
+            ? formatTaskGroupCounts(group.used.length, group.unused.length)
+            : searched
+              ? t("Searched. Nothing relevant.")
+              : t("Not searched."),
+      open,
+      empty: !total,
+    });
+    if (card.body.hidden) return;
+    const fold = foldKey(scope, kind);
+    const signature = JSON.stringify([
+      group,
+      settled,
+      groups.why[kind] || "",
+      openFolds.has(fold),
+      showAllFolds.has(fold),
+      [...expanded].filter((key) => key.startsWith(`${scope}src:`)),
+      highlight?.turn === groups.turn ? [...highlight.keys] : null,
+    ]);
+    if (signature === card.signature) return;
+    card.signature = signature;
+    const list = (rows: TaskSourceRow[], className = "") => {
+      const ol = el(
+        doc,
+        "ol",
+        `llm-task-progress-list llm-task-group-list ${className}`.trim(),
+      );
+      ol.setAttribute("role", "list");
+      for (const row of rows)
+        ol.append(
+          createTaskSourceRow(
+            row,
+            sourceRowContext({ scope, host: card.body }, groups, row),
+          ),
+        );
+      return ol;
+    };
+    const children: HTMLElement[] = [];
+    const why = groups.why[kind];
+    if (why) children.push(createTaskWhyOutside(doc, why));
+    if (!settled) {
+      // Until the answer is in, every row shows.
+      const rows = [...group.used, ...group.unused];
+      if (rows.length) children.push(list(rows));
+      card.body.replaceChildren(...children);
+      return;
+    }
+    if (group.used.length) children.push(list(group.used));
+    const foldSlot = el(doc, "div", "llm-task-fold-slot");
+    const moreSlot = el(doc, "div", "llm-task-fold-slot");
+    const unusedSlot = el(doc, "div", "llm-task-fold-slot");
+    paintUnused(
+      scope,
+      kind,
+      group.used.length,
+      group.unused.length,
+      foldSlot,
+      moreSlot,
+      (shown) =>
+        unusedSlot.replaceChildren(
+          ...(shown.length ? [list(shown, "llm-task-fold-rows")] : []),
+        ),
+      group.unused,
+    );
+    children.push(foldSlot, unusedSlot, moreSlot);
+    card.body.replaceChildren(...children);
+  };
+
   /** An earlier question's header, and its steps and papers while unrolled. */
   const patchSection = (refs: SectionRefs, section: TaskProgressSection) => {
-    patchQuestionHead(refs, section);
-    const shown = unrolled.has(refs.id);
+    refs.current = section.current;
+    patchDockedQuestionHead(refs, section);
+    const shown = isUnrolled(refs);
     const expandedText = shown ? "true" : "false";
     if (refs.head.getAttribute("aria-expanded") !== expandedText)
       refs.head.setAttribute("aria-expanded", expandedText);
@@ -2455,76 +4021,77 @@ export function mountTaskProgressView(params: {
       const title = el(doc, "div", "llm-task-progress-papers-title");
       const host = el(doc, "ol", "llm-task-progress-list");
       host.setAttribute("role", "list");
-      root.append(sectionSteps, title, host);
+      const quietLine = el(doc, "div", "llm-task-progress-quiet");
+      quietLine.hidden = true;
+      const groups = createGroupSlot(doc, `${refs.id}\u0000`);
+      root.append(
+        sectionSteps,
+        title,
+        groups.before,
+        host,
+        quietLine,
+        groups.after,
+      );
       refs.root.append(root);
       refs.body = {
         root,
         steps: sectionSteps,
         papersTitle: title,
+        quiet: quietLine,
+        groups,
         list: {
           host,
           rowsByKey: new Map(),
           ordered: [],
           scope: `${refs.id}\u0000`,
         },
+        cards: null,
       };
+      // The cards hold the steps and every list; the quiet line leads.
+      root.replaceChildren(quietLine);
+      refs.body.cards = createDockedCards(`${refs.id}\u0000`, root);
+      root.classList.add("llm-task-cards");
     }
-    const parts = refs.body;
-    if (parts.steps.hidden !== !section.checklist)
-      parts.steps.hidden = !section.checklist;
-    if (section.checklist)
-      renderChecklistSteps(doc, parts.steps, section.checklist, {
-        resolvePaperLabel,
-      });
-    else if (parts.steps.firstChild) parts.steps.replaceChildren();
-    setPapersTitle(parts.papersTitle, section.rows.length);
-    renderRows(parts.list, section.rows);
+    paintDockedCards(refs.body, section);
   };
 
   /**
-   * The drawer's history, shown once it holds more than one question: the
-   * current question named above its steps and papers, and each earlier one
-   * as a header that unrolls them. With one question, none of it exists.
+   * Docked, the drawer lists every question, newest first, each as the same
+   * block (`createDockedQuestionHead`); the current one is unrolled unless
+   * folded, an earlier one folded unless unrolled. The current question's
+   * papers are the drawer's own rows.
    */
-  const renderHistory = (sections: TaskProgressSection[], papers: number) => {
-    if (sections.length < 2) {
-      if (currentHead || historyHost) clearHistory();
+  const renderDockedQuestions = (sections: TaskProgressSection[]) => {
+    if (!sections.length) {
+      if (historyHost) clearHistory();
       return;
     }
-    if (!currentHead) {
-      currentHead = createQuestionHead(
+    const current = record();
+    if (!historyHost) {
+      historyHost = el(
+        doc,
         "div",
-        "llm-task-progress-question-current",
-        false,
+        "llm-task-progress-history llm-task-progress-dock-questions",
       );
-      currentHead.head.setAttribute("role", "heading");
-      currentHead.head.setAttribute("aria-level", "3");
     }
-    if (currentHead.head.nextSibling !== steps)
-      body.insertBefore(currentHead.head, steps);
-    patchQuestionHead(currentHead, sections[0]);
-    if (!papersTitle) {
-      papersTitle = el(doc, "div", "llm-task-progress-papers-title");
-    }
-    if (papersTitle.nextSibling !== list) body.insertBefore(papersTitle, list);
-    setPapersTitle(papersTitle, papers);
-    if (!historyHost) historyHost = el(doc, "div", "llm-task-progress-history");
     if (historyHost.parentElement !== body) body.append(historyHost);
-    const earlier = sections.slice(1);
-    const ids = new Set(earlier.map((section) => section.id));
+    const ids = new Set(sections.map((section) => section.id));
     for (const [id, refs] of sectionRefs) {
       if (ids.has(id)) continue;
       refs.root.remove();
       sectionRefs.delete(id);
     }
     let cursor = historyHost.firstChild as HTMLElement | null;
-    for (const section of earlier) {
+    for (const section of sections) {
+      const shown = section.current
+        ? { ...section, rows: currentRows(current, sections) }
+        : section;
       let refs = sectionRefs.get(section.id);
       if (!refs) {
-        refs = createSectionRefs(section);
+        refs = createSectionRefs(shown);
         sectionRefs.set(section.id, refs);
       }
-      patchSection(refs, section);
+      patchSection(refs, shown);
       if (refs.root !== cursor) historyHost.insertBefore(refs.root, cursor);
       else cursor = cursor.nextSibling as HTMLElement | null;
     }
@@ -2539,12 +4106,12 @@ export function mountTaskProgressView(params: {
     if (head.textContent !== text) head.textContent = text;
     if (head.hidden !== !preparing) head.hidden = !preparing;
     if (note.hidden !== input.recordsReads) note.hidden = input.recordsReads;
-    // With a history, the Steps block is the current question's own.
+    // With a history, the Steps block is the current question's own; docked,
+    // each question's block holds its own steps.
     const sections = sectionsOf(current);
-    const checklist =
-      sections.length > 1
-        ? sections[0].checklist
-        : shownChecklist(current?.checklist);
+    const checklist = sections.length
+      ? null
+      : shownChecklist(current?.checklist);
     if (steps.hidden !== !checklist) steps.hidden = !checklist;
     if (checklist)
       renderChecklistSteps(doc, steps, checklist, { resolvePaperLabel });
@@ -2607,6 +4174,14 @@ export function mountTaskProgressView(params: {
       deps.onVisibilityChange?.(visible);
     }
     if (!visible) return;
+    if (docked) {
+      renderHead(current);
+      renderList(current);
+      if (!open) applyOpen(true, false, { remember: false });
+      // Once the tab is laid out: in the background it has no place yet.
+      restoreDockedPlace();
+      return;
+    }
     if (current && current.collapseSeq !== seenCollapseSeq) {
       seenCollapseSeq = current.collapseSeq;
       if (open) {
@@ -2614,6 +4189,7 @@ export function mountTaskProgressView(params: {
         applyOpen(false);
       }
     }
+    if (restorePending && deps.now() > restoreUntil) restorePending = false;
     if (restorePending) {
       restorePending = false;
       restoreOpen(current);
@@ -2635,7 +4211,7 @@ export function mountTaskProgressView(params: {
     renderHead(current);
     renderList(current);
     applyOpen(true, false, { remember: false });
-    body.scrollTop = memo.scrollTop;
+    restorePlace(memo);
     remember();
   };
 
@@ -2691,35 +4267,21 @@ export function mountTaskProgressView(params: {
     if (!next && options?.focusRow) row.focus?.({ preventScroll: true });
   };
 
-  function jumpToCitation(citationId: string) {
-    setOpen(false);
-    const cards = Array.from(
-      chatBox.querySelectorAll(".llm-quote-citation-anchor"),
-    ) as HTMLElement[];
-    const card = cards
-      .filter((node) => node?.dataset?.quoteCitationId === citationId)
-      .pop();
-    if (!card) return;
-    if (deps.navigateToCitation) deps.navigateToCitation(card);
-    else card.scrollIntoView?.({ block: "center" });
-    card.classList.add(FLASH_CLASS);
-    const timer = deps.setTimeout(() => {
-      flashTimers.delete(timer);
-      card.classList.remove(FLASH_CLASS);
-    }, TASK_PROGRESS_FLASH_MS);
-    flashTimers.add(timer);
-  }
-
   const onRowClick = (event: Event) => {
     event.preventDefault?.();
+    if (docked) return;
     setOpen(!open);
   };
   const onKeyDown = (event: Event) => {
     const key = (event as KeyboardEvent).key;
-    if (key !== "Escape" || !open) return;
+    if (key !== "Escape" || !open || docked) return;
     event.preventDefault?.();
     event.stopPropagation?.();
     setOpen(false, { focusRow: true });
+  };
+  /** The reader used the list: its place is theirs, not the remembered one. */
+  const onReaderInput = () => {
+    restorePending = false;
   };
   const onScroll = () => {
     if (!open) return;
@@ -2741,7 +4303,7 @@ export function mountTaskProgressView(params: {
     const current = record();
     adoptRecord(current);
     // The answer started: collapse now, not at the next coalesced paint.
-    if (current && current.collapseSeq !== seenCollapseSeq) {
+    if (!docked && current && current.collapseSeq !== seenCollapseSeq) {
       seenCollapseSeq = current.collapseSeq;
       if (open) {
         endDrag();
@@ -2754,6 +4316,8 @@ export function mountTaskProgressView(params: {
   row.addEventListener("click", onRowClick);
   keyTarget.addEventListener("keydown", onKeyDown);
   body.addEventListener("scroll", onScroll);
+  for (const type of ["mousedown", "wheel", "keydown"])
+    body.addEventListener(type, onReaderInput);
   drawer.addEventListener("transitionend", onTransitionEnd);
   curtain?.addEventListener("transitionend", onCurtainTransitionEnd);
   grip.addEventListener("mousedown", onGripMouseDown);
@@ -2769,22 +4333,35 @@ export function mountTaskProgressView(params: {
       if (switched) {
         clearList(mainList);
         clearHistory();
+        highlight = null;
+        paintGroups(mainSlot, null, 0, false);
         mineruKnown.clear();
         mineruAsked.clear();
-        // The conversation shown now comes back as its card was left.
+        // The conversation shown now comes back as its card was left, in
+        // the chat or in the side panel tab.
         const memo = next.conversationKey
           ? getTaskProgressViewMemo(next.conversationKey)
           : null;
-        expanded = new Set(memo?.expanded || []);
-        unrolled = new Set(memo?.questions || []);
-        limit = Math.max(TASK_PROGRESS_WINDOW, memo?.limit || 0);
-        restorePending = Boolean(memo?.open);
+        adoptMemo(memo);
+        namedCache.clear();
+        startRestore(docked || Boolean(memo?.open));
         seenCollapseSeq = record()?.collapseSeq ?? 0;
         seenEpoch = record()?.epoch ?? 0;
       }
       flush();
     },
     setOpen,
+    resume() {
+      if (disposed || !input.conversationKey) return;
+      const memo = getTaskProgressViewMemo(input.conversationKey);
+      if (!memo) return;
+      // The other view had the list: take it as it was left there.
+      if (!docked && open) applyOpen(false, false, { remember: false });
+      adoptMemo(memo);
+      startRestore(docked || memo.open);
+      flush();
+    },
+    reveal,
     isOpen: () => open,
     drawerState: () => drawerState,
     isVisible: () => visible,
@@ -2793,7 +4370,10 @@ export function mountTaskProgressView(params: {
     renderedRowCount: () =>
       mainList.ordered.length +
       Array.from(sectionRefs.values()).reduce(
-        (total, section) => total + (section.body?.list.ordered.length || 0),
+        (total, section) =>
+          total +
+          (section.body?.list.ordered.length || 0) +
+          (section.body?.cards?.unused.ordered.length || 0),
         0,
       ),
     dispose() {
@@ -2811,8 +4391,6 @@ export function mountTaskProgressView(params: {
         }
       };
       if (paintTimer !== null) clearing(() => deps.clearTimeout(paintTimer));
-      for (const timer of flashTimers) clearing(() => deps.clearTimeout(timer));
-      flashTimers.clear();
       endDrag();
       clearing(clearSettleTimer);
       clearing(clearCurtainTimer);
@@ -2821,6 +4399,8 @@ export function mountTaskProgressView(params: {
       row.removeEventListener("click", onRowClick);
       keyTarget.removeEventListener("keydown", onKeyDown);
       body.removeEventListener("scroll", onScroll);
+      for (const type of ["mousedown", "wheel", "keydown"])
+        body.removeEventListener(type, onReaderInput);
       drawer.removeEventListener("transitionend", onTransitionEnd);
       curtain?.removeEventListener("transitionend", onCurtainTransitionEnd);
       grip.removeEventListener("mousedown", onGripMouseDown);

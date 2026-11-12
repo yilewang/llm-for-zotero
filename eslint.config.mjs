@@ -67,6 +67,16 @@ export default zotero({
       },
     },
     {
+      // The Claude Code bridge runs under Node, outside Zotero.
+      files: ["packages/claude-bridge/**/*.ts"],
+      rules: {
+        // Best-effort cleanup of SDK sessions swallows close errors on purpose.
+        "no-empty": ["error", { allowEmptyCatch: true }],
+        // Prompt generators that never yield keep an SDK control channel open.
+        "require-yield": "off",
+      },
+    },
+    {
       files: ["scripts/**/*.cjs", "scripts/**/*.mjs"],
       languageOptions: {
         globals: {
@@ -77,12 +87,9 @@ export default zotero({
     },
     {
       files: [
-        "test/**/*.test.ts",
         "test-workflows/**/*.test.ts",
-        "test-live-workflows/**/*.test.ts",
-        "test-live-agent/**/*.test.ts",
-        "test-live-runtimes/**/*.test.ts",
-        "test-db-upgrade/**/*.test.ts",
+        "test-live/**/*.test.ts",
+        "test-isolated/**/*.test.ts",
       ],
       rules: {
         // Static fixture construction at module scope is deliberate in these tests.

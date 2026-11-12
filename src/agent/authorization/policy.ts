@@ -46,6 +46,13 @@ export function authorizeOriginalAction(
     };
   }
   const plan = proposal.invocationPlan;
+  // The user's rule for Zotero scripts: Auto runs them directly, as Yolo
+  // does; Safe asked above. Hard risk signals were blocked first
+  // (`actionIntegrityFailure`). Other mechanisms of unknown effect, such as
+  // an unparsed shell command, still go to the model review below.
+  if (plan.mechanism === "zotero_script") {
+    return { kind: "execute", authority: "auto_policy" };
+  }
   const known = plan.impact === "state_change" && plan.assurance !== "unknown";
   const localEffects = proposal.effects.every((effect) =>
     ["read", "create", "modify", "delete"].includes(effect),

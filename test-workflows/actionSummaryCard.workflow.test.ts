@@ -573,9 +573,13 @@ describe("workflow: one action card for a mixed turn", function () {
         "a collection the receipt identified is a way in",
       );
       assert.include(collectionChip.textContent, collection.name);
+      const getSelectedCollectionId = () =>
+        typeof pane.getSelectedCollections === "function"
+          ? pane.getSelectedCollections(true)?.[0]
+          : pane.getSelectedCollection(true);
       collectionChip.click();
       await waitFor(
-        () => pane.getSelectedCollection(true) === collection.id,
+        () => getSelectedCollectionId() === collection.id,
         "the collection tree to select the collection the chip names",
       );
 
@@ -594,7 +598,7 @@ describe("workflow: one action card for a mixed turn", function () {
         "the items pane to select the paper the chip names",
       );
       assert.equal(
-        pane.getSelectedCollection(true),
+        getSelectedCollectionId(),
         collection.id,
         "opening a paper leaves the reader in the collection they were in",
       );

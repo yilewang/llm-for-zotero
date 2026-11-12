@@ -17,6 +17,7 @@ export type ModelCapabilityProvider =
   | "qwen"
   | "kimi"
   | "mimo"
+  | "siliconflow"
   | "copilot"
   /**
    * A model served by a local runtime whose name matches no hosted family.
@@ -178,6 +179,14 @@ export type DiscoveredModel = {
 
 export type ModelCatalogIdentity = ModelCapabilityIdentity & {
   apiKey?: string;
+};
+
+export type ModelCatalogStatus = {
+  models: DiscoveredModel[];
+  fetchedAt: number;
+  stale: boolean;
+  error?: string;
+  errorCode?: string;
 };
 
 export type ModelCapabilityRefreshOptions = {

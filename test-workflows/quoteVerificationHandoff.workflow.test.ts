@@ -1,6 +1,7 @@
 import { assert } from "chai";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 import { buildQuoteCitation } from "../src/services/quotes/quoteCitations";
+import { QUOTE_LOCATION_FIELDS } from "../src/shared/quoteLocationStorage";
 import { collectReaderSelectionDocuments } from "../src/services/pdf/readerSelection";
 import { isMineruEnabled, setMineruEnabled } from "../src/utils/mineruConfig";
 import {
@@ -128,10 +129,32 @@ describe("workflow: independently verify saved quote anchors", function () {
           "SELECT text, quote_citations_json FROM llm_for_zotero_chat_messages WHERE conversation_key = ? AND role = 'assistant' ORDER BY id",
           [conversationKey],
         ))!.map((row) => ({
-          text: row.text,
-          quoteCitations: row.quote_citations_json,
+          text: row.text as string,
+          quoteCitations: JSON.parse(row.quote_citations_json || "[]") as Array<
+            Record<string, unknown>
+          >,
         }));
-      const stored = JSON.stringify(await readStored());
+      // A verified PDF-page location is saved into its record, with the file
+      // state it was found in. Every other field, and every record not
+      // written back, stays as the answer stored it.
+      const withoutSavedLocations = (
+        rows: Awaited<ReturnType<typeof readStored>>,
+        after: Awaited<ReturnType<typeof readStored>>,
+      ) =>
+        JSON.stringify(
+          rows.map((row, rowIndex) => ({
+            text: row.text,
+            quoteCitations: row.quoteCitations.map((citation, index) => {
+              if (!after[rowIndex]?.quoteCitations[index]?.sourceFileState)
+                return citation;
+              const rest = { ...citation };
+              for (const field of [...QUOTE_LOCATION_FIELDS, "sourceFileState"])
+                delete rest[field];
+              return rest;
+            }),
+          })),
+        );
+      const stored = await readStored();
       for (let reload = 0; reload < 2; reload += 1) {
         await api.reset();
         await api.openStandaloneForItem(item.id);
@@ -161,10 +184,11 @@ describe("workflow: independently verify saved quote anchors", function () {
             cards.map((card) => card.outerHTML).join("\n"),
         );
         assert.include(cards[1].textContent || "", ocrQuote);
+        const reloaded = await readStored();
         assert.equal(
-          JSON.stringify(await readStored()),
-          stored,
-          "revalidation leaves historical text and citation metadata intact",
+          withoutSavedLocations(reloaded, reloaded),
+          withoutSavedLocations(stored, reloaded),
+          "revalidation leaves historical text and citation metadata intact, apart from the locations it verified",
         );
         const navigation = await api.observeCitationNavigationFocus(
           cards[0].querySelector<HTMLElement>(".llm-citation-icon")!,

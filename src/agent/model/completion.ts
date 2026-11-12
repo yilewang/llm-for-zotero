@@ -5,6 +5,24 @@ export type AgentRecoverableCompletionReason =
   | "provider_pause"
   | "stream_interrupted";
 
+/**
+ * A response stream that broke before the provider finished the step: the
+ * connection dropped, or the provider sent an error event mid-stream. The
+ * adapter that throws it kept none of the step, so the runtime may send the
+ * same request again (`turnBoundary.ts`, Rule 4).
+ */
+export class ModelStreamInterruptedError extends Error {
+  readonly kind = "stream_interrupted" as const;
+  constructor(
+    message: string,
+    /** The provider's HTTP-equivalent status, for an error event (529). */
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = "ModelStreamInterruptedError";
+  }
+}
+
 export function resolveAgentRecoverableCompletion(
   completion: ModelTurnCompletion,
 ): AgentRecoverableCompletionReason | null {

@@ -9,6 +9,10 @@ import {
   readAttachmentFileState,
   type AttachmentFileState,
 } from "../../utils/attachmentFileState";
+import {
+  MANIFEST_STRUCTURE_VERSION,
+  isHeadingClassifiedDifferentlySinceV3,
+} from "../mineru/mineruCache";
 import { paperTextStore } from "../paperContent/paperTextStore";
 import { ensurePDFTextCached } from "../paperContent/pdfContext";
 import type { PdfContext } from "../paperContent/types";
@@ -48,6 +52,46 @@ const META_KEYS: Array<keyof StoredChunkMeta> = [
 ];
 const POSTING_ROW_BYTES = 24;
 
+/** Whether a MinerU paper has a heading that structure version 3 classifies differently. */
+function hasHeadingClassifiedDifferentlySinceV3(
+  ctx: Pick<PdfContext, "chunks" | "chunkMeta">,
+): boolean {
+  for (const chunk of ctx.chunks)
+    for (const line of chunk.split("\n")) {
+      const heading = /^#{1,3}\s+(.+?)\s*$/.exec(line);
+      if (heading && isHeadingClassifiedDifferentlySinceV3(heading[1]))
+        return true;
+    }
+  return ctx.chunkMeta.some(
+    (meta) =>
+      meta.sectionLabel &&
+      isHeadingClassifiedDifferentlySinceV3(meta.sectionLabel),
+  );
+}
+
+/**
+ * The index document's source fingerprint: the text's own. For MinerU text
+ * with a heading that the manifest now classifies differently (a short
+ * CJK section name such as "结果", a figure label such as "图12"), it also
+ * carries the manifest structure version, because that paper's chunk
+ * boundaries and labels changed. Such a paper has a new fingerprint, so the
+ * indexer rebuilds its document (`indexAttachment`) with no chunker version
+ * bump; every other paper keeps its fingerprint, text index and vectors.
+ * The chunk metadata keeps the text-only fingerprint, which quotes and
+ * saved evidence refer to.
+ */
+export function indexSourceFingerprint(
+  ctx: Pick<PdfContext, "chunks" | "chunkMeta" | "sourceType">,
+  structureVersion: number = MANIFEST_STRUCTURE_VERSION,
+): string {
+  const text =
+    ctx.chunkMeta[0]?.sourceFingerprint || fnv1a32(ctx.chunks.join("\n\n"));
+  return ctx.sourceType === "mineru" &&
+    hasHeadingClassifiedDifferentlySinceV3(ctx)
+    ? `${text}:structure${structureVersion}`
+    : text;
+}
+
 /** UTF-8 length without allocating an encoded copy. */
 function utf8ByteLength(text: string): number {
   let bytes = 0;
@@ -69,9 +113,9 @@ function utf8ByteLength(text: string): number {
 }
 
 /** Stored text as UTF-8 plus a fixed cost per posting row (the byte budget's unit). */
-export function estimateDocumentBytes(
-  doc: Pick<IndexDocumentInput, "chunks">,
-): number {
+export function estimateDocumentBytes(doc: {
+  chunks: Array<Pick<IndexDocumentInput["chunks"][number], "text" | "tf">>;
+}): number {
   let bytes = 0;
   for (const chunk of doc.chunks) {
     bytes +=
@@ -90,9 +134,13 @@ export function buildIndexDocumentFromPdfContext(params: {
   ctx: PdfContext;
 }): IndexDocumentInput {
   const { ctx } = params;
+  // A chat may have loaded the text with its chapter structure; the index
+  // stores the metadata without it, so its rows do not depend on who loaded
+  // the text first.
+  const chunkMeta = ctx.documentStructure?.plainChunkMeta || ctx.chunkMeta;
   const chunks = ctx.chunks.map((text, chunkIndex) => {
     const stat = ctx.chunkStats[chunkIndex];
-    const full = ctx.chunkMeta[chunkIndex];
+    const full = chunkMeta[chunkIndex];
     // Copied key by key from a full PdfChunkMeta, so required keys (chunkKind) are present.
     const meta = {} as StoredChunkMeta;
     for (const key of META_KEYS) {
@@ -116,8 +164,7 @@ export function buildIndexDocumentFromPdfContext(params: {
     parentItemId: params.parentItemId,
     title: ctx.title,
     sourceType: ctx.sourceType || "unknown",
-    sourceFingerprint:
-      ctx.chunkMeta[0]?.sourceFingerprint || fnv1a32(ctx.chunks.join("\n\n")),
+    sourceFingerprint: indexSourceFingerprint(ctx),
     sourceMtime: params.fileState?.mtime ?? null,
     sourceSize: params.fileState?.size ?? null,
     chunkerVersion: LIBRARY_TEXT_INDEX_CHUNKER_VERSION,
@@ -128,11 +175,12 @@ export function buildIndexDocumentFromPdfContext(params: {
 
 /** fnv1a32 over chunk boundaries and section labels; pinned by a unit test. */
 export function computeChunkerFingerprint(ctx: PdfContext): string {
+  const chunkMeta = ctx.documentStructure?.plainChunkMeta || ctx.chunkMeta;
   return fnv1a32(
     ctx.chunks
       .map(
         (c, i) =>
-          `${c.length}:${ctx.chunkMeta[i]?.sectionLabel || ""}:${ctx.chunkMeta[i]?.chunkKind || ""}:${ctx.chunkMeta[i]?.enclosingSection || ""}`,
+          `${c.length}:${chunkMeta[i]?.sectionLabel || ""}:${chunkMeta[i]?.chunkKind || ""}:${chunkMeta[i]?.enclosingSection || ""}`,
       )
       .join("|"),
   );
@@ -150,17 +198,20 @@ export async function indexAttachment(params: {
   const attachmentId = params.item.id;
   // The agent may have loaded this paper for its own reasons; only evict what indexing loaded.
   const releaseBorrowedText = paperTextStore.borrow(attachmentId);
+  let loaded: PdfContext | undefined;
   try {
     // Prefetch: cheapest source first (MinerU md → Zotero full-text cache → PDFWorker).
     // Urgent (write-through, added, invalidated): today's ladder, pages included.
     // Both lanes load silently so an index job never re-enqueues itself via the write-through hook.
-    await ensurePDFTextCached(
+    // Use what this load returns: a chat load that joins it may drop the
+    // cached entry before this resumes.
+    const ctx = await ensurePDFTextCached(
       params.item,
       params.lane === "prefetch"
         ? { preferFulltextCache: true, silentLoad: true }
         : { silentLoad: true },
     );
-    const ctx = paperTextStore.peek(attachmentId);
+    loaded = ctx;
     if (!ctx || !ctx.chunks.length) {
       const fileState = await readAttachmentFileState(params.item);
       if (!fileState) {
@@ -255,6 +306,6 @@ export async function indexAttachment(params: {
       elapsedMs: now() - started,
     };
   } finally {
-    releaseBorrowedText();
+    releaseBorrowedText(loaded);
   }
 }

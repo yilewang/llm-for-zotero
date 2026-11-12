@@ -4,6 +4,18 @@ import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
 import { clearCitationPageCache } from "./citationNavigationCache";
 import {
+  readPageCompleteZoteroFulltextCache,
+  type ProveTextPageOffset,
+} from "./zoteroFulltextPageCache";
+import type { TextPageOffset } from "../paperContent/types";
+import { paperTextStore } from "../paperContent/paperTextStore";
+import { readPdfBookmarks } from "../paperContent/pdfBookmarks";
+import { textPageOffset as bookmarkTextPageOffset } from "../paperContent/documentStructure";
+import {
+  readAttachmentFileState,
+  type AttachmentFileState,
+} from "../../utils/attachmentFileState";
+import {
   findLargestUniqueQuoteTextAnchorMatch,
   normalizeLocatorText,
   splitQuoteAtPairedInlineMath,
@@ -1378,6 +1390,11 @@ const MAX_COOPERATIVE_PAGE_TEXT_CHARS = 50_000;
 
 type CachedPageTextRecord = {
   index: CachedPageTextIndex;
+  /**
+   * The attachment file the text was read from, as it was when the read
+   * began; a record from an earlier version of the file is stale.
+   */
+  fileState?: PageTextFileState;
   createdAt: number;
   lastAccessedAt: number;
   lastAccessedOrder: number;
@@ -1539,11 +1556,35 @@ function getReaderCacheKeys(reader: any): string[] {
   ]);
 }
 
-function getCachedPageTextIndex(keys: string[]): CachedPageTextIndex | null {
+type PageTextFileState = Pick<AttachmentFileState, "size" | "mtime">;
+
+function pageTextFileState(
+  state: AttachmentFileState | null | undefined,
+): PageTextFileState | undefined {
+  return state ? { size: state.size, mtime: state.mtime } : undefined;
+}
+
+/**
+ * The cached page text for `keys`. Given the attachment file's current
+ * state, a record read from another version of the file is dropped.
+ */
+function getCachedPageTextIndex(
+  keys: string[],
+  fileState?: AttachmentFileState | null,
+): CachedPageTextIndex | null {
   const currentTime = Date.now();
   evictExpiredPageTextCacheRecords(currentTime);
   for (const key of keys) {
     const cached = pageTextCacheByKey.get(key);
+    if (
+      cached?.fileState &&
+      fileState &&
+      (cached.fileState.size !== fileState.size ||
+        cached.fileState.mtime !== fileState.mtime)
+    ) {
+      deletePageTextCacheRecord(cached);
+      continue;
+    }
     if (cached) {
       touchPageTextCacheRecord(cached, currentTime);
       return cached.index;
@@ -1569,6 +1610,7 @@ function getCachedPageTextPromise(
 function storeCachedPageTextIndex(
   keys: string[],
   index: CachedPageTextIndex,
+  fileState?: AttachmentFileState | null,
 ): void {
   const currentTime = Date.now();
   evictExpiredPageTextCacheRecords(currentTime);
@@ -1576,6 +1618,7 @@ function storeCachedPageTextIndex(
   if (estimatedBytes > MAX_PAGE_TEXT_CACHE_ESTIMATED_BYTES) return;
   const record: CachedPageTextRecord = {
     index,
+    fileState: pageTextFileState(fileState),
     createdAt: currentTime,
     lastAccessedAt: currentTime,
     lastAccessedOrder: nextCacheAccessOrder(),
@@ -1799,6 +1842,13 @@ export function getCachedPageTextForAttachment(
   return key ? getCachedPageTextIndex([key]) : null;
 }
 
+/**
+ * The share of pages that may be blank in a PDF still called complete,
+ * rounded up. A page with no text cannot be told apart from a scanned page,
+ * so only an occasional blank page between text pages is allowed.
+ */
+const MAX_BLANK_PAGE_FRACTION = 0.1;
+
 export function hasCompleteSearchablePageTextForAttachment(
   contextItemId: number,
 ): boolean {
@@ -1806,11 +1856,17 @@ export function hasCompleteSearchablePageTextForAttachment(
   if (
     !isCompletePageTextCache(cached) ||
     !cached?.pageCount ||
-    cached.pages.length !== cached.pageCount
+    cached.pages.length !== cached.pageCount ||
+    cached.normalised.length !== cached.pageCount ||
+    cached.normalised.some((page, index) => page.pageIndex !== index)
   ) {
     return false;
   }
-  return cached.normalised.every((page) => Boolean(page.normalizedText));
+  const hasText = cached.normalised.map((page) => Boolean(page.normalizedText));
+  // A blank first or last page may hide a scanned cover or appendix.
+  if (!hasText[0] || !hasText[hasText.length - 1]) return false;
+  const blankPages = hasText.filter((value) => !value).length;
+  return blankPages <= Math.ceil(hasText.length * MAX_BLANK_PAGE_FRACTION);
 }
 
 function buildHiddenQuoteLocationCacheKey(
@@ -1942,17 +1998,116 @@ function locateQuoteInCachedPageTexts(
 // Three approaches to extract per-page text, tried in priority order.
 // The first one that returns data wins.
 
+/** The parts of a `PDFWorker.getFullText` result that place text on pages. */
+export type PdfWorkerFullTextResult = {
+  text?: unknown;
+  pageChars?: unknown;
+  totalPages?: unknown;
+  extractedPages?: unknown;
+};
+
+function positivePageCount(value: unknown): number | undefined {
+  const count = Number(value);
+  return Number.isInteger(count) && count > 0 ? count : undefined;
+}
+
+/**
+ * Split PDFWorker full text into pages.
+ *
+ * Zotero 7+ returns `{ text, extractedPages, totalPages }`: pages joined by
+ * form feeds, with the whole string trimmed, so blank pages at either end
+ * leave no break behind. Older builds returned `pageChars`. Blank pages are
+ * kept as empty strings so each page keeps its own index; `totalPages` is the
+ * PDF's real page count, so trimmed pages show as missing, not as absent.
+ *
+ * Text that lost blank leading pages is placed only by a `textPageOffset`
+ * its bookmarks proved for a text of the same part count: part `i` goes on
+ * page `i + pageOffset`, and the lost pages, with the trimmed pages after
+ * the text up to the last extracted page, are listed empty. An offset that
+ * would place text past the PDF's or the extraction's last page refuses the
+ * split; one proven for another part count is ignored.
+ */
+export function splitPdfWorkerFullTextIntoPages(
+  result: PdfWorkerFullTextResult | null | undefined,
+  options?: { textPageOffset?: TextPageOffset },
+): ExtractedPageTextIndexSource | null {
+  const fullText = typeof result?.text === "string" ? result.text : "";
+  if (!fullText) return null;
+  const totalPages = positivePageCount(result?.totalPages);
+  const rawPageChars = result?.pageChars;
+  const pageChars = Array.isArray(rawPageChars)
+    ? rawPageChars.map((value) => Number(value))
+    : null;
+
+  const pages: LivePdfPageText[] = [];
+  let pageCount: number | undefined;
+  if (pageChars?.length) {
+    let offset = 0;
+    for (let i = 0; i < pageChars.length; i++) {
+      const charCount = pageChars[i];
+      if (
+        Number.isFinite(charCount) &&
+        charCount >= 0 &&
+        offset + charCount <= fullText.length
+      ) {
+        // PDFWorker text carries no printed labels.
+        pages.push({
+          pageIndex: i,
+          text: sanitizeText(fullText.slice(offset, offset + charCount).trim()),
+        });
+      }
+      offset += Number.isFinite(charCount) ? charCount : 0;
+    }
+    pageCount = pageChars.length;
+  } else {
+    const ffPages = fullText.split("\f");
+    // Without a break the text can only be placed when the PDF has one page.
+    if (ffPages.length < 2 && totalPages !== 1) return null;
+    // More parts than pages means a break inside a page: no part can be
+    // trusted to sit on the page its position names.
+    if (totalPages && ffPages.length > totalPages) return null;
+    const extractedPages = positivePageCount(result?.extractedPages);
+    const shift = options?.textPageOffset;
+    if (shift && shift.pageOffset >= 0 && ffPages.length === shift.textParts) {
+      const textEnd = shift.pageOffset + ffPages.length;
+      if (!totalPages || textEnd > totalPages) return null;
+      if (extractedPages !== undefined && textEnd > extractedPages) return null;
+      const lastPage = Math.min(extractedPages ?? totalPages, totalPages);
+      for (let i = 0; i < lastPage; i++) {
+        const part = ffPages[i - shift.pageOffset];
+        pages.push({
+          pageIndex: i,
+          text: part === undefined ? "" : sanitizeText(part.trim()),
+        });
+      }
+      pageCount = totalPages;
+    } else {
+      // Zotero trims blank pages at either end, which shifts every index
+      // when a leading page is lost. Trust the split only when the part
+      // count equals the extracted page count (a limit such as pdfMaxPages
+      // keeps indices).
+      if (extractedPages !== undefined && ffPages.length !== extractedPages) {
+        return null;
+      }
+      for (let i = 0; i < ffPages.length; i++) {
+        pages.push({ pageIndex: i, text: sanitizeText(ffPages[i].trim()) });
+      }
+      pageCount = totalPages ?? ffPages.length;
+    }
+  }
+  return pages.some((page) => page.text) ? { pages, pageCount } : null;
+}
+
 /**
  * Strategy 0 — Zotero PDFWorker (MOST RELIABLE)
  *
- * Uses Zotero.PDFWorker.getFullText(itemId) which returns
- * { text: string, pageChars: number[] }.  `pageChars[i]` is the
- * character count for page i, so we slice the full text into per-page
- * segments using cumulative offsets.  This requires NO iframe access
+ * Uses Zotero.PDFWorker.getFullText(itemId), which needs no iframe access
  * and is proven working in the codebase (pdfContext.ts).
  */
 async function extractPageTextsFromPdfWorkerItemId(
   itemId: number,
+  textPageOffset?: TextPageOffset,
+  proveShift?: ProveTextPageOffset,
 ): Promise<ExtractedPageTextIndexSource | null> {
   try {
     if (!Number.isFinite(itemId) || itemId <= 0) {
@@ -1969,65 +2124,62 @@ async function extractPageTextsFromPdfWorkerItemId(
       );
       return null;
     }
-
-    const fullText: string = String(result.text);
-    const pageChars: number[] | undefined = result.pageChars;
-
-    if (!Array.isArray(pageChars) || pageChars.length === 0) {
-      // Fallback: if pageChars is unavailable, try splitting by form-feed
-      const ffPages = fullText.split("\f");
-      if (ffPages.length > 1) {
-        appLogger.debug(
-          "LLM quote-locator: PDFWorker — no pageChars, using form-feed split:",
-          ffPages.length,
-          "pages",
-        );
-        const pages: LivePdfPageText[] = [];
-        for (let i = 0; i < ffPages.length; i++) {
-          const text = sanitizeText(ffPages[i].trim());
-          if (text) {
-            // PDFWorker text carries no printed labels.
-            pages.push({ pageIndex: i, text });
-          }
-        }
-        return pages.length > 0 ? { pages, pageCount: ffPages.length } : null;
+    let extracted = splitPdfWorkerFullTextIntoPages(result, {
+      textPageOffset,
+    });
+    // `pageChars` places text without a shift.
+    const totalPages = positivePageCount(result.totalPages);
+    const formFeed = !(
+      Array.isArray(result.pageChars) && result.pageChars.length
+    );
+    if (!extracted && proveShift && formFeed && totalPages) {
+      const proven = await proveShift({
+        text: String(result.text),
+        totalPages,
+      });
+      if (proven) {
+        extracted = splitPdfWorkerFullTextIntoPages(result, {
+          textPageOffset: proven,
+        });
       }
+    }
+    if (!extracted) {
       appLogger.warn(
-        "LLM quote-locator: PDFWorker — no pageChars and no form-feeds, cannot split into pages",
+        "LLM quote-locator: PDFWorker — text could not be split into pages",
       );
       return null;
     }
-
-    // Slice the full text into per-page segments using pageChars offsets
-    const pages: LivePdfPageText[] = [];
-    let offset = 0;
-    for (let i = 0; i < pageChars.length; i++) {
-      const charCount = pageChars[i];
-      if (charCount > 0 && offset + charCount <= fullText.length) {
-        const pageText = fullText.slice(offset, offset + charCount);
-        const text = sanitizeText(pageText.trim());
-        if (text) {
-          // PDFWorker text carries no printed labels.
-          pages.push({ pageIndex: i, text });
-        }
-      }
-      offset += charCount;
-    }
-
     appLogger.debug(
       "LLM quote-locator: PDFWorker extracted",
-      pages.length,
-      "pages from",
-      pageChars.length,
-      "total (text length:",
-      fullText.length,
-      ")",
+      extracted.pages.length,
+      "pages of",
+      extracted.pageCount,
     );
-    return pages.length > 0 ? { pages, pageCount: pageChars.length } : null;
+    return extracted;
   } catch (e) {
     appLogger.debug("LLM quote-locator: PDFWorker strategy failed:", e);
     return null;
   }
+}
+
+/**
+ * Strategy 0a — Zotero's own full-text cache, when it is page-complete.
+ * The file holds the text PDFWorker returned when Zotero indexed the PDF.
+ */
+async function extractPageTextsFromZoteroFulltextCache(
+  itemId: number,
+  textPageOffset?: TextPageOffset,
+  proveShift?: ProveTextPageOffset,
+): Promise<ExtractedPageTextIndexSource | null> {
+  const cached = await readPageCompleteZoteroFulltextCache(itemId, {
+    textPageOffset,
+    proveShift,
+  });
+  if (!cached) return null;
+  return splitPdfWorkerFullTextIntoPages(
+    { text: cached.text, totalPages: cached.totalPages },
+    { textPageOffset: cached.textPageOffset },
+  );
 }
 
 async function extractPageTextsFromPdfWorker(
@@ -2603,6 +2755,11 @@ export async function warmPageTextCacheForAttachment(
     yieldToMain?: () => Promise<void>;
     shouldContinue?: () => boolean;
     reader?: any;
+    /**
+     * The shift the attachment's bookmarks proved for text that lost blank
+     * leading pages (`splitPdfWorkerFullTextIntoPages`).
+     */
+    textPageOffset?: TextPageOffset;
   },
 ): Promise<CachedPageTextIndex | null> {
   const key = getAttachmentPageTextCacheKey(contextItemId);
@@ -2612,13 +2769,59 @@ export async function warmPageTextCacheForAttachment(
       ? options.reader
       : null;
   const keys = reader ? getReaderCacheKeys(reader) : [key];
-  const cached = getCachedPageTextIndex(keys);
+  const itemId = Math.floor(Number(contextItemId));
+  // Taken before the stat below: a clear while it runs still voids this warm.
+  const generation = pageTextCacheGeneration;
+  // The file as it is now: text read from an earlier version of it is
+  // stale, and a fresh read is recorded against this version.
+  const fileState = await readAttachmentFileState(
+    (globalThis as { Zotero?: typeof Zotero }).Zotero?.Items?.get?.(itemId),
+  );
+  const cached = getCachedPageTextIndex(keys, fileState);
   if (cached) return cached;
   const cachedTask = getCachedPageTextPromise(keys, !options?.yieldToMain);
   if (cachedTask) return cachedTask;
+  // Text that lost blank leading pages is placed by the shift its bookmarks
+  // proved when the paper was loaded, whoever asks. A shift proven on another
+  // file is dropped.
+  const proven =
+    options?.textPageOffset ?? paperTextStore.peek(itemId)?.textPageOffset;
+  const provenFile = proven?.file;
+  const textPageOffset =
+    proven &&
+    (!provenFile ||
+      (provenFile.size === (fileState?.size ?? null) &&
+        provenFile.mtime === (fileState?.mtime ?? null)))
+      ? proven
+      : undefined;
+  // Without one, the warm proves the shift as a paper load does, from the
+  // PDF's bookmarks (`readPdfBookmarks`) and this same text; without a proof
+  // the text is refused. Text with every page, or text an offset in hand was
+  // proven for, needs no proof.
+  let bookmarks: ReturnType<typeof readPdfBookmarks> | undefined;
+  const proveShift: ProveTextPageOffset = async ({ text, totalPages }) => {
+    const textParts = text.split("\f").length;
+    if (textParts < 2 || textParts >= totalPages) return undefined;
+    if (textPageOffset?.textParts === textParts) return undefined;
+    // One read per warm, even when both text sources need a proof.
+    bookmarks ??= readPdfBookmarks(itemId, fileState);
+    const pageOffset = bookmarkTextPageOffset({
+      text,
+      layout: { totalPages },
+      bookmarks: await bookmarks,
+    });
+    return pageOffset !== null
+      ? {
+          pageOffset,
+          textParts,
+          file: {
+            size: fileState?.size ?? null,
+            mtime: fileState?.mtime ?? null,
+          },
+        }
+      : undefined;
+  };
 
-  const itemId = Math.floor(Number(contextItemId));
-  const generation = pageTextCacheGeneration;
   let foreground = false;
   let promote: (() => void) | undefined;
   const promotion = new Promise<void>((resolve) => {
@@ -2630,7 +2833,19 @@ export async function warmPageTextCacheForAttachment(
   let task: Promise<CachedPageTextIndex | null> | null = null;
   task = (async () => {
     try {
-      let extracted = await extractPageTextsFromPdfWorkerItemId(itemId);
+      // Zotero's page-complete full-text cache holds the same text a fresh
+      // PDFWorker extraction would return, without queueing a PDF parse.
+      let extracted =
+        (await extractPageTextsFromZoteroFulltextCache(
+          itemId,
+          textPageOffset,
+          proveShift,
+        )) ??
+        (await extractPageTextsFromPdfWorkerItemId(
+          itemId,
+          textPageOffset,
+          proveShift,
+        ));
       let coverage: PageTextCacheCoverage = "full-pdfworker";
       let sourceFingerprint: string | undefined;
       if (!extracted?.pages.length && reader) {
@@ -2671,7 +2886,7 @@ export async function warmPageTextCacheForAttachment(
           );
       if (!result) return null;
       if (generation !== pageTextCacheGeneration) return null;
-      storeCachedPageTextIndex(keys, result);
+      storeCachedPageTextIndex(keys, result, fileState);
       return result;
     } catch (e) {
       appLogger.debug(
@@ -2688,6 +2903,67 @@ export async function warmPageTextCacheForAttachment(
     task,
     options?.yieldToMain ? promote : undefined,
   );
+  return task;
+}
+
+/**
+ * Fill the page-text cache from PDFWorker text that is already in hand, such
+ * as the text a context extraction just read, so quote checks need no second
+ * extraction. The text is split and normalised exactly as a PDFWorker warm
+ * would; an attachment that is cached or being read already is left alone.
+ * `fileState` is the attachment file as it was when that text was read;
+ * `textPageOffset` is the shift its bookmarks proved for text that lost
+ * blank leading pages.
+ */
+export async function seedPageTextCacheFromFullText(
+  contextItemId: number,
+  fullText: PdfWorkerFullTextResult,
+  options?: {
+    fileState?: AttachmentFileState | null;
+    textPageOffset?: TextPageOffset;
+    yieldToMain?: () => Promise<void>;
+    shouldContinue?: () => boolean;
+  },
+): Promise<CachedPageTextIndex | null> {
+  const key = getAttachmentPageTextCacheKey(contextItemId);
+  if (!key) return null;
+  const keys = [key];
+  const cached = getCachedPageTextIndex(keys);
+  if (cached) return cached;
+  const pendingTask = getCachedPageTextPromise(keys);
+  if (pendingTask) return pendingTask;
+  const extracted = splitPdfWorkerFullTextIntoPages(fullText, {
+    textPageOffset: options?.textPageOffset,
+  });
+  if (!extracted) return null;
+
+  const generation = pageTextCacheGeneration;
+  let task: Promise<CachedPageTextIndex | null> | null = null;
+  task = (async () => {
+    try {
+      const result = await buildCachedPageTextIndexCooperatively(
+        extracted.pages,
+        "full-pdfworker",
+        extracted.pageCount,
+        undefined,
+        {
+          yieldToMain:
+            options?.yieldToMain ||
+            (() => new Promise<void>((resolve) => setTimeout(resolve, 0))),
+          shouldContinue: options?.shouldContinue,
+        },
+      );
+      if (!result || generation !== pageTextCacheGeneration) return null;
+      storeCachedPageTextIndex(keys, result, options?.fileState);
+      return result;
+    } catch (e) {
+      appLogger.debug("LLM quote-locator: page text seed failed:", e);
+      return null;
+    } finally {
+      if (task) clearCachedPageTextPromise(keys, task);
+    }
+  })();
+  storeCachedPageTextPromise(keys, task);
   return task;
 }
 
@@ -2950,6 +3226,142 @@ type FindControllerSearchSnapshot = {
   selectedMatchIndex: number | null;
 };
 
+/**
+ * One search sent to PDF.js, followed from the moment it is sent.
+ *
+ * PDF.js marks the results dirty as soon as a search arrives and clears the
+ * mark only once the search has run. It empties and refills the same result
+ * list, so a finished search can leave the counts, the page and the selected
+ * match exactly as the previous search left them (two quotes on one page with
+ * one match each; two searches that both find nothing). The mark, seen set
+ * and then clear with this query, is the evidence that the results are this
+ * search's.
+ */
+type FindControllerSearchRun = {
+  query: string;
+  dirtySeen: boolean;
+};
+
+/** Start following a search; call it right after sending the search. */
+function followFindControllerSearch(
+  findController: any,
+  query: string,
+): FindControllerSearchRun {
+  const run = { query, dirtySeen: false };
+  noteFindControllerSearchRun(findController, run);
+  return run;
+}
+
+/**
+ * The query of the last search PDF.js was sent. Its state holds it as soon as
+ * the search arrives; `_rawQuery` (which `getFindControllerQuery` reads
+ * first) follows only once the search runs.
+ */
+function getFindControllerRequestedQuery(
+  findController: any,
+): string | undefined {
+  const query = findController?.state?.query ?? findController?._state?.query;
+  return typeof query === "string" ? query : undefined;
+}
+
+function noteFindControllerSearchRun(
+  findController: any,
+  run: FindControllerSearchRun | undefined,
+): void {
+  if (
+    run &&
+    !run.dirtySeen &&
+    findController?._dirtyMatch === true &&
+    getFindControllerRequestedQuery(findController) === run.query
+  ) {
+    run.dirtySeen = true;
+  }
+}
+
+/** Whether PDF.js has run this search since it arrived. */
+function hasFindControllerSearchRun(
+  findController: any,
+  run: FindControllerSearchRun | undefined,
+): boolean {
+  noteFindControllerSearchRun(findController, run);
+  return (
+    run?.dirtySeen === true &&
+    findController?._dirtyMatch === false &&
+    getFindControllerRequestedQuery(findController) === run.query &&
+    getFindControllerQuery(findController) === run.query
+  );
+}
+
+type CloneIntoFn = (value: unknown, targetScope: unknown) => any;
+
+function getCloneInto(): CloneIntoFn | undefined {
+  const globalWithClone = globalThis as unknown as {
+    cloneInto?: CloneIntoFn;
+    Components?: { utils?: { cloneInto?: CloneIntoFn } };
+  };
+  return (
+    globalWithClone.cloneInto || globalWithClone.Components?.utils?.cloneInto
+  );
+}
+
+/** The reader page's window, where PDF.js runs. */
+function getPdfViewerWindow(app: any): unknown {
+  const findBar = app?.findBar;
+  for (const node of [
+    findBar?._findField ?? findBar?.findField,
+    app?.appConfig?.mainContainer,
+    app?.pdfViewer?.container,
+  ]) {
+    const view = node?.ownerDocument?.defaultView;
+    if (view) return view;
+  }
+  return null;
+}
+
+/** The plain settings of a PDF.js find state: text, flags and numbers. */
+function findStateSettings(state: unknown): Record<string, unknown> {
+  const settings: Record<string, unknown> = {};
+  if (!state || typeof state !== "object") return settings;
+  for (const key of Object.keys(state)) {
+    const value = (state as Record<string, unknown>)[key];
+    if (["string", "boolean", "number"].includes(typeof value)) {
+      settings[key] = value;
+    }
+  }
+  return settings;
+}
+
+/**
+ * A request PDF.js can read. PDF.js runs in the reader page, which cannot
+ * read the fields of an object made in the plugin's privileged code: such a
+ * "find" request reaches PDF.js with no type and no query, as an empty search
+ * that clears every result. The request is copied into the reader page;
+ * `source`, an object of the page, is set on the copy.
+ */
+function toPdfViewerRequest(
+  app: any,
+  request: Record<string, unknown>,
+  source?: unknown,
+): any {
+  const view = getPdfViewerWindow(app);
+  const cloneInto = getCloneInto();
+  if (!view || typeof cloneInto !== "function") {
+    // PDF.js may not be able to read this request (an empty search that
+    // clears every result); say so, so the failure is not silent.
+    logFindControllerDiagnostic(
+      "LLM paragraph-jump: sending PDF.js a request it may not be able to read",
+      {
+        hasViewerWindow: Boolean(view),
+        hasCloneInto: typeof cloneInto === "function",
+      },
+    );
+    return source === undefined ? request : { ...request, source };
+  }
+  const copy = cloneInto(request, view);
+  if (source !== undefined) (copy?.wrappedJSObject ?? copy).source = source;
+  return copy;
+}
+
 function getFindControllerPageMatchesValue(findController: any): unknown {
   return findController?.pageMatches ?? findController?._pageMatches;
 }
@@ -3052,12 +3464,16 @@ function hasFindControllerResultsForQuery(
   findController: any,
   snapshot: FindControllerSearchSnapshot,
   expectedQuery: string,
+  run?: FindControllerSearchRun,
 ): boolean {
   // Updating the query happens before PDF.js replaces the previous results.
   // Neither old hits nor an old empty result are evidence about the new query.
+  // A search PDF.js was seen to run is; an unchanged-looking result is not
+  // evidence against it (see `FindControllerSearchRun`).
   return (
     findController?._dirtyMatch !== true &&
     (snapshot.query === expectedQuery ||
+      hasFindControllerSearchRun(findController, run) ||
       didFindControllerSearchStateChange(findController, snapshot))
   );
 }
@@ -3071,6 +3487,7 @@ async function waitForFindControllerSearchAcceptance(
     timeoutMs?: number;
     hardDeadlineAt?: number;
     isCancelled?: () => boolean;
+    run?: FindControllerSearchRun;
   },
 ): Promise<number | null> {
   const startedAt = Date.now();
@@ -3085,6 +3502,7 @@ async function waitForFindControllerSearchAcceptance(
   const progressWaiter = createFindControllerProgressWaiter(options?.eventBus);
   try {
     while (true) {
+      noteFindControllerSearchRun(findController, options?.run);
       const rawQuery = getFindControllerQuery(findController);
       if (
         rawQuery === expectedQuery ||
@@ -3200,6 +3618,7 @@ function mergeFindControllerResultSnapshot(params: {
   completionReason?: FindControllerSearchResult["completionReason"];
   snapshotCount: number;
   allowUnobservableQuery?: boolean;
+  run?: FindControllerSearchRun;
 }): FindControllerSearchResult {
   const pageMatches = getFindControllerPageMatches(params.findController);
   const currentQuery = getFindControllerQuery(params.findController);
@@ -3210,6 +3629,7 @@ function mergeFindControllerResultSnapshot(params: {
       params.findController,
       params.previousSnapshot,
       params.expectedQuery,
+      params.run,
     );
   // PDF.js replaces pageMatches in place for the newest query. Never attribute
   // a newer click's positive results to an older, superseded navigation.
@@ -3238,7 +3658,8 @@ function mergeFindControllerResultSnapshot(params: {
     if (
       selectedPageIndex !== null &&
       (matchStateChanged ||
-        params.previousSnapshot.query === params.expectedQuery)
+        params.previousSnapshot.query === params.expectedQuery ||
+        hasFindControllerSearchRun(params.findController, params.run))
     ) {
       if (!summary.matchedPageIndexes.includes(selectedPageIndex)) {
         summary.matchedPageIndexes.push(selectedPageIndex);
@@ -3275,6 +3696,7 @@ async function waitForFindControllerPageMatches(params: {
   hardDeadlineAt: number;
   isCancelled?: () => boolean;
   requireCompleteResults?: boolean;
+  run?: FindControllerSearchRun;
 }): Promise<FindControllerSearchResult> {
   const startedAt = Date.now();
   let lastProgressAt = startedAt;
@@ -3287,6 +3709,7 @@ async function waitForFindControllerPageMatches(params: {
   try {
     while (true) {
       snapshotCount += 1;
+      noteFindControllerSearchRun(params.findController, params.run);
       const rawQuery = getFindControllerQuery(params.findController);
       if (rawQuery === params.expectedQuery) {
         queryConfirmed = true;
@@ -3344,6 +3767,7 @@ async function waitForFindControllerPageMatches(params: {
         resultsComplete: false,
         snapshotCount,
         allowUnobservableQuery: queryConfirmed,
+        run: params.run,
       });
       if (
         queryConfirmed &&
@@ -3372,6 +3796,7 @@ async function waitForFindControllerPageMatches(params: {
           params.findController,
           params.previousSnapshot,
           params.expectedQuery,
+          params.run,
         ) &&
         (pageMatches.length >= params.pagesCount || pagesToSearch === 0) &&
         pendingCount === 0 &&
@@ -3407,6 +3832,7 @@ async function waitForFindControllerPageMatches(params: {
               : "inactivity",
           snapshotCount: snapshotCount + 1,
           allowUnobservableQuery: queryConfirmed,
+          run: params.run,
         });
         if (queryConfirmed && finalSnapshot.totalMatches > 0) {
           return { ...finalSnapshot, completion: "found" };
@@ -3489,6 +3915,9 @@ async function searchFindControllerForQuery(
 
   let shouldRunCommandFallback = true;
   let acceptanceMs: number | null = null;
+  // Followed from the moment the search is sent; a find bar that handles the
+  // input later is followed by the waits below.
+  let run: FindControllerSearchRun | undefined;
 
   if (findField) {
     try {
@@ -3508,6 +3937,7 @@ async function searchFindControllerForQuery(
       findField.dispatchEvent(
         new EventCtor("input", { bubbles: true } as EventInit),
       );
+      run = followFindControllerSearch(findController, query);
       const findFieldAcceptanceMs = await waitForFindControllerSearchAcceptance(
         findController,
         query,
@@ -3516,6 +3946,7 @@ async function searchFindControllerForQuery(
           eventBus,
           hardDeadlineAt: options.hardDeadlineAt,
           isCancelled: options.isCancelled,
+          run,
         },
       );
       shouldRunCommandFallback = findFieldAcceptanceMs === null;
@@ -3536,17 +3967,20 @@ async function searchFindControllerForQuery(
     if (!eventBus && typeof findController.executeCommand !== "function") {
       return null;
     }
-    const findState = {
-      source: findBar ?? { source: "llm-live-quote-locator" },
-      type: "",
-      query,
-      phraseSearch: true,
-      caseSensitive: false,
-      entireWord: false,
-      highlightAll: true,
-      findPrevious: false,
-      matchDiacritics: false,
-    };
+    const findState = toPdfViewerRequest(
+      app,
+      {
+        type: "",
+        query,
+        phraseSearch: true,
+        caseSensitive: false,
+        entireWord: false,
+        highlightAll: true,
+        findPrevious: false,
+        matchDiacritics: false,
+      },
+      findBar ?? undefined,
+    );
     try {
       if (typeof findBar?.open === "function") findBar.open();
     } catch {
@@ -3564,6 +3998,7 @@ async function searchFindControllerForQuery(
     if (!dispatched && eventBus) {
       eventBus.dispatch("find", findState);
     }
+    run = followFindControllerSearch(findController, query);
     const commandAcceptanceMs = await waitForFindControllerSearchAcceptance(
       findController,
       query,
@@ -3572,6 +4007,7 @@ async function searchFindControllerForQuery(
         eventBus,
         hardDeadlineAt: options.hardDeadlineAt,
         isCancelled: options.isCancelled,
+        run,
       },
     );
     if (commandAcceptanceMs !== null) {
@@ -3596,6 +4032,7 @@ async function searchFindControllerForQuery(
     hardDeadlineAt: options.hardDeadlineAt,
     isCancelled: options.isCancelled,
     requireCompleteResults: options.requireCompleteResults,
+    run,
   });
 }
 
@@ -3904,7 +4341,12 @@ function captureFindControllerUserState(app: any): FindControllerUserState {
     findBar?._findField ?? findBar?.findField ?? null;
   const rawState = findController?.state ?? findController?._state;
   return {
-    query: getFindControllerQuery(findController) || "",
+    // The search the reader was last sent: the user's, or one this plugin
+    // put back. The last search PDF.js ran can be an earlier wording of this
+    // navigation that the put-back search has not yet replaced.
+    query:
+      getFindControllerRequestedQuery(findController) ??
+      (getFindControllerQuery(findController) || ""),
     state:
       rawState && typeof rawState === "object"
         ? { ...(rawState as Record<string, unknown>) }
@@ -3942,18 +4384,24 @@ async function restoreFindControllerUserState(
       findField.value = query;
       dispatchFindFieldInput(findField);
     } else if (eventBus && previous.state) {
-      eventBus.dispatch("find", {
-        ...previous.state,
-        source: findBar ?? { source: "llm-live-quote-locator" },
-        type: "",
-        query,
-      });
+      eventBus.dispatch(
+        "find",
+        toPdfViewerRequest(
+          app,
+          { ...findStateSettings(previous.state), type: "", query },
+          findBar ?? undefined,
+        ),
+      );
     } else if (query && typeof findController?.executeCommand === "function") {
-      findController.executeCommand("find", {
-        ...(previous.state || {}),
-        query,
-      });
+      findController.executeCommand(
+        "find",
+        toPdfViewerRequest(app, {
+          ...findStateSettings(previous.state),
+          query,
+        }),
+      );
     }
+    const run = followFindControllerSearch(findController, query);
     if (
       query &&
       previous.matchCount > 0 &&
@@ -3969,6 +4417,7 @@ async function restoreFindControllerUserState(
           eventBus,
           timeoutMs: 800,
           hardDeadlineAt: restoreDeadlineAt,
+          run,
         },
       );
       const restoredSearch = await waitForFindControllerPageMatches({
@@ -3979,6 +4428,7 @@ async function restoreFindControllerUserState(
         previousSnapshot: restoreSnapshot,
         acceptanceMs: 0,
         hardDeadlineAt: restoreDeadlineAt,
+        run,
       });
       const pageMatchCount =
         restoredSearch.pageMatchCounts[previous.selectedPageIndex] || 0;
@@ -3994,9 +4444,10 @@ async function restoreFindControllerUserState(
       }
     }
     if (!query) {
-      eventBus?.dispatch?.("findbarclose", {
-        source: findBar ?? { source: "llm-live-quote-locator" },
-      });
+      eventBus?.dispatch?.(
+        "findbarclose",
+        toPdfViewerRequest(app, {}, findBar ?? undefined),
+      );
     }
     if (
       previous.findBarWasOpen === false &&
@@ -4128,6 +4579,35 @@ async function waitForFindControllerSelectionChange(
   }
 }
 
+/**
+ * Ask PDF.js for the next match of the current search, as the find bar's
+ * Next button does. The find bar builds the request in the reader page from
+ * its own field, which holds the current search; without one, the request is
+ * copied into the reader page (see `toPdfViewerRequest`).
+ */
+function sendFindAgain(app: any): void {
+  const findController = app?.findController;
+  const findBar = app?.findBar;
+  const findField = findBar?._findField ?? findBar?.findField;
+  if (
+    typeof findBar?.dispatchEvent === "function" &&
+    findField &&
+    String(findField.value ?? "") === getFindControllerQuery(findController)
+  ) {
+    findBar.dispatchEvent("again", false);
+    return;
+  }
+  const state = findController?.state ?? findController?._state ?? {};
+  app?.eventBus?.dispatch(
+    "find",
+    toPdfViewerRequest(
+      app,
+      { ...findStateSettings(state), type: "again", findPrevious: false },
+      findBar ?? undefined,
+    ),
+  );
+}
+
 async function selectNativeFindControllerMatch(params: {
   app: any;
   pageIndex: number;
@@ -4161,13 +4641,7 @@ async function selectNativeFindControllerMatch(params: {
       getFindControllerSelectedPageIndex(findController);
     const previousMatchIndex =
       getFindControllerSelectedMatchIndex(findController);
-    const state = findController?.state ?? findController?._state ?? {};
-    eventBus.dispatch("find", {
-      ...state,
-      source: params.app?.findBar ?? { source: "llm-live-quote-locator" },
-      type: "again",
-      findPrevious: false,
-    });
+    sendFindAgain(params.app);
     await waitForFindControllerSelectionChange(
       findController,
       previousPageIndex,

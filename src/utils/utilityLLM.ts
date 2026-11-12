@@ -21,7 +21,10 @@ import {
 } from "../modelCapabilities";
 import type { ReasoningLevel, ReasoningProvider } from "./reasoningProfiles";
 import type { ModelTurnOutcome } from "../shared/llm";
-import { getGeminiReasoningProfileForModel } from "./reasoningProfiles";
+import {
+  getAnthropicReasoningProfileForModel,
+  getGeminiReasoningProfileForModel,
+} from "./reasoningProfiles";
 import { callLLMWithTimeout } from "./llmCallTimeout";
 
 export type UtilityLLMFailureReason =
@@ -102,6 +105,14 @@ export type UtilityLLMParams = {
    */
   timeoutMs: number;
   systemMessages?: string[];
+  /**
+   * Let the call go out when the caller names neither an API URL nor a key.
+   * `callLLM` then resolves the connection from the saved default model
+   * entry, or from the auth mode itself (Codex login, Copilot), and fails
+   * with its own error when there is none. Reader calls set this because
+   * full-read batches always reached `callLLM` that way.
+   */
+  allowImplicitConnection?: boolean;
   /** Test seam: replaces the actual model call. */
   llmCall?: (chatParams: ChatParams) => Promise<ModelTurnOutcome>;
 };
@@ -307,13 +318,36 @@ function buildReasoningPlan(params: {
       : undefined;
   if (configured && provider) return planForOption(configured, provider);
 
-  // Anthropic's bounded utility requests deliberately never inherit manual or
-  // adaptive thinking. A profile-authored disabled control is still honored.
+  // Anthropic's bounded utility requests never inherit a manual thinking
+  // budget. Models that think when `thinking` is omitted get thinking off, or
+  // else the lowest adaptive effort. A profile-authored disabled control is
+  // still honored.
   if (
     capabilities.provider === "anthropic" &&
     capabilities.provenance.reasoning === "legacy"
   ) {
-    return { reasoning: undefined, reserveTokens: 0 };
+    if (
+      !getAnthropicReasoningProfileForModel(params.model).thinkingOnWhenOmitted
+    ) {
+      return { reasoning: undefined, reserveTokens: 0 };
+    }
+    // Claude 5.x thinks when `thinking` is omitted, inside max_tokens. Its
+    // controls are only encoded for the Messages API; elsewhere the model
+    // still thinks, so the call keeps room for it.
+    if (capabilities.identity.protocol !== "anthropic_messages" || !provider) {
+      return { reasoning: undefined, reserveTokens: 1024 };
+    }
+    const off = findDisabledOption(capabilities, reasoning, provider);
+    if (off) {
+      return {
+        reasoning: { provider, level: normalize(off.id) as ReasoningLevel },
+        reserveTokens: 0,
+      };
+    }
+    const lowest = findLowestSupportedOption(reasoning);
+    return lowest
+      ? planForOption(lowest, provider)
+      : { reasoning: undefined, reserveTokens: 1024 };
   }
   const disabled = findDisabledOption(capabilities, reasoning, provider);
   if (disabled) {
@@ -377,7 +411,10 @@ export async function callUtilityLLM(
   params: UtilityLLMParams,
 ): Promise<UtilityLLMResult> {
   const model = (params.model || "").trim();
-  if (!model || (!params.apiBase && !params.apiKey)) {
+  if (
+    !model ||
+    (!params.allowImplicitConnection && !params.apiBase && !params.apiKey)
+  ) {
     return { ok: false, reason: "not_configured" };
   }
 

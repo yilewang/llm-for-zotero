@@ -3,7 +3,15 @@
  * This file has zero imports — all types are pure data shapes.
  */
 
-export type SelectedTextSource = "pdf" | "model" | "note" | "note-edit";
+export type SelectedTextSource =
+  | "pdf"
+  | "model"
+  | "note"
+  | "note-edit"
+  /** A side chat's transcript attached to the main chat. */
+  | "sidechat"
+  /** Inline Ask turns handed to a Claude Code or Codex app-server chat. */
+  | "inlineask";
 
 export type ChatAttachmentCategory =
   | "image"
@@ -25,12 +33,24 @@ export type ChatAttachment = {
   contentHash?: string;
 };
 
+/** Where an extracted paper figure came from, so its box can reopen the page. */
+export type GeneratedChatImageFigure = {
+  pageIndex?: number;
+  pageLabel?: string;
+  paper?: {
+    itemId: number;
+    contextItemId: number;
+    title?: string;
+  };
+};
+
 export type GeneratedChatImage = {
   id: string;
   label?: string;
   path?: string;
   src?: string;
   revisedPrompt?: string;
+  figure?: GeneratedChatImageFigure;
 };
 
 export type PaperContentSourceMode =
@@ -149,6 +169,11 @@ export type SelectedTextContext = {
   pageIndex?: number;
   /** User-facing PDF page label, which may be non-numeric. */
   pageLabel?: string;
+  /**
+   * The user's question about this text, attached from the inline box.
+   * Trimmed, whitespace-collapsed, at most 2000 characters; absent when empty.
+   */
+  userQuery?: string;
 };
 
 export type SelectedTextAnchorResolution = "chunks" | "page" | "locator-only";
@@ -198,6 +223,26 @@ export type TagContextRef = {
   includeAutomatic?: boolean;
   /** Papers with this tag the user removed from the task (Task progress). */
   excludedItemIds?: number[];
+};
+
+/**
+ * A past conversation attached to a user message as context.
+ * Reference only: no conversation text is copied into the message.
+ */
+export type AttachedConversationRef = {
+  system: ConversationSystem;
+  conversationKey: number;
+  /** Catalog conversationID, used to detect a reused conversationKey. */
+  conversationID?: string;
+  title: string;
+  libraryID: number;
+  kind?: "paper" | "global";
+  paperItemID?: number;
+  /**
+   * "agent" when the agent attached it with past_chat_attach; absent when
+   * the user attached it from the picker.
+   */
+  via?: "agent";
 };
 
 export type ActiveNoteSession = {

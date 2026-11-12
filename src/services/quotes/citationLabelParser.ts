@@ -320,10 +320,51 @@ function parseCitationParts(
   };
 }
 
+const PAIRED_EMPHASIS_PATTERN = /^(\*{1,3}|_{1,3})(\S(?:.*\S)?)\1$/;
+/** An em or en dash, or "--"; a single "-" is a Markdown list bullet. */
+const LEADING_ATTRIBUTION_DASH_PATTERN =
+  /^(?:[\u2014\u2013\u2015]|-{2,3}(?=\s))\s*/;
+/**
+ * An attribution line written without parentheses ("— Smith et al., 2020")
+ * must end with its year, so a dash-led prose line that merely mentions a
+ * year ("— In 2020, the authors showed …") stays prose.
+ */
+const UNWRAPPED_ATTRIBUTION_LABEL_PATTERN =
+  /^\p{Lu}[\p{L}'’-]+(?:\s+et\s+al\.?|\s+(?:and|&)\s+\p{Lu}[\p{L}'’-]+)?,\s+(?:(?:19|20)\d{2}[a-z]?|n\.d\.?)(?:,\s*page\s+[^,;()]+)?$/u;
+
+function stripPairedEmphasis(value: string): string {
+  let text = value;
+  for (;;) {
+    const match = PAIRED_EMPHASIS_PATTERN.exec(text);
+    if (!match) return text;
+    text = match[2].trim();
+  }
+}
+
+/**
+ * The label text inside the decoration models add to an attribution line:
+ * Markdown emphasis around it ("**(Smith, 2020)**", "*(Smith, 2020)*") and a
+ * leading dash ("— (Smith, 2020)", "— Smith, 2020"). A dash-led label without
+ * parentheses is returned wrapped when it ends in a year. Undecorated text is
+ * returned unchanged, so plain prose is still judged by the strict parser.
+ */
+export function stripCitationLabelDecoration(value: string): string {
+  const normalized = normalizeCitationText(value);
+  let text = stripPairedEmphasis(normalized);
+  const dash = LEADING_ATTRIBUTION_DASH_PATTERN.exec(text);
+  if (!dash) return text;
+  text = stripPairedEmphasis(text.slice(dash[0].length).trim());
+  if (text.startsWith("(")) return text;
+  const unwrapped = text.replace(/(?<!\bn\.d)\.$/, "");
+  return UNWRAPPED_ATTRIBUTION_LABEL_PATTERN.test(unwrapped)
+    ? `(${unwrapped})`
+    : normalized;
+}
+
 export function parseStandaloneCitationLabel(
   value: string,
 ): ParsedCitationLabel | null {
-  const normalized = normalizeCitationText(value);
+  const normalized = stripCitationLabelDecoration(value);
   if (!normalized) return null;
 
   const wrappedMatch = normalized.match(/^\((.+)\)$/);

@@ -1,4 +1,5 @@
 import type { AgentConfirmationResolution } from "../../../../agent/types";
+import { flushPendingChatRender } from "../../progressiveChatRender";
 
 export type ResolvePendingConfirmation = (
   requestId: string,
@@ -10,6 +11,12 @@ export function cancelVisiblePendingConfirmationCards(
   resolveConfirmation: ResolvePendingConfirmation,
 ): string[] {
   if (!root) return [];
+  // Cards in messages still waiting to be drawn must be cancelled too.
+  flushPendingChatRender(
+    (root as Element).id === "llm-chat-box"
+      ? (root as Element)
+      : (root as ParentNode).querySelector?.("#llm-chat-box"),
+  );
   const cards = Array.from(
     root.querySelectorAll(".llm-agent-hitl-card[data-request-id]"),
   ) as HTMLElement[];

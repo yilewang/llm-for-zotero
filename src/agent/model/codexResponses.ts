@@ -13,6 +13,11 @@ import type {
 } from "../types";
 import type { AgentModelAdapter, AgentStepParams } from "./adapter";
 import { buildAgentModelCapabilities } from "./contentCapabilities";
+import {
+  buildAgentRecoveryInstruction,
+  resolveAgentRecoverableCompletion,
+  type AgentRecoverableCompletionReason,
+} from "./completion";
 import { resolveRequestContentInputs } from "./messageBuilder";
 import {
   buildResponsesContinuationInput,
@@ -20,6 +25,8 @@ import {
   type ResponsesPayload,
   normalizeResponsesStepFromPayload,
   parseResponsesStepStream,
+  replayableResponsesOutputItems,
+  withoutTrailingReasoningItems,
 } from "./responsesShared";
 import { buildResponsesFunctionTools } from "./shared";
 import { CODEX_DIRECT_RESPONSES_URL } from "../../codexAuth/auth";
@@ -144,7 +151,7 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           ...buildPromptCachePayloadHints(request.contextCache),
           include: ["reasoning.encrypted_content"],
           tools: buildResponsesFunctionTools(params.tools),
-          tool_choice: "auto",
+          tool_choice: params.toolChoice === "none" ? "none" : "auto",
           store: false,
           stream: true,
           ...reasoningPayload.extra,
@@ -170,7 +177,64 @@ export class CodexResponsesAgentAdapter implements AgentModelAdapter {
           (await response.json()) as ResponsesPayload,
         );
 
-    this.conversationItems = [...inputItems, ...normalized.outputItems];
+    // The provider reports a reply it cut off mid-stream as incomplete with
+    // reason "interrupted": a broken stream to ask again, not a block.
+    const interrupted =
+      normalized.completion.status === "blocked" &&
+      normalized.completion.providerReason?.trim().toLowerCase() ===
+        "interrupted";
+    const recoveryReason: AgentRecoverableCompletionReason | null = interrupted
+      ? "stream_interrupted"
+      : resolveAgentRecoverableCompletion(normalized.completion);
+    if (recoveryReason === "stream_interrupted") {
+      // The broken step is discarded whole, as the recovery instruction says.
+      this.conversationItems = [...inputItems];
+      return {
+        kind: "incomplete",
+        reason: recoveryReason,
+        providerReason: normalized.completion.providerReason,
+        text: "",
+        recoveryInstruction: buildAgentRecoveryInstruction(
+          recoveryReason,
+          "tool call",
+        ),
+        assistantMessage: { role: "assistant", content: "" },
+      };
+    }
+    if (recoveryReason) {
+      // A reasoning item must not end the replayed items: the recovery
+      // message would follow it, and the provider rejects that request.
+      this.conversationItems = [
+        ...inputItems,
+        ...withoutTrailingReasoningItems(
+          normalized.outputItems.filter((item) => {
+            if (!item || typeof item !== "object") return true;
+            const type = String(
+              (item as { type?: unknown }).type ?? "",
+            ).toLowerCase();
+            return type !== "function_call" && type !== "tool_call";
+          }),
+        ),
+      ];
+      return {
+        kind: "incomplete",
+        reason: recoveryReason,
+        providerReason: normalized.completion.providerReason,
+        text: normalized.text,
+        recoveryInstruction: buildAgentRecoveryInstruction(
+          recoveryReason,
+          "tool call",
+        ),
+        assistantMessage: {
+          role: "assistant",
+          content: normalized.text,
+        },
+      };
+    }
+    this.conversationItems = [
+      ...inputItems,
+      ...replayableResponsesOutputItems(normalized),
+    ];
 
     if (normalized.toolCalls.length) {
       return {

@@ -1,6 +1,7 @@
 import { t } from "../../../../utils/i18n";
 import { registerAddonDialog } from "../../../../utils/dialogRegistry";
 import { MAX_SELECTED_IMAGES } from "../../constants";
+import { MAX_ATTACHED_CONVERSATIONS } from "../../../../services/context/normalizers";
 import { activeContextPanels } from "../../state";
 import { composeContextStore } from "../../contexts/composeContextStore";
 import {
@@ -32,6 +33,7 @@ import {
   isPanelOperationLeaseCurrent,
   requireCurrentPanelOwnership,
 } from "../../panelHostOwnership";
+import { attachSideChatFromSlashItem } from "../../sideChatSlashItem";
 
 type StatusLevel = "ready" | "warning" | "error" | "sending";
 type ActiveAtToken = { slashStart: number; caretEnd: number } | null;
@@ -45,8 +47,14 @@ type ComposeCaptureControllerDeps = {
   slashMenu: HTMLDivElement | null;
   slashUploadOption: HTMLButtonElement | null;
   slashReferenceOption: HTMLButtonElement | null;
+  slashPastConversationOption?: HTMLButtonElement | null;
+  /** Opens the past conversation picker. */
+  openPastConversationPicker?: () => void;
+  /** How many past chats the composer holds now. */
+  getAttachedConversationCount?: () => number;
   slashPdfPageOption: HTMLButtonElement | null;
   slashPdfMultiplePagesOption: HTMLButtonElement | null;
+  slashSideChatOption?: HTMLButtonElement | null;
   modelMenu: HTMLDivElement | null;
   reasoningMenu: HTMLDivElement | null;
   retryModelMenu: HTMLDivElement | null;
@@ -84,8 +92,10 @@ export function attachComposeCaptureController(
     slashMenu,
     slashUploadOption,
     slashReferenceOption,
+    slashPastConversationOption,
     slashPdfPageOption,
     slashPdfMultiplePagesOption,
+    slashSideChatOption,
     modelMenu,
     reasoningMenu,
     retryModelMenu,
@@ -403,6 +413,17 @@ export function attachComposeCaptureController(
     });
   }
 
+  if (slashSideChatOption) {
+    slashSideChatOption.addEventListener("click", (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (slashSideChatOption.disabled) return;
+      deps.consumeActiveActionToken();
+      deps.closeSlashMenu();
+      attachSideChatFromSlashItem(body);
+    });
+  }
+
   if (slashReferenceOption) {
     slashReferenceOption.addEventListener("click", (event: Event) => {
       event.preventDefault();
@@ -410,6 +431,23 @@ export function attachComposeCaptureController(
       deps.consumeActiveActionToken();
       deps.closeSlashMenu();
       openReferenceSlashFromMenu();
+    });
+  }
+
+  if (slashPastConversationOption) {
+    slashPastConversationOption.addEventListener("click", (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      deps.consumeActiveActionToken();
+      deps.closeSlashMenu();
+      if (
+        (deps.getAttachedConversationCount?.() ?? 0) >=
+        MAX_ATTACHED_CONVERSATIONS
+      ) {
+        setStatus(t("Up to 3 past chats per message"), "warning");
+        return;
+      }
+      deps.openPastConversationPicker?.();
     });
   }
 

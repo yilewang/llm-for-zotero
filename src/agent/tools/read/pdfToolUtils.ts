@@ -302,7 +302,7 @@ export function normalizeExplicitTargetSyntax(params: {
   if (params.mode !== "visual" && hasVisualSelectorFields(params.target)) {
     return invalidTargetSyntax(
       "selector_not_supported_for_mode",
-      "attachmentId and name selectors are supported only for visual or capture reads.",
+      "attachmentId and name selectors are supported only for visual or capture reads. To name a paper's PDF attachment, give target {itemId, contextItemId}.",
     );
   }
   const issues = selectorIssues(params.target, "target", params.mode);

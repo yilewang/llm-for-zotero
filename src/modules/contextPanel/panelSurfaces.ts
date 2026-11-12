@@ -17,8 +17,9 @@
  * than as a side effect of importing a UI module, so that whether a capability
  * is available depends on the plugin being started, not on import order.
  */
-import { refreshChat } from "./chat";
+import { refreshChat, updateStoredAssistantQuoteLocations } from "./chat";
 import { configureQuoteValidationChatRefresher } from "./quoteValidation/chatRefreshBridge";
+import { configureQuoteLocationWriter } from "./quoteValidation/locationWriteBack";
 
 /**
  * Configures every panel-internal bridge and returns a disposer that undoes the
@@ -30,6 +31,9 @@ export function composePanelSurfaces(): () => void {
     // the chat renderer can do that, and it imports the validator, so the
     // dependency is composed here rather than registered at import time.
     configureQuoteValidationChatRefresher(refreshChat),
+    // The validator saves the PDF locations it verified; only the panel's
+    // conversation routing knows the store, the write lock, and the fences.
+    configureQuoteLocationWriter(updateStoredAssistantQuoteLocations),
   ];
   return () => {
     for (const dispose of [...disposers].reverse()) dispose();

@@ -1,6 +1,12 @@
 import { getMaintenanceQueryOptions } from "../../core/logging";
 import type { PdfChunkMeta } from "../paperContent/types";
-import { INDEX_MAX_ATTEMPTS, INDEX_RETRY_BACKOFF_MS } from "./constants";
+import {
+  INDEX_MAX_ATTEMPTS,
+  INDEX_RETRY_BACKOFF_MS,
+  LIBRARY_TEXT_INDEX_CHUNKER_VERSION,
+  LIBRARY_TEXT_INDEX_POSTINGS_ONLY_CHUNKER_VERSION,
+  LIBRARY_TEXT_INDEX_TOKENIZER_VERSION,
+} from "./constants";
 import { openLibraryTextIndexDb, type LibraryTextIndexDb } from "./db";
 
 export type StoredChunkMeta = Pick<
@@ -113,12 +119,35 @@ function chunked<T>(items: T[], size = SQL_CHUNK): T[][] {
 
 export class LibraryTextIndexStore {
   private stats: CorpusStats | null = null;
+  /** Session-only cache of a true answer: nothing here writes older postings. */
+  private tokenizerCurrent = false;
   constructor(private readonly db: LibraryTextIndexDb) {}
+
+  /**
+   * True when no document needs re-posting (tokenizerUpgrade.ts). The global
+   * meta row is informational only: an older build can re-index documents
+   * after it was written, so this re-checks the per-document markers once per
+   * session.
+   */
+  async isTokenizerVersionCurrent(): Promise<boolean> {
+    if (this.tokenizerCurrent) return true;
+    const pending = await this.listDocumentsNeedingRepost(
+      LIBRARY_TEXT_INDEX_TOKENIZER_VERSION,
+      1,
+    );
+    this.tokenizerCurrent = pending.length === 0;
+    return this.tokenizerCurrent;
+  }
 
   private q(sql: string, params?: unknown[]): Promise<unknown> {
     return this.db.queryAsync(sql, params, getMaintenanceQueryOptions());
   }
 
+  /**
+   * Writes a document, its chunks and its postings in one transaction. Every
+   * `tf` comes from `buildChunkIndex` (index terms), so the document is
+   * recorded at the current tokenizer version.
+   */
   async upsertDocument(doc: IndexDocumentInput): Promise<void> {
     const now = Date.now();
     const byTerm = new Map<string, Array<[number, number, number]>>();
@@ -177,8 +206,127 @@ export class LibraryTextIndexStore {
           [term, doc.attachmentId, JSON.stringify(hits), hits.length],
         );
       }
+      await this.q(
+        `INSERT OR REPLACE INTO document_tokenizer (attachment_id, tokenizer_version, indexed_at) VALUES (?, ?, ?)`,
+        [doc.attachmentId, LIBRARY_TEXT_INDEX_TOKENIZER_VERSION, now],
+      );
     });
     this.stats = null;
+  }
+
+  /**
+   * Documents whose postings were not written at `tokenizerVersion` (no
+   * marker row, another version, or a marker older than the document's last
+   * indexing, which means an older build re-indexed it), lowest attachment id first.
+   */
+  async listDocumentsNeedingRepost(
+    tokenizerVersion: number,
+    limit: number,
+    excludeIds: number[] = [],
+  ): Promise<number[]> {
+    const exclude = excludeIds.length
+      ? ` AND d.attachment_id NOT IN (${excludeIds.map(() => "?").join(",")})`
+      : "";
+    const rows = (await this.q(
+      `SELECT d.attachment_id FROM documents d LEFT JOIN document_tokenizer t ON t.attachment_id = d.attachment_id
+       WHERE (t.attachment_id IS NULL OR t.tokenizer_version <> ? OR t.indexed_at <> d.indexed_at OR d.chunker_version = ?)${exclude}
+       ORDER BY d.attachment_id ASC LIMIT ?`,
+      [
+        tokenizerVersion,
+        LIBRARY_TEXT_INDEX_POSTINGS_ONLY_CHUNKER_VERSION,
+        ...excludeIds,
+        limit,
+      ],
+    )) as Array<{ attachment_id: number }>;
+    return rows.map((row) => Number(row.attachment_id));
+  }
+
+  /**
+   * Rewrites one document's postings from its stored chunk text, and records
+   * `tokenizerVersion` for it, in one transaction: the chunk rows, the
+   * document row's identity and every vector row stay as they are. The read
+   * is inside the transaction, so a concurrent re-index or delete of the same
+   * document cannot interleave. `rebuild` returns each chunk's term counts
+   * (in chunk order) and the document's new byte estimate. Returns false
+   * when the document is no longer indexed.
+   */
+  async repostDocument(
+    attachmentId: number,
+    tokenizerVersion: number,
+    rebuild: (texts: string[]) => {
+      tf: Array<Record<string, number>>;
+      byteEstimate: number;
+    },
+  ): Promise<boolean> {
+    const reposted = await this.db.executeTransaction(async () => {
+      const documents = (await this.q(
+        `SELECT attachment_id, indexed_at FROM documents WHERE attachment_id = ?`,
+        [attachmentId],
+      )) as Array<{ attachment_id: number; indexed_at: number }>;
+      if (!documents.length) {
+        await this.q(`DELETE FROM document_tokenizer WHERE attachment_id = ?`, [
+          attachmentId,
+        ]);
+        return false;
+      }
+      const chunks = (await this.q(
+        `SELECT chunk_index, text, token_count FROM chunks WHERE attachment_id = ? ORDER BY chunk_index`,
+        [attachmentId],
+      )) as Array<{ chunk_index: number; text: string; token_count: number }>;
+      const rebuilt = rebuild(chunks.map((chunk) => String(chunk.text)));
+      const byTerm = new Map<string, Array<[number, number, number]>>();
+      chunks.forEach((chunk, i) => {
+        const tf = rebuilt.tf[i] || {};
+        for (const term of Object.keys(tf)) {
+          const hits = byTerm.get(term) || [];
+          hits.push([
+            Number(chunk.chunk_index),
+            tf[term],
+            Number(chunk.token_count),
+          ]);
+          byTerm.set(term, hits);
+        }
+      });
+      // New postings first, stale ones after. A search does not wait for
+      // this transaction: Zotero runs a plain query on the same connection
+      // in the middle of it and sees its uncommitted rows. Written in this
+      // order, every state it can see holds the document's old postings, its
+      // new ones, or both, so the document never drops out of a search.
+      for (const [term, hits] of byTerm) {
+        await this.q(
+          `INSERT OR REPLACE INTO postings (term, attachment_id, hits_json, hit_count) VALUES (?,?,?,?)`,
+          [term, attachmentId, JSON.stringify(hits), hits.length],
+        );
+      }
+      const kept = (await this.q(
+        `SELECT term FROM postings WHERE attachment_id = ?`,
+        [attachmentId],
+      )) as Array<{ term: string }>;
+      for (const row of kept) {
+        const term = String(row.term);
+        if (!byTerm.has(term))
+          await this.q(
+            `DELETE FROM postings WHERE term = ? AND attachment_id = ?`,
+            [term, attachmentId],
+          );
+      }
+      await this.q(
+        `UPDATE documents SET byte_estimate = ?, chunker_version = CASE WHEN chunker_version = ? THEN ? ELSE chunker_version END WHERE attachment_id = ?`,
+        [
+          rebuilt.byteEstimate,
+          LIBRARY_TEXT_INDEX_POSTINGS_ONLY_CHUNKER_VERSION,
+          LIBRARY_TEXT_INDEX_CHUNKER_VERSION,
+          attachmentId,
+        ],
+      );
+      await this.q(
+        `INSERT OR REPLACE INTO document_tokenizer (attachment_id, tokenizer_version, indexed_at) VALUES (?, ?, ?)`,
+        [attachmentId, tokenizerVersion, Number(documents[0].indexed_at)],
+      );
+      return true;
+    });
+    // Corpus stats come from the chunk rows, which did not change.
+    return reposted;
   }
 
   /**
@@ -202,6 +350,7 @@ export class LibraryTextIndexStore {
         const marks = ids.map(() => "?").join(",");
         for (const table of [
           "postings",
+          "document_tokenizer",
           "chunks",
           "vector_documents",
           "queue",

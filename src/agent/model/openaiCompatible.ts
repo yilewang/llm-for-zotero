@@ -692,7 +692,7 @@ export class OpenAIChatCompatAgentAdapter implements AgentModelAdapter {
           messages: resolvedMessages,
           ...buildPromptCachePayloadHints(request.contextCache),
           tools: buildProviderFunctionTools(request, params.tools),
-          tool_choice: "auto",
+          tool_choice: params.toolChoice === "none" ? "none" : "auto",
           stream: true,
           stream_options: { include_usage: true },
           ...(outputPolicy.mode === "numeric"

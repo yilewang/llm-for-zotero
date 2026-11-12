@@ -17,6 +17,7 @@ import type {
   ResolvedContextSource,
   SelectedTextContext,
   TagContextRef,
+  AttachedConversationRef,
 } from "../../types";
 import type { SelectedTextSource } from "../../types";
 import type { EditLatestTurnMarker, EditLatestTurnResult } from "../../chat";
@@ -99,7 +100,15 @@ type SendFlowControllerDeps = {
     conversationKey: number,
     requestId: number,
   ) => boolean;
-  queueFollowUpInput: (text: string) => void;
+  /**
+   * Queues `text` as a follow-up. Returns false when nothing was queued. With
+   * preserveInputDraft the text did not come from the composer, so the queue
+   * must leave the composer draft alone.
+   */
+  queueFollowUpInput: (
+    text: string,
+    options: { preserveInputDraft: boolean },
+  ) => boolean;
   resolveContextSource: () => Promise<ResolvedContextSource | null>;
   closeSlashMenu: () => void;
   closePaperPicker: () => void;
@@ -111,6 +120,9 @@ type SendFlowControllerDeps = {
   getSelectedPaperContexts: (itemId: number) => PaperContextRef[];
   getSelectedCollectionContexts: (itemId: number) => CollectionContextRef[];
   getSelectedTagContexts: (itemId: number) => TagContextRef[];
+  getAttachedConversations: (itemId: number) => AttachedConversationRef[];
+  /** Past chats are one-shot: the composer drops them once a message is sent. */
+  clearAttachedConversations: (itemId: number) => void;
   getFullTextPaperContexts: (
     item: Zotero.Item,
     paperContexts: PaperContextRef[],
@@ -152,6 +164,7 @@ type SendFlowControllerDeps = {
     text: string,
     selectedText: string,
     hasAttachmentContext: boolean,
+    selectedTextContexts?: readonly SelectedTextContext[],
   ) => string;
   buildQuestionWithSelectedTextContexts: (
     selectedTexts: string[],
@@ -275,6 +288,11 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       (deps.requireCurrentOwnership &&
         !deps.requireCurrentOwnership(item, "send"))
     ) {
+      // The composer arm leaves its draft in place; the preserve arm's text
+      // lives nowhere else, so hand it back.
+      if (options?.preserveInputDraft && options.overrideText.trim()) {
+        options.restoreQueuedInput();
+      }
       return;
     }
 
@@ -288,7 +306,14 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       "Preparing attached context…",
     );
     if (!request) {
-      if (rawSubmittedText) deps.queueFollowUpInput(rawSubmittedText);
+      const preserveInputDraft = Boolean(options?.preserveInputDraft);
+      const queued = rawSubmittedText
+        ? deps.queueFollowUpInput(rawSubmittedText, { preserveInputDraft })
+        : false;
+      // A refused queue (no thread key) drops the text; hand it back.
+      if (!queued && rawSubmittedText && options?.preserveInputDraft) {
+        options.restoreQueuedInput();
+      }
       return;
     }
     // Only a user cancel (or a superseding request) stops preparation.
@@ -314,7 +339,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       advancedModelParams: deps.getAdvancedModelParams(
         panelSelectedProfile?.entryId,
       ),
-      activeEditSession: deps.getActiveEditSession(),
+      // A queued drain is always a new turn, never an edit.
+      activeEditSession: options?.preserveInputDraft
+        ? null
+        : deps.getActiveEditSession(),
     };
     const shouldClearDraft = !options?.preserveInputDraft;
     let submittedInputRestored = false;
@@ -365,6 +393,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         item.id,
       );
       const selectedTagContexts = deps.getSelectedTagContexts(item.id);
+      const attachedConversations = deps.getAttachedConversations(item.id);
       const usesPluginAgentMode =
         (panel.isAgentMode || panel.isClaudeConversationSystem) &&
         !panel.isCodexConversationSystem;
@@ -525,6 +554,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         );
         return;
       }
+      if (isWebChat && attachedConversations.length) {
+        deps.setStatusMessage?.(
+          "Web chat does not support past chats as context. Remove the past chat chip and try again.",
+          "error",
+        );
+        return;
+      }
       const hasPaperComposeState =
         allSelectedPaperContexts.length > 0 ||
         selectedCollectionContexts.length > 0 ||
@@ -537,6 +573,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         !selectedPaperContexts.length &&
         !selectedCollectionContexts.length &&
         !selectedTagContexts.length &&
+        !attachedConversations.length &&
         !selectedFiles.length &&
         !localDocuments.length &&
         !hasImageInputs
@@ -549,7 +586,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         localDocuments.length > 0 ||
         selectedPaperContexts.length > 0 ||
         selectedCollectionContexts.length > 0 ||
-        selectedTagContexts.length > 0;
+        selectedTagContexts.length > 0 ||
+        attachedConversations.length > 0;
 
       let resolvedPromptText =
         !text && !primarySelectedText && localDocuments.length
@@ -560,6 +598,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
               text,
               primarySelectedText,
               hasNonImageAttachments,
+              selectedContexts,
             );
       if (!resolvedPromptText && hasImageInputs) {
         resolvedPromptText = "Please analyze the attached images.";
@@ -569,7 +608,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const selectedScopeContextCount =
         selectedPaperContexts.length +
         selectedCollectionContexts.length +
-        selectedTagContexts.length;
+        selectedTagContexts.length +
+        attachedConversations.length;
       if (
         !text &&
         !primarySelectedText &&
@@ -582,7 +622,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           ? "Please analyze selected papers."
           : selectedCollectionContexts.length
             ? "Please analyze selected collection."
-            : "Please analyze selected tag.";
+            : selectedTagContexts.length
+              ? "Please analyze selected tag."
+              : "Please review the attached past chats.";
       }
 
       const composedQuestionBase = primarySelectedText
@@ -726,6 +768,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           fullTextPaperContexts,
           selectedCollectionContexts,
           selectedTagContexts,
+          attachedConversations,
           attachments: selectedFiles.length ? selectedFiles : undefined,
           modelAttachments: selectedFiles.length ? modelFiles : undefined,
           localDocuments: localDocuments.length ? localDocuments : undefined,
@@ -779,6 +822,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           deps.updateFilePreviewPreservingScroll();
         }
         deps.updateImagePreviewPreservingScroll();
+        if (attachedConversations.length) {
+          deps.clearAttachedConversations(item.id);
+          deps.updatePaperPreviewPreservingScroll();
+        }
         if (primarySelectedText) {
           deps.retainPinnedTextState(textContextConversationKey);
           deps.updateSelectedTextPreviewPreservingScroll();
@@ -795,6 +842,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         deps.updateFilePreviewPreservingScroll();
       }
       deps.updateImagePreviewPreservingScroll();
+      if (attachedConversations.length) {
+        deps.clearAttachedConversations(item.id);
+        deps.updatePaperPreviewPreservingScroll();
+      }
       if (primarySelectedText) {
         deps.retainPinnedTextState(textContextConversationKey);
         deps.updateSelectedTextPreviewPreservingScroll();
@@ -877,6 +928,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         fullTextPaperContexts,
         selectedCollectionContexts,
         selectedTagContexts,
+        attachedConversations: attachedConversations.length
+          ? attachedConversations
+          : undefined,
         attachments: selectedFiles.length ? selectedFiles : undefined,
         modelAttachments: selectedFiles.length ? modelFiles : undefined,
         localDocuments: localDocuments.length ? localDocuments : undefined,
