@@ -57,6 +57,19 @@ export const WEBCHAT_TARGETS = [
     conversationPathPattern: /^\/app\/([a-f0-9]{16})\/?$/,
     answerCapture: "dom",
   },
+  {
+    id: "yuanbao",
+    label: "Tencent Yuanbao",
+    defaultHost: "http://127.0.0.1:23119/llm-for-zotero/webchat",
+    modelName: "yuanbao.tencent.com",
+    hostname: "yuanbao.tencent.com",
+    displayName: "yuanbao",
+    // Conversations live at /chat/<agentId>/<conversationId>; the last segment
+    // is the conversation id, the first one the agent.
+    conversationPathPattern:
+      /^\/chat\/(?:[A-Za-z0-9_-]+\/)?([A-Za-z0-9_-]+)\/?$/,
+    answerCapture: "network",
+  },
 ] as const satisfies readonly WebChatTargetEntry[];
 
 export type WebChatTarget = (typeof WEBCHAT_TARGETS)[number]["id"];
