@@ -79,6 +79,11 @@ import {
 type StatusLevel = ContextSelectionStatusLevel;
 type ActiveSlashToken = PaperSearchSlashToken;
 type PickerAttachmentKind = "pdf" | "note" | "text" | "figure" | "other";
+// Sidebar panes keep their scroll position across full re-renders.
+const PAPER_PICKER_SIDEBAR_SCROLL_CLASSES = [
+  "llm-paper-picker-folder-pane",
+  "llm-paper-picker-tag-cloud",
+] as const;
 type PaperPickerRenderOptions = {
   preserveReferenceScroll?: boolean;
   skipActiveScroll?: boolean;
@@ -1699,6 +1704,11 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     const preservedReferenceScrollTop = options.preserveReferenceScroll
       ? getRenderedPaperPickerReferenceRowHost()?.scrollTop
       : undefined;
+    const previousRoot = paperPickerList.children[0] as HTMLElement | undefined;
+    const preservedSidebarScrollTops = PAPER_PICKER_SIDEBAR_SCROLL_CLASSES.map(
+      (className) =>
+        findPaperPickerDescendantByClass(previousRoot, className)?.scrollTop,
+    );
     paperPickerList.innerHTML = "";
     const item = deps.getItem();
     const selectedNoteContextItemIds = item
@@ -2124,6 +2134,12 @@ export function createPaperPickerController(deps: PaperPickerControllerDeps): {
     ) {
       rowHost.scrollTop = preservedReferenceScrollTop;
     }
+    const nextRoot = paperPickerList.children[0] as HTMLElement | undefined;
+    PAPER_PICKER_SIDEBAR_SCROLL_CLASSES.forEach((className, index) => {
+      const scrollTop = preservedSidebarScrollTops[index];
+      const pane = findPaperPickerDescendantByClass(nextRoot, className);
+      if (pane && typeof scrollTop === "number") pane.scrollTop = scrollTop;
+    });
     if (options.skipActiveScroll) return;
     const activeOption =
       renderedOptions[referenceSelectorState.activeRowIndex] || null;

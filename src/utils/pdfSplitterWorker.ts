@@ -1,4 +1,5 @@
 import { EncryptedPDFError, PDFDocument } from "pdf-lib";
+import { readPdfOutline, type PdfOutlineResult } from "./pdfOutline";
 
 // Bundled as a separate worker. No Zotero globals, file paths, or OS executables.
 const scope = globalThis as unknown as {
@@ -14,6 +15,20 @@ scope.onmessage = async ({ data }) => {
       const pageCount = source.getPageCount();
       if (pageCount < 1) throw new Error("The PDF contains no pages.");
       scope.postMessage({ id, pageCount });
+    } else if (action === "outline") {
+      // Its own document: an outline read never disturbs an open split.
+      const doc = await PDFDocument.load(data.bytes, {
+        updateMetadata: false,
+        ignoreEncryption: true,
+      });
+      const result: PdfOutlineResult = doc.isEncrypted
+        ? { status: "encrypted" }
+        : {
+            status: "ok",
+            pageCount: doc.getPageCount(),
+            entries: readPdfOutline(doc),
+          };
+      scope.postMessage({ id, ...result });
     } else if (action === "extract") {
       if (!source) throw new Error("No PDF is open.");
       const { startPage, endPage } = data;
@@ -46,11 +61,15 @@ scope.onmessage = async ({ data }) => {
       error instanceof EncryptedPDFError ||
       (error instanceof Error &&
         error.message === new EncryptedPDFError().message);
+    const detail = error instanceof Error ? error.message : String(error);
     scope.postMessage({
       id,
-      error: encrypted
-        ? "This PDF is encrypted. Save an unencrypted copy before parsing it with MinerU."
-        : `Unable to prepare PDF for MinerU: ${error instanceof Error ? error.message : String(error)}`,
+      error:
+        action === "outline"
+          ? `Unable to read the PDF's bookmarks: ${detail}`
+          : encrypted
+            ? "This PDF is encrypted. Save an unencrypted copy before parsing it with MinerU."
+            : `Unable to prepare PDF for MinerU: ${detail}`,
     });
   }
 };

@@ -55,7 +55,14 @@ export function attachFontScaleShortcutController(panelDoc: Document): void {
     const standaloneRoot = panelDoc.getElementById(
       "llmforzotero-standalone-chat-root",
     ) as HTMLElement | null;
-    if (standaloneRoot) applyPanelFontScale(standaloneRoot);
+    if (standaloneRoot) {
+      // The window's side panel mounts more chat panels (read-only view,
+      // side chat); they follow the same scale as the main one.
+      panelDoc.querySelectorAll("#llm-main").forEach((other) => {
+        if (other !== panel) applyPanelFontScale(other as HTMLElement);
+      });
+      applyPanelFontScale(standaloneRoot);
+    }
   };
 
   panelDoc.addEventListener(

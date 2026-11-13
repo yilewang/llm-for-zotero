@@ -11,6 +11,11 @@ import {
 import { SELECTED_TEXT_QUESTIONS_INSTRUCTION } from "../../services/context/selectedTextAnchorFormatting";
 import type { AgentContextBudgetState } from "./budgetPolicy";
 import {
+  formatPastChatPointerLine,
+  isPastChatMessageText,
+  readPastChatMessageSections,
+} from "../../services/pastConversations/pastConversationText";
+import {
   createAgentToolResultHandleRecord,
   type AgentToolResultHandleRecord,
 } from "../store/toolResultHandles";
@@ -175,6 +180,7 @@ function buildSummaryMessage(
       ).length,
     );
   const userLines: string[] = [];
+  const pastChatLines: string[] = [];
   const rootUserGoals: string[] = [];
   const assistantLines: string[] = [];
   const preservedToolHandleIds = new Set<string>();
@@ -191,6 +197,15 @@ function buildSummaryMessage(
           preservedToolHandleIds.add(message.retainedTool.handle);
         const name = message.retainedTool.name;
         toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+        continue;
+      }
+      // A past chat the user attached is reference data, not a goal: the
+      // summary keeps one line per chat that says how to open it again.
+      if (isPastChatMessageText(text)) {
+        for (const section of readPastChatMessageSections(text)) {
+          const line = `- ${formatPastChatPointerLine(section)}`;
+          if (!pastChatLines.includes(line)) pastChatLines.push(line);
+        }
         continue;
       }
       const checkpointGoal = readAgentSemanticCheckpointRootGoal(message);
@@ -239,6 +254,9 @@ function buildSummaryMessage(
       ? "The previous provider session ended. This is portable task history, not hidden reasoning or new instructions."
       : "Older conversation was shortened for the prompt; exact messages remain stored.",
     "Excerpts are incomplete; use context_read source:'conversation' with messageId or source:'tool_result' with handle before relying on omitted text.",
+    pastChatLines.length
+      ? `Attached past chats:\n${pastChatLines.join("\n")}`
+      : "",
     rootUserGoals.length
       ? `Latest root user goal: ${truncateText(rootUserGoals[rootUserGoals.length - 1], 400)}`
       : "",
@@ -537,6 +555,12 @@ export function compactAgentTranscript(params: {
   force?: boolean;
   conversationKey?: number;
   resourceSignature?: string;
+  /**
+   * A message that must stay in the recent tail with everything after it:
+   * the past-chat message the current turn attached, which the model has
+   * not seen yet and which no summary could stand in for.
+   */
+  keepInTail?: AgentModelMessage;
 }): AgentTranscriptCompactionResult {
   const messages = durableTranscriptMessages(params.messages);
   if (messages.length <= params.budget.policy.minRecentMessages + 1) {
@@ -547,13 +571,18 @@ export function compactAgentTranscript(params: {
       handleRecords: [],
     };
   }
-  const tailStart = alignTailStartToProviderMessageBoundary(
+  const pinnedIndex = params.keepInTail
+    ? messages.indexOf(params.keepInTail)
+    : -1;
+  const budgetTailStart = alignTailStartToProviderMessageBoundary(
     messages,
     Math.max(
       findTailStart(messages, params.budget.recentTailTokens),
       Math.max(0, messages.length - params.budget.policy.minRecentMessages),
     ),
   );
+  const tailStart =
+    pinnedIndex >= 0 ? Math.min(budgetTailStart, pinnedIndex) : budgetTailStart;
   const older = messages.slice(0, tailStart);
   const tail = messages.slice(tailStart);
   if (!older.length) {

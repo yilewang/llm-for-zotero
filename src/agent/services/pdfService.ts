@@ -45,13 +45,16 @@ function canInspectZoteroItems(): boolean {
 }
 
 export class PdfService {
+  /** The paper's text, loaded once; `signal` cancels this caller's load. */
   async ensurePaperContext(
     paperContext: PaperContextRef,
+    options: { signal?: AbortSignal } = {},
   ): Promise<PdfContext | undefined> {
     const contextItem = resolveContextItemFromPaperContext(paperContext);
     if (!contextItem) return undefined;
     await ensurePDFTextCached(contextItem, {
       sourceMode: paperContext.contentSourceMode,
+      ...(options.signal ? { signal: options.signal } : {}),
     });
     return paperTextStore.peek(contextItem.id);
   }
@@ -143,7 +146,7 @@ export class PdfService {
     citationLabel: string;
     sourceLabel: string;
     paperContext: PaperContextRef;
-    backend: "raw_pdf_text";
+    backend: "mineru" | "raw_pdf_text";
   }> {
     const contextItem = canInspectZoteroItems()
       ? resolveContextItemFromPaperContext(params.paperContext)
@@ -170,7 +173,7 @@ export class PdfService {
         citationLabel: formatPaperCitationLabel(params.paperContext),
         sourceLabel: formatPaperSourceLabel(params.paperContext),
         paperContext: params.paperContext,
-        backend: "raw_pdf_text",
+        backend: pdfContext.sourceType === "mineru" ? "mineru" : "raw_pdf_text",
       };
     }
     const selected = new Map<number, string>();
@@ -209,7 +212,7 @@ export class PdfService {
       citationLabel: formatPaperCitationLabel(params.paperContext),
       sourceLabel: formatPaperSourceLabel(params.paperContext),
       paperContext: params.paperContext,
-      backend: "raw_pdf_text",
+      backend: pdfContext.sourceType === "mineru" ? "mineru" : "raw_pdf_text",
     };
   }
 

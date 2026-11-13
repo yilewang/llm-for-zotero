@@ -1,10 +1,13 @@
-import { fnv1a32Raw } from "../../../utils/fnv1a";
+import { fnv1a32, fnv1a32Raw } from "../../../utils/fnv1a";
+import { openWebSourceLink } from "../webSourcesSidePanel";
+import { CONTENT_FLAT_SCOPE_CLASS } from "../contentChrome";
 import type {
   AgentActionSummaryResultCard,
   AgentNoteChangeResultCard,
   AgentSavedNoteResultCard,
 } from "../../../agent/types";
 import { projectPaperReferences } from "../../../shared/paperDisplayLabels";
+import { isZoteroMcpServerToolName } from "./toolActivityDedupe";
 import type { AgentActionVerification } from "../../../agent/contracts/actionVerificationLabels";
 import {
   AGENT_ACTION_VERIFICATION_LABELS,
@@ -36,6 +39,7 @@ import type {
   AgentToolEffect,
   AgentToolPresentationSummary,
   AgentToolResultCard,
+  AgentToolTraceIcon,
   AgentTraceChip,
   AgentTraceDetail,
   AgentTraceRequestSummary,
@@ -46,6 +50,7 @@ import { SKILL_ACTIVATION_TRACE_LABEL } from "../../../agent/workCategory";
 import type { GeneratedChatImage } from "../../../shared/types";
 import { toFileUrl } from "../../../utils/pathFileUrl";
 import { normalizePublicWebUrl } from "../../../webAccess/tavilyClient";
+import { stripWebSourceMarkersForDisplay } from "../../../webAccess/attribution";
 import { agentReasoningExpandedCache } from "../agentState";
 import { copyTextToClipboard } from "../clipboard";
 import {
@@ -56,6 +61,7 @@ import {
 } from "../contextIcons";
 import { createDocumentCardLayout } from "../documentCard";
 import { renderAssistantGeneratedImagesInto } from "../generatedImageRender";
+import { setStatus } from "../textUtils";
 import {
   normalizePaperContextRefs,
   normalizeSelectedTextSources,
@@ -67,7 +73,11 @@ import {
   renderPlanDocumentContent,
   renderPlanDocumentFigures,
 } from "../planDocumentPresentation";
-import { buildAssistantDisplayMarkdownForRender } from "../assistantRichText";
+import { buildAssistantDisplayRenderPlan } from "../assistantRichText";
+import {
+  bindQuoteRenderOccurrences,
+  type QuoteRenderOccurrence,
+} from "../quoteRenderPlan";
 import { renderRenderedMarkdownInto } from "../renderedMarkdown";
 import { applyStableAnimationPhase } from "../stableAnimationPhase";
 import { isCodexPlanChecklistEvent } from "../taskProgress/codexPlan";
@@ -113,6 +123,10 @@ import { getAgentRuntime } from "../../../agent";
 import { projectStageEvents } from "./stageProjection";
 import { resolveAgentToolPresentation } from "./toolPresentation";
 import {
+  SIDE_ITEM_KIND_ATTRIBUTE,
+  appendMoveToSidePanelButton,
+} from "../sidePanelItems";
+import {
   compactAgentTraceEvents,
   createAgentTraceCompactor,
   getReasoningTraceKey,
@@ -135,7 +149,7 @@ type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 type AgentTraceSummaryRow = {
   kind: AgentTraceSummaryKind;
   icon: string;
-  iconName?: "library" | "web";
+  iconName?: AgentToolTraceIcon;
   text: string;
   /** Optional code block shown below the summary text (e.g. shell commands). */
   codeBlock?: string;
@@ -183,6 +197,8 @@ type AgentTraceDisplayItem =
       tone: "neutral" | "success" | "warning";
       text: string;
       markdown?: boolean;
+      /** A Codex agent message: always drawn in the answer's look. */
+      agentMessage?: boolean;
     }
   | {
       type: "action";
@@ -217,6 +233,8 @@ type AgentTraceDisplayItem =
   | {
       type: "image_grid";
       images: GeneratedChatImage[];
+      /** Figure crops from paper_read mode "figures"; they go to the strip. */
+      figures?: boolean;
     }
   | {
       type: "reasoning";
@@ -226,7 +244,12 @@ type AgentTraceDisplayItem =
       summary?: string;
       details?: string;
     }
-  | { type: "inline_text"; text: string };
+  | {
+      type: "inline_text";
+      text: string;
+      /** Drawn as the answer, below the activity rather than in it. */
+      answer?: boolean;
+    };
 
 type RenderAgentTraceParams = {
   doc: Document;
@@ -241,7 +264,23 @@ type RenderAgentTraceParams = {
   actionSummaryHost?: HTMLElement;
   /** Where the action card's chips take the reader; the running Zotero by default. */
   actionCardNavigation?: NavigationHost;
+  /**
+   * A read-only view shows pending approval cards without live controls: the
+   * viewer must not be able to approve or cancel another chat's action.
+   */
+  readOnly?: boolean;
 };
+
+/** Disable every control of an approval card; it stays visible as history. */
+function lockPendingActionCard<T extends HTMLElement>(card: T): T {
+  for (const control of Array.from(
+    card.querySelectorAll("input,button,select,textarea"),
+  ) as (HTMLInputElement | HTMLButtonElement | HTMLSelectElement)[]) {
+    control.disabled = true;
+  }
+  card.dataset.readOnly = "true";
+  return card;
+}
 
 export function formatAgentActivityDuration(durationMs: number): string {
   const totalSeconds = Math.max(
@@ -420,22 +459,41 @@ export function buildAgentTraceMarkdownForRender(
     "text" | "quoteCitations" | "quoteDisplayOverride" | "streaming"
   > | null,
 ): string {
-  const useDisplayOverride =
-    Boolean(message?.quoteDisplayOverride) &&
-    sanitizeText(text || "") === sanitizeText(message?.text || "");
-  const display = useDisplayOverride
-    ? message!.quoteDisplayOverride!
-    : {
-        markdown: text,
-        quoteCitations:
-          message?.quoteDisplayOverride?.quoteCitations ||
-          message?.quoteCitations,
-      };
-  return buildAssistantDisplayMarkdownForRender({
-    text: display.markdown || text || "",
-    quoteCitations: display.quoteCitations,
-    streaming: message?.streaming,
-  });
+  return planAgentTraceMarkdownForRender(text, message).markdown;
+}
+
+/**
+ * Trace text's markdown and the quote occurrences its tokens name. Text that
+ * is not the answer's own numbers its occurrences under a scope, so its cards
+ * never take the answer's ids; the hash keeps them stable across re-renders.
+ */
+function planAgentTraceMarkdownForRender(
+  text: string,
+  message?: Pick<
+    Message,
+    "text" | "quoteCitations" | "quoteDisplayOverride" | "streaming"
+  > | null,
+): { markdown: string; occurrences: QuoteRenderOccurrence[] } {
+  const cleanText = sanitizeText(text || "");
+  const isAnswerText = cleanText === sanitizeText(message?.text || "");
+  const display =
+    isAnswerText && message?.quoteDisplayOverride
+      ? message.quoteDisplayOverride
+      : {
+          markdown: text,
+          quoteCitations:
+            message?.quoteDisplayOverride?.quoteCitations ||
+            message?.quoteCitations,
+        };
+  return buildAssistantDisplayRenderPlan(
+    {
+      text: display.markdown || text || "",
+      quoteCitations: display.quoteCitations,
+      streaming: message?.streaming,
+    },
+    [],
+    isAnswerText ? undefined : fnv1a32(cleanText),
+  );
 }
 
 function normalizeSelectedTexts(
@@ -1657,8 +1715,13 @@ function normalizePendingActions(action: AgentPendingAction) {
       ? action.cancelActionId
       : provided.find((entry) => entry.id === "cancel")?.id ||
         provided[provided.length - 1]?.id;
+  // A footer action has its own button beside the primary one; the rest
+  // share the primary button and the Alternatives chooser.
+  const footerActions = provided.filter(
+    (entry) => entry.id !== cancelActionId && entry.footer,
+  );
   const primaryActions = provided.filter(
-    (entry) => entry.id !== cancelActionId,
+    (entry) => entry.id !== cancelActionId && !entry.footer,
   );
   const defaultActionId =
     action.defaultActionId &&
@@ -1668,6 +1731,7 @@ function normalizePendingActions(action: AgentPendingAction) {
   return {
     actions: provided,
     primaryActions,
+    footerActions,
     cancelAction: provided.find((entry) => entry.id === cancelActionId) || null,
     defaultActionId,
     cancelActionId,
@@ -1769,7 +1833,9 @@ function isFieldRequiredForAction(
   field: AgentPendingField,
   actionId: string,
 ): boolean {
-  if (field.requiredForActionIds?.length) {
+  // An explicit empty list means the field is required for no action: a
+  // checklist that may be left with nothing checked.
+  if (field.requiredForActionIds) {
     return field.requiredForActionIds.includes(actionId);
   }
   return isFieldVisibleForAction(field, actionId);
@@ -2654,6 +2720,7 @@ export function renderPendingActionCard(
   const primaryActionGroup = doc.createElement("div");
   primaryActionGroup.className = "llm-agent-hitl-footer-primary";
   let executeButton: HTMLButtonElement | null = null;
+  const footerButtons = new Map<string, HTMLButtonElement>();
   let backButton: HTMLButtonElement | null = null;
   let alternativesToggleButton: HTMLButtonElement | null = null;
   let alternativesOpen = false;
@@ -2686,16 +2753,25 @@ export function renderPendingActionCard(
   };
   const syncConfirmButton = () => {
     const isValid = isActionValid(activeActionId);
+    const selectionAction = pending.action.selectionAction;
+    const selectionValue = selectionAction
+      ? fieldAccessors
+          .find((accessor) => accessor.id === selectionAction.fieldId)
+          ?.getValue()
+      : undefined;
+    const count = Array.isArray(selectionValue) ? selectionValue.length : 0;
     if (executeButton) {
       executeButton.disabled = !isValid;
-      const selectionAction = pending.action.selectionAction;
       if (selectionAction) {
-        const value = fieldAccessors
-          .find((accessor) => accessor.id === selectionAction.fieldId)
-          ?.getValue();
-        const count = Array.isArray(value) ? value.length : 0;
         executeButton.textContent = `${selectionAction.verb} ${count} paper${count === 1 ? "" : "s"}`;
       }
+    }
+    for (const [actionId, button] of footerButtons) {
+      button.disabled = !isActionValid(actionId);
+      const label = getActionById(actionId)?.label || "";
+      button.textContent = selectionAction
+        ? label.replace("{count}", String(count))
+        : label;
     }
   };
   const syncAlternativeButtons = () => {
@@ -2886,6 +2962,24 @@ export function renderPendingActionCard(
     });
     buttons.push(backButton);
     primaryActionGroup.appendChild(backButton);
+  }
+
+  if (!isPagedReviewCard) {
+    for (const action of normalizedActions.footerActions) {
+      const footerButton = doc.createElement("button");
+      footerButton.type = "button";
+      footerButton.dataset.actionId = action.id;
+      footerButton.className =
+        action.style === "primary"
+          ? "llm-plan-action llm-plan-approve llm-agent-hitl-btn"
+          : "llm-agent-hitl-btn llm-agent-hitl-btn-secondary";
+      footerButton.addEventListener("click", () => {
+        executeAction(action.id);
+      });
+      footerButtons.set(action.id, footerButton);
+      buttons.push(footerButton);
+      primaryActionGroup.appendChild(footerButton);
+    }
   }
 
   if (!isPagedReviewCard && buttonLayout.showsFooterExecuteButton) {
@@ -3149,7 +3243,11 @@ function resolveToolPresentationSummary(
  * dropped because a name matched a list written years earlier.
  */
 function isToolHiddenFromTrace(name: string): boolean {
-  return resolveAgentToolPresentation(name)?.hiddenInTrace === true;
+  return (
+    resolveAgentToolPresentation(name)?.hiddenInTrace === true ||
+    // The Zotero server's own row for the same call says it better.
+    isZoteroMcpServerToolName(name)
+  );
 }
 
 /**
@@ -3182,9 +3280,8 @@ function buildAgentTraceToolChips(
     args,
     request: requestSummary,
   });
-  if (Array.isArray(customChips) && customChips.length) {
-    return customChips;
-  }
+  // A tool that builds its own chips, even none, replaces the generic ones.
+  if (Array.isArray(customChips)) return customChips;
 
   const record = isAgentTraceRecord(args) ? args : null;
   const chips: AgentTraceChip[] = [];
@@ -3947,6 +4044,19 @@ function summarizeCodexToolActivity(input: {
   codeBlock?: string;
   artifacts?: AgentToolArtifact[];
 }): AgentTraceSummaryRow {
+  const toolName = readAgentTraceText(input.toolName);
+  // The same icon the tool's row gets in every other mode.
+  const traceIcon = toolName
+    ? resolveAgentToolPresentation(normalizeMcpToolName(toolName))?.traceIcon
+    : undefined;
+  const row = summarizeCodexToolActivityText(input, toolName || "");
+  return traceIcon ? { ...row, iconName: traceIcon } : row;
+}
+
+function summarizeCodexToolActivityText(
+  input: Parameters<typeof summarizeCodexToolActivity>[0],
+  toolName: string,
+): AgentTraceSummaryRow {
   const explicitText = readAgentTraceText(input.text);
   if (explicitText) {
     return {
@@ -3956,7 +4066,6 @@ function summarizeCodexToolActivity(input: {
       codeBlock: readAgentTraceText(input.codeBlock) || undefined,
     };
   }
-  const toolName = readAgentTraceText(input.toolName);
   const label =
     (toolName
       ? toolLabelFromEvent(toolName, input.toolLabel)
@@ -3979,6 +4088,23 @@ function summarizeCodexToolActivity(input: {
   const skillText = skillActivationText(label, input.args);
   if (skillText) {
     return { kind: "tool", icon: "⌘", text: skillText };
+  }
+  // The words the tool's own row uses when the plugin's agent calls it, so
+  // a read Claude Code or Codex ran over MCP reads the same in every mode.
+  const callText = toolName
+    ? resolveToolPresentationSummary(
+        resolveAgentToolPresentation(normalizeMcpToolName(toolName))?.summaries
+          ?.onCall,
+        { label, args: input.args },
+      )
+    : null;
+  if (callText) {
+    return {
+      kind: "tool",
+      icon: "⌘",
+      text: callText,
+      codeBlock: readAgentTraceText(input.codeBlock) || undefined,
+    };
   }
   const verb = input.phase === "completed" ? "Used" : "Using";
   return {
@@ -4094,6 +4220,30 @@ function imageArtifactTooltip(artifact: ImageAgentToolArtifact): string {
   return parts.join(" · ");
 }
 
+/** The page and paper an image artifact came from, for its figure box. */
+function imageArtifactFigure(
+  artifact: ImageAgentToolArtifact,
+): GeneratedChatImage["figure"] | undefined {
+  const paper = artifact.paperContext;
+  const itemId = Math.floor(Number(paper?.itemId));
+  const contextItemId = Math.floor(Number(paper?.contextItemId));
+  const pageIndex = Number.isFinite(artifact.pageIndex)
+    ? Math.floor(Number(artifact.pageIndex))
+    : undefined;
+  const pageLabel = artifact.pageLabel?.trim();
+  const title = sanitizeText(paper?.title || "").trim();
+  const figure: NonNullable<GeneratedChatImage["figure"]> = {
+    ...(pageIndex !== undefined && pageIndex >= 0 ? { pageIndex } : {}),
+    ...(pageLabel ? { pageLabel } : {}),
+    ...(itemId > 0 && contextItemId > 0
+      ? {
+          paper: { itemId, contextItemId, ...(title ? { title } : {}) },
+        }
+      : {}),
+  };
+  return Object.keys(figure).length ? figure : undefined;
+}
+
 function imageArtifactsToGeneratedImages(
   artifacts: unknown,
   keyPrefix: string,
@@ -4107,17 +4257,51 @@ function imageArtifactsToGeneratedImages(
     ...(imageArtifactTooltip(artifact)
       ? { revisedPrompt: imageArtifactTooltip(artifact) }
       : {}),
+    ...(imageArtifactFigure(artifact)
+      ? { figure: imageArtifactFigure(artifact) }
+      : {}),
   }));
+}
+
+/**
+ * Whether a result's own content (or a call's own input) says it ran in
+ * figure mode. The event decides, not the tool's name.
+ */
+function isFiguresModeRecord(source: unknown): boolean {
+  if (!source || typeof source !== "object") return false;
+  const record = source as Record<string, unknown>;
+  if (record.mode === "figures") return true;
+  // A big persisted result keeps a bounded preview of its content.
+  const preview = record.preview;
+  return Boolean(
+    record.truncated === true &&
+    preview &&
+    typeof preview === "object" &&
+    (preview as Record<string, unknown>).mode === "figures",
+  );
 }
 
 function appendImageArtifactGrid(
   ctx: AgentTraceAdapterContext,
   artifacts: unknown,
   keyPrefix: string,
+  options: { figures?: boolean } = {},
 ): boolean {
-  const images = imageArtifactsToGeneratedImages(artifacts, keyPrefix);
+  const images = imageArtifactsToGeneratedImages(artifacts, keyPrefix).filter(
+    (image) => {
+      const key = (image.path || "").replace(/\\/g, "/");
+      if (!key) return true;
+      if (ctx.shownImagePaths.has(key)) return false;
+      ctx.shownImagePaths.add(key);
+      return true;
+    },
+  );
   if (images.length) {
-    ctx.items.push({ type: "image_grid", images });
+    ctx.items.push({
+      type: "image_grid",
+      images,
+      ...(options.figures ? { figures: true } : {}),
+    });
     return true;
   }
   return false;
@@ -4159,6 +4343,9 @@ function isHiddenClaudeStartupStatus(text: string): boolean {
     // future rewording stays hidden instead of leaking into the trace.
     /^Claude runtime changed\./i.test(text) ||
     /^Claude bridge URL:/i.test(text) ||
+    // Claude Code's internal messages ("System event: thinking_tokens"),
+    // which runs recorded before the bridge stopped forwarding them.
+    /^System event(?::|$)/.test(text) ||
     text === "Claude bridge URL is empty. Falling back to local runtime."
   );
 }
@@ -4178,6 +4365,21 @@ function replaceInlineTextDedupeKey(
   if (previousKey) visibleInlineText.delete(previousKey);
   const nextKey = normalizeInlineTextForDedupe(nextText);
   if (nextKey) visibleInlineText.add(nextKey);
+}
+
+/**
+ * A replay repeats a whole streamed message, while a streamed token is a few
+ * characters that can match the tail by chance: `}` after `}`, `$` after `$`.
+ * Only a long chunk that starts on a word boundary counts as a replayed tail;
+ * a short one is new text and dropping it breaks math and Markdown mid-stream.
+ */
+const MIN_REPLAYED_TAIL_CHARS = 16;
+
+function isReplayedInlineTail(previousKey: string, chunkKey: string): boolean {
+  if (chunkKey.length < MIN_REPLAYED_TAIL_CHARS) return false;
+  if (!previousKey.endsWith(chunkKey)) return false;
+  const before = previousKey.length - chunkKey.length - 1;
+  return before < 0 || /\s/.test(previousKey[before]!);
 }
 
 /** `chunk` is already sanitized: the caller remembers it per payload. */
@@ -4203,14 +4405,15 @@ function appendInterleavedInlineText(
     if (!chunkKey) return;
     if (
       chunkLooksLikeReplay &&
-      (chunkKey === previousKey || previousKey.endsWith(chunkKey))
+      ((chunkKey === previousKey && chunkKey.length > 1) ||
+        isReplayedInlineTail(previousKey, chunkKey))
     ) {
       return;
     }
 
     if (
       chunkLooksLikeReplay &&
-      previousKey &&
+      previousKey.length > 1 &&
       chunkKey.startsWith(previousKey)
     ) {
       const nextText = chunk.trim();
@@ -4255,11 +4458,41 @@ function shouldSuppressInlineFinalAnswer(
 ): boolean {
   if (item.type !== "inline_text") return false;
   const finalKey = normalizeInlineTextForDedupe(finalText);
-  const itemKey = normalizeInlineTextForDedupe(item.text);
+  // The streamed text still carries the web-source markers the final text
+  // leaves out.
+  const itemKey = normalizeInlineTextForDedupe(
+    stripWebSourceMarkersForDisplay(item.text),
+  );
   if (!finalKey || !itemKey) return false;
   if (finalKey === itemKey) return true;
   if (!intermediate) return finalKey.endsWith(` ${itemKey}`);
   return itemKey.length >= 40 && finalKey.includes(itemKey);
+}
+
+/**
+ * Codex sends its answer as an agent message too, and the run then reports the
+ * same text as its final answer. Once the final answer is known the bubble
+ * shows it, so the last agent message that is that text, or its closing part,
+ * leaves the steps. Other agent messages stay. The stored events are not
+ * changed, and no final text exists while the answer still streams.
+ */
+function dropAgentMessageRepeatingFinalAnswer(
+  items: AgentTraceDisplayItem[],
+  finalText: string,
+): AgentTraceDisplayItem[] {
+  const finalKey = normalizeInlineTextForDedupe(finalText);
+  if (!finalKey) return items;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.type !== "message" || !item.agentMessage) continue;
+    const itemKey = normalizeInlineTextForDedupe(
+      stripWebSourceMarkersForDisplay(item.text),
+    );
+    if (!itemKey) continue;
+    if (finalKey === itemKey || finalKey.endsWith(` ${itemKey}`))
+      return [...items.slice(0, index), ...items.slice(index + 1)];
+  }
+  return items;
 }
 
 type AgentTraceAdapterContext = {
@@ -4286,6 +4519,8 @@ type AgentTraceAdapterContext = {
   finalizedMaterials: Map<string, TraceMaterialAnnouncement>;
   /** Documents whose note write failed in this run. */
   failedMaterialWrites: Set<string>;
+  /** Image files already shown in this trace (separators normalized to "/"). */
+  shownImagePaths: Set<string>;
 };
 
 /**
@@ -4402,13 +4637,12 @@ function appendReasoningTraceItem(
     label = ctx.reasoningLabels.get(logicalKey) || "";
   }
   if (!label) {
+    // The same word in every mode, as a Claude session uses.
     if (hasExplicitStepId) {
       ctx.reasoningStepCounter += 1;
-      label = ctx.isCodexTrace
-        ? `Codex reasoning ${ctx.reasoningStepCounter}`
-        : `Thinking for step ${ctx.reasoningStepCounter}`;
+      label = `Thinking for step ${ctx.reasoningStepCounter}`;
     } else {
-      label = ctx.isCodexTrace ? "Codex reasoning" : "Thinking";
+      label = "Thinking";
     }
     ctx.reasoningLabels.set(logicalKey, label);
   }
@@ -4749,6 +4983,9 @@ function appendLegacyAgentTraceEvent(
           ctx,
           entry.payload.artifacts,
           `tool-result:${entry.payload.callId}`,
+          {
+            figures: isFiguresModeRecord(entry.payload.content),
+          },
         );
         if (hasImageGrid && !row) {
           const inserted = ctx.items.pop();
@@ -4833,6 +5070,7 @@ function appendCodexAgentTraceEvent(
           ctx,
           entry.payload.artifacts,
           `codex:${entry.payload.itemId}`,
+          { figures: isFiguresModeRecord(entry.payload.args) },
         );
       }
       return true;
@@ -4849,6 +5087,7 @@ function appendCodexAgentTraceEvent(
           tone: "neutral",
           text: progressText,
           markdown: true,
+          agentMessage: true,
         });
       }
       return true;
@@ -5482,6 +5721,47 @@ function createTraceStageGrouper(items: AgentTraceDisplayItem[]) {
   };
 }
 
+/** Reports a figure action's result in the panel's status line, if any. */
+function figureActionStatusReporter(
+  doc: Document,
+  anchor: HTMLElement,
+): (message: string, level: "ready" | "warning" | "error") => void {
+  return (message, level) => {
+    // Look up at click time: the document can hold more than one panel, and
+    // the strip may have moved since it was built.
+    const root = anchor.closest?.("#llm-main") as HTMLElement | null;
+    const status = (root || doc).querySelector(
+      "#llm-status",
+    ) as HTMLElement | null;
+    if (status) setStatus(status, message, level);
+  };
+}
+
+function collectDisplayItemFigureImages(
+  items: readonly AgentTraceDisplayItem[],
+): GeneratedChatImage[] {
+  const images: GeneratedChatImage[] = [];
+  forEachAgentTraceDisplayItem(items, (item) => {
+    if (item.type === "image_grid" && item.figures) images.push(...item.images);
+  });
+  return images;
+}
+
+/**
+ * The figure crops the strip shows: every crop except those the answer
+ * already shows. Paths compare with backslashes read as slashes.
+ */
+export function selectFigureStripImages(
+  images: readonly GeneratedChatImage[],
+  shownInAnswer: ReadonlySet<string>,
+): GeneratedChatImage[] {
+  if (!shownInAnswer.size) return [...images];
+  return images.filter(
+    (image) =>
+      !image.path || !shownInAnswer.has(image.path.replace(/\\/g, "/")),
+  );
+}
+
 /** Visit every item, inside a stage group or not, in the order produced. */
 function forEachAgentTraceDisplayItem(
   items: readonly AgentTraceDisplayItem[],
@@ -5593,6 +5873,7 @@ function projectAgentTrace(
     intermediateInlineTextItems: new Set(),
     finalizedMaterials: new Map<string, TraceMaterialAnnouncement>(),
     failedMaterialWrites: new Set<string>(),
+    shownImagePaths: new Set<string>(),
   };
 
   items.push({
@@ -5692,7 +5973,7 @@ function projectAgentTrace(
     isInterleaved &&
     !finalText &&
     (!hasTerminalInlineText || !hasCanonicalAssistantText);
-  const displayItems = isInterleaved
+  const shownItems = isInterleaved
     ? finalText
       ? items.filter(
           (item) =>
@@ -5719,10 +6000,27 @@ function projectAgentTrace(
           )
         : items
     : replaceInlineTextWithDraftingAction(items);
+  const displayItems = finalText
+    ? dropAgentMessageRepeatingFinalAnswer(shownItems, finalText)
+    : shownItems;
+  // Text that stands in for the answer takes the answer's look and place, so
+  // nothing changes when the bubble takes it over. Only the last item can be
+  // the answer; notes between tool calls keep the step look. Codex agent
+  // messages keep the answer's look in the steps instead (see the renderer).
+  const lastItem = displayItems[displayItems.length - 1];
+  const answerItem =
+    (assistantMessage?.streaming === true || inlineTextReplacesAssistantText) &&
+    lastItem?.type === "inline_text" &&
+    !adapterContext.intermediateInlineTextItems.has(lastItem)
+      ? lastItem
+      : undefined;
+  const answerMarkedItems = answerItem
+    ? [...displayItems.slice(0, -1), { ...answerItem, answer: true }]
+    : displayItems;
 
   const presentedItems = labels
-    ? projectPaperReferencesOntoTraceItems(displayItems, labels)
-    : displayItems;
+    ? projectPaperReferencesOntoTraceItems(answerMarkedItems, labels)
+    : answerMarkedItems;
   const lastShown = presentedItems[presentedItems.length - 1];
   return {
     projection: {
@@ -5872,7 +6170,16 @@ function renderAgentTraceDetailsBody(
         row.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          Zotero.launchURL(safeHref!);
+          // The side panel in the standalone window (⌘-click: the browser).
+          if (
+            !openWebSourceLink(
+              doc,
+              { url: safeHref!, title: detail.value },
+              event as MouseEvent,
+            )
+          ) {
+            Zotero.launchURL(safeHref!);
+          }
         });
       }
       row.title = detail.value;
@@ -5923,6 +6230,7 @@ function renderAgentTraceDetailsBody(
         value,
         `${fence}${detail.kind === "json" ? "json" : "text"}\n${detail.value}\n${fence}`,
         doc,
+        { sideItems: false },
       );
       item.append(label, value);
     } else {
@@ -6029,7 +6337,7 @@ function renderPlanProposal(
   artifact: StoredPlanArtifact,
 ): HTMLElement {
   const markdown = doc.createElement("div");
-  markdown.className = "llm-plan-markdown";
+  markdown.className = `llm-plan-markdown ${CONTENT_FLAT_SCOPE_CLASS}`;
   const rawSource =
     artifact.nativePlanning?.proposal?.markdown ||
     [
@@ -6383,11 +6691,12 @@ function syncDocumentLead(
   if (documentView.lead?.text !== text) {
     documentView.lead?.node.remove();
     const node = doc.createElement("div");
-    node.className = "llm-agent-inline-text llm-plan-document-lead";
-    const markdown = buildAgentTraceMarkdownForRender(
+    node.className = `llm-agent-inline-text llm-plan-document-lead ${CONTENT_FLAT_SCOPE_CLASS}`;
+    const { markdown, occurrences } = planAgentTraceMarkdownForRender(
       text,
       documentView.message,
     );
+    bindQuoteRenderOccurrences(node, occurrences);
     try {
       renderRenderedMarkdownInto(node, markdown, doc);
     } catch {
@@ -6507,6 +6816,37 @@ function renderPlanDocumentCard(params: {
       }
     });
     actions.append(copy, note, exportButton, expand);
+    root.setAttribute(SIDE_ITEM_KIND_ATTRIBUTE, "plan");
+    appendMoveToSidePanelButton({
+      doc: params.doc,
+      parent: actions,
+      className: "llm-plan-document-action llm-plan-document-action-move-side",
+      buildRequest: () => ({
+        kind: "plan",
+        title: document.title,
+        source: document.visibleMarkdown,
+        documentId: document.documentId,
+        element: root,
+        renderBody: (targetDoc, target) =>
+          renderPlanDocumentContent({
+            doc: targetDoc,
+            root: target,
+            document,
+            citationContext: params.citationContext,
+          }),
+        saveAsNote: async () => {
+          const saved = await savePlanDocumentAsNote(document.documentId);
+          return saved.created ? "Saved as note" : "Note already saved";
+        },
+        openOwnWindow: () =>
+          openStandalonePlanDocumentWindow(
+            params.doc,
+            document,
+            params.citationContext,
+          ),
+      }),
+    });
+    content.classList.add(CONTENT_FLAT_SCOPE_CLASS);
     renderPlanDocumentContent({
       doc: params.doc,
       root: content,
@@ -6581,6 +6921,10 @@ type TraceView = {
   quoteCitations?: Message["quoteCitations"];
   quoteOverride?: Message["quoteDisplayOverride"];
   formattingVersion?: number;
+  /** The figure strip below the activity; rebuilt only when its images change. */
+  figures?: { signature: string; node: HTMLElement };
+  /** Holds the item drawn as the answer, just below the disclosure. */
+  answerHost?: HTMLElement;
 };
 const traceViews = new WeakMap<HTMLElement, TraceView>();
 
@@ -6600,7 +6944,9 @@ export function disposeAgentTrace(root: HTMLElement): void {
  */
 const committedReasoningText = new WeakMap<HTMLElement, string>();
 
-function updateReasoningText(target: HTMLElement, next: string): void {
+function updateReasoningText(target: HTMLElement, rawNext: string): void {
+  // Model reasoning may quote web source markers; show it without them.
+  const next = stripWebSourceMarkersForDisplay(rawNext);
   const previous =
     committedReasoningText.get(target) ?? target.textContent ?? "";
   if (previous === next) return;
@@ -6615,6 +6961,11 @@ function updateReasoningText(target: HTMLElement, next: string): void {
   } else target.textContent = next;
   committedReasoningText.set(target, next);
 }
+
+/** Trace text that is the answer, drawn like the answer in the bubble. */
+const INLINE_ANSWER_CLASS = "llm-agent-inline-answer";
+/** A step list whose answer-look messages reach the answer's left edge. */
+const FLUSH_LIST_CLASS = "llm-agent-activity-list-flush";
 
 /**
  * A row's signature: the item itself, except where the projection shares a
@@ -6642,7 +6993,14 @@ export function renderAgentTrace({
   previous,
   actionCardNavigation,
   actionSummaryHost,
+  readOnly,
 }: RenderAgentTraceParams): HTMLElement | null {
+  const renderPendingCard = (
+    pendingAction: Parameters<typeof renderPendingActionCard>[1],
+  ): HTMLDivElement => {
+    const card = renderPendingActionCard(doc, pendingAction);
+    return readOnly ? lockPendingActionCard(card) : card;
+  };
   const runId = message.agentRunId?.trim() || "pending";
   // Temporary native events remain visible until the durable run is loaded.
   // The caller supplies this callback only while that run is absent from cache.
@@ -6660,6 +7018,9 @@ export function renderAgentTrace({
   const retained = previous ? traceViews.get(previous) : undefined;
   const wrap = retained ? previous! : doc.createElement("div");
   if (!retained) wrap.className = "llm-agent-activity";
+  // Task progress's "Show in answer" finds an answer drawn in the trace by it.
+  if (message.agentRunId?.trim())
+    wrap.dataset.agentRunId = message.agentRunId.trim();
   if (!retained)
     applyStableAnimationPhase(
       wrap,
@@ -6751,12 +7112,14 @@ export function renderAgentTrace({
       disposePlanCard(view.document.node);
       view.document = undefined;
     }
-    wrap.replaceChildren(renderPendingActionCard(doc, pending));
+    wrap.replaceChildren(renderPendingCard(pending));
     view.items.clear();
+    view.answerHost = undefined;
     return wrap;
   }
   const hasFinalResponse = scan.hasFinal;
   const nextViews = new Map<string, TraceItemView>();
+  let answerPlaced = false;
   // Stage groups nest their rows, so placement walks one container at a time
   // and recurses into a stage's body with the same retained-view cache.
   const renderTraceItemsInto = (
@@ -6767,9 +7130,23 @@ export function renderAgentTrace({
     let cursor: ChildNode | null = container.firstChild;
     let currentKey = "";
     let currentSignature = "";
+    let currentIsAnswer = false;
     const place = (node: HTMLElement, reasoningText?: HTMLElement | null) => {
-      if (node !== cursor) container.insertBefore(node, cursor);
-      cursor = node.nextSibling;
+      if (currentIsAnswer) {
+        // The answer sits below the disclosure. A node already there is left
+        // in place: moving it would restart its fade-in.
+        if (node === cursor) cursor = node.nextSibling;
+        if (!view.answerHost) {
+          view.answerHost = doc.createElement("div");
+          view.answerHost.className = "llm-agent-activity-answer";
+        }
+        if (node.parentElement !== view.answerHost)
+          view.answerHost.replaceChildren(node);
+        answerPlaced = true;
+      } else {
+        if (node !== cursor) container.insertBefore(node, cursor);
+        cursor = node.nextSibling;
+      }
       nextViews.set(currentKey, {
         signature: currentSignature,
         node,
@@ -6777,6 +7154,10 @@ export function renderAgentTrace({
       });
     };
     for (const [itemIndex, itemEntry] of itemsToRender.entries()) {
+      currentIsAnswer =
+        keyPrefix === "" &&
+        itemEntry.type === "inline_text" &&
+        itemEntry.answer === true;
       currentKey =
         keyPrefix +
         (itemEntry.type === "reasoning"
@@ -6841,23 +7222,31 @@ export function renderAgentTrace({
         place(old.node);
         continue;
       }
-      if (old && itemEntry.type === "inline_text" && message.streaming) {
-        renderStreamingMarkdownInto(
-          old.node,
-          buildAgentTraceMarkdownForRender(itemEntry.text, message),
-          doc,
-          () => {},
+      // A node that changes between answer and step is rebuilt in its look.
+      if (
+        old &&
+        itemEntry.type === "inline_text" &&
+        message.streaming &&
+        old.node.classList.contains(INLINE_ANSWER_CLASS) ===
+          Boolean(itemEntry.answer)
+      ) {
+        const streamed = planAgentTraceMarkdownForRender(
+          itemEntry.text,
+          message,
         );
+        bindQuoteRenderOccurrences(old.node, streamed.occurrences);
+        renderStreamingMarkdownInto(old.node, streamed.markdown, doc, () => {});
         place(old.node);
         continue;
       }
       if (itemEntry.type === "inline_text") {
         const inlineEl = doc.createElement("div");
         inlineEl.className = "llm-agent-inline-text";
-        const inlineText = buildAgentTraceMarkdownForRender(
-          itemEntry.text,
-          message,
-        );
+        if (itemEntry.answer)
+          inlineEl.classList.add(INLINE_ANSWER_CLASS, CONTENT_FLAT_SCOPE_CLASS);
+        const { markdown: inlineText, occurrences } =
+          planAgentTraceMarkdownForRender(itemEntry.text, message);
+        bindQuoteRenderOccurrences(inlineEl, occurrences);
         try {
           renderRenderedMarkdownInto(inlineEl, inlineText, doc);
         } catch {
@@ -6870,14 +7259,22 @@ export function renderAgentTrace({
       if (itemEntry.type === "message") {
         const messageEl = doc.createElement("div");
         messageEl.className = `llm-agent-process-message llm-agent-process-message-${itemEntry.tone}`;
+        // A Codex agent message may be the answer: it has the answer's look
+        // from its first word, so it never changes when a tool call follows.
+        if (itemEntry.agentMessage)
+          messageEl.classList.add(
+            INLINE_ANSWER_CLASS,
+            CONTENT_FLAT_SCOPE_CLASS,
+          );
         if (itemEntry.markdown) {
           messageEl.classList.add("llm-agent-process-message-markdown");
-          const markdownText = buildAgentTraceMarkdownForRender(
-            itemEntry.text,
-            message,
-          );
+          const { markdown: markdownText, occurrences } =
+            planAgentTraceMarkdownForRender(itemEntry.text, message);
+          bindQuoteRenderOccurrences(messageEl, occurrences);
           try {
-            renderRenderedMarkdownInto(messageEl, markdownText, doc);
+            renderRenderedMarkdownInto(messageEl, markdownText, doc, {
+              sideItems: false,
+            });
           } catch {
             messageEl.textContent = markdownText;
           }
@@ -6903,6 +7300,10 @@ export function renderAgentTrace({
       }
 
       if (itemEntry.type === "image_grid") {
+        // Extracted figures are an outcome, not a step: the strip below the
+        // activity disclosure shows them, so the folded stage keeps only the
+        // action row that prepared them. Other images stay in the stage.
+        if (itemEntry.figures) continue;
         const container = doc.createElement("div") as HTMLDivElement;
         container.className = "llm-agent-image-artifacts";
         const rendered = renderAssistantGeneratedImagesInto(
@@ -6964,8 +7365,9 @@ export function renderAgentTrace({
           summaryBlock.className = "llm-agent-reasoning-block";
           const text = doc.createElement("div") as HTMLDivElement;
           text.className = "llm-agent-reasoning-text";
-          text.textContent = reasoningText;
-          committedReasoningText.set(text, reasoningText);
+          const shownText = stripWebSourceMarkersForDisplay(reasoningText);
+          text.textContent = shownText;
+          committedReasoningText.set(text, shownText);
           reasoningTextNode = text;
           summaryBlock.appendChild(text);
           bodyWrap.appendChild(summaryBlock);
@@ -7049,7 +7451,25 @@ export function renderAgentTrace({
       cursor = next;
     }
   };
+  // Codex agent messages sit at the answer's left edge: the list drops its
+  // indent and each step row draws its own piece of the rail.
+  list.classList.toggle(
+    FLUSH_LIST_CLASS,
+    processItems.some((item) => item.type === "message" && item.agentMessage),
+  );
   renderTraceItemsInto(list, processItems, "");
+  if (!answerPlaced) {
+    view.answerHost?.remove();
+    view.answerHost = undefined;
+  }
+  // Right after the disclosure; moved only when something displaced it.
+  const mountAnswerHost = () => {
+    const details = list.parentElement;
+    const host = view.answerHost;
+    if (host && details?.parentElement === wrap && details.nextSibling !== host)
+      wrap.insertBefore(host, details.nextSibling);
+  };
+  mountAnswerHost();
   for (const [key, old] of view.items) {
     if (nextViews.get(key)?.node !== old.node)
       disposeStreamingMarkdown(old.node);
@@ -7072,7 +7492,9 @@ export function renderAgentTrace({
         child !== view.document?.node &&
         child !== view.document?.caption &&
         child !== view.document?.lead?.node &&
-        child !== view.discovery?.node
+        child !== view.discovery?.node &&
+        child !== view.figures?.node &&
+        child !== view.answerHost
       )
         child?.remove();
     }
@@ -7086,6 +7508,7 @@ export function renderAgentTrace({
     scan,
     forceOpen: Boolean(pending),
   });
+  mountAnswerHost();
 
   let hasSavedNote = false;
   let actionSummaryCard: AgentActionSummaryResultCard | undefined;
@@ -7133,7 +7556,8 @@ export function renderAgentTrace({
       actionCardNode = renderActionSummaryCard(doc, attached.card, {
         mode: noteMode ? "note" : "action",
         ...(noteMode ? { header: noteMode } : {}),
-        renderDetail: renderActionCardDetail,
+        renderDetail: (detailDoc, entry, status) =>
+          renderActionCardDetail(detailDoc, entry, status, { readOnly }),
         ...(actionCardNavigation ? { navigation: actionCardNavigation } : {}),
       });
     }
@@ -7142,9 +7566,54 @@ export function renderAgentTrace({
   for (const card of standaloneNoteCards)
     wrap.appendChild(
       card.kind === "note_change"
-        ? renderNoteChangeCard(doc, card)
+        ? renderNoteChangeCard(doc, card, { readOnly })
         : renderSavedNoteCard(doc, card),
     );
+
+  // The figures the run extracted, shown once between the activity and the
+  // answer. A crop the answer already shows is left to the answer. The node
+  // is kept while its images are unchanged, so a streaming frame does not
+  // reload the pictures.
+  // Follow-up: the inline [[figure:ID]] block passes the paths it renders.
+  const stripImages = selectFigureStripImages(
+    collectDisplayItemFigureImages(processItems),
+    new Set<string>(),
+  );
+  if (!stripImages.length) {
+    view.figures?.node.remove();
+    view.figures = undefined;
+  } else {
+    const signature = JSON.stringify(
+      stripImages.map((image) => [image.id, image.path, image.figure]),
+    );
+    if (view.figures?.signature !== signature) {
+      view.figures?.node.remove();
+      const strip = doc.createElement("div") as HTMLDivElement;
+      strip.className = "llm-agent-image-artifacts llm-agent-figure-strip";
+      renderAssistantGeneratedImagesInto(strip, stripImages, doc, {
+        // Below the activity disclosure, so part of the answer: flat style.
+        flatChrome: true,
+        wrapClassName: "llm-agent-image-artifacts-grid",
+        frameClassName: "llm-agent-image-artifact-frame",
+        onImageActionStatus: figureActionStatusReporter(doc, strip),
+      });
+      view.figures = { signature, node: strip };
+    }
+    // A fixed place: before the first plan, document or discovery card the
+    // run keeps, so the strip does not jump when those cards are retained.
+    const keptCards = new Set<Node | undefined>([
+      view.plan?.node,
+      view.document?.node,
+      view.document?.caption,
+      view.document?.lead?.node,
+      view.discovery?.node,
+    ]);
+    const anchorNode = Array.from(wrap.children).find((child) =>
+      keptCards.has(child),
+    );
+    if (anchorNode) wrap.insertBefore(view.figures.node, anchorNode);
+    else wrap.appendChild(view.figures.node);
+  }
 
   const planProjection = readPlanProjection(scan);
   if (!planProjection && view.plan) {
@@ -7303,7 +7772,7 @@ export function renderAgentTrace({
       const shell = doc.createElement("div");
       shell.className = "llm-agent-pending-action-shell";
       shell.dataset.discoverySession = identity.sessionId;
-      const card = renderPendingActionCard(doc, discovery.pending);
+      const card = renderPendingCard(discovery.pending);
       if (discovery.phase !== "pending") {
         for (const control of Array.from(
           card.querySelectorAll("input,button,select,textarea"),
@@ -7332,7 +7801,7 @@ export function renderAgentTrace({
   if (pending && !pending.action.discovery) {
     const pendingShell = doc.createElement("div");
     pendingShell.className = "llm-agent-pending-action-shell";
-    pendingShell.appendChild(renderPendingActionCard(doc, pending));
+    pendingShell.appendChild(renderPendingCard(pending));
     wrap.appendChild(pendingShell);
   }
 

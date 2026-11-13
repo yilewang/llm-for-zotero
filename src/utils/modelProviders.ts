@@ -878,8 +878,61 @@ function ensureModelProviderGroups(): ModelProviderGroup[] {
   return migrateLegacyModelProviderGroups();
 }
 
+/** Deep copy of plain JSON-shaped data (groups and runtime entries). */
+function clonePlainData<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((entry) => clonePlainData(entry)) as T;
+  }
+  if (value && typeof value === "object") {
+    const copy: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      copy[key] = clonePlainData(entry);
+    }
+    return copy as T;
+  }
+  return value;
+}
+
+// One click in a chat panel reads the provider groups 15-25 times. Parsing
+// and normalizing the stored JSON each time showed up in click latency, so
+// reads reuse the last result while the stored value and its migration
+// version are unchanged. Callers get their own copy and may mutate it.
+let cachedGroupsKey: string | null = null;
+let cachedGroups: ModelProviderGroup[] = [];
+
+function readModelProviderGroupsCacheKey(): string | null {
+  // Only a migrated, non-empty value is a pure function of the stored
+  // string; the legacy and pre-migration paths write prefs and stay uncached.
+  if (getMigrationVersion() < MODEL_PROVIDER_GROUPS_MIGRATION_VERSION) {
+    return null;
+  }
+  const raw = getStringPref(MODEL_PROVIDER_GROUPS_PREF_KEY);
+  return raw.trim() ? raw : null;
+}
+
+function readModelProviderGroupsShared(): {
+  key: string | null;
+  groups: ModelProviderGroup[];
+} {
+  const key = readModelProviderGroupsCacheKey();
+  if (key !== null && key === cachedGroupsKey) {
+    return { key, groups: cachedGroups };
+  }
+  const groups = ensureModelProviderGroups();
+  // Migration may have rewritten the stored value; key on what is stored now.
+  const storedKey = readModelProviderGroupsCacheKey();
+  if (storedKey !== null) {
+    cachedGroupsKey = storedKey;
+    cachedGroups = clonePlainData(groups);
+  } else {
+    cachedGroupsKey = null;
+    cachedGroups = [];
+  }
+  return { key: storedKey, groups };
+}
+
 export function getModelProviderGroups(): ModelProviderGroup[] {
-  return ensureModelProviderGroups();
+  return clonePlainData(readModelProviderGroupsShared().groups);
 }
 
 /** Consume the one-time notice emitted after resetting stored caps to Auto. */
@@ -893,8 +946,22 @@ export function consumeOutputTokenAutoMigrationNotice(): boolean {
   return pending;
 }
 
-export function setModelProviderGroups(groups: ModelProviderGroup[]): void {
+export function setModelProviderGroups(
+  groups: ModelProviderGroup[],
+  options: {
+    /**
+     * False saves now and leaves the notification to a later
+     * notifyModelProviderGroupsChanged() (settings text fields coalesce
+     * keystrokes this way).
+     */
+    notify?: boolean;
+  } = {},
+): void {
   storeModelProviderGroups(normalizeModelProviderGroups(groups));
+  if (options.notify !== false) notifyModelProviderGroupsChanged();
+}
+
+export function notifyModelProviderGroupsChanged(): void {
   for (const listener of modelProviderGroupListeners) listener();
 }
 
@@ -970,8 +1037,34 @@ export function createWebChatTargetRow(
   return { id: createId("model"), model: model.trim() };
 }
 
+let cachedRuntimeEntriesGroupsKey: string | null = null;
+let cachedRuntimeEntriesCodexSnapshot: unknown = null;
+let cachedRuntimeEntries: RuntimeModelEntry[] = [];
+
 export function getRuntimeModelEntries(): RuntimeModelEntry[] {
-  const groups = getModelProviderGroups();
+  const { key, groups } = readModelProviderGroupsShared();
+  // Codex Direct rows read the live catalog snapshot, which is replaced (never
+  // mutated) when it changes, so its identity is part of the cache key.
+  const codexSnapshot = getCodexDirectCatalogSnapshot();
+  if (
+    key !== null &&
+    key === cachedRuntimeEntriesGroupsKey &&
+    codexSnapshot === cachedRuntimeEntriesCodexSnapshot
+  ) {
+    return clonePlainData(cachedRuntimeEntries);
+  }
+  const entries = buildRuntimeModelEntries(groups);
+  cachedRuntimeEntriesGroupsKey = key;
+  cachedRuntimeEntriesCodexSnapshot = codexSnapshot;
+  cachedRuntimeEntries = key !== null ? entries : [];
+  // Entries may share nested objects with the cached groups; never hand
+  // those out.
+  return clonePlainData(entries);
+}
+
+function buildRuntimeModelEntries(
+  groups: readonly ModelProviderGroup[],
+): RuntimeModelEntry[] {
   const entries: RuntimeModelEntry[] = [];
 
   for (const [groupIndex, group] of groups.entries()) {

@@ -8,6 +8,8 @@ import type { AgentSkill, LoadedSkill } from "../../skills";
 import { SKILL_SCOPE_GUARD } from "../../skills/scopeGuard";
 import type { AgentRuntimeRequest, AgentToolDefinition } from "../../types";
 import { fail, ok, validateObject } from "../shared";
+import { toolGuidanceItems } from "../guidance";
+import { isSkillWithheldForEphemeralRequest } from "../../skills/sideChatScope";
 
 export type LoadSkillInput = { id: string };
 
@@ -58,19 +60,20 @@ function collectSkillToolGuidance(
   const withSkill = [...new Set([...activeSkillIds, skillId])];
   const instructions = new Set<string>();
   for (const tool of tools) {
-    const guidance = tool.guidance;
-    if (!guidance) continue;
-    const instruction = guidance.instruction.trim();
-    if (!instruction) continue;
-    if (!guidance.matches(request, { matchedSkillIds: withSkill })) continue;
-    if (delivered) {
-      if (delivered.has(instruction)) continue;
-    } else {
-      if (!guidance.matches(request, { matchedSkillIds: [skillId] })) continue;
-      if (guidance.matches(request, { matchedSkillIds: activeSkillIds }))
-        continue;
+    for (const guidance of toolGuidanceItems(tool.guidance)) {
+      const instruction = guidance.instruction.trim();
+      if (!instruction) continue;
+      if (!guidance.matches(request, { matchedSkillIds: withSkill })) continue;
+      if (delivered) {
+        if (delivered.has(instruction)) continue;
+      } else {
+        if (!guidance.matches(request, { matchedSkillIds: [skillId] }))
+          continue;
+        if (guidance.matches(request, { matchedSkillIds: activeSkillIds }))
+          continue;
+      }
+      instructions.add(instruction);
     }
-    instructions.add(instruction);
   }
   return [...instructions];
 }
@@ -124,6 +127,22 @@ export function createLoadSkillTool(
     async execute(input, context) {
       const skills = getSkills();
       const skill = skills.find((candidate) => candidate.id === input.id);
+      if (
+        skill &&
+        context?.request &&
+        isSkillWithheldForEphemeralRequest(skill.id, context.request)
+      ) {
+        return {
+          found: false,
+          error: `Skill "${input.id}" changes the library, and this side chat is read-only. The main chat can run it.`,
+          availableSkillIds: skills
+            .map((candidate) => candidate.id)
+            .filter(
+              (id) => !isSkillWithheldForEphemeralRequest(id, context.request!),
+            )
+            .sort((left, right) => left.localeCompare(right)),
+        };
+      }
       if (!skill) {
         return {
           found: false,
@@ -133,7 +152,11 @@ export function createLoadSkillTool(
             .sort((left, right) => left.localeCompare(right)),
         };
       }
-      const loaded = await loadSkill(skill, getShippedInstruction(skill.id));
+      // An MCP scope names its runtime (claude_code or codex); the plugin's
+      // own Agent names none, and reads no runtime section.
+      const loaded = await loadSkill(skill, getShippedInstruction(skill.id), {
+        runtime: context?.conversationSystem,
+      });
       let toolGuidance: string | undefined;
       if (context?.request) {
         const records = context.request.loadedSkillRecords || [];

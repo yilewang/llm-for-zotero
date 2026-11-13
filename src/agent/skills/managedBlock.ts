@@ -160,7 +160,11 @@ export function getSkillCustomizationNotice(
   return null;
 }
 
-/** Simple djb2 hash — fast, good distribution, not crypto. */
+/**
+ * Simple djb2 hash — fast, good distribution, not crypto. It is 32 bits, so a
+ * user's edited text can in principle collide with a listed shipped hash and
+ * be upgraded as untouched (about 1 in 4 billion per compared text).
+ */
 export function hashBody(str: string): string {
   let h = 5381;
   for (let i = 0; i < str.length; i++) {

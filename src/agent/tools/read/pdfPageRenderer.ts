@@ -22,9 +22,15 @@ export type PdfPageRenderInput = {
   neighborPages?: number;
 };
 
+/** Pages rendered at most: each one is an image the user reviews. */
+const MAX_RENDERED_PAGES = 12;
+
+/** The pages to render, the first `MAX_RENDERED_PAGES` of those named. */
 function normalizePages(value: unknown): number[] | undefined {
-  const parsed = parsePageSelectionValue(value);
-  return parsed?.pageIndexes;
+  return parsePageSelectionValue(value)?.pageIndexes.slice(
+    0,
+    MAX_RENDERED_PAGES,
+  );
 }
 
 /**
@@ -205,11 +211,11 @@ export function createPdfPageRenderer(
       if (
         Object.prototype.hasOwnProperty.call(resolutionData, "pageSelection")
       ) {
-        const selection = parsePageSelectionValue(resolutionData.pageSelection);
-        if (!selection?.pageIndexes.length) {
+        const pages = normalizePages(resolutionData.pageSelection);
+        if (!pages?.length) {
           return fail("At least one page is required");
         }
-        return ok({ ...input, pages: selection.pageIndexes });
+        return ok({ ...input, pages });
       }
       return ok(input);
     },

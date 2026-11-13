@@ -124,15 +124,21 @@ export async function readFileBytes(path: string): Promise<Uint8Array | null> {
 
 /**
  * Writes bytes to a file. Write errors propagate.
+ * With `atomic`, the file is written beside the target and renamed into place.
  * Returns false, without writing, when no API exists.
  */
 export async function writeFileBytes(
   path: string,
   bytes: Uint8Array,
+  options?: { atomic?: boolean },
 ): Promise<boolean> {
   const io = getIOUtils();
   if (io?.write) {
-    await io.write(path, bytes);
+    // With a tmpPath, IOUtils writes the temp file and renames it into place,
+    // so a failed write never leaves a half-written file at `path`.
+    if (options?.atomic)
+      await io.write(path, bytes, { tmpPath: `${path}.tmp` });
+    else await io.write(path, bytes);
     return true;
   }
   const osFile = getOSFile();

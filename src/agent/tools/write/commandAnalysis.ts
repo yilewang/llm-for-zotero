@@ -10,6 +10,7 @@ import {
   parseSimpleShellWords,
   isReadOnlyCommand,
 } from "./shellSyntax";
+import { reachesAuthorizationState } from "./authorizationTampering";
 
 export type RunCommandInput = {
   command: string;
@@ -208,11 +209,7 @@ function commandRiskSignals(command: string): ActionRiskSignal[] {
   ) {
     signals.push("broad_delete");
   }
-  if (
-    /originalAgentPermissionMode|agentLibraryWriteMode|authorization|grantStore/i.test(
-      command,
-    )
-  ) {
+  if (reachesAuthorizationState(command)) {
     signals.push("authorization_tampering");
   }
   return signals;

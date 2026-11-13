@@ -11,6 +11,37 @@ export type PdfContext = {
   embeddingPromise?: Promise<number[][] | null>;
   embeddingPromiseKey?: string;
   embeddingFailureKey?: string;
+  /**
+   * The section structure of a chaptered plain PDF (bookmarks, else numbered
+   * headings that open pages). Absent for papers and every other source.
+   */
+  documentStructure?: PdfDocumentStructure;
+  /**
+   * An unchaptered plain PDF's pages, in order (entry `i` is PDF page
+   * `i + 1`), each with its size and first text line, when the text splits
+   * into exactly the PDF's pages. Only a chat's load computes it, and
+   * chunkMeta stays as it was, so retrieval and the library index read the
+   * paper as before.
+   */
+  textPages?: Array<{ tokens: number; firstLine: string }>;
+  /**
+   * An unchaptered plain PDF's sections by its bookmarks alone
+   * (`bookmarkSectionTree`), when it has usable ones: the map a chat shows
+   * when the whole text does not fit, and what its section ids read. Only a
+   * chat's load computes it; chunkMeta stays as it was.
+   */
+  bookmarkSections?: Pick<
+    PdfDocumentStructure,
+    "pageCount" | "sections" | "pieces"
+  >;
+  /**
+   * A plain PDF text that lost pages to Zotero's trimming: the shift its
+   * bookmarks prove (`textPageOffset`; 0 when only trailing pages were
+   * lost), with the number of text pages it was proven on. Only a chat's
+   * load computes it; page reads place text page `i` on PDF page
+   * `i + pageOffset` by it.
+   */
+  textPageOffset?: TextPageOffset;
   sourceType?:
     | "mineru"
     | "zotero-worker"
@@ -19,6 +50,89 @@ export type PdfContext = {
     | "attachment-html"
     | "attachment-txt"
     | "attachment-docx";
+};
+
+/**
+ * Text page `i` is PDF page `i + pageOffset`, proven for a text of
+ * `textParts` form-feed separated pages.
+ */
+export type TextPageOffset = {
+  pageOffset: number;
+  textParts: number;
+  /**
+   * The PDF file the shift was proven on. A page-text read applies the
+   * shift only to the file with this size and modification time; a
+   * replaced file is read without it. Absent: not checked.
+   */
+  file?: { size: number | null; mtime: number | null };
+};
+
+/** One section of a chaptered plain PDF's text, in document order. */
+export type DocumentStructureSection = {
+  title: string;
+  /** 1 for a top-level section. */
+  level: number;
+  /** Index of the enclosing section in the same list. */
+  parentIndex?: number;
+  /** Text offsets: own text `[charStart, ownCharEnd)`, with subsections to `charEnd`. */
+  charStart: number;
+  ownCharEnd: number;
+  charEnd: number;
+  /** 0-based PDF page indexes of the section with its subsections. */
+  pageStart: number;
+  pageEnd: number;
+  /** Size of the section with its subsections, and of its own text. */
+  chars: number;
+  ownChars: number;
+  tokens: number;
+};
+
+/** A chaptered plain PDF's structure, as its chunks carry it. */
+export type PdfDocumentStructure = {
+  source: "bookmarks" | "headings";
+  /** The PDF's page count. */
+  pageCount: number;
+  /** Sections with their heading chain and the chunks they overlap. */
+  sections: Array<
+    DocumentStructureSection & {
+      /** Heading chain down to the section, e.g. `Chapter 2 › 2.1 Origins`. */
+      path: string;
+      /** First and last chunk the section (with subsections) overlaps. */
+      chunkStart: number;
+      chunkEnd: number;
+    }
+  >;
+  /**
+   * The chunks cut at every section start, in chunk order, without the text
+   * a chunk repeats from the one before it: what a section read returns.
+   */
+  pieces?: SectionChunkPiece[];
+  /**
+   * The chunk metadata as it was before the structure was applied: what the
+   * library text index stores, so index rows do not depend on who loaded
+   * the text first.
+   */
+  plainChunkMeta: PdfChunkMeta[];
+};
+
+/** The text of one chunk that lies in one section. */
+export type SectionChunkPiece = {
+  chunkIndex: number;
+  /** Chunk text `[start, end)`. */
+  start: number;
+  end: number;
+  /**
+   * Where it lies in the document text. A chunk whose text does not line
+   * up with the source is one whole piece, read with every section it
+   * touches.
+   */
+  sourceStart: number;
+  sourceEnd: number;
+  /** The deepest section that holds its start. */
+  sectionIndex: number;
+  /** 0-based PDF pages. */
+  pageStart: number;
+  pageEnd: number;
 };
 
 export type PdfChunkKind =
@@ -54,6 +168,12 @@ export type PdfChunkMeta = {
   sectionLabel?: string;
   /** Position of the enclosing section in the manifest's section list. */
   sectionIndex?: number;
+  /**
+   * Every section a chaptered PDF's chunk lies in, enclosing sections
+   * included: a chunk that crosses a section start is in both sections.
+   * The library index does not store it.
+   */
+  sectionIndexes?: number[];
   /** Heading chain down to the chunk, e.g. `2 Algorithm › 2.1 Weak form`. */
   sectionPath?: string;
   /** Markdown heading depth of the enclosing section: `#` → 1, `##` → 2. */
@@ -130,6 +250,8 @@ export type PaperContextCandidate = {
   sectionLabel?: string;
   /** Position of the enclosing section in the document's section list. */
   sectionIndex?: number;
+  /** Every section the chunk lies in; see `PdfChunkMeta`. */
+  sectionIndexes?: number[];
   /** Heading chain down to the chunk, e.g. `2 Algorithm › 2.1 Weak form`. */
   sectionPath?: string;
   /** The standard section the chunk lies in; see `PdfChunkMeta`. */
@@ -164,10 +286,21 @@ export type DocumentOutlineSection = {
   level: number;
   /** Heading chain down to the section, e.g. `2 Algorithm › 2.1 Weak form`. */
   path: string;
-  /** First and last chunk index of the section, inclusive. */
+  /** First and last chunk index of the section with its subsections, inclusive. */
   chunkIndexes: [number, number];
-  /** Total characters of the section's chunks. */
+  /** Characters of the section with its subsections. */
   chars: number;
+  /** Characters of the section's own text, before its first subsection. */
+  ownChars: number;
+  /** Estimated tokens of the section with its subsections. */
+  tokens: number;
+  /** Pages from 1, as paper_read's `pages` input counts them, when known. */
+  pageStart?: number;
+  pageEnd?: number;
+  /** The enclosing section, when there is one. */
+  parentId?: string;
+  /** The sections directly under this one, in document order. */
+  childIds: string[];
 };
 
 /**
@@ -193,6 +326,13 @@ export type DocumentStructureHealth = {
 export type DocumentOutline = {
   sections: DocumentOutlineSection[];
   totalChunks: number;
+  /**
+   * The document has chapters (`PdfContext.documentStructure`): its map is
+   * read instead of its whole text.
+   */
+  chaptered?: true;
+  /** The PDF's page count, when the map knows it. */
+  pageCount?: number;
   /** Parse health, when the MinerU manifest records it. */
   structure?: DocumentStructureHealth;
 };

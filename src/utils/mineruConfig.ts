@@ -12,11 +12,14 @@ const MINERU_GLOBAL_AUTO_PARSE_KEY = `${config.prefsPrefix}.mineruGlobalAutoPars
 const MINERU_SYNC_ENABLED_KEY = `${config.prefsPrefix}.mineruSyncEnabled`;
 const MINERU_MAX_AUTO_PAGES_KEY = `${config.prefsPrefix}.mineruMaxAutoPages`;
 const MINERU_EXCLUDE_PATTERNS_KEY = `${config.prefsPrefix}.mineruExcludePatterns`;
+const MINERU_LOCAL_SERVER_COMMAND_KEY = `${config.prefsPrefix}.mineruLocalServerCommand`;
+const MINERU_LOCAL_SERVER_IDLE_MINUTES_KEY = `${config.prefsPrefix}.mineruLocalServerIdleMinutes`;
 
 export const DEFAULT_MINERU_LOCAL_API_BASE = "http://127.0.0.1:8000";
 export const DEFAULT_MINERU_CLOUD_MODEL: MineruCloudModel = "vlm";
 export const DEFAULT_MINERU_LOCAL_BACKEND: MineruLocalBackend = "pipeline";
 export const DEFAULT_MINERU_FORCE_OCR = false;
+export const DEFAULT_MINERU_LOCAL_SERVER_IDLE_MINUTES = 10;
 export const DEFAULT_MINERU_MAX_AUTO_PAGES = 200;
 export const MAX_MINERU_FILENAME_PATTERN_LENGTH = 256;
 
@@ -187,6 +190,49 @@ export function setMineruLocalApiBase(value: string): void {
   Zotero.Prefs.set(
     MINERU_LOCAL_API_BASE_KEY,
     normalizeMineruLocalApiBase(value),
+    true,
+  );
+}
+
+export function normalizeMineruLocalServerCommand(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function getMineruLocalServerCommand(): string {
+  return normalizeMineruLocalServerCommand(
+    Zotero.Prefs.get(MINERU_LOCAL_SERVER_COMMAND_KEY, true),
+  );
+}
+
+export function setMineruLocalServerCommand(value: string): void {
+  Zotero.Prefs.set(
+    MINERU_LOCAL_SERVER_COMMAND_KEY,
+    normalizeMineruLocalServerCommand(value),
+    true,
+  );
+}
+
+export function normalizeMineruLocalServerIdleMinutes(value: unknown): number {
+  const num =
+    typeof value === "number"
+      ? value
+      : Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(num) || num < 1) {
+    return DEFAULT_MINERU_LOCAL_SERVER_IDLE_MINUTES;
+  }
+  return Math.floor(num);
+}
+
+export function getMineruLocalServerIdleMinutes(): number {
+  return normalizeMineruLocalServerIdleMinutes(
+    Zotero.Prefs.get(MINERU_LOCAL_SERVER_IDLE_MINUTES_KEY, true),
+  );
+}
+
+export function setMineruLocalServerIdleMinutes(value: number): void {
+  Zotero.Prefs.set(
+    MINERU_LOCAL_SERVER_IDLE_MINUTES_KEY,
+    normalizeMineruLocalServerIdleMinutes(value),
     true,
   );
 }

@@ -18,6 +18,7 @@
 import { appLogger } from "../core/logging";
 import {
   classifyConversationKey,
+  isEphemeralConversationKey,
   type ConversationKeyKind,
 } from "../shared/conversationKeySpace";
 import { getRegisteredConversationScope } from "../shared/conversationRegistry";
@@ -343,6 +344,8 @@ export async function recordUsageEvent(
     if (!db) return false;
     const conversationKey = normalizePositiveInt(input.conversationKey);
     if (!conversationKey) return false;
+    // A temporary side chat's key (reserved band) is never persisted.
+    if (isEphemeralConversationKey(conversationKey)) return false;
     await initUsageStore();
     const timestamp = Number.isFinite(input.timestamp)
       ? Math.floor(Number(input.timestamp))

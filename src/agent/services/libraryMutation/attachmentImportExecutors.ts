@@ -1,11 +1,68 @@
+import type { AgentToolContext } from "../../types";
+import type { ZoteroGateway } from "../zoteroGateway";
+import { MutationNoEffectError } from "../externalMutationCoordinator";
 import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
+import { assertItemInActiveLibrary } from "./forwardExecutionSupport";
 
 type DomainOperation =
   | "import_identifiers"
   | "delete_attachment"
   | "rename_attachment"
   | "relink_attachment"
-  | "import_local_files";
+  | "import_local_files"
+  | "attach_file"
+  | "attach_url"
+  | "find_pdf"
+  | "update_annotation";
+
+/**
+ * The regular item an attach or a find writes under, refused before anything
+ * is written when it is missing, trashed, not a regular item, or in another
+ * library than the chat's.
+ */
+function regularParent(
+  itemId: number,
+  context: AgentToolContext,
+  zoteroGateway: ZoteroGateway,
+  operationLabel: string,
+): Zotero.Item {
+  const item = zoteroGateway.getItem(itemId);
+  if (!item) throw new MutationNoEffectError(`Item ${itemId} was not found.`);
+  if (item.isRegularItem?.() !== true)
+    throw new MutationNoEffectError(
+      `Item ${itemId} is not a regular item; attach to the paper itself, not to a note, attachment or annotation.`,
+    );
+  if (item.deleted)
+    throw new MutationNoEffectError(`Item ${itemId} is in the trash.`);
+  assertItemInActiveLibrary(item, context, operationLabel);
+  return item;
+}
+
+/**
+ * Whether `path` is a regular file. A directory or a missing path is refused
+ * before the write: Zotero would throw midway, which reads as "may have
+ * applied".
+ */
+async function isRegularFile(path: string): Promise<boolean> {
+  const io = (
+    globalThis as {
+      IOUtils?: { stat?: (path: string) => Promise<{ type?: string }> };
+    }
+  ).IOUtils;
+  if (!io?.stat) return true;
+  try {
+    return (await io.stat(path)).type === "regular";
+  } catch {
+    return false;
+  }
+}
+
+function trashCreated(ids: number[], what: string) {
+  return {
+    inverseOperations: [{ type: "trash_items" as const, itemIds: ids }],
+    description: `Trash ${what}`,
+  };
+}
 
 export const attachmentImportExecutors = {
   import_identifiers: async (operation, context, zoteroGateway) => {
@@ -149,6 +206,159 @@ export const attachmentImportExecutors = {
               }`,
             }
           : null,
+    };
+  },
+  attach_file: async (operation, context, zoteroGateway) => {
+    regularParent(operation.parentItemId, context, zoteroGateway, "attach");
+    if (!(await isRegularFile(operation.filePath)))
+      throw new MutationNoEffectError(
+        `${operation.filePath} is not a file; nothing was attached.`,
+      );
+    const attached = await zoteroGateway.attachFile({
+      parentItemId: operation.parentItemId,
+      filePath: operation.filePath,
+      link: operation.link,
+    });
+    if (attached.status === "refused")
+      throw new MutationNoEffectError(
+        `${attached.reason} Nothing was attached.`,
+      );
+    const { attachment } = attached;
+    return {
+      result: {
+        operation: operation.type,
+        operationId: operation.id,
+        result: {
+          status: attached.status,
+          parentItemId: operation.parentItemId,
+          attachmentIds: [attachment.attachmentId],
+          attachments: [attachment],
+        },
+      },
+      inverse:
+        attached.status === "attached"
+          ? trashCreated(
+              [attachment.attachmentId],
+              `the attached file ${attachment.title || operation.filePath}`,
+            )
+          : undefined,
+    };
+  },
+  attach_url: async (operation, context, zoteroGateway) => {
+    const parent = regularParent(
+      operation.parentItemId,
+      context,
+      zoteroGateway,
+      "web page attach",
+    );
+    const saved = await zoteroGateway.attachUrl({
+      parentItemId: operation.parentItemId,
+      libraryID: parent.libraryID,
+      url: operation.url,
+    });
+    if (saved.status === "failed")
+      throw new MutationNoEffectError(
+        `Zotero could not save ${operation.url}: ${saved.reason}. Nothing was attached.`,
+      );
+    const ids = saved.attachments.map((attachment) => attachment.attachmentId);
+    return {
+      result: {
+        operation: operation.type,
+        operationId: operation.id,
+        result: {
+          status: saved.status,
+          parentItemId: operation.parentItemId,
+          // Both attachments the item now has for the page; the ones it
+          // already had are named again in reusedAttachmentIds.
+          attachmentIds: ids,
+          attachments: saved.attachments,
+          reusedAttachmentIds: ids.filter(
+            (id) => !saved.createdIds.includes(id),
+          ),
+        },
+      },
+      // Undo trashes only what this call made.
+      inverse: saved.createdIds.length
+        ? trashCreated(
+            saved.createdIds,
+            saved.createdIds.length === 2
+              ? `the link and snapshot of ${operation.url}`
+              : `the attachment saved for ${operation.url}`,
+          )
+        : undefined,
+    };
+  },
+  find_pdf: async (operation, context, zoteroGateway) => {
+    const item = regularParent(
+      operation.itemId,
+      context,
+      zoteroGateway,
+      "Find Available PDF",
+    );
+    const outcome = await zoteroGateway.findAvailablePdf(item);
+    if (outcome.status === "not_found")
+      return {
+        result: {
+          operation: operation.type,
+          operationId: operation.id,
+          result: {
+            status: "not_found",
+            itemId: operation.itemId,
+            reason: outcome.reason,
+          },
+        },
+      };
+    const { attachment } = outcome;
+    return {
+      result: {
+        operation: operation.type,
+        operationId: operation.id,
+        result: {
+          status: "found",
+          itemId: operation.itemId,
+          attachmentIds: [attachment.attachmentId],
+          attachments: [attachment],
+        },
+      },
+      inverse: trashCreated(
+        [attachment.attachmentId],
+        `the found file ${attachment.title}`,
+      ),
+    };
+  },
+  update_annotation: async (operation, context, zoteroGateway) => {
+    const annotation = zoteroGateway.getItem(operation.annotationId);
+    if (!annotation?.isAnnotation?.())
+      throw new MutationNoEffectError(
+        `Item ${operation.annotationId} is not an annotation.`,
+      );
+    if (annotation.annotationIsExternal)
+      throw new MutationNoEffectError(
+        `Annotation ${operation.annotationId} is stored inside the PDF file, and Zotero keeps it read-only.`,
+      );
+    if (annotation.deleted)
+      throw new MutationNoEffectError(
+        `Annotation ${operation.annotationId} is in the trash.`,
+      );
+    assertItemInActiveLibrary(annotation, context, "annotation edit");
+    const updated = await zoteroGateway.updateAnnotation({
+      annotation,
+      comment: operation.comment,
+      color: operation.color,
+    });
+    return {
+      result: {
+        operation: operation.type,
+        operationId: operation.id,
+        result: {
+          status: updated.status,
+          annotationId: operation.annotationId,
+          annotationType: String(annotation.annotationType || ""),
+          previous: updated.previous,
+          comment: updated.comment,
+          color: updated.color,
+        },
+      },
     };
   },
 } satisfies Pick<ForwardExecutorRegistry, DomainOperation>;

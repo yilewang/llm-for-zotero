@@ -68,7 +68,7 @@ describe("workflow: OpenCode provider request contract", function () {
           authMode: "api_key",
           apiBase,
           apiKey: "workflow-dummy-key",
-          presetIdOverride: "opencode",
+          presetIdOverride: "opencode_go",
           providerProtocol: "openai_chat_compat",
           models: [
             {

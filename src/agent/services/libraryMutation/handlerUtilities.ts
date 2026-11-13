@@ -2,6 +2,11 @@ import type { LibraryMutationOperation } from "./contracts";
 import type { MutationStateView } from "./stateView";
 import { renderMarkdownForNote } from "../../../utils/markdown";
 import { normalizeNotePlainText, stripNoteHtml } from "../../../utils/noteText";
+import {
+  citationSignatures,
+  newCitationRequestsExpected,
+} from "../../../services/notes/noteCitations";
+import { hasNewCitationTokens } from "../../../utils/noteCitations";
 
 export const resultCount = (result: unknown, key: string): number => {
   const value = (result || {}) as Record<string, unknown>;
@@ -65,6 +70,51 @@ export const noteContentMatches = (
     (actualText === expectedText || actualText.includes(expectedText)),
   );
 };
+
+/**
+ * Whether a stored note holds a batch body. A body's `{{cite item=…}}`
+ * request is stored as a citation chip, so the stored note is compared with
+ * the chips' text and must cite the same items at the same locators: two
+ * works can share a label. Items named by key are looked up in the library
+ * of the item the note was written for. A body whose requests cannot be
+ * expanded is compared as written. A body without a request is compared as
+ * written and looks nothing up.
+ */
+export function batchNoteMatcher(
+  content: string,
+  targetItemId: number,
+): (actualHtml: string | undefined) => boolean {
+  if (!hasNewCitationTokens(content))
+    return (actualHtml) => noteContentMatches(actualHtml, content);
+  let expected: { text: string; citations: string[] };
+  try {
+    expected = newCitationRequestsExpected(content, (itemRef) =>
+      /^\d+$/.test(itemRef)
+        ? Zotero.Items.get(Number(itemRef)) || null
+        : (() => {
+            const libraryID = Zotero.Items.get(targetItemId)?.libraryID;
+            return libraryID
+              ? Zotero.Items.getByLibraryAndKey(
+                  libraryID,
+                  itemRef.toUpperCase(),
+                ) || null
+              : null;
+          })(),
+    );
+  } catch {
+    return (actualHtml) => noteContentMatches(actualHtml, content);
+  }
+  return (actualHtml) => {
+    if (!noteContentMatches(actualHtml, expected.text)) return false;
+    const stored = citationSignatures(actualHtml || "");
+    return expected.citations.every((signature) => {
+      const at = stored.indexOf(signature);
+      if (at < 0) return false;
+      stored.splice(at, 1);
+      return true;
+    });
+  };
+}
 
 export function onePer<Operation extends LibraryMutationOperation, Value>(
   operation: Operation,

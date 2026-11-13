@@ -1,6 +1,9 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
-import { classifyConversationKey } from "./conversationKeySpace";
+import {
+  capAllocationRangeEndBelowEphemeralBand,
+  classifyConversationKey,
+} from "./conversationKeySpace";
 import { CONVERSATION_MESSAGE_TABLES } from "./conversationStore/storeTables";
 
 export type ConversationKeyLedgerKind = "global" | "paper";
@@ -496,6 +499,12 @@ export async function allocateConversationKeyInTransaction(params: {
     throw new Error("Invalid conversation key allocation request");
   }
   const id = rangeID(range);
+  // Real keys never enter the reserved ephemeral band. The counter keeps the
+  // range's identity (rangeID above) so its high-water mark carries over.
+  const allocationEnd = capAllocationRangeEndBelowEphemeralBand(
+    range.start,
+    range.endExclusive,
+  );
   const counterRows = (await db.queryAsync(
     `SELECT next_key AS nextKey
      FROM ${KEY_COUNTERS_TABLE}
@@ -508,14 +517,14 @@ export async function allocateConversationKeyInTransaction(params: {
      FROM ${KEY_LEDGER_TABLE}
      WHERE conversation_key >= ?
        AND conversation_key < ?`,
-    [range.start, range.endExclusive],
+    [range.start, allocationEnd],
   )) as Array<{ maxKey?: unknown }> | undefined;
   let candidate = Math.max(
     range.start,
     Number(counterRows?.[0]?.nextKey) || 0,
     (Number(maxRows?.[0]?.maxKey) || range.start - 1) + 1,
   );
-  while (candidate < range.endExclusive) {
+  while (candidate < allocationEnd) {
     const usedRows = (await db.queryAsync(
       `SELECT 1 AS present
        FROM ${KEY_LEDGER_TABLE}
@@ -526,7 +535,7 @@ export async function allocateConversationKeyInTransaction(params: {
     if (!usedRows?.length) break;
     candidate += 1;
   }
-  if (candidate >= range.endExclusive) {
+  if (candidate >= allocationEnd) {
     throw new Error(
       `Conversation key range exhausted for ${range.system}/${range.kind}`,
     );
@@ -719,10 +728,15 @@ export async function nextUnissuedConversationKeyInRange(params: {
 }): Promise<number> {
   const db = getDb();
   const start = normalizePositiveInt(params.start);
-  const endExclusive = normalizePositiveInt(params.endExclusive);
-  if (!db?.queryAsync || !start || !endExclusive || endExclusive <= start) {
+  const requestedEnd = normalizePositiveInt(params.endExclusive);
+  if (!db?.queryAsync || !start || !requestedEnd || requestedEnd <= start) {
     throw new Error("Invalid conversation key allocation range");
   }
+  // Real keys never enter the reserved ephemeral band.
+  const endExclusive = capAllocationRangeEndBelowEphemeralBand(
+    start,
+    requestedEnd,
+  );
   const floor = Math.max(start, normalizePositiveInt(params.atLeast) || start);
   const rows = (await db.queryAsync(
     `SELECT MAX(conversation_key) AS maxKey

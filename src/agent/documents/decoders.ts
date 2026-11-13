@@ -1,15 +1,24 @@
+import { OUTSIDE_PAPER_CSL_TYPES, type OutsidePaperCslType } from "./types";
 import type {
+  BibliographyEntry,
+  CslName,
+  DocumentCitationDraft,
   DocumentCoverageItem,
   DocumentArtifact,
   DocumentActionState,
+  DocumentRevisionOf,
   FormattedCitationBundle,
   FormattedCitationCluster,
+  OutsidePaperCslItem,
+  OutsidePaperSnapshot,
+  PlanCitationCluster,
   PlanCitationSource,
   PlanDocument,
   PlanDocumentAsset,
   PlanDocumentOutboxRecord,
   PlanDocumentValidation,
   PlanVerifiedQuote,
+  ZoteroCitationSource,
 } from "./types";
 import type { SkillRoutingReceipt } from "../skills/routingTypes";
 
@@ -115,7 +124,17 @@ function decodeCitationSource(
   label: string,
 ): PlanCitationSource {
   const input = object(value, label);
-  let locator: PlanCitationSource["locator"];
+  // A stored source without a kind is a Zotero item: every source before
+  // outside papers could be cited.
+  if (input.kind === "outside") {
+    return {
+      kind: "outside",
+      paperId: string(input.paperId, `${label}.paperId`),
+      evidenceRefs: strings(input.evidenceRefs ?? [], `${label}.evidenceRefs`),
+    };
+  }
+  if (input.kind !== undefined) throw new Error(`${label}.kind is invalid`);
+  let locator: ZoteroCitationSource["locator"];
   if (input.locator !== undefined) {
     const raw = object(input.locator, `${label}.locator`);
     if (raw.kind !== "pdf_page") {
@@ -142,6 +161,94 @@ function decodeCitationSource(
     itemKey: string(input.itemKey, `${label}.itemKey`),
     evidenceRefs: strings(input.evidenceRefs, `${label}.evidenceRefs`),
     locator,
+  };
+}
+
+/** An optional text field: absent stays absent, present must be text. */
+function optionalString(
+  input: Row,
+  key: string,
+  label: string,
+): Record<string, string> {
+  return input[key] === undefined
+    ? {}
+    : { [key]: string(input[key], `${label}.${key}`) };
+}
+
+function decodeCslName(value: unknown, label: string): CslName {
+  const input = object(value, label);
+  if (input.literal !== undefined)
+    return { literal: string(input.literal, `${label}.literal`) };
+  return {
+    family: string(input.family, `${label}.family`),
+    ...optionalString(input, "given", label),
+    ...optionalString(input, "suffix", label),
+  };
+}
+
+function decodeOutsidePaperCsl(
+  value: unknown,
+  label: string,
+): OutsidePaperCslItem {
+  const input = object(value, label);
+  const id = string(input.id, `${label}.id`);
+  if (/^\d+$/.test(id) || id.includes("/"))
+    throw new Error(`${label}.id is invalid`);
+  if (!OUTSIDE_PAPER_CSL_TYPES.some((type) => type === input.type))
+    throw new Error(`${label}.type is invalid`);
+  let issued: OutsidePaperCslItem["issued"];
+  if (input.issued !== undefined) {
+    const raw = object(input.issued, `${label}.issued`);
+    const parts = raw["date-parts"];
+    if (!Array.isArray(parts))
+      throw new Error(`${label}.issued.date-parts must be an array`);
+    issued = {
+      "date-parts": parts.map((part, index) => {
+        if (!Array.isArray(part))
+          throw new Error(`${label}.issued.date-parts[${index}] is invalid`);
+        return part.map((entry, partIndex) =>
+          number(entry, `${label}.issued.date-parts[${index}][${partIndex}]`),
+        );
+      }),
+    };
+  }
+  if (input.author !== undefined && !Array.isArray(input.author))
+    throw new Error(`${label}.author must be an array`);
+  return {
+    id,
+    type: input.type as OutsidePaperCslType,
+    ...optionalString(input, "title", label),
+    ...(Array.isArray(input.author)
+      ? {
+          author: input.author.map((name, index) =>
+            decodeCslName(name, `${label}.author[${index}]`),
+          ),
+        }
+      : {}),
+    ...(issued ? { issued } : {}),
+    ...optionalString(input, "DOI", label),
+    ...optionalString(input, "URL", label),
+    ...optionalString(input, "container-title", label),
+    ...optionalString(input, "volume", label),
+    ...optionalString(input, "issue", label),
+    ...optionalString(input, "page", label),
+  };
+}
+
+function decodeOutsidePaper(
+  value: unknown,
+  index: number,
+): OutsidePaperSnapshot {
+  const label = `citationBundle.outsidePapers[${index}]`;
+  const input = object(value, label);
+  return {
+    paperId: string(input.paperId, `${label}.paperId`),
+    ...optionalString(input, "doi", label),
+    ...optionalString(input, "arxivId", label),
+    ...optionalString(input, "pmid", label),
+    ...optionalString(input, "pmcid", label),
+    ...optionalString(input, "url", label),
+    csl: decodeOutsidePaperCsl(input.csl, `${label}.csl`),
   };
 }
 
@@ -176,30 +283,55 @@ function decodeCitationBundle(value: unknown): FormattedCitationBundle {
       };
     },
   );
-  const bibliographyEntries = input.bibliographyEntries.map((entry, index) => {
-    const bibliography = object(
-      entry,
-      `citationBundle.bibliographyEntries[${index}]`,
-    );
-    return {
-      libraryID: nonNegativeInteger(
-        bibliography.libraryID,
-        `citationBundle.bibliographyEntries[${index}].libraryID`,
-      ),
-      itemKey: string(
-        bibliography.itemKey,
-        `citationBundle.bibliographyEntries[${index}].itemKey`,
-      ),
-      text: string(
-        bibliography.text,
-        `citationBundle.bibliographyEntries[${index}].text`,
-      ),
-      html: string(
-        bibliography.html,
-        `citationBundle.bibliographyEntries[${index}].html`,
-      ),
-    };
-  });
+  if (input.outsidePapers !== undefined && !Array.isArray(input.outsidePapers))
+    throw new Error("citationBundle.outsidePapers must be an array");
+  const outsidePapers = Array.isArray(input.outsidePapers)
+    ? input.outsidePapers.map(decodeOutsidePaper)
+    : undefined;
+  const bibliographyEntries = input.bibliographyEntries.map(
+    (entry, index): BibliographyEntry => {
+      const bibliography = object(
+        entry,
+        `citationBundle.bibliographyEntries[${index}]`,
+      );
+      // An entry with a paperId is an outside paper's; every entry stored
+      // before outside papers is a Zotero item's.
+      if (bibliography.paperId !== undefined) {
+        return {
+          paperId: string(
+            bibliography.paperId,
+            `citationBundle.bibliographyEntries[${index}].paperId`,
+          ),
+          text: string(
+            bibliography.text,
+            `citationBundle.bibliographyEntries[${index}].text`,
+          ),
+          html: string(
+            bibliography.html,
+            `citationBundle.bibliographyEntries[${index}].html`,
+          ),
+        };
+      }
+      return {
+        libraryID: nonNegativeInteger(
+          bibliography.libraryID,
+          `citationBundle.bibliographyEntries[${index}].libraryID`,
+        ),
+        itemKey: string(
+          bibliography.itemKey,
+          `citationBundle.bibliographyEntries[${index}].itemKey`,
+        ),
+        text: string(
+          bibliography.text,
+          `citationBundle.bibliographyEntries[${index}].text`,
+        ),
+        html: string(
+          bibliography.html,
+          `citationBundle.bibliographyEntries[${index}].html`,
+        ),
+      };
+    },
+  );
   return {
     clusters,
     bibliographyEntries,
@@ -208,6 +340,41 @@ function decodeCitationBundle(value: unknown): FormattedCitationBundle {
       title: string(style.title, "citationBundle.style.title"),
     },
     locale: string(input.locale, "citationBundle.locale"),
+    ...(outsidePapers ? { outsidePapers } : {}),
+  };
+}
+
+function decodeCitationDraft(value: unknown): DocumentCitationDraft {
+  const input = object(value, "citationDraft");
+  if (!Array.isArray(input.clusters))
+    throw new Error("citationDraft.clusters must be an array");
+  if (typeof input.markdown !== "string")
+    throw new Error("citationDraft.markdown is required");
+  return {
+    markdown: input.markdown,
+    clusters: input.clusters.map((entry, index): PlanCitationCluster => {
+      const label = `citationDraft.clusters[${index}]`;
+      const cluster = object(entry, label);
+      if (!Array.isArray(cluster.sources))
+        throw new Error(`${label}.sources must be an array`);
+      return {
+        citationId: string(cluster.citationId, `${label}.citationId`),
+        sources: cluster.sources.map((source, sourceIndex) =>
+          decodeCitationSource(source, `${label}.sources[${sourceIndex}]`),
+        ),
+      };
+    }),
+  };
+}
+
+function decodeRevisionOf(value: unknown): DocumentRevisionOf {
+  const input = object(value, "revisionOf");
+  return {
+    documentId: string(input.documentId, "revisionOf.documentId"),
+    documentVersion: nonNegativeInteger(
+      input.documentVersion,
+      "revisionOf.documentVersion",
+    ),
   };
 }
 
@@ -475,6 +642,12 @@ export function decodePlanDocument(value: unknown): PlanDocument {
       integrityPolicy: input.integrityPolicy,
       origin: decodedOrigin,
       ...common,
+      ...(input.citationDraft === undefined
+        ? {}
+        : { citationDraft: decodeCitationDraft(input.citationDraft) }),
+      ...(input.revisionOf === undefined
+        ? {}
+        : { revisionOf: decodeRevisionOf(input.revisionOf) }),
     };
   }
   return {
@@ -505,7 +678,9 @@ function decodeDocumentNoteBinding(
         ? undefined
         : string(note.contentHash, "note.contentHash"),
     nativeContentHashVersion:
-      note.nativeContentHashVersion === 1 ? 1 : undefined,
+      note.nativeContentHashVersion === 1 || note.nativeContentHashVersion === 2
+        ? note.nativeContentHashVersion
+        : undefined,
     nativeContentHash:
       note.nativeContentHash === undefined
         ? undefined

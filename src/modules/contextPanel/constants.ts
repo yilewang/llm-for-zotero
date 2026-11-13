@@ -29,13 +29,17 @@ export const FONT_SCALE_STEP_PERCENT = 10;
 export const MESSAGE_LINE_SPACING_DEFAULT_PERCENT = 150;
 export const MESSAGE_LINE_SPACING_MIN_PERCENT = 150;
 export const MESSAGE_LINE_SPACING_MAX_PERCENT = 250;
-export const MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX = 8;
+export const MESSAGE_PARAGRAPH_SPACING_DEFAULT_PX = 12;
 export const MESSAGE_PARAGRAPH_SPACING_MIN_PX = 0;
 export const MESSAGE_PARAGRAPH_SPACING_MAX_PX = 32;
 export const MESSAGE_WORD_SPACING_DEFAULT_PX = 0;
 export const MESSAGE_WORD_SPACING_MIN_PX = 0;
 export const MESSAGE_WORD_SPACING_MAX_PX = 8;
 export const SELECTED_TEXT_MAX_LENGTH = 4000;
+/** A side-chat transcript attached to the main chat ("sidechat" source). */
+export const SIDECHAT_SELECTED_TEXT_MAX_LENGTH = 24000;
+/** The main chat given to a side chat's model as background. */
+export const MAIN_CHAT_BACKGROUND_CONTEXT_MAX_LENGTH = 24000;
 export const SELECTED_TEXT_PREVIEW_LENGTH = 240;
 export const MAX_SELECTED_TEXT_CONTEXTS = 5;
 // Total visible editable shortcuts: built-in plus user-created custom shortcuts.
@@ -83,9 +87,7 @@ export const REASONING_COMPACT_LABEL = "";
 export const ACTION_LAYOUT_FULL_MODE_BUFFER_PX = 0;
 export const ACTION_LAYOUT_PARTIAL_MODE_BUFFER_PX = 0;
 export const ACTION_LAYOUT_CONTEXT_ICON_WIDTH_PX = 36;
-export const ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX = 56;
-export const ACTION_LAYOUT_MODEL_WRAP_MIN_CHARS = 12;
-export const ACTION_LAYOUT_MODEL_FULL_MAX_LINES = 3;
+export const ACTION_LAYOUT_DROPDOWN_ICON_WIDTH_PX = 36;
 export const CUSTOM_SHORTCUT_ID_PREFIX = "custom-shortcut";
 
 export const BUILTIN_SHORTCUT_FILES = [

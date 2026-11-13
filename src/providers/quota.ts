@@ -1,4 +1,5 @@
 import { createAbortController } from "../utils/apiHelpers";
+import { detectProviderPreset } from "../utils/providerPresets";
 import { parseMiniMaxQuota } from "./minimaxQuota";
 import type { ProviderQuota } from "./types";
 
@@ -68,12 +69,11 @@ export function resolveQuotaTarget(
       if (url.origin === new URL(API_QUOTA_ENDPOINTS[kind]).origin) {
         if (kind === "kimi_code" && !/^\/coding(\/|$)/.test(url.pathname))
           return null;
-        // Go's subscription quota does not describe Zen's prepaid balance.
+        // Go's subscription quota does not describe Zen's prepaid balance, so
+        // only the paths the Go preset claims select it.
         if (
           kind === "opencode_go" &&
-          !/^\/zen\/go\/v1(?:\/(?:chat\/completions|responses|messages))?\/?$/.test(
-            url.pathname,
-          )
+          detectProviderPreset(entry.apiBase) !== "opencode_go"
         )
           return null;
         // GLM plan allowance applies to Coding Plan routes, not PAYG requests.

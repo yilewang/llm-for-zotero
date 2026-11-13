@@ -5,10 +5,12 @@ import { stripWebSourceMarkersForDisplay } from "../../webAccess/attribution";
 import { sanitizeText } from "../../utils/textSanitization";
 import { stripReceiptStatusForDisplay } from "../../agent/contracts/actionEvaluation";
 import {
-  buildQuoteDisplayMarkdown,
   buildQuoteExpandedMarkdown,
-  getMessageQuoteDisplay,
+  buildQuoteRenderPlan,
+  getAssistantRenderDisplay,
+  type QuoteRenderOccurrence,
 } from "./quoteRenderPlan";
+import { stripPartialTrailingCitationToken } from "../../services/quotes/paragraphCitations";
 import {
   decorateAssistantCitationLinks,
   renderQuoteCitationPlaceholders,
@@ -36,28 +38,51 @@ export function buildAssistantDisplayMarkdownForRender(
   >,
   webSourceAnchors: readonly WebSourceAnchor[] = [],
 ): string {
+  return buildAssistantDisplayRenderPlan(message, webSourceAnchors).markdown;
+}
+
+/** Same markdown, plus the occurrences its quote tokens refer to. */
+export function buildAssistantDisplayRenderPlan(
+  message: Pick<
+    Message,
+    "text" | "quoteCitations" | "quoteDisplayOverride" | "streaming"
+  >,
+  webSourceAnchors: readonly WebSourceAnchor[] = [],
+  occurrenceIdScope?: string,
+): { markdown: string; occurrences: QuoteRenderOccurrence[] } {
   const hasWebSources = webSourceAnchors.length > 0;
-  const display = hasWebSources
-    ? { markdown: message.text || "", quoteCitations: message.quoteCitations }
-    : getMessageQuoteDisplay(message);
+  const display = getAssistantRenderDisplay(message, { hasWebSources });
+  // The action-status block the runtime appends is written for the model
+  // that reads the transcript; the reader is shown the same receipts as
+  // the summary card at the end of the trace.
+  const markdown = stripReceiptStatusForDisplay(sanitizeText(display.markdown));
   // Quote cards are finalized after streaming. Until then, keep their text
-  // readable instead of publishing an unresolved interactive-render token.
-  const buildDisplay = message.streaming
-    ? buildQuoteExpandedMarkdown
-    : buildQuoteDisplayMarkdown;
-  return buildDisplay({
+  // readable instead of publishing an unresolved interactive-render token;
+  // paragraph citations show nothing until their marks at the final render,
+  // and neither does a token still being written at the tail.
+  const input = {
     markdown: injectWebSourceAnchorTokens(
       stripWebSourceMarkersForDisplay(
-        // The action-status block the runtime appends is written for the model
-        // that reads the transcript; the reader is shown the same receipts as
-        // the summary card at the end of the trace.
-        stripReceiptStatusForDisplay(sanitizeText(display.markdown)),
+        message.streaming
+          ? stripPartialTrailingCitationToken(markdown)
+          : markdown,
       ),
       webSourceAnchors,
     ),
     quoteCitations: display.quoteCitations,
     allowLegacyInference: !hasWebSources,
-  });
+    occurrenceIdScope,
+  };
+  if (message.streaming) {
+    return {
+      markdown: buildQuoteExpandedMarkdown(input, {
+        paragraphCitations: "omit",
+      }),
+      occurrences: [],
+    };
+  }
+  const plan = buildQuoteRenderPlan(input);
+  return { markdown: plan.displayMarkdown, occurrences: plan.occurrences };
 }
 
 export function decorateCompletedAssistantCitationLinks(
@@ -67,13 +92,14 @@ export function decorateCompletedAssistantCitationLinks(
     webSourceAnchors?: readonly WebSourceAnchor[];
   },
 ): void {
-  const { assistantMessage, bubble, webSourceAnchors = [] } = params;
+  const { assistantMessage, bubble } = params;
   if (assistantMessage.streaming || assistantMessage.compactMarker) return;
   if (!sanitizeText(bubble.textContent || assistantMessage.text || "").trim())
     return;
   try {
     renderQuoteCitationPlaceholders(params);
-    if (!webSourceAnchors.length) decorateAssistantCitationLinks(params);
+    // Library citations keep their chips beside the web and paper markers.
+    decorateAssistantCitationLinks(params);
   } catch (error) {
     appLogger.warn("LLM citation decoration error:", error);
   }
@@ -96,7 +122,12 @@ export function renderAssistantRichText(
     anchors,
   );
   const decorate = () => {
-    decorateWebSourceIndicators(params.bubble, doc, anchors);
+    decorateWebSourceIndicators(
+      params.bubble,
+      doc,
+      anchors,
+      params.assistantMessage.agentRunId,
+    );
     decorateCompletedAssistantCitationLinks(params);
   };
   if (params.incremental && params.assistantMessage.streaming) {

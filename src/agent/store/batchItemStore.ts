@@ -238,6 +238,36 @@ export async function markBatchItemSaved(
   );
 }
 
+/**
+ * Points each unwritten row at the journal action the batch now writes
+ * under, replacing any earlier action, without changing the row's status.
+ *
+ * A row is otherwise linked to the action only after its note lands. A
+ * process that ends while a note is being written would then leave no row
+ * naming the action that holds the step, and a resume could not find it; it
+ * would write the note a second time. A row that still names an earlier
+ * action (after an undo, say) would send the next resume to that action. The
+ * recorded step belonged to the earlier action, so it is cleared, and the
+ * update time moves so this action is the newest one the rows name.
+ * The row stays `pending` or `failed`: naming the action says nothing about
+ * whether it was written.
+ */
+export async function linkBatchItemsToAction(
+  batchId: string,
+  itemKeys: readonly string[],
+  actionId: string,
+  now: number = Date.now(),
+): Promise<void> {
+  if (!hasDb() || !itemKeys.length) return;
+  await Zotero.DB.queryAsync(
+    `UPDATE ${BATCH_ITEMS_TABLE}
+     SET action_id = ?, step_sequence = NULL, updated_at = ?
+     WHERE batch_id = ? AND status <> 'saved'
+       AND item_key IN (${itemKeys.map(() => "?").join(", ")})`,
+    [actionId, now, batchId, ...itemKeys],
+  );
+}
+
 /** Records why one item did not land, leaving its material available to retry. */
 export async function markBatchItemFailed(
   batchId: string,
@@ -263,6 +293,28 @@ export async function markBatchItemFailed(
       batchId,
       itemKey,
     ],
+  );
+}
+
+/**
+ * Records that another batch now holds this item's note.
+ *
+ * A later batch over the same paper wrote its note, or found one already
+ * saved, so this row's work is done: left `pending`, a resume of this batch
+ * would write the paper a second time. The row's own journal action and step
+ * are kept, because they are the record of what this batch itself did.
+ */
+export async function markBatchItemSettled(
+  batchId: string,
+  itemKey: string,
+  params: { noteId: number; now?: number },
+): Promise<void> {
+  if (!hasDb()) return;
+  await Zotero.DB.queryAsync(
+    `UPDATE ${BATCH_ITEMS_TABLE}
+     SET status = 'saved', note_id = ?, error = NULL, updated_at = ?
+     WHERE batch_id = ? AND item_key = ?`,
+    [params.noteId, params.now ?? Date.now(), batchId, itemKey],
   );
 }
 

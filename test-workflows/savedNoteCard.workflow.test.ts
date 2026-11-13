@@ -23,7 +23,8 @@ describe("workflow: create then show saved note", function () {
       "saved-note tests must not leave panel hosts for later workflows",
     );
   });
-  for (const mode of ["safe", "auto", "yolo"] as const) {
+  // Auto and yolo run the note create through the same path; test one of them.
+  for (const mode of ["safe", "auto"] as const) {
     it(`${mode === "safe" ? "reviews" : "creates"} in ${mode}, shows native content, and opens the exact note`, async function () {
       const api = (Zotero as any).LLMForZotero.api
         .workflowTest as WorkflowTestApi;

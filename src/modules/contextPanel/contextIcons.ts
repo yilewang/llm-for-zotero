@@ -48,7 +48,8 @@ export function createContextIcon(
 export function getSelectedTextSourceIconName(
   source: SelectedTextSource,
 ): ContextIconName {
-  if (source === "model") return "model";
+  if (source === "model" || source === "sidechat" || source === "inlineask")
+    return "model";
   if (source === "note") return "note";
   return "text";
 }

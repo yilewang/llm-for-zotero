@@ -9,6 +9,10 @@ import { readAgentConversationMessages } from "../../store/transcriptStore";
 import { fail, ok } from "../shared";
 import { readOnlyInvocationPlan } from "../../authorization/invocationPlan";
 import { readTextChunk } from "./textChunk";
+import { skillGuidance } from "../guidance";
+import { PAPER_DIGEST_HANDLE_TOOL } from "../../digests/digestJobHost";
+import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
+import { extractQuoteCitationsFromToolContent } from "../../../services/quotes/quoteCitations";
 
 /**
  * context_read: exact stored context the prompt no longer carries in full.
@@ -270,6 +274,20 @@ function buildArraySlice(params: {
   return next;
 }
 
+/**
+ * The stored results that hold digests: the digest cache's records, and a
+ * paper_digest or task_update result the trace kept whole.
+ */
+const DIGEST_RESULT_TOOL_NAMES: ReadonlySet<string> = new Set([
+  PAPER_DIGEST_HANDLE_TOOL,
+  "task_update",
+]);
+
+function isDigestResultRead(result: unknown): boolean {
+  const toolName = contentRecord(result).toolName;
+  return typeof toolName === "string" && DIGEST_RESULT_TOOL_NAMES.has(toolName);
+}
+
 async function readToolResult(
   input: ToolResultSourceInput,
   context: AgentToolContext,
@@ -332,50 +350,66 @@ async function readToolResult(
         "Stored tool result belongs to a previous Zotero resource scope. Re-run the source tool for current-scope evidence, or set allowStale true only if stale result content is explicitly acceptable.",
     };
   }
+  // A digest is paged as the model reads it when it returns: each Evidence
+  // quote with its id, and no citation record. The records ride on the
+  // result's top level, which the run's collector and the panel read and
+  // the model does not (`modelContent`).
+  const digestResult = DIGEST_RESULT_TOOL_NAMES.has(record.toolName);
+  const content = digestResult
+    ? withoutDigestQuoteCitations(record.content)
+    : record.content;
   if (!input.path) {
+    const summary = summarizeRoot(content);
+    // The read's own warnings first, then the stored result's, each once.
+    const stored = Array.isArray(summary.warnings) ? summary.warnings : [];
     return {
       ...base,
-      ...summarizeRoot(record.content),
+      ...summary,
+      warnings: [...new Set([...warnings, ...stored])],
     };
   }
-  const root = contentRecord(record.content);
+  const root = contentRecord(content);
   if (!Object.prototype.hasOwnProperty.call(root, input.path)) {
     return {
       ...base,
       path: input.path,
-      availablePaths: availablePaths(record.content),
+      availablePaths: availablePaths(content),
       error: `Stored tool result has no top-level path '${input.path}'.`,
     };
   }
   const section = root[input.path];
-  if (Array.isArray(section)) {
-    return buildArraySlice({
-      base: {
+  const read = Array.isArray(section)
+    ? buildArraySlice({
+        base: {
+          ...base,
+          path: input.path,
+        },
+        items: section,
+        offset: input.offset,
+        textOffset: input.textOffset,
+        limit: input.limit,
+        maxTokens: input.maxTokens,
+      })
+    : {
         ...base,
         path: input.path,
-      },
-      items: section,
-      offset: input.offset,
-      textOffset: input.textOffset,
-      limit: input.limit,
-      maxTokens: input.maxTokens,
-    });
-  }
-  return {
-    ...base,
-    path: input.path,
-    ...(input.textOffset ||
-    estimateTextTokens(stableStringify(section)) > input.maxTokens - 256
-      ? {
-          format: typeof section === "string" ? "text" : "json",
-          ...readTextChunk(
-            stableStringify(section),
-            input.textOffset,
-            input.maxTokens - 256,
-          ),
-        }
-      : { value: section }),
-  };
+        ...(input.textOffset ||
+        estimateTextTokens(stableStringify(section)) > input.maxTokens - 256
+          ? {
+              format: typeof section === "string" ? "text" : "json",
+              ...readTextChunk(
+                stableStringify(section),
+                input.textOffset,
+                input.maxTokens - 256,
+              ),
+            }
+          : { value: section }),
+      };
+  // Added after the page is sized: the model never reads them.
+  const quoteCitations = digestResult
+    ? extractQuoteCitationsFromToolContent(record.content)
+    : [];
+  return quoteCitations.length ? { ...read, quoteCitations } : read;
 }
 
 async function readConversation(
@@ -439,6 +473,26 @@ function argsRecord(args: unknown): Record<string, unknown> {
     ? (args as Record<string, unknown>)
     : {};
 }
+
+/**
+ * The skills' context_read steps. context_read reads in-plugin state an
+ * external runtime does not share, so MCP hides it and the skill bodies do
+ * not name it (#541); each item reaches the plugin's Agent with its skill.
+ */
+export const LITERATURE_REVIEW_DIGEST_HANDLE_GUIDANCE = skillGuidance(
+  "literature-review",
+  "Literature review digest results: when you need a paper's full record, read it with `context_read` `source:'tool_result'` and the handle its digest result carries.",
+);
+
+export const WRITE_NOTE_SOURCE_GUIDANCE = skillGuidance(
+  "write-note",
+  'To save an existing answer unchanged, use `context_read` with `source: "conversation"` only to recover the source identity or exact text; do not regenerate or reformat it.',
+);
+
+export const LIBRARY_ANALYSIS_PAGING_GUIDANCE = skillGuidance(
+  "library-analysis",
+  "Library results: `omitted` counts what a result left out, and `context_read` with its `toolResultHandle` pages the rest when the answer needs it.",
+);
 
 export function createContextReadTool(): AgentToolDefinition<
   ContextReadInput,
@@ -505,7 +559,14 @@ export function createContextReadTool(): AgentToolDefinition<
       executionClass: "read",
       workCategory: "retrieval",
     },
+    guidance: [
+      LITERATURE_REVIEW_DIGEST_HANDLE_GUIDANCE,
+      WRITE_NOTE_SOURCE_GUIDANCE,
+      LIBRARY_ANALYSIS_PAGING_GUIDANCE,
+    ],
     validate: validateContextReadInput,
+    modelContent: (result) =>
+      isDigestResultRead(result) ? withoutDigestQuoteCitations(result) : result,
     planInvocation: (input) =>
       readOnlyInvocationPlan({
         domains: [],

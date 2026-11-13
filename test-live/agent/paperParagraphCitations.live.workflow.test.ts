@@ -80,9 +80,9 @@ describe("live: full-paper paragraph citations", function () {
         ...credentials,
       };
       for (const [index, userText] of [
-        "Explain this paper in two short paragraphs, including the method, quantitative result, and limitations. Cite the source passages supporting each paragraph.",
-        "Read a targeted snippet about the decoder accuracy, then explain whether this establishes a causal mechanism. Keep it to one paragraph with supporting passages.",
-        "Compare the newly added replication with the first study in one short paragraph. Cite supporting passages from both papers.",
+        "Explain this paper in two short paragraphs, including the method, quantitative result, and limitations. Cite the source passages supporting each sentence.",
+        "Read a targeted snippet about the decoder accuracy, then explain whether this establishes a causal mechanism. Keep it to one paragraph and cite the passages supporting each sentence.",
+        "Compare the newly added replication with the first study in one short paragraph. Cite the passages from both papers that support each sentence.",
       ].entries()) {
         const events: any[] = [];
         const result = await Zotero.LLMForZotero.api.agent.runTurn(
@@ -117,7 +117,7 @@ describe("live: full-paper paragraph citations", function () {
         assert.match(
           result.text,
           /\[\[cite:/,
-          "the real model uses paragraph support citations",
+          "the real model uses sentence support citations",
         );
         assert.isNotEmpty(
           result.quoteCitations || [],

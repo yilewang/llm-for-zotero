@@ -10,6 +10,7 @@
  */
 import { appLogger } from "../../core/logging";
 import { isPdfContextAttachment } from "../paperContent/contextAttachmentSupport";
+import type { TextPageOffset } from "../paperContent/types";
 
 type ZoteroFulltextApi = {
   getItemCacheFile?: (item: Zotero.Item) => { path?: string } | null;
@@ -34,18 +35,28 @@ function positiveInt(value: unknown): number | null {
  * True when a full-text cache covers every page of its PDF with one form-feed
  * separated part per page. PDFWorker trims leading and trailing blank pages
  * from its text, so only an exact count proves that each part sits on the
- * page its position names.
+ * page its position names, unless the text's bookmarks proved how many
+ * leading pages it lost (`textPageOffset`) for text of this part count.
  */
 export function isPageCompleteZoteroFulltextCache(input: {
   text: string;
   indexedPages?: number | null;
   totalPages?: number | null;
+  textPageOffset?: TextPageOffset;
 }): boolean {
   const totalPages = positiveInt(input.totalPages);
   if (!totalPages || !input.text) return false;
   // Zotero indexes at most `fulltext.pdfMaxPages` pages.
   if (positiveInt(input.indexedPages) !== totalPages) return false;
-  return input.text.split("\f").length === totalPages;
+  const parts = input.text.split("\f").length;
+  if (parts === totalPages) return true;
+  const shift = input.textPageOffset;
+  return Boolean(
+    shift &&
+    shift.pageOffset >= 0 &&
+    parts === shift.textParts &&
+    shift.pageOffset + parts <= totalPages,
+  );
 }
 
 function getZoteroFulltextApi(): ZoteroFulltextApi | null {
@@ -61,6 +72,15 @@ function getIOUtils(): FulltextIOUtils | null {
   );
 }
 
+/**
+ * The shift of form-feed text that may have lost blank leading pages, shown
+ * for that same text and its PDF's page count; undefined when none is shown.
+ */
+export type ProveTextPageOffset = (text: {
+  text: string;
+  totalPages: number;
+}) => Promise<TextPageOffset | undefined>;
+
 async function getModifiedTime(
   io: FulltextIOUtils,
   path: string,
@@ -73,11 +93,21 @@ async function getModifiedTime(
  * Read an attachment's Zotero full-text cache when it can stand in for a
  * fresh PDFWorker extraction. Returns null for anything that cannot be
  * verified: no cache, an unknown or mismatched page count, a cache older than
- * the PDF, or a read failure.
+ * the PDF, or a read failure. Text that lost blank leading pages is accepted
+ * with `textPageOffset`, or else with the shift `proveShift` shows for this
+ * same text; the result names the shift it was accepted with.
  */
 export async function readPageCompleteZoteroFulltextCache(
   attachmentId: number,
-): Promise<{ text: string; totalPages: number } | null> {
+  options: {
+    textPageOffset?: TextPageOffset;
+    proveShift?: ProveTextPageOffset;
+  } = {},
+): Promise<{
+  text: string;
+  totalPages: number;
+  textPageOffset?: TextPageOffset;
+} | null> {
   try {
     const itemId = positiveInt(attachmentId);
     if (!itemId) return null;
@@ -108,16 +138,21 @@ export async function readPageCompleteZoteroFulltextCache(
     if (cacheModified === null || pdfModified === null) return null;
     if (cacheModified < pdfModified) return null;
     const text = await io.readUTF8(cachePath);
-    if (
-      !isPageCompleteZoteroFulltextCache({
+    const pageComplete = (textPageOffset?: TextPageOffset) =>
+      isPageCompleteZoteroFulltextCache({
         text,
         indexedPages: positiveInt(pages.indexedPages),
         totalPages,
-      })
-    ) {
-      return null;
+        textPageOffset,
+      });
+    if (pageComplete(options.textPageOffset)) {
+      return { text, totalPages, textPageOffset: options.textPageOffset };
     }
-    return { text, totalPages };
+    const proven = await options.proveShift?.({ text, totalPages });
+    if (proven && pageComplete(proven)) {
+      return { text, totalPages, textPageOffset: proven };
+    }
+    return null;
   } catch (error) {
     appLogger.debug("LLM: Zotero full-text page cache unavailable", {
       attachmentId,

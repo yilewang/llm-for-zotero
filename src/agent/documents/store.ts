@@ -1,3 +1,4 @@
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import { appLogger } from "../../core/logging";
 import {
   decodeDocumentActionState,
@@ -276,6 +277,8 @@ export async function savePlanDocumentInTransaction(params: {
 }): Promise<void> {
   const document = decodePlanDocument(params.document);
   const outbox = decodePlanDocumentOutbox(params.outbox);
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(document.conversationKey)) return;
   const storedDocument = { ...document, coverageItems: [] };
   const planned = getPlannedDocumentOrigin(document);
   const direct =
@@ -624,6 +627,7 @@ export async function addPlanDocumentOwner(params: {
   conversationKey: number;
   sourceMessageTimestamp: number;
 }): Promise<void> {
+  if (isEphemeralConversationKey(params.conversationKey)) return;
   await Zotero.DB.queryAsync(
     `INSERT OR IGNORE INTO ${PLAN_DOCUMENT_OWNERS_TABLE}
      (document_id, conversation_key, source_message_timestamp)
@@ -650,6 +654,46 @@ export async function loadDocumentIdForMessageOwner(params: {
   return typeof documentId === "string" && documentId.trim()
     ? documentId.trim()
     : null;
+}
+
+/**
+ * loadDocumentIdForMessageOwner for many messages of one conversation in a
+ * single query. Each timestamp maps to the same document the single lookup
+ * returns: the greatest document ID owned at that timestamp.
+ */
+export async function loadDocumentIdsForMessageOwners(params: {
+  conversationKey: number;
+  sourceMessageTimestamps: readonly number[];
+}): Promise<Map<number, string>> {
+  const wanted = new Set(params.sourceMessageTimestamps);
+  const result = new Map<number, string>();
+  if (!wanted.size) return result;
+  const rows = (await Zotero.DB.queryAsync(
+    `SELECT document_id AS documentId,
+            source_message_timestamp AS sourceMessageTimestamp
+     FROM ${PLAN_DOCUMENT_OWNERS_TABLE}
+     WHERE conversation_key = ?
+     ORDER BY document_id DESC`,
+    [params.conversationKey],
+  ).catch((error) => {
+    if (/no such table|no table/i.test(String(error))) return [];
+    throw error;
+  })) as
+    | Array<{ documentId?: unknown; sourceMessageTimestamp?: unknown }>
+    | undefined;
+  for (const row of rows || []) {
+    const timestamp = Number(row.sourceMessageTimestamp);
+    if (!wanted.has(timestamp) || result.has(timestamp)) continue;
+    const documentId =
+      typeof row.documentId === "string" ? row.documentId.trim() : "";
+    // The single lookup reads only the first row per timestamp; a blank ID
+    // there means no document, even when an older row has one.
+    result.set(timestamp, documentId);
+  }
+  for (const [timestamp, documentId] of result) {
+    if (!documentId) result.delete(timestamp);
+  }
+  return result;
 }
 
 export async function copyPlanDocumentOwnersForFork(params: {

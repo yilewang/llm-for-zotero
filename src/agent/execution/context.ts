@@ -1,4 +1,5 @@
 import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
+import { getAgentFilesRoot } from "../../utils/agentFilesDirectory";
 import type { AgentRuntimeRequest } from "../types";
 
 export function createAgentExecutionContext(
@@ -6,6 +7,8 @@ export function createAgentExecutionContext(
   executionId: string,
   options: {
     notesDirectory?: ReturnType<typeof getNotesDirectoryConfig>;
+    /** The root of the per-paper folders the agent saves files in. */
+    agentFilesRoot?: string | null;
   } = {},
 ): NonNullable<AgentRuntimeRequest["executionContext"]> {
   const activePaper = request.turnPaperScope.papers.find((entry) =>
@@ -31,9 +34,15 @@ export function createAgentExecutionContext(
   const taskReadDirectories = request.turnPaperScope.papers.flatMap(
     ({ paper }) => (paper.mineruCacheDir ? [paper.mineruCacheDir] : []),
   );
-  const outputDirectories = notesDirectory?.directoryPath
-    ? [notesDirectory.directoryPath]
-    : [];
+  const agentFilesRoot =
+    options.agentFilesRoot === undefined
+      ? getAgentFilesRoot()
+      : options.agentFilesRoot;
+  const outputDirectories = [
+    ...(notesDirectory?.directoryPath ? [notesDirectory.directoryPath] : []),
+    // The plugin's own folder for files the agent saves for the user.
+    ...(agentFilesRoot ? [agentFilesRoot] : []),
+  ];
   return {
     version: 1,
     executionId,

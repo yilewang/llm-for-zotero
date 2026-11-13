@@ -534,7 +534,7 @@ describe("workflow: runtime mode switch", function () {
       const paper = await createPaper("Mode Switch Empty");
       const panel = await api.renderPanelForItem(paper.parentItemId);
 
-      const agent = await api.clickPanelRuntimeModeToggle(panel.panelId);
+      const agent = await api.getDiagnostics(panel.panelId);
       assert.equal(agent.runtimeMode, "agent");
 
       const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
@@ -570,7 +570,7 @@ describe("workflow: runtime mode switch", function () {
       const paper = await createPaper("Mode Switch Turn");
       const panel = await api.renderPanelForItem(paper.parentItemId);
 
-      const agent = await api.clickPanelRuntimeModeToggle(panel.panelId);
+      const agent = await api.getDiagnostics(panel.panelId);
       assert.equal(agent.runtimeMode, "agent");
 
       const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
@@ -610,25 +610,26 @@ describe("workflow: runtime mode switch", function () {
     });
   });
 
-  it("stays responsive when the Agent toggle is pressed right after returning from Codex", async function () {
+  it("stays responsive when Agent is picked from the badge right after returning from Codex", async function () {
     await withPrefs(AGENT_AND_CODEX_PREFS, async () => {
       const paper = await createPaper("Mode Switch Toggle");
       const panel = await api.renderPanelForItem(paper.parentItemId);
 
       const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
+      assert.equal(codex.runtimeBadge?.label, "Codex");
 
       const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
 
-      const agent = await api.clickPanelRuntimeModeToggle(panel.panelId);
+      const secondCodex = await api.pickPanelRuntime(panel.panelId, "codex");
+      assert.equal(secondCodex.conversationSystem, "codex");
+      const agent = await api.pickPanelRuntime(panel.panelId, "upstream");
+      assert.equal(agent.conversationSystem, "upstream");
       assert.equal(agent.runtimeMode, "agent");
-      await assertMainThreadResponsive("agent toggle after Codex");
+      assert.equal(agent.runtimeBadge?.label, "Agent");
+      await assertMainThreadResponsive("agent pick after Codex");
       await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
-
-      const chat = await api.clickPanelRuntimeModeToggle(panel.panelId);
-      assert.equal(chat.runtimeMode, "chat");
-      await assertMainThreadResponsive("chat toggle after Codex");
     });
   });
 
@@ -637,7 +638,7 @@ describe("workflow: runtime mode switch", function () {
       const paper = await createPaper("Mode Switch Legacy Trace");
       const panel = await api.renderPanelForItem(paper.parentItemId);
 
-      const agent = await api.clickPanelRuntimeModeToggle(panel.panelId);
+      const agent = await api.getDiagnostics(panel.panelId);
       assert.equal(agent.runtimeMode, "agent");
 
       // The upstream conversation the user comes back to is old: its trace

@@ -1,5 +1,6 @@
 import { buildSafeSvgMarkup } from "../../utils/markdown";
 import { escapeNoteHtml } from "../../utils/textSanitization";
+import { buildSvgExportMarkup } from "../../utils/previewTheme";
 import {
   importNoteImageAsset,
   type NoteImageImporter,
@@ -151,6 +152,7 @@ function createSvgDataUrl(svgMarkup: string): string {
 export async function defaultRasterizeSvgToPngBytes(
   doc: Document,
   svgMarkup: string,
+  options?: { background?: string },
 ): Promise<Uint8Array | null> {
   const safeSvg = svgMarkup.trim();
   if (!safeSvg || !/^<svg\b[\s\S]*(?:<\/svg>|\/>)\s*$/i.test(safeSvg)) {
@@ -172,6 +174,11 @@ export async function defaultRasterizeSvgToPngBytes(
   const context = canvas.getContext("2d");
   if (!context) return null;
   context.clearRect(0, 0, width, height);
+  if (options?.background) {
+    // A transparent diagram with light text would vanish on a white page.
+    context.fillStyle = options.background;
+    context.fillRect(0, 0, width, height);
+  }
   context.drawImage(image, 0, 0, width, height);
 
   try {
@@ -235,7 +242,9 @@ async function resolveFigureFenceSvgMarkup(params: {
 }): Promise<string | null> {
   const lang = normalizeFigureFenceLanguage(params.lang);
   if (lang === "svg") {
-    return buildSafeSvgMarkup(params.source);
+    // A note image leaves the plugin: light sheet on white.
+    const svgMarkup = buildSafeSvgMarkup(params.source);
+    return svgMarkup ? buildSvgExportMarkup(svgMarkup) : null;
   }
   if (!isMermaidFigureFenceLanguage(lang)) return null;
   const doc = params.options.doc || null;

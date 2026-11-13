@@ -1,5 +1,6 @@
 declare const Zotero: any;
 
+import { isEphemeralConversationKey } from "./conversationKeySpace";
 import type { ConversationSystem } from "./types";
 import {
   getConversationKeyLedgerEntry,
@@ -227,6 +228,13 @@ export async function recordConversationForkLink(
   value: ConversationForkLink,
 ): Promise<ConversationForkLink> {
   const link = normalizeLink(value);
+  // A temporary side chat is never a fork source or target on disk.
+  if (
+    isEphemeralConversationKey(link.sourceConversationKey) ||
+    isEphemeralConversationKey(link.targetConversationKey)
+  ) {
+    return link;
+  }
   await initConversationForkLinksStore();
   const ledgerInitialized = isConversationKeyLedgerStoreInitialized();
   const write = async (): Promise<void> => {

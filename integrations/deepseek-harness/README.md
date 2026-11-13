@@ -14,10 +14,10 @@ npm ci --ignore-scripts --prefix integrations/deepseek-harness
 
 安装构建生成的 XPI 后，进入 Zotero 设置 → LLM-for-Zotero → Agent → DeepSeek Harness：
 
-1. 开启 **DeepSeek Harness** 卡片的开关。原生 Agent 和 Harness 共用聊天中的 Agent 按钮，开启其中一个会选中对应引擎。
+1. 开启 **DeepSeek Harness** 卡片的开关。原生 Agent 和 Harness 共用聊天中的 Agent 运行时，开启其中一个会选中对应引擎。
 2. “Node 可执行文件”填写 Node 的绝对路径，可通过 `node -p process.execPath` 查看。
 3. “Harness 工作进程脚本”填写本目录 `worker.mjs` 的绝对路径。
-4. 在聊天面板选择服务商及模型，开启 Agent 后发送任务。权限与网页搜索配置位于原生 Agent 卡片中。
+4. 在聊天面板选择服务商及模型。如果启用了多个运行时，先通过消息框的运行时标记选择 Agent，再发送任务。权限与网页搜索配置位于原生 Agent 卡片中。
 
 工作进程目录应保留在稳定位置，并保留其 `node_modules`。更新时，安装同一构建中的 XPI 和工作进程依赖，然后重启 Zotero。执行引擎选择对 Original Agent 的侧栏、独立窗口和扩展 API 生效。默认使用内置执行引擎。
 

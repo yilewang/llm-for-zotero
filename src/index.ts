@@ -1,11 +1,21 @@
 import { BasicTool } from "zotero-plugin-toolkit";
 import Addon from "./addon";
-import { config } from "../package.json";
+import { config, version } from "../package.json";
+import { shouldReplaceAddonInstance } from "./utils/pluginReload";
 
 const basicTool = new BasicTool();
 
-// @ts-expect-error - Plugin instance is not typed
-if (!basicTool.getGlobal("Zotero")[config.addonInstance]) {
+// An in-place update loads this script while the previous version's object
+// may still be on Zotero (its shutdown threw before deleting it). Bootstrap
+// calls the hooks of whatever object is there, so a dead or older one must be
+// replaced, never reused.
+if (
+  shouldReplaceAddonInstance(
+    // @ts-expect-error - Plugin instance is not typed
+    basicTool.getGlobal("Zotero")[config.addonInstance],
+    version,
+  )
+) {
   _globalThis.addon = new Addon();
   defineGlobal("ztoolkit", () => {
     return _globalThis.addon.data.ztoolkit;

@@ -234,6 +234,47 @@ class CaptionWindowTests(unittest.TestCase):
         self.assertIsNotNone(candidate)
         self.assertLessEqual(candidate.rect.right, 710)
 
+    def test_caption_region_keeps_axis_labels_at_page_edges(self):
+        # Clark et al. 2025, Fig. 2: the last time tick ("90") starts inside
+        # the right-edge margin band, next to "80"; the y-axis labels mirror it.
+        tick_row = [
+            self.text_box(470 + index * 30, 650, 10, 11, str(index * 10))
+            for index in range(11)
+        ]
+        y_labels = [
+            self.text_box(30, 120, 10, 11, "2π"),
+            self.text_box(48, 120, 10, 11, "θ"),
+        ]
+        page = {
+            "width": 820.0,
+            "height": 1180.0,
+            "texts": [*tick_row, *y_labels],
+        }
+        target = self.extractor.Target(
+            label="Figure 2",
+            page_number=4,
+            caption_box=self.extractor.Rect(80, 700, 500, 12),
+            caption_text="Figure 2. Full-width figure above the caption.",
+            source="pdf-text",
+        )
+        image = self.image(
+            [
+                (30, 90, 785, 640),
+                *[(470 + index * 30, 650, 480 + index * 30, 661) for index in range(11)],
+            ]
+        )
+
+        candidate = self.extractor.choose_caption_region_candidate(
+            image,
+            page,
+            target,
+            [target],
+        )
+
+        self.assertIsNotNone(candidate)
+        self.assertGreaterEqual(candidate.rect.right, 780)
+        self.assertLessEqual(candidate.rect.left, 32)
+
     def test_crop_margin_preserves_sparse_panel_labels(self):
         self.assertEqual(self.extractor.figure_crop_margin_pixels(216), 13)
         self.assertEqual(self.extractor.figure_crop_margin_pixels(72), 4)

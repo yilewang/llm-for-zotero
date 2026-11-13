@@ -9,12 +9,17 @@ import {
 import type { ActionEffect } from "../../authorization/types";
 import type {
   ApplyTagsOperation,
+  ChangeItemTypeOperation,
   LibraryMutationOperation,
   LibraryMutationService,
   MoveToCollectionOperation,
   UpdateMetadataOperation,
 } from "../../services/libraryMutationService";
 import { executeLibraryMutationAction } from "../../services/mutationCoordinator";
+import {
+  describeCheckpointedBatch,
+  type CheckpointedBatchReport,
+} from "../../services/checkpointedBatch";
 import type {
   EditableArticleCreator,
   EditableArticleMetadataField,
@@ -202,7 +207,7 @@ function normalizeDisplayText(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function formatItemTypeLabel(itemType: string | undefined): string {
+export function formatItemTypeLabel(itemType: string | undefined): string {
   if (!itemType) return "";
   if (itemType === "journalArticle") return "Journal article";
   if (itemType === "conferencePaper") return "Conference paper";
@@ -520,33 +525,104 @@ export function formatCreatorsDisplay(
     .join("; ");
 }
 
+/**
+ * The object a metadata operation will write, resolved the way the executor
+ * resolves it. A refusal is thrown so a card is never shown for a write that
+ * cannot happen, or for an object other than the one named.
+ */
+export function resolveMetadataWriteItem(
+  operation: UpdateMetadataOperation,
+  zoteroGateway: ZoteroGateway,
+  context: AgentToolContext,
+): Zotero.Item {
+  const target = zoteroGateway.resolveMetadataWriteTarget({
+    itemId: operation.itemId,
+    paperContext: operation.paperContext,
+    request: context.request,
+    item: context.item,
+  });
+  if ("refusal" in target) throw new Error(target.refusal);
+  return target.item;
+}
+
+/**
+ * The label a review row shows for a Zotero field: the card's own wording for
+ * the well-known fields, else Zotero's localized field name, else the field
+ * name spelled out ("seriesNumber" -> "Series number").
+ */
+export function metadataFieldLabel(fieldName: string): string {
+  const known = METADATA_FIELD_DISPLAY_LABELS[fieldName];
+  if (known) return known;
+  try {
+    const localized = (
+      globalThis as {
+        Zotero?: {
+          ItemFields?: { getLocalizedString?: (field: string) => unknown };
+        };
+      }
+    ).Zotero?.ItemFields?.getLocalizedString?.(fieldName);
+    if (typeof localized === "string" && localized.trim()) {
+      return localized.trim();
+    }
+  } catch {
+    // An unlocalized field still gets a readable label below.
+  }
+  const words = fieldName
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : fieldName;
+}
+
+/**
+ * The fields a metadata patch writes, in card order: the well-known fields
+ * first, as the card always listed them, then every other key in the order
+ * the patch gives it.
+ */
+export function metadataPatchFieldNames(
+  patch: EditableArticleMetadataPatch,
+): string[] {
+  const keys = Object.keys(patch).filter((key) => key !== "creators");
+  const known = (EDITABLE_ARTICLE_METADATA_FIELDS as readonly string[]).filter(
+    (fieldName) => keys.includes(fieldName),
+  );
+  return [...known, ...keys.filter((key) => !known.includes(key))];
+}
+
+/**
+ * One review row per field the operation writes. The rows come from the
+ * operation's own keys, not a fixed field list: walking 18 article fields
+ * gave a book's `edition` or `series` change a card with no rows, and the
+ * user approved a write they could not see. A card that would show no rows
+ * is refused rather than shown.
+ */
 export function buildUpdateMetadataReviewField(
   operation: UpdateMetadataOperation,
   zoteroGateway: ZoteroGateway,
   context: AgentToolContext,
   itemTitle: string,
   showTitle: boolean,
-): Extract<AgentPendingField, { type: "review_table" }> | null {
-  const item = zoteroGateway.resolveMetadataItem({
-    itemId: operation.itemId,
-    paperContext: operation.paperContext,
-    request: context.request,
-    item: context.item,
-  });
+): Extract<AgentPendingField, { type: "review_table" }> {
+  const item = resolveMetadataWriteItem(operation, zoteroGateway, context);
+  // The write throws on a field its item type cannot take (a DOI on a PDF),
+  // so the card is refused here rather than approved and then failed.
+  const unsupported = zoteroGateway.metadataPatchRefusal(
+    item,
+    operation.metadata,
+  );
+  if (unsupported) throw new Error(unsupported);
   const snapshot = zoteroGateway.getEditableArticleMetadata(item);
   const rows: Extract<AgentPendingField, { type: "review_table" }>["rows"] = [];
+  const beforeFields = (snapshot?.fields || {}) as Record<string, string>;
+  const patch = operation.metadata as Record<string, unknown>;
 
-  for (const fieldName of EDITABLE_ARTICLE_METADATA_FIELDS) {
-    if (!Object.prototype.hasOwnProperty.call(operation.metadata, fieldName))
-      continue;
-    const newValue = operation.metadata[fieldName] ?? "";
-    const label = METADATA_FIELD_DISPLAY_LABELS[fieldName] || fieldName;
-    const before = snapshot?.fields[fieldName] ?? "";
+  for (const fieldName of metadataPatchFieldNames(operation.metadata)) {
+    const value = patch[fieldName];
     rows.push({
       key: fieldName,
-      label,
-      before,
-      after: newValue,
+      label: metadataFieldLabel(fieldName),
+      before: beforeFields[fieldName] ?? "",
+      after: value === undefined || value === null ? "" : String(value),
       multiline: fieldName === "abstractNote",
     });
   }
@@ -557,13 +633,68 @@ export function buildUpdateMetadataReviewField(
     rows.push({ key: "creators", label: "Authors", before, after });
   }
 
-  if (!rows.length) return null;
+  if (!rows.length) {
+    throw new Error(
+      `The metadata review for ${itemTitle} has no rows to show, so it was not offered for approval.`,
+    );
+  }
 
   return {
     type: "review_table",
     id: `metadataReview:${operation.id}`,
     label: showTitle ? itemTitle : undefined,
     rows,
+  };
+}
+
+/**
+ * Freeze what a type change drops, once, before the card or the write: the
+ * user approves these exact fields, and the write refuses any others.
+ */
+export function prepareItemTypeChange(
+  operation: ChangeItemTypeOperation,
+  zoteroGateway: ZoteroGateway,
+): void {
+  if (operation.restore || operation.droppedFields) return;
+  const plan = zoteroGateway.planItemTypeChange(
+    zoteroGateway.getItem(operation.itemId),
+    operation.itemType,
+  );
+  if ("refusal" in plan) throw new Error(plan.refusal);
+  operation.droppedFields = plan.droppedFields;
+  operation.expectedCreators = plan.after.creators;
+  operation.expectedFields = plan.after.fields;
+}
+
+/**
+ * The type-change card: the type row, then one row per field the change
+ * drops, with the value it loses.
+ */
+export function buildItemTypeChangeReviewField(
+  operation: ChangeItemTypeOperation,
+  zoteroGateway: ZoteroGateway,
+): Extract<AgentPendingField, { type: "review_table" }> {
+  prepareItemTypeChange(operation, zoteroGateway);
+  const item = zoteroGateway.getItem(operation.itemId)!;
+  const record = zoteroGateway.readItemTypeRecord(item);
+  return {
+    type: "review_table",
+    id: `itemTypeReview:${operation.id || operation.itemId}`,
+    rows: [
+      {
+        key: "itemType",
+        label: "Item type",
+        before: formatItemTypeLabel(record.itemType),
+        after: formatItemTypeLabel(operation.itemType),
+      },
+      ...(operation.droppedFields || []).map((field) => ({
+        key: field,
+        label: metadataFieldLabel(field),
+        before: record.fields[field] || "",
+        after: "",
+        multiline: field === "abstractNote",
+      })),
+    ],
   };
 }
 
@@ -588,10 +719,29 @@ export async function executeAndRecordUndo(
   return {
     content: {
       actionId: coordinated.actionId,
-      result: coordinated.results[0],
+      result: coordinated.checkpoint
+        ? checkpointResult(operation.type, coordinated.checkpoint)
+        : coordinated.results[0],
     },
     effect: coordinated.effect,
     actionEvidence: coordinated.actionEvidence,
+  };
+}
+
+/**
+ * The result of a checkpointed batch: its counts and the sentence that names
+ * what was done and what remains, instead of one row per item.
+ */
+export function checkpointResult(
+  operation: LibraryMutationOperation["type"],
+  checkpoint: CheckpointedBatchReport,
+) {
+  return {
+    operation,
+    result: {
+      checkpointedBatch: checkpoint,
+      message: describeCheckpointedBatch(checkpoint),
+    },
   };
 }
 
@@ -622,12 +772,20 @@ export async function executeAndRecordUndoBatch(
     content: {
       actionId: coordinated.actionId,
       appliedCount: coordinated.affectedCount,
-      results: coordinated.results,
+      results: coordinated.checkpoint
+        ? [checkpointResult(operations[0].type, coordinated.checkpoint)]
+        : coordinated.results,
     },
     effect: coordinated.effect,
     actionEvidence: coordinated.actionEvidence,
   };
 }
+
+/** Library operations that fetch from the network to make their effect. */
+const NETWORK_OPERATIONS = new Set<LibraryMutationOperation["type"]>([
+  "attach_url",
+  "find_pdf",
+]);
 
 /** Build the confirmation decision from the same concrete operations that
  * will later be persisted and executed by MutationCoordinator. */
@@ -655,6 +813,9 @@ export async function planLibraryMutations(
     "create_items",
     "import_identifiers",
     "import_local_files",
+    "attach_file",
+    "attach_url",
+    "find_pdf",
     "save_note",
     "save_notes_batch",
     "save_saved_search",
@@ -682,7 +843,7 @@ export async function planLibraryMutations(
     ...new Set(
       operations.flatMap((operation) =>
         Object.entries(operation).flatMap(([key, value]) => {
-          if (!/(?:id|ids|path|paths)$/i.test(key)) return [];
+          if (!/(?:id|ids|path|paths|url)$/i.test(key)) return [];
           return (Array.isArray(value) ? value : [value])
             .filter(
               (entry): entry is string | number =>
@@ -693,7 +854,13 @@ export async function planLibraryMutations(
       ),
     ),
   ];
+  // Saving a web page and Find Available PDF fetch from the network to make
+  // their attachment; the plan names that domain beside the library.
+  const fetches = operations.some((operation) =>
+    NETWORK_OPERATIONS.has(operation.type),
+  );
   return stateChangeInvocationPlan({
+    ...(fetches ? { domains: ["zotero_library", "network"] } : {}),
     effects,
     targets,
     reversibility,

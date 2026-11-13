@@ -7,6 +7,7 @@ export const DEFAULT_LLM_CALL_TIMEOUT_MS = 10_000;
 
 export type LLMCallWithTimeoutParams = Omit<ChatParams, "signal"> & {
   parentSignal?: AbortSignal;
+  /** `Infinity` means no deadline; the caller's signal still cancels. */
   timeoutMs?: number;
   /** Test seam: replaces callLLM. */
   llmCall?: (chatParams: ChatParams) => Promise<ModelTurnOutcome>;
@@ -41,6 +42,8 @@ export async function callLLMWithTimeout(
   parentSignal?.addEventListener("abort", onAbort!, { once: true });
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
+    // setTimeout would clamp Infinity to a near-immediate timer.
+    if (budgetMs === Infinity) return;
     timeoutHandle = setTimeout(() => {
       controller?.abort();
       reject(new Error(`LLM call timed out after ${budgetMs}ms`));

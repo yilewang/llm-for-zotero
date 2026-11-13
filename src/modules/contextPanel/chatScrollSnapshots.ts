@@ -7,6 +7,7 @@ import {
   findBestVisibleChatAnchor,
   findChatAnchorForElement,
   findElementForAnchor,
+  findAnswerBlockForElement,
 } from "./chatScrollGeometry";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 
@@ -17,6 +18,11 @@ export interface ChatScrollSnapshot {
   scrollTop: number;
   updatedAt: number;
   anchor?: ChatScrollAnchor;
+  /**
+   * A place the chat was taken to (Show in answer, a turn marker): kept as
+   * it is until the reader scrolls, not re-read from what is on screen.
+   */
+  held?: boolean;
 }
 
 type ActiveChatNavigation = {
@@ -61,6 +67,35 @@ const reconciliationStates = new WeakMap<
   }
 >();
 const liveReconciliationBoxes = new Set<HTMLDivElement>();
+/** The conversation whose messages each chat box shows. */
+let drawnConversationKeys = new WeakMap<HTMLDivElement, number>();
+
+/**
+ * Records which conversation the chat box's messages belong to; each full
+ * chat render calls this as it replaces them. Null forgets it.
+ */
+export function setChatBoxConversation(
+  chatBox: HTMLDivElement,
+  conversationKey: number | null,
+): void {
+  const normalized =
+    conversationKey === null ? null : normalizeConversationKey(conversationKey);
+  if (normalized) drawnConversationKeys.set(chatBox, normalized);
+  else drawnConversationKeys.delete(chatBox);
+}
+
+/**
+ * True while a panel that switched in place still shows the last
+ * conversation's messages. Their geometry says nothing about `key`: no
+ * position of `key` is applied to them or saved from them.
+ */
+function showsOtherConversation(
+  chatBox: HTMLDivElement,
+  key: number | null,
+): boolean {
+  const drawn = drawnConversationKeys.get(chatBox);
+  return drawn !== undefined && drawn !== normalizeConversationKey(key || 0);
+}
 
 function captureViewportPosition(chatBox: HTMLDivElement): void {
   viewportPositions.set(chatBox, {
@@ -115,6 +150,10 @@ export function disposeChatScrollViewport(chatBox: HTMLDivElement): void {
 export function observeChatScroll(key: number, chatBox: HTMLDivElement): void {
   if (!isCurrentChatViewport(key, chatBox) || !isChatViewportVisible(chatBox))
     return;
+  if (showsOtherConversation(chatBox, key)) {
+    captureViewportPosition(chatBox);
+    return;
+  }
   const previous = viewportPositions.get(chatBox);
   if (isChatNavigationActive(chatBox)) {
     captureViewportPosition(chatBox);
@@ -153,6 +192,7 @@ export function reconcileChatScroll(
 ): void {
   if (!isCurrentChatViewport(key, chatBox) || !isChatViewportVisible(chatBox))
     return;
+  if (showsOtherConversation(chatBox, key)) return;
   // User input can precede its scroll event or this queued layout callback.
   observeChatScroll(key, chatBox);
   if (isChatNavigationActive(chatBox)) return;
@@ -218,8 +258,15 @@ function getMaxScrollTop(chatBox: HTMLDivElement): number {
   return Math.max(0, chatBox.scrollHeight - chatBox.clientHeight);
 }
 
-function isChatViewportVisible(chatBox: HTMLDivElement): boolean {
-  return chatBox.clientHeight > 0 && chatBox.getClientRects().length > 0;
+export function isChatViewportVisible(chatBox: HTMLDivElement): boolean {
+  if (!(chatBox.clientHeight > 0 && chatBox.getClientRects().length > 0)) {
+    return false;
+  }
+  // An unfilled box clamps every restore to the top; persisting that would
+  // overwrite the position the reader left in another surface.
+  return (
+    chatBox.childElementCount > 0 || chatBox.scrollHeight > chatBox.clientHeight
+  );
 }
 
 function clampScrollTop(chatBox: HTMLDivElement, scrollTop: number): number {
@@ -344,6 +391,7 @@ export function persistChatScrollSnapshotForConversationKey(
   const normalized = normalizeConversationKey(conversationKey);
   if (!normalized) return;
   if (!isChatViewportVisible(chatBox)) return;
+  if (showsOtherConversation(chatBox, normalized)) return;
   const activeNavigation = activeChatNavigations.get(chatBox);
   if (activeNavigation?.conversationKey === normalized) return;
   // Snapshot persistence records geometry, never user intent. Both manual and
@@ -353,12 +401,22 @@ export function persistChatScrollSnapshotForConversationKey(
     previous?.key === normalized
       ? previous.snapshot.mode === "followBottom"
         ? buildFollowBottomScrollSnapshot(chatBox)
-        : buildAnchoredChatScrollSnapshot(chatBox)
+        : previous.snapshot.held && previous.snapshot.anchor
+          ? {
+              ...previous.snapshot,
+              scrollTop: clampScrollTop(chatBox, chatBox.scrollTop),
+              updatedAt: Date.now(),
+            }
+          : buildAnchoredChatScrollSnapshot(chatBox)
       : buildChatScrollSnapshot(chatBox);
   panelScrollSnapshots.set(chatBox, { key: normalized, snapshot });
   chatScrollSnapshots.set(normalized, snapshot);
 }
 
+/**
+ * Where the target's top should sit, held by the closest thing that stays
+ * put: the answer block that holds it, else its message.
+ */
 function buildNavigationAnchor(
   targetElement: Element,
   viewportOffsetTop: number,
@@ -367,10 +425,26 @@ function buildNavigationAnchor(
   if (!wrapper) return null;
   const identity = getMessageAnchorForElement(wrapper);
   if (!identity.messageRole || !identity.messageTimestamp) return null;
+  const targetTop = getElementRect(targetElement)?.top ?? 0;
+  const found =
+    targetElement === wrapper ? null : findAnswerBlockForElement(targetElement);
+  if (found) {
+    return {
+      kind: "answerBlock",
+      ...identity,
+      blockOrdinal: found.blockOrdinal,
+      blockText: found.blockText,
+      viewportOffsetTop:
+        viewportOffsetTop -
+        (targetTop - (getElementRect(found.block)?.top ?? targetTop)),
+    };
+  }
   return {
     kind: "message",
     ...identity,
-    viewportOffsetTop,
+    viewportOffsetTop:
+      viewportOffsetTop -
+      (targetTop - (getElementRect(wrapper)?.top ?? targetTop)),
   };
 }
 
@@ -460,6 +534,7 @@ function persistNavigationDestination(navigation: ActiveChatNavigation): void {
   }
   const finalSnapshot: ChatScrollSnapshot = {
     mode: "manual",
+    held: true,
     scrollTop: clampScrollTop(
       navigation.chatBox,
       targetScrollTop ?? navigation.chatBox.scrollTop,
@@ -549,6 +624,7 @@ export function navigateChatToMessage(params: {
 }): boolean {
   const conversationKey = normalizeConversationKey(params.conversationKey);
   if (!conversationKey || !isChatViewportVisible(params.chatBox)) return false;
+  // Where the target's own top lands, below the chat's top.
   const viewportOffsetTop = Math.max(0, Number(params.viewportOffsetTop || 0));
   const anchor = buildNavigationAnchor(params.targetElement, viewportOffsetTop);
   if (!anchor) return false;
@@ -771,6 +847,10 @@ export function withScrollGuard(
     fn();
     return;
   }
+  if (showsOtherConversation(chatBox, conversationKey)) {
+    fn();
+    return;
+  }
   observeChatScroll(conversationKey, chatBox);
   const snapshot =
     getChatScrollSnapshot(conversationKey, chatBox) ||
@@ -785,6 +865,51 @@ export function withScrollGuard(
   }
 }
 
+/** Forget the saved scroll position of one conversation. */
+export function clearChatScrollSnapshotForConversationKey(
+  conversationKey: number,
+): void {
+  const normalized = Math.floor(Number(conversationKey));
+  if (!Number.isFinite(normalized) || normalized <= 0) return;
+  chatScrollSnapshots.delete(normalized);
+  pendingChatScrollRestores.delete(normalized);
+}
+
+export type SavedChatScrollState = {
+  snapshot: ChatScrollSnapshot | undefined;
+  pending:
+    | {
+        snapshot: ChatScrollSnapshot;
+        expiresAt: number;
+        appliedBodies: WeakSet<Element>;
+      }
+    | undefined;
+};
+
+/** Copy one conversation's saved scroll state, to put back after a borrower. */
+export function saveChatScrollStateForConversationKey(
+  conversationKey: number,
+): SavedChatScrollState {
+  const normalized = normalizeConversationKey(conversationKey);
+  return {
+    snapshot: normalized ? chatScrollSnapshots.get(normalized) : undefined,
+    pending: normalized ? pendingChatScrollRestores.get(normalized) : undefined,
+  };
+}
+
+/** Put back a saved state, or remove any state when there was none. */
+export function restoreChatScrollStateForConversationKey(
+  conversationKey: number,
+  saved: SavedChatScrollState,
+): void {
+  const normalized = normalizeConversationKey(conversationKey);
+  if (!normalized) return;
+  if (saved.snapshot) chatScrollSnapshots.set(normalized, saved.snapshot);
+  else chatScrollSnapshots.delete(normalized);
+  if (saved.pending) pendingChatScrollRestores.set(normalized, saved.pending);
+  else pendingChatScrollRestores.delete(normalized);
+}
+
 export function clearChatScrollSnapshotsForTests(): void {
   for (const chatBox of liveNavigationBoxes) {
     cancelChatNavigation(chatBox, false);
@@ -795,5 +920,6 @@ export function clearChatScrollSnapshotsForTests(): void {
   activeChatNavigations = new WeakMap<HTMLDivElement, ActiveChatNavigation>();
   panelScrollSnapshots = new WeakMap();
   viewportPositions = new WeakMap();
+  drawnConversationKeys = new WeakMap();
   for (const box of liveReconciliationBoxes) disposeChatScrollViewport(box);
 }

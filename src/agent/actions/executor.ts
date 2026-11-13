@@ -16,7 +16,8 @@ function nextCallId(): string {
 
 /**
  * Creates a minimal AgentToolContext for invoking a tool directly from an action.
- * Actions don't have a real user request, so we synthesise one.
+ * Actions don't have a real user request, so we synthesise one. The action's
+ * code, not the model, built the call's arguments (hostAction).
  */
 function buildToolContext(
   ctx: ActionExecutionContext,
@@ -37,6 +38,7 @@ function buildToolContext(
       journalActionScope:
         ctx.journalActionScope || ctx.toolContext.journalActionScope,
       journalToolName: ctx.journalToolName || ctx.toolContext.journalToolName,
+      hostAction: true,
     };
   return {
     signal: ctx.signal,
@@ -63,6 +65,7 @@ function buildToolContext(
     modelName: "action",
     journalActionScope: ctx.journalActionScope,
     journalToolName: ctx.journalToolName,
+    hostAction: true,
   };
 }
 

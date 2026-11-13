@@ -17,6 +17,7 @@ import type {
   ResolvedContextSource,
   SelectedTextContext,
   TagContextRef,
+  AttachedConversationRef,
 } from "../../types";
 import type { SelectedTextSource } from "../../types";
 import type { EditLatestTurnMarker, EditLatestTurnResult } from "../../chat";
@@ -119,6 +120,9 @@ type SendFlowControllerDeps = {
   getSelectedPaperContexts: (itemId: number) => PaperContextRef[];
   getSelectedCollectionContexts: (itemId: number) => CollectionContextRef[];
   getSelectedTagContexts: (itemId: number) => TagContextRef[];
+  getAttachedConversations: (itemId: number) => AttachedConversationRef[];
+  /** Past chats are one-shot: the composer drops them once a message is sent. */
+  clearAttachedConversations: (itemId: number) => void;
   getFullTextPaperContexts: (
     item: Zotero.Item,
     paperContexts: PaperContextRef[],
@@ -389,6 +393,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         item.id,
       );
       const selectedTagContexts = deps.getSelectedTagContexts(item.id);
+      const attachedConversations = deps.getAttachedConversations(item.id);
       const usesPluginAgentMode =
         (panel.isAgentMode || panel.isClaudeConversationSystem) &&
         !panel.isCodexConversationSystem;
@@ -549,6 +554,13 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         );
         return;
       }
+      if (isWebChat && attachedConversations.length) {
+        deps.setStatusMessage?.(
+          "Web chat does not support past chats as context. Remove the past chat chip and try again.",
+          "error",
+        );
+        return;
+      }
       const hasPaperComposeState =
         allSelectedPaperContexts.length > 0 ||
         selectedCollectionContexts.length > 0 ||
@@ -561,6 +573,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         !selectedPaperContexts.length &&
         !selectedCollectionContexts.length &&
         !selectedTagContexts.length &&
+        !attachedConversations.length &&
         !selectedFiles.length &&
         !localDocuments.length &&
         !hasImageInputs
@@ -573,7 +586,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         localDocuments.length > 0 ||
         selectedPaperContexts.length > 0 ||
         selectedCollectionContexts.length > 0 ||
-        selectedTagContexts.length > 0;
+        selectedTagContexts.length > 0 ||
+        attachedConversations.length > 0;
 
       let resolvedPromptText =
         !text && !primarySelectedText && localDocuments.length
@@ -594,7 +608,8 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const selectedScopeContextCount =
         selectedPaperContexts.length +
         selectedCollectionContexts.length +
-        selectedTagContexts.length;
+        selectedTagContexts.length +
+        attachedConversations.length;
       if (
         !text &&
         !primarySelectedText &&
@@ -607,7 +622,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           ? "Please analyze selected papers."
           : selectedCollectionContexts.length
             ? "Please analyze selected collection."
-            : "Please analyze selected tag.";
+            : selectedTagContexts.length
+              ? "Please analyze selected tag."
+              : "Please review the attached past chats.";
       }
 
       const composedQuestionBase = primarySelectedText
@@ -751,6 +768,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           fullTextPaperContexts,
           selectedCollectionContexts,
           selectedTagContexts,
+          attachedConversations,
           attachments: selectedFiles.length ? selectedFiles : undefined,
           modelAttachments: selectedFiles.length ? modelFiles : undefined,
           localDocuments: localDocuments.length ? localDocuments : undefined,
@@ -804,6 +822,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           deps.updateFilePreviewPreservingScroll();
         }
         deps.updateImagePreviewPreservingScroll();
+        if (attachedConversations.length) {
+          deps.clearAttachedConversations(item.id);
+          deps.updatePaperPreviewPreservingScroll();
+        }
         if (primarySelectedText) {
           deps.retainPinnedTextState(textContextConversationKey);
           deps.updateSelectedTextPreviewPreservingScroll();
@@ -820,6 +842,10 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         deps.updateFilePreviewPreservingScroll();
       }
       deps.updateImagePreviewPreservingScroll();
+      if (attachedConversations.length) {
+        deps.clearAttachedConversations(item.id);
+        deps.updatePaperPreviewPreservingScroll();
+      }
       if (primarySelectedText) {
         deps.retainPinnedTextState(textContextConversationKey);
         deps.updateSelectedTextPreviewPreservingScroll();
@@ -902,6 +928,9 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         fullTextPaperContexts,
         selectedCollectionContexts,
         selectedTagContexts,
+        attachedConversations: attachedConversations.length
+          ? attachedConversations
+          : undefined,
         attachments: selectedFiles.length ? selectedFiles : undefined,
         modelAttachments: selectedFiles.length ? modelFiles : undefined,
         localDocuments: localDocuments.length ? localDocuments : undefined,

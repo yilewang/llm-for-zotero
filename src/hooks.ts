@@ -1,4 +1,9 @@
 import { appLogger } from "./core/logging";
+import {
+  createStartupLifecycle,
+  waitWithTimeout,
+  watchStartupPhase,
+} from "./core/startupLifecycle";
 import { initLocale } from "./utils/locale";
 import { initI18n } from "./utils/i18n";
 import { initializeModelCapabilityRegistry } from "./modelCapabilities";
@@ -6,13 +11,16 @@ import { registerPrefsScripts } from "./modules/preferenceScript";
 import { config, PREFERENCES_PANE_ID } from "./modules/contextPanel/constants";
 import {
   registerReaderContextPanel,
+  unregisterReaderContextPanel,
   registerLLMStyles,
+  unregisterLLMStyles,
   registerNoteEditingSelectionTracking,
   registerReaderSelectionTracking,
   unregisterAllNoteEditingSelectionTracking,
   unregisterNoteEditingSelectionTracking,
   unregisterReaderSelectionTracking,
   openStandaloneChat,
+  getStandaloneActivePaperItemID,
 } from "./modules/contextPanel";
 import { composeHostSurfaces } from "./modules/contextPanel/hostSurfaces";
 import { composePanelSurfaces } from "./modules/contextPanel/panelSurfaces";
@@ -33,7 +41,7 @@ import {
   runDeferredLegacyMigrations,
   runStartupPreferenceMigrations,
 } from "./utils/migrations";
-import { createZToolkit, disposeAppLogging } from "./utils/ztoolkit";
+import { disposeAppLogging } from "./utils/ztoolkit";
 import {
   activeContextPanels,
   unregisterContextPanel,
@@ -43,6 +51,7 @@ import {
 import { disposeSetupHandlers } from "./modules/contextPanel/setupHandlers";
 import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps";
 import { closeAllAddonDialogs } from "./utils/dialogRegistry";
+import { closeAllTornChatWindows } from "./modules/contextPanel/tornChatWindows";
 import {
   initializePaperRestoreSelections,
   shutdownPaperRestoreSelections,
@@ -58,6 +67,21 @@ type ConversationStoreReadiness = {
   codexStoreReady: boolean;
   pendingDeletionReady: boolean;
 };
+
+/** Passed by addon/bootstrap.js; isUpgrade is true for an in-place update. */
+type PluginLifecycleReason = { isUpgrade?: boolean };
+
+const STANDALONE_SHORTCUT_KEY_ID = "llmforzotero-key-standalone";
+// Zotero waits for shutdown before it loads an update, so a Codex child that
+// never exits must not hold the update back. Matches the bridge's stop bound.
+const CODEX_SHUTDOWN_TIMEOUT_MS = 4_000;
+// Shutdown waits this long for an unfinished startup sequence before teardown,
+// with the same bound as the Codex stop, so a stuck store cannot hold back an
+// update or a disable.
+const STARTUP_SHUTDOWN_WAIT_MS = 4_000;
+// A startup phase that runs longer than this is named in a warning, so a
+// startup that never finishes can be traced to its phase.
+const STARTUP_PHASE_WATCHDOG_MS = 15_000;
 
 let startupUserSkillsLoadTask: Promise<void> | null = null;
 let disposeHostSurfaces: (() => void) | null = null;
@@ -84,7 +108,14 @@ async function measureStartupPhase<T>(
 ): Promise<T> {
   const start = Date.now();
   try {
-    return await task();
+    return await watchStartupPhase(label, task, {
+      trace: (message) => Zotero.debug(message),
+      onSlow: (elapsedMs) =>
+        appLogger.warn(
+          `LLM startup: ${label} has not finished after ${elapsedMs}ms`,
+        ),
+      slowAfterMs: STARTUP_PHASE_WATCHDOG_MS,
+    });
   } finally {
     appLogger.info(
       `LLM startup: ${label} completed in ${Date.now() - start}ms`,
@@ -136,6 +167,7 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
   } catch (err) {
     appLogger.warn("LLM: Failed to initialize chat store", err);
   }
+  if (startupLifecycle.isStopped()) return readiness;
   try {
     // The local usage ledger is a reporting surface, never a gate: a failure
     // here must not hold back conversation readiness.
@@ -143,12 +175,14 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
   } catch (err) {
     appLogger.warn("LLM: Failed to initialize usage store", err);
   }
+  if (startupLifecycle.isStopped()) return readiness;
   try {
     await measureStartupPhase("Claude Code store", initClaudeCodeStore);
     readiness.claudeStoreReady = true;
   } catch (err) {
     appLogger.warn("LLM: Failed to initialize Claude Code store", err);
   }
+  if (startupLifecycle.isStopped()) return readiness;
   try {
     await measureStartupPhase(
       "Codex App Server store",
@@ -158,6 +192,7 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
   } catch (err) {
     appLogger.warn("LLM: Failed to initialize Codex App Server store", err);
   }
+  if (startupLifecycle.isStopped()) return readiness;
   try {
     await measureStartupPhase("pending deletion store", async () => {
       configurePendingDeletionSubsystem();
@@ -176,6 +211,23 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
   }
 
   return readiness;
+}
+
+/**
+ * Undoes what a startup phase that was still running at shutdown may have
+ * registered after teardown found nothing to undo. Both steps are idempotent.
+ */
+async function cleanUpStoppedStartup(): Promise<void> {
+  try {
+    await shutdownPaperRestoreSelections();
+  } catch (err) {
+    appLogger.debug("LLM: cleanup of stopped startup failed", err);
+  }
+  try {
+    disposePendingDeletionSubsystem();
+  } catch (err) {
+    appLogger.debug("LLM: cleanup of stopped startup failed", err);
+  }
 }
 
 function allConversationStoresReady(
@@ -278,6 +330,20 @@ function scheduleClaudeProjectBootstrapIfEnabled(): void {
   });
 }
 
+function scheduleClaudeBridgeLifecycle(): void {
+  runDeferredStartupTask("Claude Code bridge", async () => {
+    const [{ installClaudeBridgeLifecycle }, { isClaudeCodeModeEnabled }] =
+      await Promise.all([
+        import("./claudeCode/bridgeProcess"),
+        import("./claudeCode/prefs"),
+      ]);
+    installClaudeBridgeLifecycle({
+      prefsPrefix: config.prefsPrefix,
+      isClaudeCodeModeEnabled,
+    });
+  });
+}
+
 function scheduleAgentSubsystemStartup(): void {
   runDeferredStartupTask("agent subsystem", async () => {
     const { getAgentApi, initAgentSubsystem } = await import("./agent");
@@ -362,6 +428,7 @@ function scheduleDeferredStartupWork(
   scheduleConversationMaintenance(readiness);
   scheduleConversationIntegrityAudit();
   scheduleClaudeProjectBootstrapIfEnabled();
+  scheduleClaudeBridgeLifecycle();
   scheduleAgentSubsystemStartup();
   scheduleUserSkillsLoad();
   scheduleAttachmentMaintenance();
@@ -371,7 +438,84 @@ function scheduleDeferredStartupWork(
   scheduleModelCapabilityRefresh();
 }
 
-async function onStartup() {
+/**
+ * Removes every element the plugin adds to a main window's document. Zotero
+ * applies an update in the running window, so whatever is left here would
+ * keep the old version's CSS and listeners alive next to the new version.
+ */
+function removePluginWindowDom(win: Window): void {
+  const doc = win.document;
+  unregisterLLMStyles(doc);
+  removeMainWindowFtlLinks(doc);
+  // Old versions added this element; nothing creates it any more.
+  doc.getElementById("llmforzotero-open-standalone")?.remove();
+  doc
+    .querySelectorAll(`[id="${STANDALONE_SHORTCUT_KEY_ID}"]`)
+    .forEach((el: Element) => el.remove());
+}
+
+function removeMainWindowFtlLinks(doc: Document): void {
+  const href = `${addon.data.config.addonRef}-mainWindow.ftl`;
+  doc
+    .querySelectorAll(`link[rel="localization"][href="${href}"]`)
+    .forEach((el: Element) => el.remove());
+}
+
+/**
+ * An update closes the standalone window with the old version. The old
+ * shutdown leaves a marker on the Zotero object, which survives the plugin
+ * scope swap but not a Zotero restart, so a failed install cannot reopen the
+ * window on a later launch. The marker is deleted before the window opens.
+ */
+const REOPEN_STANDALONE_MARKER = "__llmForZoteroReopenStandalone";
+type ReopenStandaloneMarker = { initialItemID: number | null };
+
+function reopenStandaloneAfterUpdate(): void {
+  const host = Zotero as unknown as Record<
+    string,
+    ReopenStandaloneMarker | undefined
+  >;
+  const marker = host[REOPEN_STANDALONE_MARKER];
+  delete host[REOPEN_STANDALONE_MARKER];
+  if (!marker) return;
+  try {
+    const item = marker.initialItemID
+      ? Zotero.Items.get(marker.initialItemID) || null
+      : null;
+    openStandaloneChat(item ? { initialItem: item } : undefined);
+  } catch (err) {
+    appLogger.warn(
+      "LLM: Failed to reopen the standalone window after update",
+      err,
+    );
+  }
+}
+
+const startupLifecycle = createStartupLifecycle<_ZoteroTypes.MainWindow>({
+  registerWindow: registerMainWindow,
+  reportError: reportStartupError,
+});
+
+function reportStartupError(
+  error: unknown,
+  context: { cancelled: boolean; phase: "startup" | "window" },
+): void {
+  // Teardown disposes the host surfaces, so a step left running by shutdown
+  // may throw for that reason alone.
+  if (context.cancelled) {
+    appLogger.debug("LLM: startup step failed after shutdown began", error);
+    return;
+  }
+  appLogger.error(
+    context.phase === "window"
+      ? "LLM: main window registration failed"
+      : "LLM: startup failed",
+    error,
+  );
+  Zotero.logError(error instanceof Error ? error : new Error(String(error)));
+}
+
+async function onStartup(_reason: PluginLifecycleReason = {}) {
   // Host surface composition comes first. Services and agent code reach
   // panel-owned capabilities through bridges that throw when nothing is
   // configured, so every later startup step - stores, the MCP server, any
@@ -381,6 +525,17 @@ async function onStartup() {
   // panel mounted by any later startup step already has them.
   disposePanelSurfaces = composePanelSurfaces();
 
+  // Zotero starts the next plugin only after this hook settles, so the
+  // sequence runs in the background (issue #528).
+  startupLifecycle.start(runStartupSequence);
+}
+
+/**
+ * Today's startup steps, in order. Each check of isStopped() follows an
+ * awaited phase or precedes a step that registers something: a cancelled or
+ * failed startup must register nothing more.
+ */
+async function runStartupSequence(): Promise<void> {
   await measureStartupPhase("Zotero readiness", () =>
     Promise.all([
       Zotero.initializationPromise,
@@ -388,6 +543,7 @@ async function onStartup() {
       Zotero.uiReadyPromise,
     ]),
   );
+  if (startupLifecycle.isStopped()) return;
 
   zoteroChangeDispatcher.registerNativeObserver();
 
@@ -398,6 +554,7 @@ async function onStartup() {
   } catch (err) {
     appLogger.warn("LLM: Failed to run legacy migration", err);
   }
+  if (startupLifecycle.isStopped()) return;
 
   initLocale();
   initI18n();
@@ -407,13 +564,22 @@ async function onStartup() {
     "model capability cache",
     initializeModelCapabilityRegistry,
   );
+  if (startupLifecycle.isStopped()) return;
 
   const conversationStoreReadiness =
     await initializeConversationStoresForStartup();
+  if (startupLifecycle.isStopped()) {
+    await cleanUpStoppedStartup();
+    return;
+  }
 
   await measureStartupPhase("paper conversation restore selections", () =>
     initializePaperRestoreSelections(conversationStoreReadiness),
   );
+  if (startupLifecycle.isStopped()) {
+    await cleanUpStoppedStartup();
+    return;
+  }
   registerPaperConversationRestoreNotifications();
 
   // A durable deletion intent that was not loaded is an active write fence,
@@ -431,17 +597,24 @@ async function onStartup() {
 
   registerPrefsPane();
 
+  // Zotero may already call onMainWindowLoad while this sequence runs. The
+  // hook registers nothing until this snapshot; the snapshot covers every
+  // window open now, and the hook covers every window after it.
   await measureStartupPhase("main window panel registration", () =>
-    Promise.all(Zotero.getMainWindows().map((win) => onMainWindowLoad(win))),
+    startupLifecycle.registerMainWindows(Zotero.getMainWindows()),
   );
+  if (startupLifecycle.isStopped()) return;
 
   // Mark initialized as true to confirm plugin loading status
   // outside of the plugin (e.g. scaffold testing process)
   if (__env__ === "test" || __env__ === "development") {
     const { installWorkflowTestHarness } =
       await import("./modules/contextPanel/workflowTestHarness");
+    if (startupLifecycle.isStopped()) return;
     installWorkflowTestHarness(addon);
   }
+  // After the windows: the standalone window mounts against a main window.
+  reopenStandaloneAfterUpdate();
   addon.data.initialized = true;
 
   // Compiled out of normal builds. Only the explicit manual behavior runner
@@ -459,10 +632,16 @@ async function onStartup() {
 
 const dedicatedChatPaneDisposers = new Map<Window, () => void>();
 
+// Zotero awaits this hook before it calls the next plugin's, so it must not
+// wait for the startup sequence.
 async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
-  // Create ztoolkit for every window
-  addon.data.ztoolkit = createZToolkit();
+  startupLifecycle.onMainWindowLoad(win);
+}
 
+function registerMainWindow(win: _ZoteroTypes.MainWindow): void {
+  // insertFTLIfNeeded keeps an existing link, and after an in-place update
+  // that link belongs to the previous version.
+  removeMainWindowFtlLinks(win.document);
   win.MozXULElement.insertFTLIfNeeded(
     `${addon.data.config.addonRef}-mainWindow.ftl`,
   );
@@ -509,8 +688,12 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   const doc = win.document;
   const keyset = doc.getElementById("mainKeyset");
   if (keyset) {
+    // A key left by the previous version would still run its old listener.
+    doc
+      .querySelectorAll(`[id="${STANDALONE_SHORTCUT_KEY_ID}"]`)
+      .forEach((el: Element) => el.remove());
     const key = doc.createXULElement("key");
-    key.id = "llmforzotero-key-standalone";
+    key.id = STANDALONE_SHORTCUT_KEY_ID;
     key.setAttribute("modifiers", "accel,shift");
     key.setAttribute("key", "L");
     key.setAttribute("oncommand", "void(0)");
@@ -545,6 +728,7 @@ function registerPrefsPane() {
 }
 
 async function onMainWindowUnload(win: Window): Promise<void> {
+  startupLifecycle.onMainWindowUnload(win as _ZoteroTypes.MainWindow);
   for (const [body] of activeContextPanels) {
     if (body.ownerDocument !== win.document) continue;
     disposeSetupHandlers(body);
@@ -553,22 +737,74 @@ async function onMainWindowUnload(win: Window): Promise<void> {
   dedicatedChatPaneDisposers.get(win)?.();
   dedicatedChatPaneDisposers.delete(win);
   unregisterNoteEditingSelectionTracking(win);
-  ztoolkit.unregisterAll();
   closeAllAddonDialogs();
   addon.data.standaloneWindow?.close();
-  win.document.getElementById("llmforzotero-open-standalone")?.remove();
-  win.document.getElementById("llmforzotero-key-standalone")?.remove();
+  closeAllTornChatWindows();
+  removePluginWindowDom(win);
 }
 
-async function onShutdown(): Promise<void> {
+async function runShutdownStep(
+  label: string,
+  step: () => unknown,
+): Promise<void> {
+  try {
+    await step();
+  } catch (error) {
+    appLogger.warn(`LLM: shutdown step failed: ${label}`, error);
+  }
+}
+
+async function onShutdown(reason: PluginLifecycleReason = {}): Promise<void> {
+  try {
+    await shutdownPlugin(reason);
+  } finally {
+    // Always retire this object, even after a failed step. src/index.ts
+    // reuses an object it finds alive, so the next load would run these old
+    // hooks. Delete the global only while it is still this object.
+    addon.data.alive = false;
+    const instanceKey = addon.data.config.addonInstance;
+    // @ts-expect-error - Plugin instance is not typed
+    if (Zotero[instanceKey] === addon) delete Zotero[instanceKey];
+  }
+}
+
+async function shutdownPlugin(reason: PluginLifecycleReason): Promise<void> {
+  // An unfinished startup stops at its next check. A step stuck in a database
+  // call may outlive teardown; the sequence then undoes what that step
+  // registered (cleanUpStoppedStartup) and registers nothing more.
+  const startupSettled = await startupLifecycle.cancelAndWait(
+    STARTUP_SHUTDOWN_WAIT_MS,
+  );
+  if (!startupSettled) {
+    appLogger.warn(
+      `LLM: startup did not stop in ${STARTUP_SHUTDOWN_WAIT_MS}ms; continuing shutdown`,
+    );
+  }
+  // Each step is isolated: one failure must not leave the rest running into
+  // the next plugin instance.
+  await runShutdownStep("standalone reopen marker", () => {
+    const standaloneWindow = addon.data.standaloneWindow;
+    if (!reason.isUpgrade || !standaloneWindow || standaloneWindow.closed) {
+      return;
+    }
+    (Zotero as unknown as Record<string, ReopenStandaloneMarker>)[
+      REOPEN_STANDALONE_MARKER
+    ] = { initialItemID: getStandaloneActivePaperItemID() };
+  });
   // Dispose while hosts are still registered, before unregisterAll removes
   // their DOM and clearAllState forgets them. Detached callbacks must not run
   // against the next plugin instance during a hot reload.
-  for (const [body] of activeContextPanels) disposeSetupHandlers(body);
-  for (const dispose of dedicatedChatPaneDisposers.values()) dispose();
-  dedicatedChatPaneDisposers.clear();
-  zoteroChangeDispatcher.unregisterNativeObserver();
-  await zoteroChangeDispatcher.flush();
+  await runShutdownStep("panel handlers", () => {
+    for (const [body] of activeContextPanels) disposeSetupHandlers(body);
+  });
+  await runShutdownStep("dedicated chat panes", () => {
+    for (const dispose of dedicatedChatPaneDisposers.values()) dispose();
+    dedicatedChatPaneDisposers.clear();
+  });
+  await runShutdownStep("Zotero change dispatcher", async () => {
+    zoteroChangeDispatcher.unregisterNativeObserver();
+    await zoteroChangeDispatcher.flush();
+  });
   try {
     const { stopLibraryTextIndex } =
       await import("./services/libraryTextIndex");
@@ -576,15 +812,44 @@ async function onShutdown(): Promise<void> {
   } catch (error) {
     appLogger.debug("LLM index: shutdown skipped", error);
   }
-  unregisterPaperConversationRestoreNotifications();
-  await shutdownPaperRestoreSelections();
-  disposePendingDeletionSubsystem();
-  disposeAppLogging();
-  ztoolkit.unregisterAll();
-  unregisterReaderSelectionTracking();
-  unregisterAllNoteEditingSelectionTracking();
-  closeAllAddonDialogs();
-  addon.data.standaloneWindow?.close();
+  await runShutdownStep("mineru local server", async () => {
+    try {
+      const { stopMineruServer } = await import("./utils/mineruServerManager");
+      await stopMineruServer("plugin_shutdown");
+    } catch (error) {
+      appLogger.debug("MinerU server: shutdown skipped", error);
+    }
+  });
+  await runShutdownStep("paper conversation restore", async () => {
+    unregisterPaperConversationRestoreNotifications();
+    await shutdownPaperRestoreSelections();
+  });
+  await runShutdownStep("pending deletion", disposePendingDeletionSubsystem);
+  await runShutdownStep("app logging", disposeAppLogging);
+  await runShutdownStep("toolkit registrations", () =>
+    ztoolkit.unregisterAll(),
+  );
+  await runShutdownStep(
+    "reader selection tracking",
+    unregisterReaderSelectionTracking,
+  );
+  await runShutdownStep(
+    "note editing selection tracking",
+    unregisterAllNoteEditingSelectionTracking,
+  );
+  await runShutdownStep("dialogs", closeAllAddonDialogs);
+  await runShutdownStep("standalone window", () =>
+    addon.data.standaloneWindow?.close(),
+  );
+  await runShutdownStep("torn-off chat windows", closeAllTornChatWindows);
+  // Zotero would keep this section's element, and so these hooks, if the
+  // next version registers it again before the item pane renders.
+  await runShutdownStep("item pane section", unregisterReaderContextPanel);
+  // Zotero does not unload the main windows for a disable or an update, so
+  // their plugin DOM is removed here.
+  await runShutdownStep("main window DOM", () => {
+    for (const win of Zotero.getMainWindows()) removePluginWindowDom(win);
+  });
   try {
     const { unregisterWebChatRelay } = require("./webchat/relayServer");
     unregisterWebChatRelay();
@@ -604,9 +869,24 @@ async function onShutdown(): Promise<void> {
     /* ignore if module not loaded */
   }
   try {
+    const { uninstallClaudeBridgeLifecycle } =
+      await import("./claudeCode/bridgeProcess");
+    await uninstallClaudeBridgeLifecycle();
+  } catch (error) {
+    appLogger.debug("LLM: Claude Code bridge shutdown skipped", error);
+  }
+  try {
     const { destroyAllCachedCodexAppServerProcesses } =
       await import("./utils/codexAppServerProcess");
-    await destroyAllCachedCodexAppServerProcesses();
+    const finished = await waitWithTimeout(
+      destroyAllCachedCodexAppServerProcesses(),
+      CODEX_SHUTDOWN_TIMEOUT_MS,
+    );
+    if (!finished) {
+      appLogger.warn(
+        `LLM: codex app-server shutdown did not finish in ${CODEX_SHUTDOWN_TIMEOUT_MS}ms; continuing`,
+      );
+    }
   } catch (error) {
     appLogger.debug("LLM: codex app-server shutdown skipped", error);
   }
@@ -616,16 +896,16 @@ async function onShutdown(): Promise<void> {
   } catch {
     /* ignore if module not loaded */
   }
-  clearQueuedFollowUpState();
-  clearAllState();
-  disposePanelSurfaces?.();
-  disposePanelSurfaces = null;
-  disposeHostSurfaces?.();
-  disposeHostSurfaces = null;
-  // Remove addon object
-  addon.data.alive = false;
-  // @ts-expect-error - Plugin instance is not typed
-  delete Zotero[addon.data.config.addonInstance];
+  await runShutdownStep("queued follow-ups", clearQueuedFollowUpState);
+  await runShutdownStep("panel state", clearAllState);
+  await runShutdownStep("panel surfaces", () => {
+    disposePanelSurfaces?.();
+    disposePanelSurfaces = null;
+  });
+  await runShutdownStep("host surfaces", () => {
+    disposeHostSurfaces?.();
+    disposeHostSurfaces = null;
+  });
 }
 
 /**

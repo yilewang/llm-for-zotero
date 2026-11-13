@@ -8,8 +8,10 @@ import type {
 import type {
   ActiveNoteContext,
   AdvancedModelParams,
+  AttachedConversationRef,
   ChatAttachment,
   CollectionContextRef,
+  ConversationSystem,
   LocalDocumentResource,
   NoteContextRef,
   PaperContentSourceMode,
@@ -31,6 +33,7 @@ import type {
 } from "./authorization/types";
 import type { MaterialRef } from "./documents/materialRef";
 import type {
+  TaskPaperDecisionInput,
   TaskPaperDocumentCitation,
   TaskPaperLedgerDelta,
 } from "./context/taskPaperLedger";
@@ -50,6 +53,10 @@ import type {
 } from "./contracts/types";
 import type { AgentActionVerification } from "./contracts/actionVerificationLabels";
 import type { TrustedReadObservation } from "./context/readObservationTypes";
+import type {
+  OutsidePaperLookupCache,
+  OutsidePaperRecord,
+} from "./context/outsidePaperRecords";
 import type { SkillRoutingReceipt } from "./skills/routingTypes";
 import type { LoadedSkillRecord } from "./skills/loadingTypes";
 import type {
@@ -107,6 +114,24 @@ export type AgentRequest = {
   pinnedPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  /**
+   * Past chats the current user message attached (at most three). The
+   * built-in agent renders them once, into the transcript, on this turn.
+   */
+  attachedConversations?: AttachedConversationRef[];
+  /**
+   * Past chats this Claude Code turn puts in front of its text: the current
+   * message's chats plus those of the slash messages right before it (a
+   * slash message cannot carry them). Host-set by the agent engine with
+   * resolveDeliveredPastChatRefs; empty on a slash turn and for other systems.
+   */
+  deliveredConversations?: AttachedConversationRef[];
+  /**
+   * Every past chat attached anywhere in this conversation: the chats
+   * past_chat_read may open. Host-set from the stored user messages and
+   * copied into the Zotero MCP scope, never taken from tool arguments.
+   */
+  attachedConversationScope?: AttachedConversationRef[];
   availableAttachmentResources?: AgentAttachmentResource[];
   attachmentResourceSummaries?: AgentAttachmentResourceSummary[];
   attachments?: ChatAttachment[];
@@ -129,6 +154,12 @@ export type AgentPendingActionButton = {
   executionMode?: "immediate" | "edit";
   submitLabel?: string;
   backLabel?: string;
+  /**
+   * A second submit button shown in the footer beside the primary one,
+   * instead of under Alternatives. On a card with a selectionAction,
+   * `{count}` in its label is the number of rows checked.
+   */
+  footer?: boolean;
 };
 
 export type AgentPendingChoiceValue =
@@ -138,6 +169,10 @@ export type AgentPendingChoiceValue =
 type AgentPendingFieldBase = {
   id: string;
   visibleForActionIds?: string[];
+  /**
+   * The actions this field must be filled for. Absent, it is required for
+   * every action it is visible for; an empty list requires it for none.
+   */
   requiredForActionIds?: string[];
 };
 
@@ -532,6 +567,11 @@ export type AgentEvent =
        * as a trace row.
        */
       steps?: Array<{ content: string; status?: string }>;
+      /**
+       * Which runtime kept the steps. Claude Code sends its own step list as
+       * this same event; an event without the field is Codex's.
+       */
+      runtime?: "codex" | "claude";
     }
   | {
       type: "codex_tool_activity";
@@ -549,6 +589,12 @@ export type AgentEvent =
       workCategory?: AgentWorkCategory;
       /** Whether the call could change library state, as the server saw it. */
       mutability?: "read" | "write";
+      /**
+       * The passage citations a completed Zotero MCP call returned (a
+       * paper_read passage, a paper_digest quote), which the chat's answer
+       * may cite; the Claude bridge relays them as the Codex panel reads them.
+       */
+      quoteCitations?: QuoteCitation[];
     }
   | {
       type: "usage";
@@ -859,6 +905,7 @@ export type AgentModelStep =
 export type ExhaustiveReadBackend =
   | "request_provider"
   | "codex_responses"
+  | "claude_bridge"
   | "unavailable";
 
 /**
@@ -950,6 +997,12 @@ export type AgentRuntimeRequestInput = AgentRequest & {
   documentReadObservations?: readonly TrustedReadObservation[];
   /** Host-observed tool artifacts eligible for direct document embedding. */
   documentArtifactObservations?: readonly AgentToolArtifact[];
+  /** The outside papers literature_search and literature_read returned this run. */
+  outsidePaperRecords?: readonly OutsidePaperRecord[];
+  /** The outside papers the user chose to cite; unset, every recorded one. */
+  outsidePaperSelection?: readonly string[];
+  /** The run's DOI lookups for citing outside papers; shared by reference. */
+  outsidePaperLookupCache?: OutsidePaperLookupCache;
   /** Live model-context state supplied by the runtime to capacity-aware tools. */
   runtimeContextBudget?: Readonly<{
     contextWindowTokens: number;
@@ -974,6 +1027,12 @@ export type AgentRuntimeRequestInput = AgentRequest & {
    * Missing means the request's configured provider is the completion backend.
    */
   exhaustiveReadBackend?: ExhaustiveReadBackend;
+  /**
+   * The reader model the user picked in the composer for this runtime, by
+   * entry ID or model name (never a credential). Absent means the main
+   * model reads. Host-set; never decoded from tool arguments.
+   */
+  readerSelection?: import("../shared/readerSelection").ReaderSelection;
 };
 
 export type LegacyPaperContextField =
@@ -1166,11 +1225,28 @@ export type AgentToolResult = {
   /** Sources the finalized document cites; announced on `material_finalized`. */
   materialCitedSources?: TaskPaperDocumentCitation[];
   /**
+   * The agent's decisions about papers this call stated, each paper already
+   * resolved in the call's library. The host's ledger recorder turns them
+   * into the call's `paper_ledger_update` (taskPaperLedgerRecorder.ts), in
+   * the built-in runtime and over MCP alike.
+   */
+  paperDecisions?: TaskPaperDecisionInput[];
+  /**
    * Per-item outcomes of a durable batch. The host announces one run event
    * each, so a batch's material is recoverable per item instead of collapsing
    * into a single turn-level `materialRef`.
    */
   batchItems?: AgentBatchItemOutcome[];
+};
+
+/**
+ * The canonical checksums of a note before and after one batch append,
+ * frozen before the first write. A resume that finds the after-checksum
+ * knows the append landed, even when its row was never marked saved.
+ */
+export type NoteAppendGuard = {
+  beforeChecksum: string;
+  afterChecksum: string;
 };
 
 /**
@@ -1192,6 +1268,8 @@ export type AgentBatchBinding = {
     material?: MaterialRef;
     /** Why this item has no material; it is recorded failed and never written. */
     failure?: string;
+    /** For an append: the note's checksums around the write. */
+    append?: NoteAppendGuard;
   }>;
 };
 
@@ -1229,6 +1307,11 @@ export type AgentToolReviewResolution =
         arguments: unknown;
         inheritedApproval?: AgentInheritedApproval;
       };
+      /**
+       * Without terminalText the run continues: the model reads the call's
+       * result, with this next step when the call succeeded.
+       */
+      nextStep?: string;
       terminalText?:
         | {
             onSuccess: string;
@@ -1249,6 +1332,8 @@ export type AgentToolExecutionOutput<TResult = unknown> =
       materialKind?: string;
       materialTitle?: string;
       materialCitedSources?: TaskPaperDocumentCitation[];
+      /** See `AgentToolResult.paperDecisions`. */
+      paperDecisions?: TaskPaperDecisionInput[];
       batchItems?: AgentBatchItemOutcome[];
     };
 
@@ -1296,6 +1381,11 @@ export type AgentToolContext = {
   reviewAction?: import("./authorization/types").ActionReviewer;
   /** Host-owned authority; never decoded from model or MCP tool arguments. */
   authorization?: { kind: "external_runtime"; standalone: boolean };
+  /**
+   * Set by the action executor: an action's code (Discover related), not the
+   * model, built this call's arguments. Never decoded from tool arguments.
+   */
+  hostAction?: true;
   /** Retain native-verified child results when a prepared workflow coordinates tools. */
   recordChildExecution?: (result: AgentToolResult) => void;
   /** Host-only execution lifetime carried into child action invocations. */
@@ -1312,6 +1402,19 @@ export type AgentToolContext = {
     prepared: PreparedToolExecution,
   ) => Promise<PreparedToolExecutionResult>;
   request: AgentRuntimeRequest;
+  /**
+   * Host-set system of the calling conversation: the MCP server sets it from
+   * the scope's runtime. Absent for the built-in agent, whose conversations
+   * are "upstream" ones.
+   */
+  conversationSystem?: ConversationSystem;
+  /**
+   * Host hook called when past_chat_attach added a chat to the turn's scope.
+   * The MCP server adds it to the scope token, so later calls of the turn can
+   * open it; the built-in runtime needs none, because its calls share
+   * context.request.
+   */
+  extendAttachedConversationScope?: (ref: AttachedConversationRef) => void;
   /** Durable identity of the execution that owns any journalled writes. */
   runId?: string;
   item: Zotero.Item | null;
@@ -1593,10 +1696,23 @@ export type AgentToolTraceCodeBlock = {
   replacesSummary?: boolean;
 };
 
+export type AgentToolTraceIcon =
+  | "library"
+  | "web"
+  | "file"
+  | "edit"
+  | "search"
+  | "code";
+
 export type AgentToolPresentation = {
   label?: string;
-  /** Optional semantic icon for this tool's compact activity-summary row. */
-  traceIcon?: "library" | "web";
+  /**
+   * Optional icon for this tool's row, naming the kind of step it is: a
+   * Zotero or paper step, reading a file, writing or editing, searching,
+   * running code, or the web. Every mode draws the same icon for the same
+   * kind of step.
+   */
+  traceIcon?: AgentToolTraceIcon;
   /**
    * Keep this tool out of the activity trace entirely.
    *
@@ -1683,7 +1799,8 @@ export type AgentToolModelView = {
 export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
   spec: ToolSpec;
   isAvailable?: (request: AgentRuntimeRequest) => boolean;
-  guidance?: AgentToolGuidance;
+  /** One guidance, or several matched and rendered one by one. */
+  guidance?: AgentToolGuidance | ReadonlyArray<AgentToolGuidance>;
   presentation?: AgentToolPresentation;
   describeAction?: (
     input: TInput,
@@ -1750,6 +1867,15 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
     result: TResult,
     context: AgentToolContext,
   ) => AgentToolModelView | null;
+  /**
+   * The successful result the model reads, when the host keeps some of its
+   * fields to itself (a digest's citation records, whose ids the result
+   * already shows beside each quote). Unlike `buildModelView` it stores
+   * nothing: the trace event, the run's citation collector and the panel
+   * read the whole result, and the plugin Agent and the MCP server both
+   * send the model this one. A tool with `buildModelView` does not use it.
+   */
+  modelContent?: (result: TResult, input: TInput) => unknown;
   /**
    * Allows a host-owned terminal artifact to become the application-visible
    * answer without fabricating a provider assistant message. The exact

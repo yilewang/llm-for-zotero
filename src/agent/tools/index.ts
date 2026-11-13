@@ -15,7 +15,15 @@ import { createReadAttachmentTool } from "./read/readAttachment";
 import { createLibraryReadTool } from "./read/libraryRead";
 import { createLiteratureReviewTool } from "./read/reviewLiterature";
 import { createLiteratureSearchTool } from "./read/literatureSearch";
+import { createLiteratureReadTool } from "./read/literatureRead";
 import { createContextReadTool } from "./read/contextRead";
+import { createPastChatReadTool } from "./read/pastChatRead";
+import { createPastChatSearchTool } from "./read/pastChatSearch";
+import { createPastChatAttachTool } from "./control/pastChatAttach";
+import { createReaderOpenTool } from "./control/readerOpen";
+import { createRecordPaperDecisionsTool } from "./control/recordPaperDecisions";
+import { createReviewCoverageTool } from "./read/reviewCoverage";
+import { createPaperDigestTool } from "./read/paperDigest";
 import { createWebReadTool } from "./read/webRead";
 import { createWebSearchTool } from "./read/webSearch";
 import { AgentToolRegistry } from "./registry";
@@ -23,7 +31,7 @@ import { AgentToolRegistry } from "./registry";
 import { ActionContractService } from "../contracts/actionContract";
 import { PdfFigureExtractionService } from "../services/pdfFigureExtractionService";
 import { PdfPageService } from "../services/pdfPageService";
-import type { AgentToolDefinition } from "../types";
+import type { AgentToolDefinition, AgentToolGuidance } from "../types";
 import { createRequestUserInputTool } from "./control/requestUserInput";
 import { createSubmitDocumentTool } from "./control/submitDocument";
 import { createTaskUpdateTool } from "./control/taskUpdate";
@@ -37,10 +45,12 @@ import {
   validateObject,
 } from "./shared";
 import { createAnnotatePdfTool } from "./write/annotatePdf";
+import { createAnnotationUpdateTool } from "./write/annotationUpdate";
 import { createApplyTagsTool } from "./write/applyTags";
 import { createAttachmentUpdateTool } from "./write/attachmentUpdate";
 import { createCollectionUpdateTool } from "./write/collectionUpdate";
 import { createFileIOTool } from "./write/fileIO";
+import { createImportDocumentCitationsTool } from "./write/importDocumentCitations";
 import { createImportIdentifiersTool } from "./write/importIdentifiers";
 import { createImportLocalFilesTool } from "./write/importLocalFiles";
 import {
@@ -52,6 +62,7 @@ import { createLibrarySettingsTool } from "./write/librarySettings";
 import { createMergeItemsTool } from "./write/mergeItems";
 import { createMoveToCollectionTool } from "./write/moveToCollection";
 import { createRestoreFromTrashTool } from "./write/restoreFromTrash";
+import { createResumeLibraryBatchTool } from "./write/resumeLibraryBatch";
 import { createRunCommandTool } from "./write/runCommand";
 import { createSavedSearchTool } from "./write/savedSearches";
 import {
@@ -72,7 +83,7 @@ type BuiltInAgentToolDeps = {
   retrievalService: RetrievalService;
 };
 
-type ToolGuidance = NonNullable<AgentToolDefinition["guidance"]>;
+type ToolGuidance = AgentToolGuidance;
 
 const STRING_ARRAY_SCHEMA = {
   type: "array" as const,
@@ -116,7 +127,8 @@ const LIBRARY_IMPORT_GUIDANCE: ToolGuidance = {
     userTextSignal(request, (signals) => signals.mentionsImport),
   instruction:
     "Use library_import with kind:'files' to import local files from the user's filesystem into Zotero. Use only paths the user gave or that you resolved; when one is missing, find it or ask. Importing files does not authorize running commands. A bibliography file (.ris, .bib, .enw, .nbib, RDF) has its references imported as real items; other files are attached, and PDFs go through Zotero's metadata lookup so they arrive with a title and authors. Optionally specify a targetCollectionId to file the results into a collection." +
-    "\n\nkind:'identifiers' resolves DOIs, ISBNs, PMIDs, arXiv IDs and ADS bibcodes. It cannot import from a page URL — Zotero has no translator path for that — so take the DOI or arXiv ID off the page instead.",
+    "\n\nkind:'identifiers' resolves DOIs, ISBNs, PMIDs, arXiv IDs and ADS bibcodes. It cannot import from a page URL — Zotero has no translator path for that — so take the DOI or arXiv ID off the page instead." +
+    "\n\nTo import the outside papers a document of this chat cites, call kind:'document_citations' with that document's documentId, not their DOIs; it also publishes a new version of the document that cites the imported items.",
 };
 
 const LIBRARY_DELETE_GUIDANCE: ToolGuidance = {
@@ -140,13 +152,16 @@ function createLibraryUpdateTool(tools: {
   setItemTags: AgentToolDefinition<any, any>;
   collectionUpdate: AgentToolDefinition<any, any>;
   attachmentUpdate: AgentToolDefinition<any, any>;
+  annotationUpdate: AgentToolDefinition<any, any>;
   savedSearchUpdate: AgentToolDefinition<any, any>;
+  resumeBatch: AgentToolDefinition<any, any>;
 }): AgentToolDefinition<any, unknown> {
   return createDelegatingTool({
     name: "library_update",
     label: "Update Library",
+    traceIcon: "edit",
     description:
-      "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links, kind:'collection' for the collection itself (create, rename, move, delete), kind:'attachment' for one attachment (rename, relink, delete), kind:'savedSearch' for a saved search (save creates or replaces one, delete trashes it).",
+      "Apply Zotero library changes. kind:'tags' for tags on items (action 'add', 'remove', or 'set' to replace an item's whole tag list), kind:'tag' for the tag object itself across the library (rename, merge, delete, setColor), kind:'collections' for collection membership, kind:'metadata' for item fields, kind:'parent' to move a note or attachment to a different parent item (or detach it), kind:'related' for Zotero's Related links, kind:'collection' for the collection itself (create, rename, move, delete), kind:'attachment' for one attachment (rename, relink, delete) or to add one to itemId (attach_file copies filePath, or links it if link; attach_url saves url as a link and a snapshot; find_pdf runs Zotero's Find Available PDF), kind:'annotation' to edit annotationId's comment or color, kind:'savedSearch' for a saved search (save creates or replaces one, delete trashes it).",
     executionClass: "external_effect",
     workCategory: "zotero_action",
     inputSchema: {
@@ -165,6 +180,7 @@ function createLibraryUpdateTool(tools: {
             "tag",
             "collection",
             "attachment",
+            "annotation",
             "savedSearch",
           ],
         },
@@ -182,9 +198,12 @@ function createLibraryUpdateTool(tools: {
             "move",
             "relink",
             "save",
+            "attach_file",
+            "attach_url",
+            "find_pdf",
           ],
           description:
-            "For kind:'tags' and kind:'collections': 'add' or 'remove'. For kind:'tags', 'set' replaces each item's tags with exactly the ones given: use it only when the user asked to replace the tags, and add or remove otherwise. For kind:'tag' (the tag object itself): 'rename', 'merge', 'delete' or 'setColor'. For kind:'collection': 'create', 'rename', 'move' or 'delete'. For kind:'attachment': 'rename', 'relink' or 'delete'. For kind:'savedSearch': 'save' or 'delete'.",
+            "For kind:'tags' and kind:'collections': 'add' or 'remove'. For kind:'tags', 'set' replaces each item's tags with exactly the ones given: use it only when the user asked to replace the tags, and add or remove otherwise. For kind:'tag' (the tag object itself): 'rename', 'merge', 'delete' or 'setColor'. For kind:'collection': 'create', 'rename', 'move' or 'delete'. For kind:'attachment': 'rename', 'relink' or 'delete' an attachment, or 'attach_file', 'attach_url' or 'find_pdf' for itemId. For kind:'savedSearch': 'save' or 'delete'. kind:'annotation' takes no action.",
         },
         itemIds: {
           ...NUMBER_ARRAY_SCHEMA,
@@ -228,7 +247,12 @@ function createLibraryUpdateTool(tools: {
         itemId: {
           type: "number",
           description:
-            "Single Zotero item ID for kind:'metadata' or the source item for kind:'related'.",
+            "Single Zotero item ID for kind:'metadata', the source item for kind:'related', or the regular item kind:'attachment' attaches to or finds a PDF for.",
+        },
+        itemType: {
+          type: "string",
+          description:
+            "For kind:'metadata': itemId's new type, e.g. 'book'. The result names the fields it drops.",
         },
         relatedItemIds: {
           ...NUMBER_ARRAY_SCHEMA,
@@ -279,6 +303,29 @@ function createLibraryUpdateTool(tools: {
           type: "number",
           description: "For kind:'attachment': the attachment's item ID.",
         },
+        filePath: {
+          type: "string",
+          description: "For action:'attach_file': the file's absolute path.",
+        },
+        link: {
+          type: "boolean",
+          description:
+            "For action:'attach_file': link to the file where it is instead of copying it into Zotero.",
+        },
+        url: {
+          type: "string",
+          description:
+            "For action:'attach_url': the web page's http or https address.",
+        },
+        annotationId: {
+          type: "number",
+          description: "For kind:'annotation': the annotation's item ID.",
+        },
+        comment: {
+          type: "string",
+          description:
+            "For kind:'annotation': the new comment; an empty string clears it.",
+        },
         newPath: {
           type: "string",
           description:
@@ -312,7 +359,7 @@ function createLibraryUpdateTool(tools: {
         color: {
           type: "string",
           description:
-            "For kind:'tag' action:'setColor': a hex colour, e.g. '#FF6666'.",
+            "For kind:'tag' action:'setColor': a hex colour, e.g. '#FF6666'. For kind:'annotation': a Zotero palette name or a hex colour.",
         },
         position: {
           type: "number",
@@ -331,6 +378,11 @@ function createLibraryUpdateTool(tools: {
           description: "Batch metadata operations when kind:'metadata'.",
         },
         paperContext: PAPER_CONTEXT_REF_SCHEMA,
+        resumeBatchId: {
+          type: "string",
+          description:
+            "Continue a stopped batch by the id its result names. Pass it alone with kind.",
+        },
       },
     },
     summaries: {
@@ -353,6 +405,18 @@ function createLibraryUpdateTool(tools: {
       }
       const delegateArgs = { ...args };
       delete delegateArgs.kind;
+      if (args.resumeBatchId !== undefined) {
+        // The batch already holds its items; anything else sent with the id
+        // would be a change that silently never ran.
+        const extra = Object.keys(delegateArgs).filter(
+          (key) => key !== "resumeBatchId",
+        );
+        return extra.length
+          ? fail(
+              `Pass resumeBatchId alone; the batch already holds its items (remove ${extra.join(", ")}).`,
+            )
+          : ok({ tool: tools.resumeBatch, args: delegateArgs });
+      }
       if (args.kind === "tags") {
         // "set" is a different operation, not a variant of add: it replaces
         // the item's whole tag list rather than merging into it.
@@ -433,11 +497,14 @@ function createLibraryUpdateTool(tools: {
       if (args.kind === "attachment") {
         return ok({ tool: tools.attachmentUpdate, args: delegateArgs });
       }
+      if (args.kind === "annotation") {
+        return ok({ tool: tools.annotationUpdate, args: delegateArgs });
+      }
       if (args.kind === "savedSearch") {
         return ok({ tool: tools.savedSearchUpdate, args: delegateArgs });
       }
       return fail(
-        "kind must be one of: tags, collections, metadata, parent, related, tag, collection, attachment, savedSearch",
+        "kind must be one of: tags, collections, metadata, parent, related, tag, collection, attachment, annotation, savedSearch",
       );
     },
   });
@@ -447,12 +514,14 @@ function createLibraryImportTool(tools: {
   importIdentifiers: AgentToolDefinition<any, any>;
   importLocalFiles: AgentToolDefinition<any, any>;
   createItems: AgentToolDefinition<any, any>;
+  importDocumentCitations: AgentToolDefinition<any, any>;
 }): AgentToolDefinition<any, unknown> {
   return createDelegatingTool({
     name: "library_import",
     label: "Import to Library",
+    traceIcon: "edit",
     description:
-      "Add items to Zotero. kind:'identifiers' for DOI, ISBN, arXiv ID, PMID, or ADS bibcode lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset).",
+      "Add items to Zotero. kind:'identifiers' for DOI, ISBN, arXiv ID, PMID, or ADS bibcode lookups, kind:'files' for local files, kind:'manual' to create items from scratch when neither applies (a book with no DOI, a thesis, a dataset). kind:'document_citations' with a documentId imports the outside papers that document cites, then publishes a new version of it that cites the imported items.",
     // Adding items to Zotero. A files-mode call resolves to the local-files delegate
     // and is labelled external_system for that call.
     executionClass: "external_effect",
@@ -464,7 +533,12 @@ function createLibraryImportTool(tools: {
       properties: {
         kind: {
           type: "string",
-          enum: ["identifiers", "files", "manual"],
+          enum: ["identifiers", "files", "manual", "document_citations"],
+        },
+        documentId: {
+          type: "string",
+          description:
+            "For kind:'document_citations': the document whose outside papers to import.",
         },
         identifiers: {
           ...STRING_ARRAY_SCHEMA,
@@ -519,7 +593,12 @@ function createLibraryImportTool(tools: {
       if (args.kind === "manual") {
         return ok({ tool: tools.createItems, args: delegateArgs });
       }
-      return fail("kind must be one of: identifiers, files, manual");
+      if (args.kind === "document_citations") {
+        return ok({ tool: tools.importDocumentCitations, args: delegateArgs });
+      }
+      return fail(
+        "kind must be one of: identifiers, files, manual, document_citations",
+      );
     },
   });
 }
@@ -532,8 +611,9 @@ function createLibraryDeleteTool(tools: {
   return createDelegatingTool({
     name: "library_delete",
     label: "Delete / Restore / Merge Library Items",
+    traceIcon: "edit",
     description:
-      "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item.",
+      "Trash, restore, or merge Zotero objects. Use mode:'trash' to move items to the trash, mode:'restore' to bring trashed items, collections, or saved searches back, or mode:'merge' to merge duplicates into a master item, or several duplicate groups at once with groups.",
     executionClass: "external_effect",
     workCategory: "zotero_action",
     inputSchema: {
@@ -567,6 +647,16 @@ function createLibraryDeleteTool(tools: {
           ...NUMBER_ARRAY_SCHEMA,
           description:
             "Duplicate item IDs to merge into the master when mode:'merge'.",
+        },
+        groups: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              masterItemId: { type: "number" },
+              otherItemIds: NUMBER_ARRAY_SCHEMA,
+            },
+          },
         },
       },
     },
@@ -633,6 +723,7 @@ export function createBuiltInToolRegistry(
   const setItemTags = createSetItemTagsTool(deps.zoteroGateway);
   const collectionUpdate = createCollectionUpdateTool(deps.zoteroGateway);
   const attachmentUpdate = createAttachmentUpdateTool(deps.zoteroGateway);
+  const annotationUpdate = createAnnotationUpdateTool(deps.zoteroGateway);
   const savedSearchUpdate = createSavedSearchTool(deps.zoteroGateway);
   const mergeItems = createMergeItemsTool(deps.zoteroGateway);
   const runCommand = createRunCommandTool();
@@ -656,6 +747,7 @@ export function createBuiltInToolRegistry(
     ),
   );
   registry.register(createLiteratureSearchTool(deps.zoteroGateway));
+  registry.register(createLiteratureReadTool());
   registry.register(createLiteratureReviewTool(deps.zoteroGateway));
   registry.register(
     createLibraryUpdateTool({
@@ -668,7 +760,9 @@ export function createBuiltInToolRegistry(
       setItemTags,
       collectionUpdate,
       attachmentUpdate,
+      annotationUpdate,
       savedSearchUpdate,
+      resumeBatch: createResumeLibraryBatchTool(deps.zoteroGateway),
     }),
   );
   registry.register(createNoteWriteTool(deps.zoteroGateway));
@@ -680,6 +774,9 @@ export function createBuiltInToolRegistry(
       importIdentifiers,
       importLocalFiles,
       createItems,
+      importDocumentCitations: createImportDocumentCitationsTool(
+        deps.zoteroGateway,
+      ),
     }),
   );
   registry.register(
@@ -691,6 +788,20 @@ export function createBuiltInToolRegistry(
   registry.register(runCommand);
   registry.register(zoteroScript);
   registry.register(createContextReadTool());
+  registry.register(createPastChatReadTool());
+  registry.register(createPastChatSearchTool());
+  registry.register(createPastChatAttachTool());
+  registry.register(createReaderOpenTool(deps.zoteroGateway));
+  registry.register(createRecordPaperDecisionsTool(deps.zoteroGateway));
+  registry.register(createReviewCoverageTool());
+  registry.register(
+    createPaperDigestTool(
+      createZoteroPaperDigestSources({
+        zoteroGateway: deps.zoteroGateway,
+        pdfService: deps.pdfService,
+      }),
+    ),
+  );
   registry.register(
     createLoadSkillTool({
       getToolDefinitions: (request) =>
@@ -704,6 +815,7 @@ export function createBuiltInToolRegistry(
         zoteroGateway: deps.zoteroGateway,
         pdfService: deps.pdfService,
       }),
+      papers: deps.zoteroGateway,
     }),
   );
   registry.register(createSubmitDocumentTool(deps.zoteroGateway));

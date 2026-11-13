@@ -18,6 +18,10 @@ import { mergeQuoteCitations } from "../../../services/quotes/quoteCitations";
 import { quoteTokenPattern } from "../../../services/quotes/quoteTokenIds";
 import { refreshQuoteValidatedConversation } from "./chatRefreshBridge";
 import {
+  syncTaskAnswerCitations,
+  taskTurnIndexFor,
+} from "../taskProgress/store";
+import {
   scheduleQuoteLocationWriteBack,
   waitForQuoteLocationWriteBacksForTests,
 } from "./locationWriteBack";
@@ -51,6 +55,17 @@ const pendingQuoteValidations = new Map<
   Map<Message, PendingQuoteValidation>
 >();
 const quoteValidationTasks = new Map<number, Promise<void>>();
+
+/** The question an answer answers: the user message before it. */
+function answerTurn(conversationKey: number, answer: Message): number {
+  const history = chatHistory.get(conversationKey) || [];
+  const at = history.indexOf(answer);
+  for (let index = at - 1; index >= 0; index -= 1) {
+    if (history[index].role === "user")
+      return taskTurnIndexFor(history, history[index]);
+  }
+  return 0;
+}
 
 function refreshConversationAfterQuoteValidation(
   conversationKey: number,
@@ -315,6 +330,15 @@ function startConversationQuoteValidation(conversationKey: number): void {
             });
           }
           if (changed) {
+            // Task progress lists the passages the answer now shows.
+            syncTaskAnswerCitations(
+              conversationKey,
+              {
+                runId: assistantMessage.agentRunId,
+                turn: answerTurn(conversationKey, assistantMessage),
+              },
+              assistantMessage,
+            );
             // Flip this message the moment it is classified so quotes appear
             // progressively, rather than holding every result until the whole
             // batch finishes. The targeted re-render only rebuilds this one

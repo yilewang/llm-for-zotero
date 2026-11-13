@@ -893,6 +893,62 @@ export type QuoteNavigationOutcome =
  * moves to it. No cached page or page hint opens or moves a reader before
  * the quote is verified.
  */
+/**
+ * Opens the paper an abstract quote came from when no PDF page held it: the
+ * Zotero abstract field has no page. Its PDF opens at the first page when it
+ * has one; else the item is selected in the library. `failed` when neither
+ * worked.
+ */
+export async function openPaperForAbstractQuote(
+  ref: { itemId?: number; contextItemId?: number },
+  deps: {
+    openReader?: typeof openReaderForItem;
+    selectItem?: (itemId: number) => Promise<boolean>;
+  } = {},
+): Promise<"opened" | "selected" | "failed"> {
+  const positive = (value: unknown) => {
+    const id = Math.floor(Number(value));
+    return Number.isFinite(id) && id > 0 ? id : 0;
+  };
+  const itemId = positive(ref.itemId);
+  const contextItemId = positive(ref.contextItemId);
+  const openReader = deps.openReader || openReaderForItem;
+  for (const id of [...new Set([contextItemId, itemId])].filter(Boolean)) {
+    try {
+      if (await openReader(id, { pageIndex: 0 })) return "opened";
+    } catch {
+      // No PDF to open from this id; try the next, then the library.
+    }
+  }
+  const select = deps.selectItem || selectItemInLibrary;
+  const target = itemId || contextItemId;
+  if (target && (await select(target).catch(() => false))) return "selected";
+  return "failed";
+}
+
+/** Selects an item in the main window's library pane. */
+async function selectItemInLibrary(itemId: number): Promise<boolean> {
+  const pane = Zotero.getActiveZoteroPane?.() as
+    | {
+        selectItems?: (
+          ids: number[],
+          options?: { selectInLibrary?: boolean },
+        ) => unknown;
+        selectItem?: (id: number, inLibrary?: boolean) => unknown;
+      }
+    | undefined;
+  if (!pane) return false;
+  const selected =
+    typeof pane.selectItems === "function"
+      ? await pane.selectItems([itemId], { selectInLibrary: true })
+      : typeof pane.selectItem === "function"
+        ? await pane.selectItem(itemId, true)
+        : false;
+  if (selected === false) return false;
+  Zotero.getMainWindow()?.focus();
+  return true;
+}
+
 export async function navigateToQuote(
   req: QuoteNavigationRequest,
   deps: QuoteNavigatorDeps = defaultQuoteNavigatorDeps,

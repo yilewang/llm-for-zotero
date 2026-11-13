@@ -17,10 +17,10 @@ import {
 } from "../../actions/pagedWorkflow";
 import {
   LibraryMutationService,
+  type ChangeItemTypeOperation,
   type UpdateMetadataOperation,
 } from "../../services/libraryMutationService";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import { EDITABLE_ARTICLE_METADATA_FIELDS } from "../../services/zoteroGateway";
 import {
   ok,
   fail,
@@ -30,18 +30,49 @@ import {
   normalizeToolPaperContext,
 } from "../shared";
 import {
+  buildItemTypeChangeReviewField,
   buildUpdateMetadataReviewField,
   executeAndRecordUndo,
   executeAndRecordUndoBatch,
   normalizeMetadataPatch,
   planLibraryMutations,
+  prepareItemTypeChange,
+  resolveMetadataWriteItem,
 } from "./mutateLibraryShared";
 
 type UpdateMetadataInput = {
-  operations: UpdateMetadataOperation[];
+  operations: UpdateMetadataOperation[] | [ChangeItemTypeOperation];
 };
 
+function itemTypeChangeOf(
+  input: UpdateMetadataInput,
+): ChangeItemTypeOperation | undefined {
+  const [operation] = input.operations;
+  return operation?.type === "change_item_type" ? operation : undefined;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const ITEM_TYPE_ROUTE =
+  "To change the item type, call library_update({ kind:'metadata', itemId, itemType:'<type>' }) without metadata, then set the new type's fields in a second call.";
+
+/** Whether a patch, or the .fields it flattens, carries itemType. */
+function patchHasItemType(patch: unknown): boolean {
+  if (!validateObject<Record<string, unknown>>(patch)) return false;
+  return (
+    patch.itemType !== undefined ||
+    (validateObject<Record<string, unknown>>(patch.fields) &&
+      patch.fields.itemType !== undefined)
+  );
+}
+
+/**
+ * Whether a metadata patch carries itemType: in metadata or patch, or in
+ * the .fields object `normalizeMetadataPatch` flattens into either.
+ */
+function hasNestedItemType(value: Record<string, unknown>): boolean {
+  return [value.metadata, value.patch].some(patchHasItemType);
+}
 
 function normalizeOperationEntry(
   value: unknown,
@@ -81,7 +112,7 @@ export function createUpdateMetadataTool(
 
   return {
     describeAction: describeLibraryMutationInput,
-    effectOperations: ["update_metadata"],
+    effectOperations: ["update_metadata", "change_item_type"],
     spec: {
       name: "update_metadata",
       description:
@@ -194,6 +225,40 @@ export function createUpdateMetadataTool(
         );
       }
 
+      // A type change stands alone: the new type's fields are set after it.
+      if (args.itemType !== undefined) {
+        const itemType =
+          typeof args.itemType === "string" ? args.itemType.trim() : "";
+        const itemId = normalizePositiveInt(args.itemId);
+        if (
+          !itemType ||
+          !itemId ||
+          args.metadata !== undefined ||
+          args.operations !== undefined
+        )
+          return fail(
+            "itemType needs exactly one itemId and no metadata. Change the type first, then set the new type's fields in a second call.",
+          );
+        return ok({
+          operations: [{ type: "change_item_type", itemId, itemType }],
+        });
+      }
+
+      // The type is not a metadata field: one route changes it, and the
+      // model is told that route instead of having a second spelling of it.
+      if (
+        hasNestedItemType(args) ||
+        (Array.isArray(args.operations) &&
+          args.operations.some(
+            (entry) =>
+              validateObject<Record<string, unknown>>(entry) &&
+              // An entry is itself a patch when it names no metadata.
+              (patchHasItemType(entry) || hasNestedItemType(entry)),
+          ))
+      ) {
+        return fail(ITEM_TYPE_ROUTE);
+      }
+
       // Batch mode: { operations: [...] }
       if (
         Object.prototype.hasOwnProperty.call(args, "operations") &&
@@ -219,11 +284,11 @@ export function createUpdateMetadataTool(
       const metadata = normalizeMetadataPatch(args.metadata);
       if (!metadata) {
         return fail(
-          "metadata must be an object with at least one recognized field. " +
+          "metadata must be an object with at least one field. " +
             "Example: { metadata: { title: 'Updated Title', DOI: '10.1234/example' } } " +
-            "Supported fields: " +
-            EDITABLE_ARTICLE_METADATA_FIELDS.join(", ") +
-            ", creators.",
+            "Any Zotero field the item's type has can be set (for a book, " +
+            "e.g. edition, series, numPages), plus creators; library_search with " +
+            "entity:'itemTypes' lists the fields of a type.",
         );
       }
 
@@ -254,41 +319,54 @@ export function createUpdateMetadataTool(
     },
 
     createPendingAction(input, context) {
-      const isBatch = input.operations.length > 1;
-      const pageMeta = readPagedOperationMeta(input.operations[0]?.id);
-      const pageLabel = readPagedOperationLabel(input.operations[0]?.id);
-      const reviewFields = input.operations
-        .map((operation) => {
-          const item = zoteroGateway.resolveMetadataItem({
-            itemId: operation.itemId,
-            paperContext: operation.paperContext,
-            request: context.request,
-            item: context.item,
-          });
-          const title =
+      const typeChange = itemTypeChangeOf(input);
+      if (typeChange) {
+        const field = buildItemTypeChangeReviewField(typeChange, zoteroGateway);
+        const item = zoteroGateway.getItem(typeChange.itemId);
+        const dropped = field.rows.slice(1).map((row) => row.label);
+        return {
+          toolName: "update_metadata",
+          mode: "review",
+          title: `Change item type for ${
             zoteroGateway.getEditableArticleMetadata(item)?.title ||
-            operation.paperContext?.title ||
-            `Item ${operation.itemId ?? "active item"}`;
-          return buildUpdateMetadataReviewField(
-            operation,
-            zoteroGateway,
-            context,
-            title,
-            isBatch,
-          );
-        })
-        .filter((f): f is NonNullable<typeof f> => Boolean(f));
+            `Item ${typeChange.itemId}`
+          }`,
+          description: dropped.length
+            ? `Changing the type drops ${dropped.length} field${dropped.length === 1 ? "" : "s"}: ${dropped.join(", ")}. Undo restores them.`
+            : "Changing the type drops no fields.",
+          confirmLabel: "Apply",
+          cancelLabel: "Cancel",
+          fields: [field],
+        };
+      }
+      const operations = input.operations as UpdateMetadataOperation[];
+      const isBatch = operations.length > 1;
+      const pageMeta = readPagedOperationMeta(operations[0]?.id);
+      const pageLabel = readPagedOperationLabel(operations[0]?.id);
+      const reviewFields = operations.map((operation) => {
+        const item = resolveMetadataWriteItem(
+          operation,
+          zoteroGateway,
+          context,
+        );
+        const title =
+          zoteroGateway.getEditableArticleMetadata(item)?.title ||
+          operation.paperContext?.title ||
+          `Item ${operation.itemId ?? "active item"}`;
+        return buildUpdateMetadataReviewField(
+          operation,
+          zoteroGateway,
+          context,
+          title,
+          isBatch,
+        );
+      });
 
       const title = isBatch
-        ? `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${input.operations.length} items`
+        ? `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${operations.length} items`
         : `${pageLabel ? `${pageLabel}: ` : ""}${pageLabel ? "Fix" : "Update"} metadata for ${(() => {
-            const op = input.operations[0];
-            const item = zoteroGateway.resolveMetadataItem({
-              itemId: op.itemId,
-              paperContext: op.paperContext,
-              request: context.request,
-              item: context.item,
-            });
+            const op = operations[0];
+            const item = resolveMetadataWriteItem(op, zoteroGateway, context);
             return (
               zoteroGateway.getEditableArticleMetadata(item)?.title ||
               op.paperContext?.title ||
@@ -320,10 +398,15 @@ export function createUpdateMetadataTool(
       return ok(input);
     },
 
-    planInvocation: (input, context) =>
-      planLibraryMutations(mutationService, input.operations, context),
+    planInvocation: (input, context) => {
+      const typeChange = itemTypeChangeOf(input);
+      if (typeChange) prepareItemTypeChange(typeChange, zoteroGateway);
+      return planLibraryMutations(mutationService, input.operations, context);
+    },
 
     async execute(input, context) {
+      const typeChange = itemTypeChangeOf(input);
+      if (typeChange) prepareItemTypeChange(typeChange, zoteroGateway);
       if (input.operations.length === 1) {
         return executeAndRecordUndo(
           mutationService,

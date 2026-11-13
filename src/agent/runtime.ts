@@ -14,9 +14,28 @@ import {
 } from "../shared/conversationWriteFence";
 import { createTurnUsageRecorder } from "../utils/usageTurnRecorder";
 import type { UsageEventRuntime } from "../utils/usageStore";
-import { classifyConversationKey } from "../shared/conversationKeySpace";
-import type { WebAttributionAssessment } from "../webAccess/attribution";
-import { clearWebSourcesForRun } from "../webAccess/runSources";
+import {
+  classifyConversationKey,
+  isEphemeralConversationKey,
+} from "../shared/conversationKeySpace";
+import type {
+  SourceCatalog,
+  WebAttributionAssessment,
+} from "../webAccess/attribution";
+import {
+  EARLIER_SOURCE_TOOL_NAMES,
+  buildEarlierSourcesBlock,
+  earlierSourceCatalog,
+} from "../webAccess/earlierSources";
+import {
+  clearWebSourcesForRun,
+  highestWebSourceNumber,
+  seedWebSourceNumbering,
+} from "../webAccess/runSources";
+import {
+  clearOutsideSearchTurn,
+  resetOutsideSearchLedger,
+} from "./tools/read/outsideSearchLedger";
 import {
   buildAgentContextBudgetState,
   resolveAgentContextBudgetPolicy,
@@ -109,6 +128,7 @@ import {
   openDeclaredOutcomes,
   reconcileJournaledReceipts,
   resumesOnContinue,
+  settleDeclinedOutcomes,
   settleOutcomes,
   type OutcomeEvidence,
 } from "./loop/outcomes";
@@ -179,7 +199,10 @@ import {
   type AgentTranscriptWriteResult,
 } from "./store/transcriptStore";
 import { resolveAgentToolCallWorkCategory } from "./workCategory";
-import { AgentToolRegistry } from "./tools/registry";
+import {
+  AgentToolRegistry,
+  isToolWithheldForEphemeralRequest,
+} from "./tools/registry";
 import {
   createEmptyExecutionCheckpoint,
   latestExecutionCheckpoint,
@@ -189,6 +212,10 @@ import type { ExecutionCheckpoint, RunEndState } from "./execution/types";
 import { createAgentExecutionContext } from "./execution/context";
 import { loadMaterialOutcomesForConversation } from "./execution/materialOutcomes";
 import { journaledNoteReceipts } from "./execution/journalReceipts";
+import {
+  buildCarriedSkillsMessage,
+  buildScopeItemKeysMessage,
+} from "./context/restartCarry";
 import {
   createToolExecution,
   type ToolExecutionRecord,
@@ -205,6 +232,16 @@ import {
   isUserDeniedToolResult,
   setToolResultReadAvailability,
 } from "./execution/toolResultLifecycle";
+import {
+  renderAgentPastChatMessageText,
+  type PastConversationSource,
+} from "../services/pastConversations/pastConversationLoader";
+import {
+  isPastChatMessageText,
+  pastChatMessageHasFailedSection,
+  pastChatMessageIdSignature,
+  withoutAgentAttachedConversationRefs,
+} from "../services/pastConversations/pastConversationText";
 import type {
   AgentAssistantMessage,
   AgentConfirmationResolution,
@@ -217,6 +254,7 @@ import type {
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
+  AgentToolCall,
   AgentToolContext,
   AgentToolMessage,
   AgentUserMessage,
@@ -252,6 +290,11 @@ type AgentRuntimeDeps = {
    * defaults unless a test exercises the retries without waiting.
    */
   modelRetryBackoffMs?: readonly number[];
+  /**
+   * Where attached past chats are read from; the conversation stores unless
+   * a test supplies a fake.
+   */
+  pastConversationSource?: PastConversationSource;
 };
 
 /**
@@ -284,6 +327,53 @@ function shiftWebAttribution(
       offset: Math.max(0, anchor.offset + delta),
     })),
   };
+}
+
+/**
+ * The highest web_<n> the model can still copy in this conversation: in the
+ * loaded transcript, and in the stored web_search and web_read results, which
+ * the transcript keeps only as handles. If the store cannot be read, the
+ * transcript alone sets the seed.
+ */
+export async function webSourceNumberSeed(
+  conversationKey: number,
+  messages: readonly { content?: unknown }[],
+): Promise<number> {
+  let stored: AgentToolResultHandleRecord[] = [];
+  try {
+    stored = (
+      await Promise.all(
+        ["web_search", "web_read"].map((toolName) =>
+          listAgentToolResultHandles({ conversationKey, toolName }),
+        ),
+      )
+    ).flat();
+  } catch {
+    stored = [];
+  }
+  return highestWebSourceNumber([...messages, ...stored]);
+}
+
+/**
+ * The outside sources earlier questions of this conversation found: papers
+ * and web pages from their stored tool results. If the store cannot be read,
+ * a follow-up starts with none.
+ */
+export async function loadEarlierSources(
+  conversationKey: number,
+): Promise<SourceCatalog> {
+  try {
+    const stored = (
+      await Promise.all(
+        EARLIER_SOURCE_TOOL_NAMES.map((toolName) =>
+          listAgentToolResultHandles({ conversationKey, toolName }),
+        ),
+      )
+    ).flat();
+    return earlierSourceCatalog(stored);
+  } catch {
+    return { sources: new Map(), linkIds: new Map() };
+  }
 }
 
 function createRunId(): string {
@@ -458,6 +548,47 @@ async function latestSettledRun(params: {
   return getLatestAgentRunForConversation(params.conversationKey);
 }
 
+/**
+ * The past-chat copy a retry of this turn already stored: the message right
+ * before the transcript's last "User request:" entry, when that entry has this
+ * turn's text and the copy holds the same set of chats. A copy with a failed
+ * section does not count when the new render loaded: history only grows, so
+ * the new copy is appended after it.
+ */
+function findStoredPastChatCopyForTurn(
+  transcript: readonly AgentModelMessage[],
+  request: AgentRuntimeRequest,
+  rendered: AgentModelMessage,
+): AgentModelMessage | null {
+  const signature = pastChatMessageIdSignature(rendered.content);
+  if (!signature) return null;
+  const renderedFailed = pastChatMessageHasFailedSection(rendered.content);
+  // Every retry appends the request again, so walk back over each request
+  // with this turn's text and stop at the first one with other text.
+  for (let index = transcript.length - 1; index >= 1; index -= 1) {
+    const message = transcript[index];
+    if (
+      message.role !== "user" ||
+      typeof message.content !== "string" ||
+      !message.content.startsWith("User request:")
+    ) {
+      continue;
+    }
+    if (!isCurrentTurnUserTranscriptMessage(message, request)) return null;
+    const previous = transcript[index - 1];
+    if (
+      previous.role === "user" &&
+      typeof previous.content === "string" &&
+      isPastChatMessageText(previous.content) &&
+      pastChatMessageIdSignature(previous.content) === signature &&
+      !(pastChatMessageHasFailedSection(previous.content) && !renderedFailed)
+    ) {
+      return previous;
+    }
+  }
+  return null;
+}
+
 export class AgentRuntime {
   private readonly registry: AgentToolRegistry;
   private readonly adapterFactory: AgentRuntimeDeps["adapterFactory"];
@@ -468,6 +599,7 @@ export class AgentRuntime {
   private readonly stoppedRunWaitMs: number;
   private readonly turnLimits?: Partial<TurnSafetyLimits>;
   private readonly modelRetryBackoffMs?: readonly number[];
+  private readonly pastConversationSource?: PastConversationSource;
   private readonly pendingConfirmations = new Map<
     string,
     PendingConfirmation
@@ -484,6 +616,7 @@ export class AgentRuntime {
     this.stoppedRunWaitMs = deps.stoppedRunWaitMs ?? STOPPED_RUN_WAIT_MS;
     this.turnLimits = deps.turnLimits;
     this.modelRetryBackoffMs = deps.modelRetryBackoffMs;
+    this.pastConversationSource = deps.pastConversationSource;
   }
 
   listTools() {
@@ -610,6 +743,56 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * The past-chat message for the chats the current user message attached,
+   * or null. Rendered once, on the attaching turn; the transcript keeps it,
+   * so later turns send the same bytes. A chat goes in full when it is small
+   * and the turn's budget (min 12,000 tokens, 15% of the context window)
+   * has room, otherwise as an outline the agent opens with past_chat_read.
+   * Never fails the turn.
+   *
+   * Only the chats the user picked: a chat the agent attached with
+   * past_chat_attach (via "agent") is in its tool result already. A retry of
+   * that turn has it in scope and opens it again with a tool.
+   */
+  private async renderAttachedPastChatMessage(
+    request: AgentRuntimeRequest,
+  ): Promise<AgentUserMessage | null> {
+    const refs = withoutAgentAttachedConversationRefs(
+      request.attachedConversations,
+    );
+    if (!refs.length) return null;
+    try {
+      const { contextWindow } = resolveAgentPromptBudgetLimits({
+        model: request.model,
+        inputTokenCap: request.advanced?.inputTokenCap,
+        apiBase: request.apiBase,
+        providerProtocol: request.providerProtocol,
+        authMode: request.authMode,
+        profileOverride: request.advanced?.profileOverride,
+        outputTokenLimit: request.advanced?.outputTokenLimit,
+      });
+      // Memoized under the user message, so a later rebuild of this turn's
+      // history in the same session (agentMode/pastChatHistory.ts) sends the
+      // same bytes.
+      const text = await renderAgentPastChatMessageText({
+        conversationKey: request.conversationKey,
+        userMessageTimestamp: request.metadata?.sourceMessageTimestamp,
+        refs,
+        libraryID: request.libraryID,
+        contextWindowTokens: contextWindow,
+        source: this.pastConversationSource,
+      });
+      return text ? { role: "user", content: text } : null;
+    } catch (error) {
+      logRuntimeWarning(
+        "LLM Agent: rendering the attached past chats failed",
+        error,
+      );
+      return null;
+    }
+  }
+
   async runTurn(params: {
     request: AgentRuntimeRequestInput;
     onEvent?: (event: AgentEvent) => void | Promise<void>;
@@ -662,12 +845,18 @@ export class AgentRuntime {
       model: request.model,
       provider: request.modelProviderLabel,
     });
+    // writeAllowed() gates delivery to the panel; persistAllowed() gates the
+    // durable stores. A temporary side chat (an ephemeral key) receives every
+    // event but writes no run, event, transcript, handle, evidence, coverage,
+    // or memory row: each turn starts from its in-memory chat history.
+    const persistAllowed = () =>
+      writeAllowed() && !isEphemeralConversationKey(request.conversationKey);
     const persistIfLive = async <T>(
       task: () => Promise<T>,
     ): Promise<T | undefined> => {
-      if (!writeAllowed()) return undefined;
+      if (!persistAllowed()) return undefined;
       return withConversationWriteLock(request.conversationKey, async () => {
-        if (!writeAllowed()) return undefined;
+        if (!persistAllowed()) return undefined;
         return task();
       });
     };
@@ -821,16 +1010,24 @@ export class AgentRuntime {
       await runEvents?.flush();
       if (recordsOutcomes()) {
         try {
-          const end = decideRunEnd(request.executionCheckpoint, {
-            status,
-            stopRule,
-          });
+          // A run that answered settles the user's declines as skipped
+          // first, and its end state is decided from that checkpoint.
+          const now = this.now();
+          const settleDeclines = (checkpoint: ExecutionCheckpoint) =>
+            status === "completed"
+              ? settleDeclinedOutcomes(checkpoint, now)
+              : checkpoint;
+          const end = decideRunEnd(
+            request.executionCheckpoint &&
+              settleDeclines(request.executionCheckpoint),
+            { status, stopRule },
+          );
           if (
             request.executionCheckpoint?.tasks.length ||
             END_STATES_RECORDED_WITHOUT_OUTCOMES.has(end)
           ) {
             await updateExecutionCheckpoint((checkpoint) =>
-              settleOutcomes(checkpoint, end, this.now()),
+              settleOutcomes(settleDeclines(checkpoint), end, now),
             );
           }
         } catch (error) {
@@ -901,6 +1098,12 @@ export class AgentRuntime {
       ): Promise<boolean> => {
         if (!records.length) return false;
         const sanitized = turnPathRedactor.redactTerminalValue(records);
+        // A temporary side chat keeps its handles in memory (the store skips
+        // the database for its key), so context_read can still open them.
+        if (isEphemeralConversationKey(request.conversationKey)) {
+          if (writeAllowed()) await upsertAgentToolResultHandles(sanitized);
+          return false;
+        }
         return (
           (await persistIfLive(() =>
             upsertAgentToolResultHandles(sanitized),
@@ -1181,6 +1384,14 @@ export class AgentRuntime {
             compatibilityKey: transcriptCompatibilityKey,
           };
       }
+      seedWebSourceNumbering(
+        runId,
+        await webSourceNumberSeed(
+          request.conversationKey,
+          transcriptSegment.messages,
+        ),
+      );
+      const earlierSources = await loadEarlierSources(request.conversationKey);
       const history = normalizeHistoryMessages(request);
       const legacyCheckpoint = transcriptSegment.messages.some(
         (message) =>
@@ -1463,10 +1674,61 @@ export class AgentRuntime {
       const transcriptTail =
         turnStartTranscriptMessages[turnStartTranscriptMessages.length - 1] ||
         transcriptSegment.messages[transcriptSegment.messages.length - 1];
-      if (
+      const storesTurnMessages =
         hadCompatibleTranscript ||
-        !isCurrentTurnUserTranscriptMessage(transcriptTail, request)
+        !isCurrentTurnUserTranscriptMessage(transcriptTail, request);
+      // Loaded only when this turn's message attached chats and the block
+      // below will store them.
+      const pickedPastChats = withoutAgentAttachedConversationRefs(
+        request.attachedConversations,
+      );
+      const renderedPastChatMessage =
+        storesTurnMessages && pickedPastChats.length
+          ? await this.renderAttachedPastChatMessage(request)
+          : null;
+      if (
+        params.signal?.aborted &&
+        storesTurnMessages &&
+        pickedPastChats.length
       ) {
+        // Stopped while the chats loaded: nothing of this turn is stored.
+        const stopped = new Error("Aborted");
+        stopped.name = "AbortError";
+        throw stopped;
+      }
+      // Redacted once, so the prompt and the stored transcript hold the same
+      // bytes and the next turn's prefix matches this one's.
+      const pastChatMessage = renderedPastChatMessage
+        ? turnPathRedactor.redactTerminalValue(renderedPastChatMessage)
+        : null;
+      let currentTurnPastChatMessage: AgentModelMessage | undefined;
+      if (storesTurnMessages) {
+        // The attached past chats go in once, as their own user message right
+        // before this turn's request: stored in the transcript for later
+        // turns, and in this turn's prompt, where the turn message stands in
+        // for the stored request. Never transient, never a system message.
+        // A retry of the latest turn keeps its transcript, which already
+        // holds the same bytes (the render is memoized per user message):
+        // the chat stays where it is instead of going in twice.
+        const storedPastChatCopy = pastChatMessage
+          ? findStoredPastChatCopyForTurn(
+              transcriptMessagesForPrompt,
+              request,
+              pastChatMessage,
+            )
+          : null;
+        if (pastChatMessage && !storedPastChatCopy) {
+          turnStartTranscriptMessages.push(pastChatMessage);
+          transcriptMessagesForPrompt = [
+            ...transcriptMessagesForPrompt,
+            pastChatMessage,
+          ];
+          currentTurnPastChatMessage = pastChatMessage;
+        } else if (storedPastChatCopy) {
+          // The stored copy stands in for this turn's, and stays in the
+          // recent tail like a fresh one would.
+          currentTurnPastChatMessage = storedPastChatCopy;
+        }
         turnStartTranscriptMessages.push(currentUserTranscriptMessage);
       }
       if (turnStartTranscriptMessages.length) {
@@ -1514,6 +1776,7 @@ export class AgentRuntime {
         resourceContextPlan,
         {
           contentInputs: resolveCapabilitiesContentInputs(adapterCapabilities),
+          earlierSourcesBlock: buildEarlierSourcesBlock(earlierSources),
         },
       );
       request.deliveredToolGuidance = [
@@ -1574,6 +1837,7 @@ export class AgentRuntime {
           force: Boolean(transcriptSegment.compactedAt),
           conversationKey: request.conversationKey,
           resourceSignature: resourceContextPlan.resourceSignature,
+          keepInTail: currentTurnPastChatMessage,
         });
         if (compacted.compacted) {
           transcriptMessagesForPrompt = compacted.messages;
@@ -1605,12 +1869,20 @@ export class AgentRuntime {
        * still finishes a call: once stopped, the run writes only over the
        * transcript as it last saw it, never over what that turn wrote.
        */
-      const writeTranscriptSegment = (next: AgentTranscriptSegment) =>
-        persistIfLive(() =>
+      // A temporary side chat keeps its transcript in memory only: the
+      // write is accepted ("memory_only") without a row, so its checkpoints
+      // pass as a stored chat's do.
+      const writeTranscriptSegment = async (
+        next: AgentTranscriptSegment,
+      ): Promise<AgentTranscriptWriteResult | undefined> => {
+        if (isEphemeralConversationKey(request.conversationKey))
+          return writeAllowed() ? "memory_only" : undefined;
+        return persistIfLive(() =>
           params.signal?.aborted
             ? replaceAgentTranscriptSegmentIfUnchanged(transcriptSegment, next)
             : replaceAgentTranscriptSegment(next),
         );
+      };
       let latestProviderReplayTokens = 0;
       const commitSemanticCheckpoint = async (params: {
         sourceMessages: AgentModelMessage[];
@@ -1781,6 +2053,14 @@ export class AgentRuntime {
               ...[
                 conversationReferenceMessage,
                 buildRetainedActionMessage(transcriptSegment.messages),
+                // What the dropped tool results gave the model mid-turn:
+                // the skills it loaded and the scope's item keys.
+                buildCarriedSkillsMessage(toolExecutionRecords, matchedSkills),
+                buildScopeItemKeysMessage(
+                  request.turnScopePapers,
+                  request.turnPaperScope.libraryID || request.libraryID,
+                  request.executionCheckpoint,
+                ),
                 longJobMessage,
               ].filter((message): message is AgentUserMessage =>
                 Boolean(message),
@@ -1810,7 +2090,9 @@ export class AgentRuntime {
       const extendedRunLimits = request.metadata?.hostRecordedBatchJob === true;
       const { maxRounds, maxToolCallsPerRound } =
         resolveAgentLimits(extendedRunLimits);
-      const finalAnswerController = new AgentFinalAnswerController(request);
+      const finalAnswerController = new AgentFinalAnswerController(request, {
+        earlierSources,
+      });
       // Every whole-turn stop decision (loop/turnBoundary.ts): the failure
       // counters, navigation without evidence, the safety limits and the
       // retry policy. Rejected input never ran, so it is a repair
@@ -1821,6 +2103,8 @@ export class AgentRuntime {
         settledTargets: settledTargetCount(request.executionCheckpoint),
         limits: this.turnLimits,
         retryBackoffMs: this.modelRetryBackoffMs,
+        // A settled paper restarts the outside-search counts with the rest.
+        onSettled: () => resetOutsideSearchLedger(runId),
       });
       const searchScope = searchScopeLabel(request.turnPaperScope);
       /** How many of the turn's declared parts are done, for a stop text. */
@@ -2135,6 +2419,9 @@ export class AgentRuntime {
       // A final-only step that wrote no visible text is asked once more; a
       // fatal failure of that request ends the turn with the host's answer.
       let finalOnlyEmptyAnswerReasked = false;
+      // An ordinary step's empty answer is asked once more per turn; a
+      // second empty answer fails the run with its reason.
+      let emptyAnswerReasked = false;
       const attemptModelStep = async (
         round: number,
         statusText: string,
@@ -2624,7 +2911,8 @@ export class AgentRuntime {
           tool.spec.executionClass === "control" ||
           name === "zotero_script" ||
           tool.spec.exposure === "internal" ||
-          tool.isAvailable?.(request) === false
+          tool.isAvailable?.(request) === false ||
+          isToolWithheldForEphemeralRequest(tool, request)
         )
           throw new Error("Unknown or unavailable registered operation.");
         const outcome = await toolExecution.executeToolWorkflow(
@@ -2976,7 +3264,11 @@ export class AgentRuntime {
        * had streamed, then why it stopped and what it did.
        */
       const stoppedTurnText = (
-        rule: "budget_reached" | "connection_lost" | "prompt_budget_exceeded",
+        rule:
+          | "budget_reached"
+          | "connection_lost"
+          | "prompt_budget_exceeded"
+          | "empty_answer",
         detail?: string,
       ): string => {
         const streamed = uncommittedAnswerText().trim();
@@ -3290,6 +3582,36 @@ export class AgentRuntime {
             await persistTranscriptCheckpoint();
             continue;
           }
+          // An ordinary step that returned no answer text and no tool call
+          // is asked once more; a second time, the run fails with the
+          // reason. A placeholder is never saved as the answer.
+          if (
+            step.kind === "final" &&
+            !(step.text || "").trim() &&
+            !stepStreamedText.trim() &&
+            !keptAnswerModelText.trim() &&
+            !committedAnswerText.trim()
+          ) {
+            if (emptyAnswerReasked) {
+              // A resumable stop: a long job's open page keeps its results.
+              await keepUnfinishedPage();
+              return await completeRun(
+                stoppedTurnText("empty_answer"),
+                "failed",
+                "empty_answer",
+              );
+            }
+            emptyAnswerReasked = true;
+            // As above: no empty assistant message is kept.
+            continuationSession.appendHostMessage({
+              role: "user",
+              transient: true,
+              content:
+                "Your last reply had no answer text and no tool call. Continue the user's request: call the next tool you need, or write the answer.",
+            });
+            await persistTranscriptCheckpoint();
+            continue;
+          }
           if (step.kind === "final") {
             const returnedText = step.text || "";
             const streamedTextOffset = stepStreamedText
@@ -3322,9 +3644,6 @@ export class AgentRuntime {
                     role: "assistant" as const,
                     content: step.text || stepStreamedText,
                   }),
-                  ...(typeof finalDecision.assistantContent === "string"
-                    ? { content: finalDecision.assistantContent }
-                    : {}),
                 };
                 const userCorrectionMessage: AgentUserMessage = {
                   role: "user",
@@ -3427,32 +3746,22 @@ export class AgentRuntime {
                 maxToolCallsPerRound,
               )
             : maxToolCallsPerRound;
-          if (step.calls.length > stepToolCallLimit) {
-            const overflowMessage = `The model returned ${step.calls.length} tool calls in one step, exceeding the safe limit of ${stepToolCallLimit}. None of those calls were executed.`;
-            if (turnBoundary.toolCallOverflow(segmentRound) === "stop") {
-              return await completeRun(
-                `${overflowMessage} Please narrow the request and try again.`,
-                "failed",
-                "tool_call_overflow",
-              );
-            }
-            await restartFromSemanticCheckpoint({
-              sourceMessages: messages,
-              retryInstruction: `${overflowMessage} Retry with a complete new step containing at most ${stepToolCallLimit} tool calls. Do not assume that any result exists for the rejected calls.`,
-            });
+          // A step with more calls than its limit runs the first ones, in
+          // order, as any step does; every call past the limit gets a result
+          // saying it did not run, and the next step can make it.
+          const calls = step.calls.slice(0, stepToolCallLimit);
+          const callsNotRun = step.calls.slice(stepToolCallLimit);
+          if (callsNotRun.length) {
             await emit({
               type: "provider_event",
               providerType: "agent_tool_call_overflow",
               payload: {
-                action: "checkpoint_and_retry",
+                action: "run_first",
                 returnedToolCalls: step.calls.length,
                 maxToolCallsPerRound: stepToolCallLimit,
               },
             });
-            continue;
           }
-
-          const calls = step.calls;
           const assistantToolMessage: AgentAssistantMessage =
             step.assistantMessage;
           if (!calls.length) {
@@ -3479,6 +3788,15 @@ export class AgentRuntime {
           newTranscriptMessages.push(assistantToolMessage);
           const roundToolMessages: AgentToolMessage[] = [];
           const roundFollowupMessages: AgentModelMessage[] = [];
+          // The result of a call of this step that did not run: every call
+          // the model made gets one, so none is left without a result.
+          const pushNotRunMessage = (call: AgentToolCall, reason: string) =>
+            roundToolMessages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.name,
+              content: JSON.stringify({ error: `Not run: ${reason}` }),
+            });
           const appendRoundContinuation = () => {
             const delta = continuationSession.completeToolStep({
               toolMessages: roundToolMessages,
@@ -3507,7 +3825,8 @@ export class AgentRuntime {
               round,
               {
                 modelCallId: call.id,
-                followingCallCount: calls.length - index - 1,
+                // Calls past the limit count: they are still to run.
+                followingCallCount: step.calls.length - index - 1,
               },
             );
             if (outcome.toolResult.ok) roundHadSuccessfulToolResult = true;
@@ -3547,6 +3866,8 @@ export class AgentRuntime {
               }
             }
             if (outcome.stopRun) {
+              for (const notRun of [...calls.slice(index + 1), ...callsNotRun])
+                pushNotRunMessage(notRun, "the run ended before this call.");
               appendRoundContinuation();
               const stopFinalText =
                 outcome.finalText || uncommittedAnswerText();
@@ -3576,6 +3897,11 @@ export class AgentRuntime {
               );
             }
           }
+          for (const call of callsNotRun)
+            pushNotRunMessage(
+              call,
+              `this step allows ${stepToolCallLimit} tool calls; call it again in the next step.`,
+            );
           appendRoundContinuation();
           // Sibling calls are one attempt: deliver every result before judging
           // repeated failure, so the next model round can repair their inputs.
@@ -3739,7 +4065,10 @@ export class AgentRuntime {
       // usage row for this turn. It never throws, and it is not awaited so a
       // slow database cannot delay the turn's teardown.
       void usageRecorder.flush(params.signal?.aborted ? "abort" : "complete");
-      if (webSourceRunId) clearWebSourcesForRun(webSourceRunId);
+      if (webSourceRunId) {
+        clearWebSourcesForRun(webSourceRunId);
+        clearOutsideSearchTurn(webSourceRunId);
+      }
       pathLease.release();
     }
   }

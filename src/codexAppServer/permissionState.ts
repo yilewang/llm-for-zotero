@@ -132,6 +132,32 @@ export function codexPermissionStatesEqual(
   );
 }
 
+/**
+ * The read-only boundary always asks the user.
+ *
+ * Choosing a profile keeps the approval behavior that came before, but the
+ * user's rule for "read only" is "ask": an earlier "Approve for me" would let
+ * Codex's own reviewer decide, and an earlier "Full access" would refuse
+ * without asking. So a read-only state asks on-request, with the user as the
+ * reviewer, whatever approval was saved with it.
+ */
+export function withReadOnlyAsking(
+  state: CodexPermissionState,
+): CodexPermissionState {
+  if (
+    state.boundary.kind !== "profile" ||
+    state.boundary.profileId !== ":read-only"
+  )
+    return state;
+  const override = state.approvalOverride;
+  if (override?.policy === "on-request" && override.reviewer === "user")
+    return state;
+  return {
+    boundary: { kind: "profile", profileId: ":read-only" },
+    approvalOverride: { policy: "on-request", reviewer: "user" },
+  };
+}
+
 export function applyCodexPermissionChoice(params: {
   current: CodexPermissionState;
   choice: CodexPermissionChoice;
@@ -141,12 +167,12 @@ export function applyCodexPermissionChoice(params: {
     if (!profileId.trim()) {
       throw new Error("Codex permission profile ID is required");
     }
-    return {
+    return withReadOnlyAsking({
       boundary: { kind: "profile", profileId },
       approvalOverride: params.current.approvalOverride
         ? { ...params.current.approvalOverride }
         : null,
-    };
+    });
   }
   if (params.choice.preset === "ask") {
     return cloneCodexPermissionState(CODEX_ASK_PERMISSION_STATE);
@@ -200,4 +226,63 @@ export function getCodexApprovalBehaviorLabel(
   return approvalOverride.reviewer === "auto_review"
     ? "Approve for me"
     : "Ask for approval";
+}
+
+/**
+ * How Codex treats a Zotero MCP write under a permission mode: "writes"
+ * asks before every tool that is not read-only, "auto" runs it.
+ *
+ * The user's rule: ask under "Ask for approval" and under a read-only
+ * boundary (the legacy Read only included, whose state is null), and run
+ * unasked under "Approve for me" and "Full access". A fixed "writes" would
+ * fail every Zotero write under "Full access", whose policy never asks.
+ * "Custom (config.toml)" keeps "auto": its approval policy is the user's
+ * config, which the plugin does not read.
+ */
+export function codexZoteroMcpWriteApprovalMode(
+  state: CodexPermissionState | null,
+): "writes" | "auto" {
+  if (!state) return "writes";
+  if (
+    state.boundary.kind === "profile" &&
+    state.boundary.profileId === ":read-only"
+  )
+    return "writes";
+  const override = state.approvalOverride;
+  if (!override) return "auto";
+  return override.policy === "on-request" && override.reviewer === "user"
+    ? "writes"
+    : "auto";
+}
+
+/**
+ * The provider session's stored permission record: the applied permission
+ * state, plus the Zotero write approval mode the thread was created with.
+ *
+ * Codex binds an MCP server's approval mode when it creates a thread;
+ * thread/resume keeps it (checked against Codex 0.164: a loaded thread
+ * resumed with "writes" still ran a write unasked). So the mode is stored
+ * with the session, and a turn whose chip implies another mode replaces the
+ * thread. The record stays one JSON string in the existing column; a
+ * reader that predates the mode ignores it, and a record without it was
+ * created under "auto", the only mode before.
+ */
+export function serializeCodexProviderPermissionRecord(
+  state: CodexPermissionState | null | undefined,
+  mcpWriteApproval: "writes" | "auto",
+): string {
+  const base = state ? JSON.parse(serializeCodexPermissionState(state)) : {};
+  return JSON.stringify({ ...base, mcpWriteApproval });
+}
+
+export function readCodexProviderMcpWriteApproval(
+  raw: string | undefined,
+): "writes" | "auto" {
+  if (!raw) return "auto";
+  try {
+    const value = JSON.parse(raw) as { mcpWriteApproval?: unknown };
+    return value?.mcpWriteApproval === "writes" ? "writes" : "auto";
+  } catch {
+    return "auto";
+  }
 }

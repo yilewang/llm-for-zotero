@@ -92,9 +92,59 @@ export function formatSelectedTextLocator(
   return fields.length ? `[${fields.join(", ")}]` : "";
 }
 
+/**
+ * The paper_read call that reads PDF page `page` (from 1) of a paper's
+ * attachment with one neighboring page, as `paper_read {arguments}`.
+ */
+export function formatPageReadCall(params: {
+  itemId: number;
+  contextItemId: number;
+  page: number;
+}): string {
+  return `paper_read ${JSON.stringify({
+    mode: "targeted",
+    target: { itemId: params.itemId, contextItemId: params.contextItemId },
+    pages: [params.page],
+    neighborPages: 1,
+  })}`;
+}
+
+/**
+ * Where the text around a selection is: its page and, when the selection's
+ * paper is known and the model has tools (`readCalls`), the paper_read call
+ * that reads it. Without tools the hint names the page and attachment.
+ */
+function selectionPageHint(
+  anchor: ResolvedSelectedTextAnchor,
+  readCalls: boolean,
+): string {
+  if (anchor.pageIndex === undefined) return "";
+  const page = anchor.pageIndex + 1;
+  if (!readCalls)
+    return `If more context is required, read PDF page ${page} for attachment ${anchor.contextItemId} with one neighboring page.`;
+  // Only a paper that owns the selection's attachment names the call.
+  const paper =
+    normalizePositiveInt(anchor.paperContext?.contextItemId) ===
+    anchor.contextItemId
+      ? anchor.paperContext
+      : undefined;
+  const itemId = normalizePositiveInt(paper?.itemId);
+  const call = itemId
+    ? `: ${formatPageReadCall({ itemId, contextItemId: anchor.contextItemId, page })}`
+    : "";
+  return `If more context is required, read PDF page ${page} with one neighboring page${call}.`;
+}
+
 export function renderSelectedTextAnchorContext(params: {
   selectedTextContexts: SelectedTextContext[];
   anchors: ResolvedSelectedTextAnchor[];
+  /**
+   * Guidance naming the map parts that hold a selection, by its index; it
+   * replaces the page hint for that selection.
+   */
+  locations?: readonly { contextIndex: number; guidance: string }[];
+  /** The model can call paper_read: the page hint names the call. */
+  readCalls?: boolean;
 }): string {
   const blocks: string[] = [];
   for (const anchor of params.anchors) {
@@ -102,10 +152,12 @@ export function renderSelectedTextAnchorContext(params: {
     if (!context) continue;
     const locator = formatSelectedTextLocator(context, anchor);
     const header = `Selected text ${anchor.contextIndex + 1} local source ${locator}`;
-    const guidance =
-      anchor.pageIndex !== undefined
-        ? `If more context is required, read PDF page ${anchor.pageIndex + 1} for attachment ${anchor.contextItemId} with one neighboring page.`
-        : "";
+    const location = params.locations?.find(
+      (entry) => entry.contextIndex === anchor.contextIndex,
+    );
+    const guidance = location
+      ? location.guidance
+      : selectionPageHint(anchor, params.readCalls === true);
     blocks.push(
       [header, anchor.contextText, guidance].filter(Boolean).join("\n"),
     );

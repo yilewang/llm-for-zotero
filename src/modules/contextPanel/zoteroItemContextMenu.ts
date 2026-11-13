@@ -128,6 +128,20 @@ export async function dispatchZoteroItemsToSidebar(
 }
 
 export function registerZoteroItemContextMenu(deps: RegisterMenuDeps): void {
+  // An old version may have left its items behind; a duplicate would run the
+  // old command listener. The toolkit registers into the main window.
+  try {
+    const doc = Zotero.getMainWindow?.()?.document;
+    for (const id of [
+      MENU_SEPARATOR_BEFORE_ID,
+      MENU_ID,
+      MENU_SEPARATOR_AFTER_ID,
+    ]) {
+      doc?.querySelectorAll(`[id="${id}"]`).forEach((el) => el.remove());
+    }
+  } catch {
+    // Nothing to clean up.
+  }
   deps.ztoolkit.Menu?.register?.("item", {
     tag: "menuseparator",
     id: MENU_SEPARATOR_BEFORE_ID,

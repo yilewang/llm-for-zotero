@@ -1,5 +1,6 @@
 import type { ActiveNoteContext, PaperContextRef } from "../../../shared/types";
 import type { NoteEditingScope } from "../../../services/notes/scope";
+import { noteHtmlToModelText } from "../../../services/notes/noteRendering";
 
 export type NoteEditingTurnContext = {
   activeNoteContext?: ActiveNoteContext;
@@ -19,7 +20,10 @@ export function buildNoteEditingTurnContext(params: {
       title: scope.title,
       noteKind: scope.noteKind,
       parentItemId: scope.parentItemId,
-      noteText: params.snapshot?.text || "",
+      noteText:
+        typeof params.snapshot?.html === "string"
+          ? noteHtmlToModelText(params.snapshot.html)
+          : params.snapshot?.text || "",
       noteHtml: params.snapshot?.html,
     },
     autoLoadedPaperContext: params.autoLoadedPaperContext || null,

@@ -17,6 +17,7 @@ import {
 } from "./constants";
 import { buildClaudeLibraryStateKey } from "./state";
 import { getClaudeProfileSignature } from "./projectSkills";
+import { getManagedClaudeBridgeBaseUrl } from "./bridgeEndpoint";
 import {
   forgetPaperRestoreTarget,
   getPaperRestoreTarget,
@@ -159,14 +160,115 @@ export function setClaudeCodeModeEnabled(enabled: boolean): void {
   setPref("enableClaudeCodeMode", Boolean(enabled));
 }
 
+export const DEFAULT_CLAUDE_BRIDGE_URL = "http://127.0.0.1:19787";
+
+export type ClaudeBridgeMode = "managed" | "custom";
+
+function normalizeCustomClaudeBridgeUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return DEFAULT_CLAUDE_BRIDGE_URL;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `http://${trimmed}`;
+}
+
+function isDefaultClaudeBridgeUrl(raw: string): boolean {
+  const normalized = normalizeCustomClaudeBridgeUrl(raw)
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  return (
+    normalized === "http://127.0.0.1:19787" ||
+    normalized === "http://localhost:19787"
+  );
+}
+
+/**
+ * "managed": the plugin starts its own bridge. "custom": the user runs a
+ * bridge themselves (WSL, another machine, development) at the Bridge URL.
+ * Until the user chooses, someone who had pointed the Bridge URL somewhere
+ * other than the old default keeps their own bridge.
+ */
+export function getClaudeBridgeMode(): ClaudeBridgeMode {
+  const explicit = getStringPref("claudeCodeBridgeMode").trim();
+  if (explicit === "managed" || explicit === "custom") return explicit;
+  return isDefaultClaudeBridgeUrl(getStringPref("agentBackendBridgeUrl"))
+    ? "managed"
+    : "custom";
+}
+
+/** True while the user has not chosen a mode and it comes from the URL. */
+export function isClaudeBridgeModeImplicit(): boolean {
+  const explicit = getStringPref("claudeCodeBridgeMode").trim();
+  return explicit !== "managed" && explicit !== "custom";
+}
+
+export function setClaudeBridgeMode(mode: ClaudeBridgeMode): void {
+  setPref("claudeCodeBridgeMode", mode);
+}
+
+/** The Bridge URL the user typed, used only in "custom" mode. */
+export function getCustomClaudeBridgeUrl(): string {
+  return normalizeCustomClaudeBridgeUrl(getStringPref("agentBackendBridgeUrl"));
+}
+
 export function getClaudeBridgeUrl(): string {
-  const raw = getStringPref("agentBackendBridgeUrl").trim();
-  if (!raw) return "http://127.0.0.1:19787";
-  if (/^https?:\/\//i.test(raw)) return raw;
-  return `http://${raw}`;
+  if (getClaudeBridgeMode() === "managed") {
+    return getManagedClaudeBridgeBaseUrl();
+  }
+  return getCustomClaudeBridgeUrl();
+}
+
+export function getClaudeBridgeNodePathPref(): string {
+  return getStringPref("claudeCodeNodePath").trim();
+}
+
+export function setClaudeBridgeNodePathPref(path: string): void {
+  setPref("claudeCodeNodePath", path.trim());
+}
+
+export function getClaudeCliPathPref(): string {
+  return getStringPref("claudeCodeCliPath").trim();
+}
+
+export function setClaudeCliPathPref(path: string): void {
+  setPref("claudeCodeCliPath", path.trim());
+}
+
+/** Extra command-line options passed to the managed bridge unchanged. */
+export function getClaudeBridgeExtraArgsPref(): string {
+  return getStringPref("claudeCodeBridgeExtraArgs").trim();
+}
+
+export function setClaudeBridgeExtraArgsPref(value: string): void {
+  setPref("claudeCodeBridgeExtraArgs", value.trim());
+}
+
+export function hasShownClaudeLegacyDaemonNotice(): boolean {
+  return (
+    getZoteroPrefs()?.get?.(
+      prefKey("claudeCodeLegacyDaemonNoticeShown"),
+      true,
+    ) === true
+  );
+}
+
+/** Hidden kill switch for the probe of the old bridge on port 19787. */
+export function isClaudeLegacyDaemonCheckEnabled(): boolean {
+  return (
+    getZoteroPrefs()?.get?.(prefKey("claudeCodeLegacyDaemonCheck"), true) !==
+    false
+  );
+}
+
+export function markClaudeLegacyDaemonNoticeShown(): void {
+  setPref("claudeCodeLegacyDaemonNoticeShown", true);
 }
 
 export function setClaudeBridgeUrl(url: string): void {
+  // While no mode is saved, the mode comes from the URL. Save the current
+  // mode first so that typing a URL never changes it.
+  if (!getStringPref("claudeCodeBridgeMode").trim()) {
+    setClaudeBridgeMode(getClaudeBridgeMode());
+  }
   setPref("agentBackendBridgeUrl", url.trim());
 }
 

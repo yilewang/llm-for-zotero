@@ -10,6 +10,11 @@ export type NoteEditingSelectionTrackingLifecycle = {
   dispose: () => void;
 };
 
+// Delays, after a click or key press, of the follow-up checks. A note editor
+// opened by that click can mount its document a moment later; these catch
+// it without polling every 250 ms all the time.
+const SETTLE_CHECK_DELAYS_MS = [0, 250, 750];
+
 export function createNoteEditingSelectionTrackingLifecycle(params: {
   timerHost: NoteEditingSelectionTrackingTimerHost;
   refresh: () => void;
@@ -18,7 +23,10 @@ export function createNoteEditingSelectionTrackingLifecycle(params: {
   intervalDelayMs?: number;
 }): NoteEditingSelectionTrackingLifecycle {
   const debounceDelayMs = params.debounceDelayMs ?? 150;
-  const intervalDelayMs = params.intervalDelayMs ?? 250;
+  // Safety net only: tracked documents report selection changes, and clicks
+  // and key presses in the main window trigger the settle checks. Each tick
+  // reads the item selection and scans for note editors.
+  const intervalDelayMs = params.intervalDelayMs ?? 2000;
   const trackedSelectionDocuments = new Set<Document>();
   let debounceTimer: number | null = null;
   let immediateTimer: number | null = null;
@@ -37,15 +45,22 @@ export function createNoteEditingSelectionTrackingLifecycle(params: {
       refresh();
     }, debounceDelayMs);
   };
+  const scheduleSettleCheck = (step: number) => {
+    immediateTimer = params.timerHost.setTimeout(() => {
+      immediateTimer = null;
+      refresh();
+      if (!disposed && step + 1 < SETTLE_CHECK_DELAYS_MS.length) {
+        scheduleSettleCheck(step + 1);
+      }
+    }, SETTLE_CHECK_DELAYS_MS[step]!);
+  };
   const immediateRefresh: EventListener = () => {
     if (disposed) return;
     if (immediateTimer !== null) {
       params.timerHost.clearTimeout(immediateTimer);
     }
-    immediateTimer = params.timerHost.setTimeout(() => {
-      immediateTimer = null;
-      refresh();
-    }, 0);
+    // A new event restarts the sequence, so a burst keeps one pending check.
+    scheduleSettleCheck(0);
   };
   const intervalId = params.timerHost.setInterval(refresh, intervalDelayMs);
 

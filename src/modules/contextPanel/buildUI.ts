@@ -32,6 +32,10 @@ import { createSidebarModeSwitch } from "./sidebarModeSwitch";
 import { resolveSelectionSurfaceForBody } from "./panelHostOwnership";
 import { buildContextUsagePresentation } from "./textUtils";
 import { createChatLatestButton } from "./chatLatestButton";
+import {
+  SIDE_CHAT_SLASH_ITEM_ID,
+  SIDE_CHAT_SLASH_SEPARATOR_ATTR,
+} from "./sideChatSlashItem";
 import { createTaskProgressToggleButton } from "./taskProgress/toggleButton";
 import { createTaskProgressCurtain } from "./taskProgress/view";
 
@@ -329,12 +333,28 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     title: t("Delete conversation"),
   });
   clearBtn.setAttribute("aria-label", t("Delete conversation"));
+  // Stacked only: when the row runs out of room, Settings, Export and Delete
+  // fold into this menu button. It stays hidden until the row is collapsed.
+  const moreBtn = createElement(
+    doc,
+    "button",
+    "llm-btn-icon llm-header-more-btn",
+    {
+      id: "llm-header-more",
+      type: "button",
+      title: t("More actions"),
+    },
+  );
+  moreBtn.setAttribute("aria-label", t("More actions"));
+  moreBtn.setAttribute("aria-haspopup", "menu");
+  moreBtn.setAttribute("aria-expanded", "false");
   headerActions.append(
     taskProgressBtn,
     popoutBtn,
     settingsBtn,
     exportBtn,
     clearBtn,
+    moreBtn,
   );
   headerNavRow.appendChild(headerActions);
   headerTop.append(toggleRow, headerNavRow);
@@ -410,16 +430,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     chatBox,
     createChatLatestButton(doc),
   );
-  if (isStandaloneBody) {
-    const chatResizeHandle = createElement(
-      doc,
-      "div",
-      "llm-standalone-resize-handle",
-    );
-    chatResizeHandle.dataset.resizeTarget = "chat";
-    chatResizeHandle.setAttribute("aria-hidden", "true");
-    chatShell.appendChild(chatResizeHandle);
-  }
   container.appendChild(chatShell);
 
   // Shortcuts row
@@ -580,6 +590,68 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   exportMenu.append(exportMenuCopyBtn, exportMenuNoteBtn);
   container.appendChild(exportMenu);
 
+  // More menu: the actions the collapsed Stacked header folds away. It looks
+  // like the standalone window's More menu and sits in the panel, outside the
+  // header, whose size containment would anchor a fixed menu to the header.
+  const headerMoreMenu = createElement(doc, "div", "llm-header-more-menu", {
+    id: "llm-header-more-menu",
+  });
+  headerMoreMenu.setAttribute("role", "menu");
+  headerMoreMenu.style.display = "none";
+  // Icon buttons only; the glyph comes from the item's own id (CSS) and the
+  // controller copies the real button's title and aria-label when it opens.
+  const createHeaderMoreItem = (
+    id: string,
+    label: string,
+    glyph: string,
+    extraClass = "",
+  ) => {
+    const item = createElement(
+      doc,
+      "button",
+      `llm-header-more-item llm-header-more-item-${glyph}${extraClass ? ` ${extraClass}` : ""}`,
+      { id, type: "button", title: label },
+    );
+    item.setAttribute("aria-label", label);
+    item.setAttribute("role", "menuitem");
+    return item;
+  };
+  // Task progress and Open in window join the strip in the tight stage only;
+  // the controller shows these two items and their separator then.
+  const headerMoreTopSeparator = createElement(
+    doc,
+    "div",
+    "llm-header-more-separator",
+    { id: "llm-header-more-top-separator" },
+  );
+  headerMoreTopSeparator.setAttribute("role", "separator");
+  headerMoreTopSeparator.style.display = "none";
+  const headerMoreTaskItem = createHeaderMoreItem(
+    "llm-header-more-task-progress",
+    t("Show task progress"),
+    "task-progress",
+  );
+  const headerMorePopoutItem = createHeaderMoreItem(
+    "llm-header-more-popout",
+    t("Open in Window"),
+    "popout",
+  );
+  headerMoreTaskItem.style.display = "none";
+  headerMorePopoutItem.style.display = "none";
+  headerMoreMenu.append(
+    headerMoreTaskItem,
+    headerMorePopoutItem,
+    headerMoreTopSeparator,
+    createHeaderMoreItem("llm-header-more-settings", t("Settings"), "settings"),
+    createHeaderMoreItem("llm-header-more-export", t("Export"), "export"),
+    createHeaderMoreItem(
+      "llm-header-more-delete",
+      t("Delete conversation"),
+      "delete",
+    ),
+  );
+  container.appendChild(headerMoreMenu);
+
   const slashMenu = createElement(
     doc,
     "div",
@@ -613,6 +685,11 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     t("Select references"),
     t("Add papers from your library"),
   );
+  const slashPastConversationBtn = makeSlashItem(
+    "llm-slash-past-conversation-option",
+    t("Add past conversation"),
+    t("Use an earlier chat as context"),
+  );
   const slashPdfPageBtn = makeSlashItem(
     "llm-slash-pdf-page-option",
     t("Send current PDF page"),
@@ -626,6 +703,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const slashBaseButtons: Record<SlashBaseMenuItem, HTMLButtonElement> = {
     upload: slashUploadBtn,
     reference: slashReferenceBtn,
+    pastConversation: slashPastConversationBtn,
     pdfPage: slashPdfPageBtn,
     pdfMultiplePages: slashPdfMultiplePagesBtn,
   };
@@ -634,6 +712,34 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       resolveSlashActionChatMode(displayConversationKind),
     ).map((entry) => slashBaseButtons[entry]),
   );
+  // "Add side chat" sits after the base items. It stays hidden until the
+  // panel registers a side-chat provider; syncSideChatSlashItem sets its
+  // visibility, disabled state, and hint each time the menu opens.
+  const slashSideChatSeparator = createElement(
+    doc,
+    "div",
+    "llm-slash-menu-separator",
+    {},
+  );
+  slashSideChatSeparator.setAttribute("data-slash-base-item", "true");
+  slashSideChatSeparator.setAttribute(SIDE_CHAT_SLASH_SEPARATOR_ATTR, "true");
+  slashSideChatSeparator.setAttribute("aria-hidden", "true");
+  slashSideChatSeparator.style.display = "none";
+  const slashSideChatBtn = makeSlashItem(
+    SIDE_CHAT_SLASH_ITEM_ID,
+    t("Add side chat"),
+    t("Start a side chat first"),
+  );
+  slashSideChatBtn.classList.add("llm-action-picker-item-stacked");
+  slashSideChatBtn.append(
+    createElement(doc, "span", "llm-action-picker-hint", {
+      textContent: t("Start a side chat first"),
+    }),
+  );
+  slashSideChatBtn.disabled = true;
+  slashSideChatBtn.setAttribute("aria-disabled", "true");
+  slashSideChatBtn.style.display = "none";
+  slashList.append(slashSideChatSeparator, slashSideChatBtn);
   slashMenu.append(slashList);
   // slashMenu is appended to composeArea below (after composeArea is created)
 
@@ -643,6 +749,15 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   });
   retryModelMenu.style.display = "none";
   container.appendChild(retryModelMenu);
+
+  // Runtime menu (opened from the runtime badge). It reuses the permission
+  // menu look, so it carries the permission menu classes and no CSS of its own.
+  const runtimeMenu = createElement(doc, "div", "llm-permission-menu", {
+    id: "llm-runtime-menu",
+  });
+  runtimeMenu.setAttribute("role", "menu");
+  runtimeMenu.style.display = "none";
+  container.appendChild(runtimeMenu);
 
   // Input section
   const inputSection = createElement(doc, "div", "llm-input-section");
@@ -656,27 +771,22 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     {
       id: "llm-runtime-mode-toggle",
       type: "button",
-      title: t("Switch to Agent mode"),
+      title: t("Agent"),
       disabled: !hasItem,
     },
   );
-  runtimeModeBtn.setAttribute("aria-label", t("Switch to Agent mode"));
-  runtimeModeBtn.setAttribute("aria-pressed", "false");
-  const runtimeModeIndicator = createElement(
-    doc,
-    "span",
-    "llm-agent-toggle-indicator",
-  );
-  runtimeModeIndicator.setAttribute("aria-hidden", "true");
+  runtimeModeBtn.setAttribute("aria-label", t("Agent"));
+  runtimeModeBtn.setAttribute("aria-haspopup", "menu");
+  runtimeModeBtn.setAttribute("aria-expanded", "false");
   const runtimeModeLabel = createElement(
     doc,
     "span",
     "llm-agent-toggle-label llm-agent-process-summary-label",
     {
-      textContent: t("Agent mode"),
+      textContent: t("Agent"),
     },
   );
-  runtimeModeBtn.append(runtimeModeIndicator, runtimeModeLabel);
+  runtimeModeBtn.append(runtimeModeLabel);
   contextPreviews.appendChild(runtimeModeBtn);
   const selectedContextList = createElement(
     doc,
@@ -902,6 +1012,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       : t("Open a PDF first"),
     disabled: !hasItem,
   });
+  inputBox.rows = 1;
   if (isStandaloneBody) {
     const inputResizeWrap = createElement(
       doc,
@@ -1016,7 +1127,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const sendBtn = createElement(
     doc,
     "button",
-    "llm-shortcut-btn llm-action-btn llm-action-btn-primary llm-send-btn llm-action-icon-only",
+    "llm-shortcut-btn llm-action-btn llm-send-btn llm-action-icon-only",
     {
       id: "llm-send",
       title: t("Send"),

@@ -12,8 +12,8 @@ import {
 } from "../modelCapabilities";
 import {
   CODEX_DIRECT_RESPONSES_URL,
-  CODEX_DIRECT_MODELS_URL,
   fetchWithCodexAuth,
+  resolveCodexDirectModelsUrl,
   type CodexAuthDependencies,
 } from "./auth";
 
@@ -57,6 +57,13 @@ const EMPTY_SNAPSHOT: CodexDirectCatalogSnapshot = {
 
 let catalogSnapshot = EMPTY_SNAPSHOT;
 let catalogRequest: Promise<CodexDirectCatalogSnapshot> | null = null;
+let catalogDependenciesForTests: CodexAuthDependencies | undefined;
+
+export function setCodexDirectCatalogDependenciesForTests(
+  dependencies?: CodexAuthDependencies,
+): void {
+  catalogDependenciesForTests = dependencies;
+}
 const catalogSubscribers = new Set<
   (snapshot: CodexDirectCatalogSnapshot) => void
 >();
@@ -206,6 +213,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 export async function loadCodexDirectCatalog(
   options: LoadCodexDirectCatalogOptions = {},
 ): Promise<CodexDirectCatalogSnapshot> {
+  options = { ...catalogDependenciesForTests, ...options };
   const now = options.now || Date.now;
   if (
     !options.force &&
@@ -221,7 +229,7 @@ export async function loadCodexDirectCatalog(
   catalogRequest = withTimeout(
     (async () => {
       const response = await fetchWithCodexAuth(
-        CODEX_DIRECT_MODELS_URL,
+        await resolveCodexDirectModelsUrl(options),
         { headers: { Accept: "application/json" } },
         options,
       );

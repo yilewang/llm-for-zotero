@@ -38,6 +38,17 @@ import type {
   RunEndState,
 } from "../../../agent/execution/types";
 import type { QuoteCitation } from "../../../shared/types";
+import type { AgentEvent } from "../../../agent/types";
+import type { Message } from "../types";
+import {
+  buildTaskAnswerCitations,
+  type TaskAnswerCitation,
+} from "./answerCitations";
+import {
+  buildTaskOutsideTurn,
+  movesTaskOutside,
+  type TaskOutsideTurn,
+} from "./outside";
 
 export type TaskRunState =
   | "idle"
@@ -89,15 +100,18 @@ export type TaskProgressStep = {
   outcome?: TaskProgressOutcomeStep;
 };
 
+/** The runtime that keeps its own steps: Codex's plan, or Claude Code's list. */
+export type TaskProgressStepsRuntime = "codex" | "claude";
+
 /**
- * A run's steps: a built-in action's progress, the checklist Codex keeps
- * with its own plan tool, or the outcomes a run's ledger holds.
+ * A run's steps: a built-in action's progress, the checklist Codex or Claude
+ * Code keeps with its own plan tool, or the outcomes a run's ledger holds.
  */
 export type TaskProgressChecklist = {
-  source: "action" | "codex" | "outcomes";
+  source: "action" | TaskProgressStepsRuntime | "outcomes";
   /** The run the steps belong to (an action gets its own id). */
   runId: string;
-  /** The action's name; empty for Codex. */
+  /** The action's name; empty for Codex and Claude Code. */
   title: string;
   steps: TaskProgressStep[];
   /** Steps completed, and steps in all (an action announces its total). */
@@ -147,6 +161,12 @@ export type TaskProgressQuestion = {
   checklist: TaskProgressChecklist | null;
   /** The run state it was left in when another question or action took the row. */
   state?: TaskRunState;
+  /**
+   * The passages its answer cites, numbered as the answer's marks are; set
+   * whole each time the answer (or how it is shown) changes. Absent until
+   * its answer is in, and on a record built before it was kept.
+   */
+  answerCitations?: TaskAnswerCitation[];
 };
 
 export type TaskProgressRecord = {
@@ -192,6 +212,12 @@ export type TaskProgressRecord = {
     number,
     { runId?: string; citations: TaskPaperDocumentCitation[] }
   >;
+  /**
+   * What each question got from outside the library (scholarly papers, web
+   * pages), and whether it searched the library, by question: its latest
+   * run's. In memory only; rebuilt from the run events.
+   */
+  outside?: Record<number, TaskOutsideTurn>;
   /** Identity of this record; a cleared and recreated record gets a new one. */
   epoch: number;
 };
@@ -216,12 +242,26 @@ export type TaskProgressViewMemo = {
   open: boolean;
   /** Paper row keys. */
   expanded: string[];
+  /** Unused-paper folds the user opened, by fold key (question scope and group). */
+  openFolds: string[];
   /** Rows the list had grown to. */
   limit: number;
   /** Earlier questions unrolled in the drawer's history, by section id. */
   questions: string[];
+  /** Current questions folded, by section id. */
+  foldedCurrent: string[];
+  /** Section cards folded, by question scope and card. */
+  closedCards: string[];
+  /** Groups showing all their rows, by fold key. */
+  showAllFolds: string[];
   /** The drawer body's scroll offset while open. */
   scrollTop: number;
+  /**
+   * What was at the top of the list while open, and how far its top sat
+   * from the list's: the chat's card and the side panel tab differ in width,
+   * so the same place is the same row, not the same offset.
+   */
+  top?: { id: string; offset: number };
   /** The record's collapseSeq when this was written: an answer started since closes it. */
   collapseSeq: number;
 };
@@ -613,6 +653,61 @@ export function applyTaskPaperUpdate(
   }
 }
 
+/** A live run's events that move its question's outside sources. */
+const liveOutsideEvents = new Map<string, { payload: AgentEvent }[]>();
+
+/** Set a question's outside sources; a newer run of it replaces them. */
+function setTaskOutside(
+  record: TaskProgressRecord,
+  turn: number,
+  runId: string,
+  next: TaskOutsideTurn | null,
+): boolean {
+  const outside = record.outside || (record.outside = {});
+  const before = outside[turn];
+  if (!next) {
+    if (!before || before.runId === runId) return false;
+    delete outside[turn];
+    return true;
+  }
+  if (before && JSON.stringify(before) === JSON.stringify(next)) return false;
+  outside[turn] = next;
+  return true;
+}
+
+/**
+ * Fold one live run event into its question's outside sources: a web or
+ * scholarly search or read, a library search, or the final answer's markers.
+ */
+export function applyTaskOutsideEvent(
+  conversationKey: number,
+  runId: string | undefined,
+  event: AgentEvent,
+): void {
+  if (!runId || !movesTaskOutside(event)) return;
+  const record = records.get(normalizeKey(conversationKey));
+  if (!record) return;
+  const turn = turnFor(record, runId);
+  if (!turn) return;
+  const events = liveOutsideEvents.get(runId) || [];
+  events.push({ payload: event });
+  if (event.type === "final") liveOutsideEvents.delete(runId);
+  else liveOutsideEvents.set(runId, events);
+  if (!setTaskOutside(record, turn, runId, buildTaskOutsideTurn(runId, events)))
+    return;
+  // A web answer's passages are read from its own text, as it renders.
+  const question = questionForTurn(record, turn);
+  const answer = question && answerMessages.get(question);
+  if (question && answer)
+    replaceAnswerCitations(
+      question,
+      buildTaskAnswerCitations(answer, {
+        hasWebSources: answerIsWebSourced(record, question),
+      }),
+    );
+  changed(record);
+}
+
 /**
  * The answer started streaming. Returns true on the transition, which also
  * asks every open drawer for this conversation to collapse.
@@ -661,6 +756,97 @@ export function completeTaskRun(
     }
     record.runState = "completed";
   }
+  changed(record);
+}
+
+/**
+ * The entry an answer belongs to: its run's, or, without a run the record
+ * knows, its question's. An earlier run of a question asked again never
+ * takes the entry from the newer one.
+ */
+function answerQuestion(
+  record: TaskProgressRecord,
+  target: { runId?: string; turn?: number },
+): TaskProgressQuestion | undefined {
+  const runId = target.runId?.trim();
+  if (runId) {
+    const own = record.questions.find((question) => question.runId === runId);
+    if (own) return own;
+    const turn = record.turnByRunId[runId];
+    if (turn !== undefined) {
+      const entry = questionForTurn(record, turn);
+      return entry && !entry.runId ? entry : undefined;
+    }
+  }
+  return target.turn ? questionForTurn(record, target.turn) : undefined;
+}
+
+/**
+ * The answer each question's cited passages were last read from: when its
+ * run's final event arrives after them, they are read again with its web
+ * markers in mind. In memory only.
+ */
+const answerMessages = new WeakMap<
+  TaskProgressQuestion,
+  Pick<Message, "text" | "quoteCitations" | "quoteDisplayOverride">
+>();
+
+/** The question's answer is web-attributed: its run's final event says. */
+function answerIsWebSourced(
+  record: TaskProgressRecord,
+  question: TaskProgressQuestion,
+): boolean {
+  const outside = record.outside?.[question.turn];
+  return Boolean(
+    outside?.webSourced &&
+    (!question.runId || outside.runId === question.runId),
+  );
+}
+
+/** Replace an entry's cited passages; true when they changed. */
+function replaceAnswerCitations(
+  question: TaskProgressQuestion,
+  next: TaskAnswerCitation[],
+): boolean {
+  if (JSON.stringify(question.answerCitations) === JSON.stringify(next))
+    return false;
+  question.answerCitations = next;
+  return true;
+}
+
+/**
+ * The passages an answer cites, as it is shown now: its question's list,
+ * replaced whole (never merged). Called wherever an answer is final or how
+ * it shows changes (background quote validation); `message` null clears
+ * the list (an answer that records no citations). Changes nothing for a
+ * record or question the store does not hold.
+ */
+export function syncTaskAnswerCitations(
+  conversationKey: number,
+  target: { runId?: string; turn?: number },
+  message: Pick<
+    Message,
+    "text" | "quoteCitations" | "quoteDisplayOverride"
+  > | null,
+  /**
+   * Whether the answer is web-attributed, as the chat decides it for the
+   * render; absent, the question's run's final event says (its markers).
+   */
+  options: { hasWebSources?: boolean } = {},
+): void {
+  const record = records.get(normalizeKey(conversationKey));
+  if (!record) return;
+  const question = answerQuestion(record, target);
+  if (!question) return;
+  if (message) answerMessages.set(question, message);
+  else answerMessages.delete(question);
+  const hasWebSources =
+    options.hasWebSources ?? answerIsWebSourced(record, question);
+  const next = message
+    ? buildTaskAnswerCitations(message, { hasWebSources })
+    : [];
+  if (!replaceAnswerCitations(question, next)) return;
+  writable(conversationKey);
   changed(record);
 }
 
@@ -755,14 +941,26 @@ function foldDocumentCitations(
 
 /**
  * A read that took in the paper's text: a digest with an answer, or a
- * paper_read of the whole text or of its overview or full-text body (not
- * its metadata, abstract or outline, and not a targeted passage).
+ * paper_read of the whole text, of a whole named section, or of its
+ * overview or full-text body (not its metadata, abstract or outline, and
+ * not a targeted passage). A scoped digest counts only when what it covered
+ * was body text: a summary of the abstract or the notes is no deeper than
+ * they are.
  */
 export function isInDepthRead(read: TaskPaperReadEvent): boolean {
-  if (read.granularity === "digest") return Boolean(read.snippet?.trim());
+  if (read.granularity === "digest") {
+    if (!read.snippet?.trim()) return false;
+    return (
+      !read.depth ||
+      read.depth === "section" ||
+      read.depth === "page" ||
+      read.depth === "full"
+    );
+  }
   if (read.toolName !== "paper_read") return false;
   return (
     read.granularity === "full" ||
+    (read.granularity === "section" && read.method === "sections") ||
     ((read.granularity === "passage" || read.granularity === "section") &&
       (read.method === "overview" || read.method === "full"))
   );
@@ -1002,11 +1200,11 @@ export function endTaskAction(
   changed(record);
 }
 
-/** Codex's own plan for a run: its checklist, as it stands. */
+/** Codex's plan or Claude Code's steps for a run, as they stand. */
 export function setTaskChecklist(
   conversationKey: number,
   params: {
-    source: "codex";
+    source: TaskProgressStepsRuntime;
     runId: string;
     steps: TaskProgressStep[];
     outcome?: TaskProgressChecklist["outcome"];
@@ -1142,10 +1340,14 @@ export type TaskProgressHistoryRun = {
   deltas: TaskPaperLedgerDelta[];
   /** The citations the persisted answer kept. */
   quoteCitations?: readonly QuoteCitation[];
+  /** The passages the persisted answer cites, as it shows them. */
+  answerCitations?: TaskAnswerCitation[];
   /** The sources the run's submitted documents cite (`material_finalized`). */
   documentCitations?: readonly TaskPaperDocumentCitation[];
   /** The run's Codex plan or outcome steps, if it had any. */
   checklist?: TaskProgressHistoryChecklist | null;
+  /** What the run got from outside the library, if anything. */
+  outside?: TaskOutsideTurn | null;
 };
 
 /** A question the conversation's user messages hold. */
@@ -1290,6 +1492,23 @@ export function hydrateTaskProgress(
       foldDocumentCitations(record, run.documentCitations, turn, run.runId);
     }
   }
+  // Each question shows its latest run's outside sources, unless this
+  // session ran it again.
+  const latestByTurn = new Map<number, TaskProgressHistoryRun>();
+  for (const run of history.runs) {
+    if (run.runId && run.turn > 0)
+      latestByTurn.set(record.turnByRunId[run.runId] ?? run.turn, run);
+  }
+  for (const [turn, run] of latestByTurn) {
+    const rerun =
+      record.runId &&
+      !historyRunIds.has(record.runId) &&
+      record.turnByRunId[record.runId] === turn;
+    if (rerun || !run.outside) continue;
+    const known = record.outside?.[turn];
+    if (known && known.runId !== run.runId) continue;
+    setTaskOutside(record, turn, run.runId, run.outside);
+  }
   if (history.planSeen) record.planSeen = true;
   // Only a record this session never ran takes the history's outcome.
   if (record.runState === "idle") {
@@ -1311,6 +1530,14 @@ export function hydrateTaskProgress(
     }
   }
   hydrateQuestions(record, history);
+  // Each question lists the passages its latest finished answer cites,
+  // unless this session ran it again.
+  for (const [turn, run] of latestByTurn) {
+    if (run.live || !run.answerCitations) continue;
+    const question = questionForTurn(record, turn);
+    if (question && (!question.runId || question.runId === run.runId))
+      replaceAnswerCitations(question, run.answerCitations);
+  }
   record.hydrated = true;
   // Views repaint only when the history added something: a live run's row
   // must not churn because its conversation's history was folded in.
@@ -1328,6 +1555,7 @@ function hydrationSignature(record: TaskProgressRecord): string {
     record.turnIndex,
     record.checklist,
     record.questions,
+    record.outside,
   ]);
 }
 
@@ -1351,7 +1579,16 @@ export function getTaskProgressViewMemo(
 ): TaskProgressViewMemo | null {
   const memo = viewMemos.get(normalizeKey(conversationKey));
   return memo
-    ? { ...memo, expanded: [...memo.expanded], questions: [...memo.questions] }
+    ? {
+        ...memo,
+        expanded: [...memo.expanded],
+        openFolds: [...memo.openFolds],
+        questions: [...memo.questions],
+        foldedCurrent: [...memo.foldedCurrent],
+        closedCards: [...memo.closedCards],
+        showAllFolds: [...memo.showAllFolds],
+        ...(memo.top ? { top: { ...memo.top } } : {}),
+      }
     : null;
 }
 
@@ -1367,9 +1604,16 @@ export function rememberTaskProgressView(
   viewMemos.set(key, {
     open: patch.open ?? previous?.open ?? false,
     expanded: [...(patch.expanded ?? previous?.expanded ?? [])],
+    openFolds: [...(patch.openFolds ?? previous?.openFolds ?? [])],
     limit: patch.limit ?? previous?.limit ?? 0,
     questions: [...(patch.questions ?? previous?.questions ?? [])],
+    foldedCurrent: [...(patch.foldedCurrent ?? previous?.foldedCurrent ?? [])],
+    closedCards: [...(patch.closedCards ?? previous?.closedCards ?? [])],
+    showAllFolds: [...(patch.showAllFolds ?? previous?.showAllFolds ?? [])],
     scrollTop: patch.scrollTop ?? previous?.scrollTop ?? 0,
+    ...((patch.top ?? previous?.top)
+      ? { top: { ...(patch.top ?? previous!.top!) } }
+      : {}),
     collapseSeq:
       patch.collapseSeq ?? previous?.collapseSeq ?? record.collapseSeq,
   });
@@ -1401,6 +1645,7 @@ export function clearAllTaskProgress(): void {
   const keys = Array.from(records.keys());
   records.clear();
   viewMemos.clear();
+  liveOutsideEvents.clear();
   for (const key of keys) notify(key);
 }
 

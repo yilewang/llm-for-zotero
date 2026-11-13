@@ -23,7 +23,9 @@ export type ConversationDeletionSurfaceAction =
   | { type: "none" }
   | { type: "leave"; remember: boolean }
   | { type: "restore" }
-  | { type: "forget" };
+  | { type: "forget" }
+  // Only for a surface that holds one chat: its window closes.
+  | { type: "close" };
 
 // Surface reactions can await fresh-chat creation or history navigation. Keep
 // each mounted surface's event reactions in notification order so a quick Undo
@@ -45,7 +47,10 @@ export function createSerializedConversationDeletionEventQueue(): (
  * this decision has to be made per surface rather than per deletion:
  *   - a surface showing the doomed chat leaves it, whoever queued the deletion;
  *   - only the surface that surrendered a chat goes back to it when the
- *     deletion is undone or abandoned — others keep their own place.
+ *     deletion is undone or abandoned — others keep their own place;
+ *   - a surface that holds one chat (a follower window) never leaves it: it
+ *     keeps the chat while Undo is possible and closes once the deletion is
+ *     final.
  */
 export function resolveConversationDeletionSurfaceAction(params: {
   eventType: PendingDeletionEvent["type"];
@@ -57,6 +62,7 @@ export function resolveConversationDeletionSurfaceAction(params: {
   // deletion would evict the user from a live chat, so it resolves like the
   // other survival outcomes.
   dropped?: boolean;
+  holdsOneChat?: boolean;
 }): ConversationDeletionSurfaceAction {
   const { entry, surface, surrendered } = params;
   // A quarantined or retrying intent remains hidden. There is no automatic
@@ -70,6 +76,15 @@ export function resolveConversationDeletionSurfaceAction(params: {
     surface.kind === entry.conversationKind &&
     surface.system === entry.system,
   );
+  if (params.holdsOneChat) {
+    // Undo is possible until the deletion starts committing, and a dropped
+    // intent leaves the chat alive. Such a surface never moves to another
+    // chat, so it has nothing to go back to: it only forgets.
+    const final =
+      !params.dropped && eventType !== "queued" && eventType !== "undone";
+    if (final && showsEntry) return { type: "close" };
+    return surrendered ? { type: "forget" } : { type: "none" };
+  }
   // Older persisted rows can still emit a compatibility "dropped" outcome.
   // It is not a deletion: keep a live surface in place, and return only a
   // surface that was explicitly moved off the conversation while the intent

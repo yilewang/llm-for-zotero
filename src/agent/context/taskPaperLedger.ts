@@ -13,6 +13,13 @@
  * that names only an attachment is skipped rather than guessed.
  */
 import type { QuoteCitation } from "../../shared/types";
+import {
+  isAbstractCoveredLabel,
+  isFullTextRead,
+  requestedPartNames,
+  shownPartName,
+  userPartNames,
+} from "../digests/readScope";
 
 /** Monotone reading state of one paper, weakest first. */
 export type TaskPaperState =
@@ -50,6 +57,11 @@ const TEXT_SOURCE_RANK: Record<TaskPaperTextSource, number> = {
 
 export type TaskPaperReadGranularity =
   | "metadata"
+  /**
+   * The item's Zotero notes: the user's or an agent's text about the paper,
+   * not the paper's own text, so never `full`.
+   */
+  | "notes"
   | "abstract"
   | "outline"
   | "section"
@@ -63,6 +75,28 @@ export type TaskPaperReadGranularity =
    * Not the paper's own text: its evidence is recorded as `passage` reads.
    */
   | "digest";
+
+/**
+ * How much of a paper a read granularity covers, weakest first. A summary
+ * of the paper's own text (`digest`) ranks above its record and outline but
+ * below text read directly; a whole paper (`full`) ranks highest. Equal
+ * depth is not claimed between neighbours: the order only picks a paper's
+ * strongest read.
+ */
+export const TASK_PAPER_READ_GRANULARITY_RANK: Readonly<
+  Record<TaskPaperReadGranularity, number>
+> = {
+  metadata: 0,
+  notes: 1,
+  abstract: 2,
+  outline: 3,
+  digest: 4,
+  figure: 5,
+  passage: 6,
+  page: 7,
+  section: 8,
+  full: 9,
+};
 
 /** How a paper bears on the request, as a host digest judged it. */
 export type TaskPaperDigestRelevance = {
@@ -121,6 +155,26 @@ export type TaskPaperReadEvent = {
   relevance?: TaskPaperDigestRelevance;
   /** A `digest` read only: the stance the digest judged, when it did. */
   stance?: TaskPaperDigestStance;
+  /**
+   * A `digest` read only: whether the digest read the paper's whole text
+   * (`source.complete`). Absent on a failed digest and on rows saved before
+   * it was recorded.
+   */
+  complete?: boolean;
+  /**
+   * A scoped `digest` read only: the depth of text the digest covered (the
+   * strongest of its scope's reads: `abstract`, `section`, `page`, `notes`,
+   * `metadata`). A digest's answer is `digest` in form, but a summary of an
+   * abstract is no deeper than the abstract, so a paper's strongest read
+   * counts this, not the answer's form.
+   */
+  depth?: TaskPaperReadGranularity;
+  /**
+   * A scoped `digest` read only: what of the paper it read, as Task
+   * progress names it ("Abstract, Results", "pages 3–5"). Absent on a read
+   * of the full text and on rows saved before it was recorded.
+   */
+  scopeLabel?: string;
 };
 
 export type TaskPaperCitation = {
@@ -162,6 +216,28 @@ export type TaskPaperDocumentCitation = {
   year?: string;
 };
 
+/**
+ * What the agent decided about a paper for the task, in its own words. A
+ * claim, not a verified fact: it is kept apart from the paper's reads and
+ * never moves its state.
+ */
+export type TaskPaperDecision = {
+  value: "include" | "exclude" | "defer";
+  relevance?: "high" | "medium" | "low" | "none";
+  /** At most `TASK_PAPER_DECISION_MAX_SUBQUESTIONS` labels. */
+  subquestions?: string[];
+  /** At most `TASK_PAPER_DECISION_REASON_MAX_CHARS` characters. */
+  reason: string;
+  origin: "agent";
+};
+
+/** A decision as a turn holds it: the call and run that stated it. */
+export type TaskPaperDecisionRecord = TaskPaperDecision & {
+  callId: string;
+  runId?: string;
+  turnIndex: number;
+};
+
 export type TaskPaperDeltaPaper = {
   key: string;
   libraryID: number;
@@ -174,6 +250,11 @@ export type TaskPaperDeltaPaper = {
   itemKey?: string;
   text?: TaskPaperTextSource;
   state: TaskPaperState;
+  /**
+   * The agent's decision about the paper. A delta that only decides lists
+   * the paper (`state: "listed"`). Absent on events saved before decisions.
+   */
+  decision?: TaskPaperDecision;
 };
 
 /** What one successful read tool call added to the ledger. */
@@ -205,9 +286,14 @@ export type TaskPaperTurnRecord = {
   /** Document citations beyond the per-turn cap. */
   droppedDocumentCitations?: number;
   /**
-   * The run whose reads `reads` holds. A re-run of the question (another
-   * run id) replaces them, as its document's sources replace the earlier
-   * run's.
+   * The latest decision this turn's run stated about the paper. A re-run
+   * of the question replaces it with the reads (`readsRunId`).
+   */
+  decision?: TaskPaperDecisionRecord;
+  /**
+   * The run whose reads and decision this turn holds. A re-run of the
+   * question (another run id) replaces them, as its document's sources
+   * replace the earlier run's.
    */
   readsRunId?: string;
   /** Runs whose reads a later run of the question replaced. */
@@ -245,7 +331,13 @@ export type TaskPaperLedger = {
 };
 
 export const TASK_PAPER_MAX_READS_PER_TURN = 12;
-export const TASK_PAPER_MAX_CITATIONS_PER_TURN = 8;
+/**
+ * Passages of one paper a question's answer cites: high enough for an
+ * answer that cites each sentence.
+ */
+export const TASK_PAPER_MAX_CITATIONS_PER_TURN = 40;
+/** Sources of one paper a question's submitted documents cite. */
+export const TASK_PAPER_MAX_DOCUMENT_CITATIONS_PER_TURN = 8;
 /** Document sections one document citation lists. */
 export const TASK_PAPER_MAX_DOCUMENT_SECTIONS = 8;
 export const TASK_PAPER_MAX_PAPERS = 5000;
@@ -258,6 +350,13 @@ export const TASK_PAPER_SNIPPET_MAX_CHARS = 280;
 export const TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS = 1600;
 export const TASK_PAPER_WHY_MATCHED_MAX_CHARS = 120;
 export const TASK_PAPER_CITATION_QUOTE_MAX_CHARS = 160;
+/** A decision's reason, at the cap a digest's judgment reason keeps. */
+export const TASK_PAPER_DECISION_REASON_MAX_CHARS =
+  TASK_PAPER_SNIPPET_MAX_CHARS;
+/** Subquestions one decision names, as many as a citation's sections. */
+export const TASK_PAPER_DECISION_MAX_SUBQUESTIONS = 8;
+/** One subquestion label, at the cap of a document section label. */
+export const TASK_PAPER_DECISION_SUBQUESTION_MAX_CHARS = 120;
 
 /**
  * Tools whose payloads this ledger reads. Kept equal to the tools
@@ -269,6 +368,8 @@ export const TASK_PAPER_LEDGER_TOOL_NAMES: ReadonlySet<string> = new Set([
   "library_retrieve",
   "paper_read",
   "read_attachment",
+  // The MCP host's per-paper reader: its rows are host digests.
+  "paper_digest",
 ]);
 
 export function taskPaperKey(libraryID: number, itemId: number): string {
@@ -658,7 +759,7 @@ function passageReadSeed(row: Row, method: string): ReadSeed {
     });
   }
   return readSeed({
-    granularity: sectionLabel ? "section" : "passage",
+    granularity: "passage",
     method,
     label: sectionLabel || pageLabelFor(row),
     snippet: row.snippet ?? row.text ?? row.surroundingText,
@@ -805,18 +906,23 @@ function libraryReadSeeds(result: unknown): Seed[] {
     const abstract =
       firstText(metadata, ["abstract", "abstractNote"]) ||
       firstText(value, ["abstract", "abstractNote"]);
+    const ownText = hasText(value, ["content", "text", "body", "fullText"]);
     const body =
-      hasText(value, ["content", "text", "body", "fullText"]) ||
-      hasRows(value, ["passages", "snippets", "chunks", "notes"]);
+      ownText || hasRows(value, ["passages", "snippets", "chunks", "notes"]);
     if (body) {
+      // Notes alone are the notes, never the paper's full text: the paper
+      // is skimmed, as for a notes-scoped digest.
+      const granularity = hasRows(value, ["passages", "snippets", "chunks"])
+        ? "passage"
+        : ownText
+          ? "full"
+          : "notes";
       return [
         {
           ref,
-          state: "read",
+          state: granularity === "notes" ? "skimmed" : "read",
           read: readSeed({
-            granularity: hasRows(value, ["passages", "snippets", "chunks"])
-              ? "passage"
-              : "full",
+            granularity,
             method: "library_read",
             snippet: firstBodyParagraph(
               firstText(value, ["content", "text", "body", "fullText"]),
@@ -967,6 +1073,7 @@ function paperReadSeeds(input: unknown, result: unknown): Seed[] {
   if (["figures", "visual", "capture"].includes(mode)) {
     return renderedPageSeeds(input, result);
   }
+  if (output.read === "whole_sections") return wholeSectionSeeds(result);
   // targeted, full, and explicit page reads. Grouped papers carry the same
   // passages as the flat results, so they win when present.
   const groups = rowsAt(result, "papers").filter((row) => paperRef(row));
@@ -1005,6 +1112,90 @@ function paperReadSeeds(input: unknown, result: unknown): Seed[] {
 
 const BODY_KEYS = ["content", "text", "body", "fullText", "snippet"] as const;
 
+/**
+ * A paper_read of whole named sections: one read per part name the user
+ * asked for, once however many places were found for it (as a digest's
+ * scope is). A name is read at `section` depth only when every place found
+ * for it came back whole (the abstract at `abstract`); a place the read
+ * budget cut makes it a `passage` read. A paper none of whose sections
+ * matched was not read. The text backend belongs to the paper, so every
+ * read of it shares that.
+ */
+function wholeSectionSeeds(result: unknown): Seed[] {
+  return rowsAt(result, "papers").flatMap((row): Seed[] => {
+    const value = record(row);
+    const ref = paperRef(row);
+    if (!value || !ref) return [];
+    const passages = rowsAt(value, "passages")
+      .map(record)
+      .filter((entry): entry is Row => Boolean(entry));
+    const backend = text(value.backend);
+    // Part names in document order, each with the sections that read it.
+    const parts = new Map<
+      string,
+      { name: string; sections: { section: Row; names: string[] }[] }
+    >();
+    for (const entry of rowsAt(value, "sections")) {
+      const section = record(entry);
+      const label = text(section?.section);
+      // A section the read budget left out entirely was not read.
+      if (!section || !label || !(Number(section.characters) > 0)) continue;
+      // The parts the user asked for, not the pages, headings or places
+      // found for them; the label the model reads stays in the output.
+      const asked = Array.isArray(section.for)
+        ? userPartNames(section.for.filter((name) => typeof name === "string"))
+        : [];
+      const names = isAbstractCoveredLabel(label)
+        ? ["Abstract"]
+        : asked.length
+          ? asked
+          : [shownPartName(label)];
+      for (const name of names) {
+        const key = name.toLowerCase();
+        const part = parts.get(key) || { name, sections: [] };
+        part.sections.push({ section, names });
+        parts.set(key, part);
+      }
+    }
+    // A passage speaks for one part: two names never share a snippet.
+    const used = new Set<Row>();
+    return [...parts.values()].map(({ name, sections }): Seed => {
+      const { section, names } = sections[0];
+      const label = text(section.section);
+      // A passage carries the section's own label, or the parts asked for
+      // that a plain PDF run is shown under.
+      const first = passages.find(
+        (passage) =>
+          !used.has(passage) &&
+          (passage.sectionLabel === label ||
+            passage.sectionLabel === names.join(", ") ||
+            passage.sectionLabel === name),
+      );
+      if (first) used.add(first);
+      const whole = sections.every((entry) => entry.section.complete === true);
+      return {
+        ref,
+        state: "read",
+        ...(backend === "mineru"
+          ? { text: "mineru" as const }
+          : backend === "pdf"
+            ? { text: "pdf_text" as const }
+            : {}),
+        read: readSeed({
+          granularity: !whole
+            ? "passage"
+            : isAbstractCoveredLabel(name)
+              ? "abstract"
+              : "section",
+          method: "sections",
+          label: name,
+          snippet: first ? firstBodyParagraph(text(first.text) || "") : "",
+        }),
+      };
+    });
+  });
+}
+
 /** The body reads one targeted/full result row carries. */
 function bodyRowSeeds(row: Row, ref: PaperRef, mode: string): Seed[] {
   const passages = ["passages", "snippets", "chunks"]
@@ -1023,12 +1214,18 @@ function bodyRowSeeds(row: Row, ref: PaperRef, mode: string): Seed[] {
   const processed = Number(row.processedChunks) || 0;
   if (processed > 0 || hasRows(row, ["exactEvidence"])) {
     const total = Number(row.totalChunks) || 0;
+    // A read that stopped short is a skim of the chunks it reached, not a
+    // read of the whole paper.
+    const status = text(row.status);
+    const complete = status
+      ? status === "complete"
+      : total > 0 && processed >= total;
     return [
       {
         ref,
-        state: "read",
+        state: complete ? "read" : "skimmed",
         read: readSeed({
-          granularity: "full",
+          granularity: complete ? "full" : "digest",
           method: mode,
           label: total ? `${processed}/${total} chunks` : undefined,
         }),
@@ -1173,6 +1370,8 @@ function seedsFor(toolName: string, input: unknown, result: unknown): Seed[] {
       return paperReadSeeds(input, result);
     case "read_attachment":
       return readAttachmentSeeds(input, result);
+    case "paper_digest":
+      return paperDigestSeeds(result);
     default:
       return [];
   }
@@ -1336,7 +1535,20 @@ export type TaskPaperDigestInput = {
   relevance?: Readonly<TaskPaperDigestRelevance>;
   stance?: Readonly<TaskPaperDigestStance>;
   evidence?: ReadonlyArray<{ section?: string; quote: string; chunk?: number }>;
-  source?: { backend: "mineru" | "pdf" | "text" };
+  source?: {
+    backend: "mineru" | "pdf" | "text";
+    complete?: boolean;
+    /**
+     * What of the paper it read (`digests/readScope.ts`); absent on a full
+     * read and on records saved before scopes.
+     */
+    scope?: Readonly<{
+      source: string;
+      pages?: ReadonlyArray<Readonly<{ from: number; to: number }>>;
+    }>;
+    /** A scoped read: the sections, pages or fields it covered. */
+    covered?: readonly string[];
+  };
 };
 
 /** The fields of a `PaperDigestFailure` the ledger records. */
@@ -1478,7 +1690,269 @@ function digestRead(
 }
 
 /**
- * What one completed host digest adds to the ledger: the paper read, one
+ * A host digest's reads: one `digest` read holding its answer (up to
+ * `TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS`), its part's label, the
+ * relevance and stance it judged and whether it read the whole text, and
+ * one `passage` read per verified evidence quote under its section.
+ */
+function digestReadSeeds(
+  digest: TaskPaperDigestInput,
+  label: string | undefined,
+): { answer: ReadSeed; passages: ReadSeed[] } {
+  const answer = readSeed({
+    granularity: "digest",
+    method: "digest",
+    label,
+  });
+  const clipped = clipTaskPaperText(
+    digest.answer,
+    TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS,
+  );
+  if (clipped) answer.snippet = clipped;
+  const relevance = digestJudgment(digest.relevance);
+  if (relevance) answer.relevance = relevance;
+  const stance = digestJudgment(digest.stance);
+  if (stance) answer.stance = stance;
+  const complete = digest.source?.complete;
+  const scoped = isScopedDigest(digest);
+  // Whether it read every character of the paper's text: a scoped read
+  // never did ("Full" in Task progress).
+  if (typeof complete === "boolean") {
+    answer.complete = isFullTextRead({
+      complete,
+      scope: digest.source?.scope,
+    });
+    // A full-text digest counts at "full" depth, above any section read.
+    if (answer.complete) answer.depth = "full";
+  }
+  const passages: ReadSeed[] = scoped ? digestScopeSeeds(digest) : [];
+  if (scoped) {
+    answer.depth = scopedDigestDepth(digest, passages);
+    // The parts the user asked for, not where they were found: built here,
+    // where a "(for: …)" suffix is whole, before the clip can cut it.
+    const scopeLabel = clipTaskPaperText(
+      requestedPartNames(digest.source?.covered || []).join(", "),
+      TASK_PAPER_DIGEST_LABEL_MAX_CHARS,
+    );
+    if (scopeLabel) answer.scopeLabel = scopeLabel;
+  }
+  const abstractOnly = digest.source?.scope?.source === "abstract";
+  for (const evidence of digest.evidence || []) {
+    // An abstract read alone is its own quote: its read above holds it.
+    if (abstractOnly) break;
+    const seed = readSeed({
+      // A quote from the abstract is the abstract, not a passage of the
+      // paper's text.
+      granularity:
+        scoped && isAbstractLabel(evidence.section) ? "abstract" : "passage",
+      method: "digest",
+      label: evidence.section,
+      snippet: evidence.quote,
+    });
+    if (!seed.snippet) continue;
+    const chunk = nonNegative(evidence.chunk);
+    if (chunk !== undefined) seed.chunk = chunk;
+    passages.push(seed);
+  }
+  return { answer, passages };
+}
+
+const SCOPE_SOURCE_DEPTH: Readonly<Record<string, TaskPaperReadGranularity>> = {
+  metadata: "metadata",
+  abstract: "abstract",
+  sections: "section",
+  pages: "page",
+  notes: "notes",
+};
+
+/**
+ * The depth a scoped digest covered: the strongest of what its scope read
+ * (`covered`), or the scope's own depth when nothing was covered. Never the
+ * `digest` of its answer.
+ */
+function scopedDigestDepth(
+  digest: TaskPaperDigestInput,
+  scopeReads: readonly ReadSeed[],
+): TaskPaperReadGranularity {
+  let best: TaskPaperReadGranularity | undefined;
+  for (const read of scopeReads) {
+    if (
+      read.granularity !== "abstract" &&
+      read.granularity !== "section" &&
+      read.granularity !== "page" &&
+      read.granularity !== "notes" &&
+      read.granularity !== "metadata"
+    )
+      continue;
+    if (
+      !best ||
+      TASK_PAPER_READ_GRANULARITY_RANK[read.granularity] >
+        TASK_PAPER_READ_GRANULARITY_RANK[best]
+    )
+      best = read.granularity;
+  }
+  return (
+    best || SCOPE_SOURCE_DEPTH[`${digest.source?.scope?.source}`] || "metadata"
+  );
+}
+
+/** A digest of part of the paper (`readScope.ts`): not of its full text. */
+function isScopedDigest(digest: TaskPaperDigestInput): boolean {
+  const source = digest.source?.scope?.source;
+  return typeof source === "string" && source !== "full";
+}
+
+function isAbstractLabel(label: string | undefined): boolean {
+  return /^\s*abstract\b/i.test(label || "");
+}
+
+/**
+ * A scoped digest's reads of what it covered, at that depth: the abstract,
+ * each named section, the pages, the notes or the record; never `full`.
+ */
+function digestScopeSeeds(digest: TaskPaperDigestInput): ReadSeed[] {
+  const scope = digest.source?.scope;
+  const seeds: ReadSeed[] = [];
+  const addAbstract = (snippet?: string) => {
+    if (seeds.some((seed) => seed.granularity === "abstract")) return;
+    seeds.push(
+      readSeed({
+        granularity: "abstract",
+        method: "digest",
+        label: "Abstract",
+        ...(snippet ? { snippet } : {}),
+      }),
+    );
+  };
+  for (const covered of digest.source?.covered || []) {
+    // The abstract by its covered label alone: a section a reader picked
+    // under a heading that starts with "Abstract" is not the abstract.
+    if (isAbstractCoveredLabel(covered)) {
+      addAbstract(scope?.source === "abstract" ? digest.answer : undefined);
+    } else if (scope?.source === "notes") {
+      seeds.push(readSeed({ granularity: "notes", method: "digest" }));
+    } else if (scope?.source === "metadata") {
+      seeds.push(readSeed({ granularity: "metadata", method: "digest" }));
+    } else if (scope?.source === "pages") {
+      const from = /(\d+)/.exec(covered)?.[1];
+      seeds.push(
+        readSeed({
+          granularity: "page",
+          method: "digest",
+          label: covered,
+          ...(from ? { pageIndex: Number(from) - 1 } : {}),
+        }),
+      );
+    } else {
+      // One read per part the user asked for, once however many places
+      // were found for it; a part the reader judged the abstract is the
+      // abstract.
+      const names = requestedPartNames([covered]);
+      for (const name of names.length ? names : [covered]) {
+        if (isAbstractCoveredLabel(name)) addAbstract();
+        else if (
+          !seeds.some(
+            (seed) => seed.granularity === "section" && seed.label === name,
+          )
+        )
+          seeds.push(
+            readSeed({ granularity: "section", method: "digest", label: name }),
+          );
+      }
+    }
+  }
+  return seeds;
+}
+
+/**
+ * A digested paper is read when the digest read its whole text, and skimmed
+ * when it read only part (`source.complete` false), as for an item longer
+ * than the digest text limit or a batch that never came back, or only what
+ * a read scope named (its abstract, named sections, pages, notes). A
+ * digest saved without the flag stays read.
+ */
+function digestPaperState(digest: TaskPaperDigestInput): TaskPaperState {
+  if (isScopedDigest(digest)) return "skimmed";
+  return digest.source?.complete === false ? "skimmed" : "read";
+}
+
+/**
+ * The text source a digest names for its paper: none for a scoped read of
+ * Zotero fields (an abstract field, notes, the record), which says nothing
+ * about the paper's text.
+ */
+function digestTextSource(
+  digest: TaskPaperDigestInput,
+): TaskPaperTextSource | undefined {
+  const backend = digest.source?.backend;
+  if (!backend) return undefined;
+  if (backend === "text" && isScopedDigest(digest)) return undefined;
+  return DIGEST_TEXT_SOURCE[backend];
+}
+
+/**
+ * The rows of one `paper_digest` call (the MCP host's per-paper reader), as
+ * the host digest builders record them: a digested paper is read (skimmed
+ * when the digest read only part of it), with its digest read and its
+ * evidence passages; a failed one is matched, with a
+ * `digest` read whose `whyMatched` is the host's reason. A row the run
+ * already reported (`alreadyReturned` for a digest repeated with its body,
+ * `alreadyReported` for a failure) and a pending paper add nothing.
+ */
+function paperDigestSeeds(result: unknown): Seed[] {
+  const output = record(result) || {};
+  const label = text(output.label);
+  const rows = Array.isArray(output.papers) ? output.papers : [];
+  const seeds: Seed[] = [];
+  for (const row of rows) {
+    const value = record(row);
+    if (
+      !value ||
+      value.alreadyReturned === true ||
+      value.alreadyReported === true
+    )
+      continue;
+    const ref = paperRef(value);
+    if (!ref) continue;
+    if (value.status === "digested" && typeof value.answer === "string") {
+      const digest = value as unknown as TaskPaperDigestInput;
+      const source = digestTextSource(digest);
+      const { answer, passages } = digestReadSeeds(digest, label);
+      for (const read of [
+        answer,
+        ...passages.slice(0, TASK_PAPER_MAX_READS_PER_TURN - 1),
+      ]) {
+        seeds.push({
+          ref,
+          state: digestPaperState(digest),
+          ...(source ? { text: source } : {}),
+          read,
+        });
+      }
+      continue;
+    }
+    if (value.status === "failed" && typeof value.reason === "string") {
+      seeds.push({
+        ref,
+        state: "matched",
+        ...(value.reason === TASK_PAPER_DIGEST_NO_TEXT_REASON
+          ? { text: "none" as const }
+          : {}),
+        read: readSeed({
+          granularity: "digest",
+          method: "digest",
+          label,
+          whyMatched: value.reason,
+        }),
+      });
+    }
+  }
+  return seeds;
+}
+
+/**
+ * What one completed host digest adds to the ledger: the paper read (skimmed
+ * when the digest read only part of its text), one
  * `digest` read holding its answer (up to
  * `TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS`), its part's id and label and the
  * relevance and stance it judged, and one `passage` read per verified
@@ -1492,42 +1966,19 @@ export function buildDigestLedgerDelta(
   params: BuildDigestLedgerDeltaParams,
 ): TaskPaperLedgerDelta {
   const { digest } = params;
-  const paper = digestPaper(params.paper, "read", digest.contextItemId);
-  const backend = digest.source?.backend;
-  const source = backend ? DIGEST_TEXT_SOURCE[backend] : undefined;
+  const paper = digestPaper(
+    params.paper,
+    digestPaperState(digest),
+    digest.contextItemId,
+  );
+  const source = digestTextSource(digest);
   if (source) paper.text = source;
   const delta = digestDeltaShell(
     params,
     `${params.callId}:digest:${params.paper.itemId}`,
     paper,
   );
-  const answer = readSeed({
-    granularity: "digest",
-    method: "digest",
-    label: params.label,
-  });
-  const clipped = clipTaskPaperText(
-    digest.answer,
-    TASK_PAPER_DIGEST_SNIPPET_MAX_CHARS,
-  );
-  if (clipped) answer.snippet = clipped;
-  const relevance = digestJudgment(digest.relevance);
-  if (relevance) answer.relevance = relevance;
-  const stance = digestJudgment(digest.stance);
-  if (stance) answer.stance = stance;
-  const passages: ReadSeed[] = [];
-  for (const evidence of digest.evidence || []) {
-    const seed = readSeed({
-      granularity: "passage",
-      method: "digest",
-      label: evidence.section,
-      snippet: evidence.quote,
-    });
-    if (!seed.snippet) continue;
-    const chunk = nonNegative(evidence.chunk);
-    if (chunk !== undefined) seed.chunk = chunk;
-    passages.push(seed);
-  }
+  const { answer, passages } = digestReadSeeds(digest, params.label);
   // The digest read is never dropped by the cap; the evidence fills the rest.
   const keptPassages = passages.slice(0, TASK_PAPER_MAX_READS_PER_TURN - 1);
   delta.reads = [answer, ...keptPassages].map((seed) =>
@@ -1573,6 +2024,121 @@ export function buildDigestFailureLedgerDelta(
     ),
   ];
   return delta;
+}
+
+// ---------------------------------------------------------------------------
+// Agent decisions
+// ---------------------------------------------------------------------------
+
+const DECISION_VALUES: ReadonlySet<string> = new Set([
+  "include",
+  "exclude",
+  "defer",
+]);
+const DECISION_RELEVANCE: ReadonlySet<string> = new Set([
+  "high",
+  "medium",
+  "low",
+  "none",
+]);
+
+/**
+ * A decision with its inputs bounded, or undefined for one without a known
+ * value or a reason. Stored events are read through it too, so a malformed
+ * one is ignored rather than folded.
+ */
+export function normalizeTaskPaperDecision(
+  value: unknown,
+): TaskPaperDecision | undefined {
+  const input = record(value);
+  if (!input || typeof input.value !== "string") return undefined;
+  if (!DECISION_VALUES.has(input.value)) return undefined;
+  const reason = clipTaskPaperText(
+    input.reason,
+    TASK_PAPER_DECISION_REASON_MAX_CHARS,
+  );
+  if (!reason) return undefined;
+  const decision: TaskPaperDecision = {
+    value: input.value as TaskPaperDecision["value"],
+    reason,
+    origin: "agent",
+  };
+  if (
+    typeof input.relevance === "string" &&
+    DECISION_RELEVANCE.has(input.relevance)
+  ) {
+    decision.relevance = input.relevance as TaskPaperDecision["relevance"];
+  }
+  const subquestions = [
+    ...new Set(
+      (Array.isArray(input.subquestions) ? input.subquestions : [])
+        .map((label) =>
+          clipTaskPaperText(label, TASK_PAPER_DECISION_SUBQUESTION_MAX_CHARS),
+        )
+        .filter((label): label is string => Boolean(label)),
+    ),
+  ].slice(0, TASK_PAPER_DECISION_MAX_SUBQUESTIONS);
+  if (subquestions.length) decision.subquestions = subquestions;
+  return decision;
+}
+
+/** One paper's decision, as a caller states it. */
+export type TaskPaperDecisionInput = Omit<TaskPaperDecision, "origin"> & {
+  paper: TaskPaperDigestPaper;
+};
+
+export type BuildDecisionLedgerDeltaParams = {
+  runId?: string;
+  callId: string;
+  toolName: string;
+  turnIndex?: number;
+  decisions: readonly TaskPaperDecisionInput[];
+};
+
+/**
+ * What one call's decisions add to the ledger: each paper listed, with its
+ * decision, and no reads. A paper named twice keeps its last decision. A
+ * decision without a paper id, a known value or a reason is dropped. Null
+ * when none is left.
+ */
+export function buildDecisionLedgerDelta(
+  params: BuildDecisionLedgerDeltaParams,
+): TaskPaperLedgerDelta | null {
+  const papers = new Map<string, TaskPaperDeltaPaper>();
+  for (const input of params.decisions || []) {
+    const libraryID = positive(input?.paper?.libraryID);
+    const itemId = positive(input?.paper?.itemId);
+    if (!libraryID || !itemId) continue;
+    const decision = normalizeTaskPaperDecision(input);
+    if (!decision) continue;
+    const paper = digestPaper({ ...input.paper, libraryID, itemId }, "listed");
+    paper.decision = decision;
+    papers.delete(paper.key);
+    papers.set(paper.key, paper);
+  }
+  if (!papers.size) return null;
+  const delta: TaskPaperLedgerDelta = {
+    version: 1,
+    callId: params.callId,
+    toolName: params.toolName,
+    papers: [...papers.values()],
+    reads: [],
+  };
+  if (params.runId) delta.runId = params.runId;
+  if (params.turnIndex !== undefined) delta.turnIndex = params.turnIndex;
+  return delta;
+}
+
+/** The paper's latest decision: its latest question's that holds one. */
+export function latestTaskPaperDecision(
+  entry: TaskPaperLedgerEntry | null | undefined,
+): TaskPaperDecisionRecord | undefined {
+  let latest: TaskPaperDecisionRecord | undefined;
+  for (const [turn, record] of Object.entries(entry?.turns || {})) {
+    if (!record.decision) continue;
+    if (!latest || Number(turn) > latest.turnIndex) latest = record.decision;
+  }
+  return latest;
 }
 
 // ---------------------------------------------------------------------------
@@ -1643,11 +2209,12 @@ function appliedCallKey(delta: TaskPaperLedgerDelta): string {
  * only ever rise. `turnIndex` overrides the delta's own turn, for a store
  * that numbers turns from the conversation rather than from the event.
  *
- * A paper's reads for a question belong to one run: reads from another run
- * of the same question replace them, unless that run is one `options.newerRunIds`
- * names as later (history replayed after the session ran the retry) or one
- * already replaced. `options.runId`, when given, names the run over the
- * delta's own.
+ * A paper's reads and decision for a question belong to one run: reads or
+ * a decision from another run of the same question replace them, unless that
+ * run is one `options.newerRunIds` names as later (history replayed after the
+ * session ran the retry) or one already replaced. `options.runId`, when
+ * given, names the run over the delta's own. Within a run the latest
+ * decision wins; a decision never moves a state.
  */
 export function applyTaskPaperLedgerDelta(
   ledger: TaskPaperLedger,
@@ -1679,6 +2246,18 @@ export function applyTaskPaperLedgerDelta(
     const record = turnOf(entry, turn);
     record.state = strongerState(record.state, paper.state);
     record.readState = strongerState(record.readState, paper.state);
+    const decision = normalizeTaskPaperDecision(paper.decision);
+    if (
+      decision &&
+      (!runId || takesReadsFrom(record, runId, options.newerRunIds))
+    ) {
+      record.decision = {
+        ...decision,
+        callId: delta.callId,
+        ...(runId ? { runId } : {}),
+        turnIndex: turn,
+      };
+    }
   }
   for (const read of delta.reads) {
     const entry = ledger.papers[read.key];
@@ -1712,8 +2291,9 @@ function lastIndexOfNonDigest(reads: readonly TaskPaperReadEvent[]): number {
 }
 
 /**
- * Whether `record` takes a read from run `runId`: its own run's, or a newer
- * run's, which first clears the earlier run's reads.
+ * Whether `record` takes a read or a decision from run `runId`: its own
+ * run's, or a newer run's, which first clears the earlier run's reads and
+ * decision.
  */
 function takesReadsFrom(
   record: TaskPaperTurnRecord,
@@ -1731,6 +2311,7 @@ function takesReadsFrom(
     (record.supersededRunIds ||= []).push(held);
     record.reads = [];
     record.droppedReads = 0;
+    delete record.decision;
   }
   record.readsRunId = runId;
   return true;
@@ -1870,7 +2451,7 @@ export function applyDocumentCitations(
     const turn = turnOf(entry, turnIndex);
     turn.state = "cited";
     const documentCitations = turn.citations.filter(isDocumentCitation).length;
-    if (documentCitations >= TASK_PAPER_MAX_CITATIONS_PER_TURN) {
+    if (documentCitations >= TASK_PAPER_MAX_DOCUMENT_CITATIONS_PER_TURN) {
       turn.droppedDocumentCitations = (turn.droppedDocumentCitations || 0) + 1;
       continue;
     }

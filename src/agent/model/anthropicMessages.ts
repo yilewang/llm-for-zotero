@@ -39,7 +39,10 @@ import {
   groupToolContinuationMessages,
 } from "./shared";
 import { resolveContentParts } from "./adapterUtils";
-import { extractContextCacheUsage } from "../../contextCache/manager";
+import {
+  anthropicPromptTokens,
+  extractContextCacheUsage,
+} from "../../contextCache/manager";
 import type { AnthropicPromptCacheControl } from "../../contextCache/manager";
 import { createMalformedToolArgumentsDiagnostic } from "../toolArgumentDiagnostics";
 
@@ -559,9 +562,7 @@ async function parseAnthropicStepStream(
       stopReasonSeen = true;
     }
     if (onUsage && eventType === "message_start" && parsed.message?.usage) {
-      const inputTokens = anthropicTokenCount(
-        parsed.message.usage.input_tokens,
-      );
+      const inputTokens = anthropicPromptTokens(parsed.message.usage);
       const outputTokens = anthropicTokenCount(
         parsed.message.usage.output_tokens,
       );
@@ -785,7 +786,7 @@ async function reportAnthropicResponseUsage(
   onUsage: AgentStepParams["onUsage"],
 ): Promise<void> {
   if (!onUsage || !data?.usage) return;
-  const inputTokens = anthropicTokenCount(data.usage.input_tokens);
+  const inputTokens = anthropicPromptTokens(data.usage);
   const outputTokens = anthropicTokenCount(data.usage.output_tokens);
   const totalTokens = inputTokens + outputTokens;
   if (totalTokens <= 0) return;

@@ -382,6 +382,36 @@ describe("workflow: task progress", function () {
     );
   }
 
+  /**
+   * The chat's height above the floating chips and composer: the chat box runs
+   * on under them (a negative bottom margin), so its own height adds that part.
+   */
+  function shownChatHeight(view: View): number {
+    const win = view.box.ownerDocument.defaultView as any;
+    const style = win.getComputedStyle(view.box);
+    return (
+      view.box.getBoundingClientRect().height +
+      (Number.parseFloat(style.marginBottom) || 0)
+    );
+  }
+
+  /** Open every fold of unused library papers: a settled answer folds them. */
+  async function openUnusedFolds(root: HTMLElement) {
+    await until(() => {
+      api.flushTaskProgress();
+      return (
+        root.querySelectorAll(
+          ".llm-task-paper, .llm-task-fold-slot .llm-task-fold",
+        ).length > 0
+      );
+    }, "the papers or their fold list");
+    for (const fold of Array.from(
+      root.querySelectorAll(".llm-task-fold-slot .llm-task-fold"),
+    ) as HTMLButtonElement[])
+      if (fold.getAttribute("aria-expanded") !== "true") fold.click();
+    api.flushTaskProgress();
+  }
+
   /** The chat under the drawer: its viewport starts at the drawer's bottom. */
   function assertChatBelow(view: View, root: HTMLElement, surface: Surface) {
     const drawer = view.drawer.getBoundingClientRect();
@@ -499,11 +529,40 @@ describe("workflow: task progress", function () {
       assert.lengthOf(view.items(), 5);
       assertAttached(view, surface);
       assertChatBelow(view, root, surface);
-      assert.isAtMost(
-        view.body.scrollHeight,
-        view.body.clientHeight + 1,
-        `a short list does not scroll (${surface})`,
-      );
+      // The list scrolls only when the drawer cannot grow: it is at the
+      // dragged height, or the chat below it is down to its strip.
+      {
+        const drawerRect = view.drawer.getBoundingClientRect();
+        const dragged = Number.parseFloat(
+          view.drawer.style.getPropertyValue("--llm-task-progress-drawer-max"),
+        );
+        // The chat below shrinks to its least height (a strip plus the composer's floor) and no further: then the drawer is
+        // at the most space it may take.
+        const chatHeight = view.box.getBoundingClientRect().height;
+        const atDraggedCap =
+          Number.isFinite(dragged) && drawerRect.height >= dragged - 2;
+        const chatMin =
+          Number.parseFloat(
+            (root.ownerDocument.defaultView as any).getComputedStyle(view.box)
+              .minHeight,
+          ) || 0;
+        const atSpaceCap = chatHeight <= chatMin + 1;
+        assert.isTrue(
+          view.body.scrollHeight <= view.body.clientHeight + 1 ||
+            atDraggedCap ||
+            atSpaceCap,
+          `a short list does not scroll while the drawer can grow (${surface}): ${JSON.stringify(
+            {
+              scrollHeight: view.body.scrollHeight,
+              clientHeight: view.body.clientHeight,
+              drawerHeight: drawerRect.height,
+              draggedMax: dragged,
+              chatHeight,
+              chatMinHeight: chatMin,
+            },
+          )}`,
+        );
+      }
       // The unscrolled body plus the card's 1px bottom border.
       assert.closeTo(
         view.drawer.getBoundingClientRect().height,
@@ -888,9 +947,11 @@ describe("workflow: task progress", function () {
       assert.equal(view.count(), "3 of 6 read · 1 cited");
       await capture(shotWindow, `task-progress-${surface}-completed.png`);
 
-      // "Cited in answer" asks the panel to open the quote in its paper; the
-      // drawer stays open. The reader itself is covered by the passage
-      // source workflow, so the request is caught before the panel here.
+      // "Cited" lists the passage the answer quotes as a card (a card has no
+      // number), and folds the reads it did not cite; "Show in answer" asks
+      // the panel to light the passage, and the drawer stays open. The
+      // panel's own lighting is covered by the docked workflow, so the
+      // request is caught before the panel here.
       view.box.scrollTop = 0;
       await Zotero.Promise.delay(50);
       view.row.click();
@@ -902,46 +963,58 @@ describe("workflow: task progress", function () {
       (
         citedItem.querySelector(".llm-task-paper-summary") as HTMLElement
       ).click();
-      const link = citedItem.querySelector(
-        ".llm-task-paper-citation",
+      assert.isNull(
+        citedItem.querySelector(".llm-task-paper-citation"),
+        "the old list of cited passages is gone",
+      );
+      const headings = Array.from(
+        citedItem.querySelectorAll(".llm-task-paper-turn"),
+      ).map((node) => (node as HTMLElement).textContent);
+      assert.deepEqual(headings, ["Cited"]);
+      assert.notInclude(citedItem.textContent!, "Passages read");
+      const passage = (
+        Array.from(
+          citedItem.querySelectorAll(".llm-task-cited-item"),
+        ) as HTMLElement[]
+      ).find((block) =>
+        (
+          block.querySelector(".llm-task-paper-snippet")?.textContent || ""
+        ).includes(quote.slice(0, 30)),
+      );
+      assert.isOk(passage, "the cited paper lists the quoted passage");
+      assert.isNull(
+        passage!.querySelector(".llm-task-cited-number"),
+        "a passage quoted as a card has no number",
+      );
+      assert.isOk(passage!.querySelector(".llm-task-paper-open"), "Source");
+      const link = passage!.querySelector(
+        ".llm-task-cited-foot .llm-task-source-link",
       ) as HTMLButtonElement;
-      assert.isOk(link, "the cited paper lists the quote");
-      // A quote that wraps keeps every line inside its link: the next link
-      // starts below it. Zotero's macOS window caps every button at 25px.
-      const linkRect = link.getBoundingClientRect();
-      assert.isAbove(
-        linkRect.height,
-        30,
-        `the quote wraps in the test layout (${surface})`,
-      );
-      assert.isAtMost(
-        link.scrollHeight,
-        Math.ceil(linkRect.height),
-        `the wrapped quote fits inside its link (${surface})`,
-      );
+      assert.isOk(link, "Show in answer under the passage");
       const requests: any[] = [];
       const catchRequest = (event: Event) => {
         requests.push((event as CustomEvent).detail);
         event.stopPropagation();
       };
       citedItem.addEventListener(
-        "llm-task-progress-open-passage",
+        "llm-task-progress-show-in-answer",
         catchRequest,
       );
       try {
         link.click();
       } finally {
         citedItem.removeEventListener(
-          "llm-task-progress-open-passage",
+          "llm-task-progress-show-in-answer",
           catchRequest,
         );
       }
-      assert.lengthOf(requests, 1, "the link asks to open its quote");
+      assert.lengthOf(requests, 1, "the link asks to show its passage");
       assert.include(requests[0], {
         itemId: paperId(3),
-        granularity: "passage",
+        key: paperKey(3),
+        citationId: citation.id,
       });
-      assert.include(requests[0].rawSnippet, quote.slice(0, 40));
+      assert.deepEqual(requests[0].texts, [], "a card lights itself");
       assert.equal(view.drawer.dataset.state, "open", "the drawer stays open");
       view.row.click();
       await settle(view, "closed", `citation (${surface})`);
@@ -1102,50 +1175,79 @@ describe("workflow: task progress", function () {
 
       view.row.click();
       await settle(view, "open", `question history (${surface})`);
-      const current = root.querySelector(
-        ".llm-task-progress-question-current",
-      ) as HTMLElement;
-      assert.isOk(current, `the current question is named (${surface})`);
-      const labelOf = (head: Element) =>
-        head.querySelector(".llm-task-progress-question-label")?.textContent;
-      assert.equal(labelOf(current), `Question 2 · “${secondWords}”`);
+      // Every question is one section, newest first; each has the same head.
       const sections = Array.from(
         root.querySelectorAll(".llm-task-progress-question-section"),
       ) as HTMLElement[];
-      assert.lengthOf(sections, 1, "one earlier question");
-      const head = sections[0].querySelector(
-        ".llm-task-progress-question",
-      ) as HTMLButtonElement;
+      assert.lengthOf(sections, 2, `both questions are sections (${surface})`);
+      const headOf = (section: HTMLElement) =>
+        section.querySelector(
+          ".llm-task-progress-question",
+        ) as HTMLButtonElement;
+      const wordsOf = (section: HTMLElement) =>
+        section.querySelector(".llm-task-progress-dock-question-words")
+          ?.textContent;
+      const currentHead = headOf(sections[0]);
+      assert.equal(wordsOf(sections[0]), secondWords);
+      assert.equal(
+        sections[0].querySelector(".llm-task-progress-question-name")
+          ?.textContent,
+        "Question 2",
+        `the current question is named (${surface})`,
+      );
+      assert.equal(currentHead.getAttribute("aria-expanded"), "true");
+      const head = headOf(sections[1]);
       assert.equal(head.tagName.toLowerCase(), "button");
       assert.equal(head.getAttribute("aria-expanded"), "false");
-      assert.equal(labelOf(head), `Question 1 · “${firstWords}”`);
+      assert.equal(wordsOf(sections[1]), firstWords);
       assert.equal(
-        head.querySelector(".llm-task-progress-pill")?.textContent,
+        sections[1].querySelector(".llm-task-progress-question-name")
+          ?.textContent,
+        "Question 1",
+      );
+      assert.equal(
+        head.querySelector(".llm-task-progress-dock-question-status")
+          ?.textContent,
         "Completed",
       );
       assert.equal(
         head.querySelector(".llm-task-progress-question-counts")?.textContent,
-        "2 papers",
+        "2 read · 0 cited",
       );
       assert.lengthOf(
-        sections[0].querySelectorAll(".llm-task-paper"),
+        sections[1].querySelectorAll(".llm-task-paper"),
         0,
         "a folded question builds no rows",
       );
-      // Newest first: the current question, its papers, then the earlier one.
-      const list = root.querySelector(".llm-task-progress-list") as HTMLElement;
+      // Newest first: the current question, then the earlier one.
       assert.isAtLeast(
         head.getBoundingClientRect().top,
-        list.getBoundingClientRect().bottom - 1,
-        "the earlier question is below the current one's papers",
+        currentHead.getBoundingClientRect().bottom - 1,
+        "the earlier question is below the current one",
       );
-      assert.isAtLeast(
-        list.getBoundingClientRect().top,
-        current.getBoundingClientRect().bottom - 1,
-      );
-
+      // None of the papers was used in the answer: they sit under a fold
+      // that opens them.
+      const openFold = async (section: HTMLElement, label: string) => {
+        const fold = () =>
+          section.querySelector(
+            ".llm-task-fold-slot .llm-task-fold",
+          ) as HTMLButtonElement | null;
+        await until(() => {
+          api.flushTaskProgress();
+          return Boolean(fold());
+        }, `${label}: the unused papers sit under a fold (${surface})`);
+        if (fold()!.getAttribute("aria-expanded") !== "true") fold()!.click();
+        await until(() => {
+          api.flushTaskProgress();
+          return section.querySelectorAll(".llm-task-paper").length > 0;
+        }, `${label}: the opened fold lists its papers (${surface})`);
+      };
+      await openFold(sections[0], "the current question");
+      const list = sections[0].querySelector(
+        ".llm-task-progress-list",
+      ) as HTMLElement;
       const currentItems = Array.from(
-        list.querySelectorAll(".llm-task-paper"),
+        sections[0].querySelectorAll(".llm-task-paper"),
       ) as HTMLElement[];
       const stateIn = (items: HTMLElement[], index: number) =>
         items.find((item) => item.dataset.key === paperKey(index))?.dataset
@@ -1154,6 +1256,7 @@ describe("workflow: task progress", function () {
         [0, 1, 2, 3, 4, 5].map((index) => stateIn(currentItems, index)),
         ["listed", "listed", "read", "listed", "skimmed", "listed"],
       );
+      assert.isOk(list, "the current question has its papers list");
       const detailsOf = (item: HTMLElement) => {
         const summary = item.querySelector(
           ".llm-task-paper-summary",
@@ -1174,8 +1277,9 @@ describe("workflow: task progress", function () {
 
       head.click();
       assert.equal(head.getAttribute("aria-expanded"), "true");
+      await openFold(sections[1], "the earlier question");
       const earlierItems = Array.from(
-        sections[0].querySelectorAll(".llm-task-paper"),
+        sections[1].querySelectorAll(".llm-task-paper"),
       ) as HTMLElement[];
       assert.deepEqual(
         earlierItems.map((item) => [item.dataset.key, item.dataset.state]),
@@ -1200,7 +1304,7 @@ describe("workflow: task progress", function () {
       await capture(shotWindow, `tp-question-history-${surface}.png`);
       head.click();
       assert.equal(head.getAttribute("aria-expanded"), "false");
-      assert.lengthOf(sections[0].querySelectorAll(".llm-task-paper"), 0);
+      assert.lengthOf(sections[1].querySelectorAll(".llm-task-paper"), 0);
       view.row.click();
       await settle(view, "closed", `question history (${surface})`);
     } finally {
@@ -1343,7 +1447,6 @@ describe("workflow: task progress", function () {
       const tailOf = (index: number) =>
         rowOf(index).querySelector(".llm-task-paper-tail")!.textContent;
       assert.equal(rowOf(0).dataset.state, "read");
-      assert.equal(tailOf(0), "1 passage", "the evidence passage count");
       assert.equal(tailOf(1), "Summary failed");
       (
         rowOf(0).querySelector(".llm-task-paper-summary") as HTMLElement
@@ -1356,7 +1459,8 @@ describe("workflow: task progress", function () {
       assert.isOk(block, "a Summary block");
       assert.equal(
         block.querySelector(".llm-task-paper-turn")!.textContent,
-        "Summary",
+        // The reader read every character of this paper's text.
+        "Summary · Full",
       );
       assert.equal(
         block.querySelector(".llm-task-paper-snippet")!.textContent,
@@ -1561,7 +1665,11 @@ describe("workflow: task progress", function () {
       await until(
         () => {
           api.flushTaskProgress();
-          return textOf(stepRows()[0], ".llm-plan-task-pill") === "Replaced";
+          const first = stepRows()[0];
+          return (
+            Boolean(first) &&
+            textOf(first, ".llm-plan-task-pill") === "Replaced"
+          );
         },
         () =>
           `the replaced part reads Replaced (${stepRows()
@@ -1600,13 +1708,9 @@ describe("workflow: task progress", function () {
         "Completed",
       );
       assert.match(view.count(), /(^| · )3\/3 steps( · |$)/);
+      await openUnusedFolds(rootOf());
       const rowOf = (index: number) =>
         view.items().find((item) => item.dataset.key === paperKey(index))!;
-      assert.equal(
-        textOf(rowOf(0), ".llm-task-paper-tail"),
-        DRIFT,
-        "the tail names the part whose answer came last",
-      );
       (
         rowOf(0).querySelector(".llm-task-paper-summary") as HTMLElement
       ).click();
@@ -1627,9 +1731,10 @@ describe("workflow: task progress", function () {
         ).map((line) => line.textContent),
         textOf(block, ".llm-task-paper-snippet"),
       ]);
+      // Each reader read every character of the paper's text.
       assert.deepEqual(blocks, [
-        [BRIEF, [], briefText],
-        [DRIFT, [`Directly relevant — ${relevanceWhy}`], driftText],
+        [`${BRIEF} · Full`, [], briefText],
+        [`${DRIFT} · Full`, [`Directly relevant — ${relevanceWhy}`], driftText],
       ]);
       assert.notInclude(details.textContent!, "Summary");
       view.row.click();
@@ -1716,7 +1821,7 @@ describe("workflow: task progress", function () {
       assertAttached(view, surface);
       assertChatBelow(view, root, surface);
       assert.closeTo(
-        heightOf(view.box),
+        shownChatHeight(view),
         CHAT_STRIP,
         1,
         `a long list takes all but the chat strip (${surface})`,
@@ -1753,7 +1858,12 @@ describe("workflow: task progress", function () {
       await dragGrip(view, -5000);
       assert.closeTo(heightOf(view.drawer), DRAWER_MIN, 1, "down to its least");
       await dragGrip(view, 5000);
-      assert.closeTo(heightOf(view.box), CHAT_STRIP, 1, "up to the chat strip");
+      assert.closeTo(
+        shownChatHeight(view),
+        CHAT_STRIP,
+        1,
+        "up to the chat strip",
+      );
       await dragGrip(view, half - heightOf(view.drawer));
       assert.closeTo(heightOf(view.drawer), half, 1.5);
       // The dragged height is kept when the drawer opens again.
@@ -1771,7 +1881,7 @@ describe("workflow: task progress", function () {
         }),
       );
       await Zotero.Promise.delay(60);
-      assert.closeTo(heightOf(view.box), CHAT_STRIP, 1, "reset");
+      assert.closeTo(shownChatHeight(view), CHAT_STRIP, 1, "reset");
       view.row.click();
       await settle(view, "closed", `long list (${surface})`);
     } finally {

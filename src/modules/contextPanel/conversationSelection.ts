@@ -20,6 +20,17 @@
  * back to the embedded selection (active, then persisted) wherever it has not
  * chosen yet, and it never writes a pref: the persisted pointers stay the
  * sidebar's. A scope without `surface` is embedded.
+ *
+ * Each torn-off chat window is a "torn:<id>" surface with slots of its own,
+ * apart from the standalone window's and from every other torn window's. Its
+ * reads fall back to the standalone window's selection, then the embedded
+ * one; like the standalone window it never writes a pref.
+ *
+ * The standalone window's temporary side chat is the "side" surface (a torn
+ * window has no side chats). It reads like the standalone window (its own key
+ * is fixed, so reads are informational) and writes no slot and no pref:
+ * remembering a side chat's conversation is a no-op. Only the embedded
+ * surface writes prefs.
  */
 import type { ConversationSystem } from "../../shared/types";
 import { invalidatePaperRestoreTargetCache } from "../../shared/paperConversationRestore";
@@ -66,6 +77,9 @@ import {
   standaloneConversationModeByLibrary,
   standaloneGlobalConversationByLibrary,
   standalonePaperConversationByPaper,
+  tornGlobalByLibrary,
+  tornModeByLibrary,
+  tornPaperByPaper,
 } from "./state";
 import {
   buildPaperStateKey,
@@ -82,8 +96,21 @@ import {
 
 export type ConversationSelectionMode = "global" | "paper";
 
+/** A torn-off chat window; the ID never contains "|". */
+export type TornSurface = `torn:${string}`;
+
 /** Which chat surface a selection belongs to; see the module comment. */
-export type SelectionSurface = "embedded" | "standalone";
+export type SelectionSurface = "embedded" | "standalone" | "side" | TornSurface;
+
+/** The surfaces with slots of their own: the standalone and torn windows. */
+export type WindowSurface = "standalone" | TornSurface;
+
+/** A surface sorted by kind, carrying its narrowed value. */
+export type ClassifiedSurface =
+  | { kind: "embedded" }
+  | { kind: "standalone" }
+  | { kind: "side" }
+  | { kind: "torn"; surface: TornSurface };
 
 export type GlobalSelectionScope = {
   system: ConversationSystem;
@@ -251,12 +278,74 @@ function adapterFor(system: ConversationSystem): SelectionAdapter {
     : ADAPTERS.upstream;
 }
 
-function isStandaloneSurface(surface: SelectionSurface | undefined): boolean {
-  return surface === "standalone";
+export function isTornSurface(
+  surface: SelectionSurface | undefined,
+): surface is TornSurface {
+  return typeof surface === "string" && surface.startsWith("torn:");
+}
+
+/** The side chat remembers nothing, in memory or in prefs. */
+export function isSideSurface(
+  surface: SelectionSurface | undefined,
+): surface is "side" {
+  return surface === "side";
+}
+
+/** Sort a surface by kind; a scope without a surface is embedded. */
+export function classifySurface(
+  surface: SelectionSurface | undefined,
+): ClassifiedSurface {
+  if (surface === undefined || surface === "embedded") {
+    return { kind: "embedded" };
+  }
+  if (surface === "standalone") return { kind: "standalone" };
+  if (isSideSurface(surface)) return { kind: "side" };
+  return { kind: "torn", surface };
+}
+
+/** The exhaustiveness check for a switch over ClassifiedSurface kinds. */
+export function unhandledSurface(surface: never): never {
+  throw new Error(`Unhandled selection surface: ${JSON.stringify(surface)}`);
+}
+
+/**
+ * A surface name read from the DOM (`data-selection-surface`), or null when
+ * it names none. Torn window IDs must be non-empty and free of "|".
+ */
+export function parseSelectionSurface(value: unknown): SelectionSurface | null {
+  if (value === "embedded" || value === "standalone" || value === "side") {
+    return value;
+  }
+  if (typeof value !== "string" || !/^torn:[^|]+$/.test(value)) {
+    return null;
+  }
+  return value as TornSurface;
+}
+
+/** The window whose slots the surface reads first, or null for the sidebar. */
+function windowOf(surface: ClassifiedSurface): WindowSurface | null {
+  switch (surface.kind) {
+    case "embedded":
+      return null;
+    case "standalone":
+      return "standalone";
+    case "torn":
+      return surface.surface;
+    case "side":
+      return "standalone";
+    default:
+      return unhandledSurface(surface);
+  }
+}
+
+/** A torn window's slots first, then the standalone window's. */
+function windowReadOrder(window: WindowSurface): WindowSurface[] {
+  return window === "standalone" ? ["standalone"] : [window, "standalone"];
 }
 
 // The standalone window's slots live in maps of their own, keyed by the
-// runtime name plus the runtime's own state key.
+// runtime name plus the runtime's own state key. Torn windows share three more
+// maps, keyed by the torn surface plus that same key.
 function standaloneKey(
   adapter: SelectionAdapter,
   stateKey: string | number,
@@ -264,34 +353,52 @@ function standaloneKey(
   return `${adapter.system}|${stateKey}`;
 }
 
-function standaloneModeSlot(
+function windowKey(
+  window: WindowSurface,
+  adapter: SelectionAdapter,
+  stateKey: string | number,
+): string {
+  const key = standaloneKey(adapter, stateKey);
+  return window === "standalone" ? key : `${window}|${key}`;
+}
+
+function windowModeSlot(
+  window: WindowSurface,
   adapter: SelectionAdapter,
   libraryID: number,
 ): Slot<ConversationSelectionMode> {
   return slot(
-    standaloneConversationModeByLibrary,
-    standaloneKey(adapter, adapter.libraryStateKey(libraryID)),
+    window === "standalone"
+      ? standaloneConversationModeByLibrary
+      : tornModeByLibrary,
+    windowKey(window, adapter, adapter.libraryStateKey(libraryID)),
   );
 }
 
-function standaloneGlobalSlot(
+function windowGlobalSlot(
+  window: WindowSurface,
   adapter: SelectionAdapter,
   libraryID: number,
 ): Slot<number> {
   return slot(
-    standaloneGlobalConversationByLibrary,
-    standaloneKey(adapter, adapter.libraryStateKey(libraryID)),
+    window === "standalone"
+      ? standaloneGlobalConversationByLibrary
+      : tornGlobalByLibrary,
+    windowKey(window, adapter, adapter.libraryStateKey(libraryID)),
   );
 }
 
-function standalonePaperSlot(
+function windowPaperSlot(
+  window: WindowSurface,
   adapter: SelectionAdapter,
   libraryID: number,
   paperItemID: number,
 ): Slot<number> {
   return slot(
-    standalonePaperConversationByPaper,
-    standaloneKey(adapter, adapter.paperStateKey(libraryID, paperItemID)),
+    window === "standalone"
+      ? standalonePaperConversationByPaper
+      : tornPaperByPaper,
+    windowKey(window, adapter, adapter.paperStateKey(libraryID, paperItemID)),
   );
 }
 
@@ -303,23 +410,72 @@ function embeddedSlotFor(scope: SelectionScope): Slot<number> {
     : adapter.paperSlot(scope.libraryID, scope.paperItemID);
 }
 
-/** The standalone window's active slot for the scope, whatever its surface. */
-function standaloneSlotFor(scope: SelectionScope): Slot<number> {
+/** One window's active slot for the scope, whatever the scope's surface. */
+function windowSlotFor(
+  window: WindowSurface,
+  scope: SelectionScope,
+): Slot<number> {
   const adapter = adapterFor(scope.system);
   return scope.kind === "global"
-    ? standaloneGlobalSlot(adapter, scope.libraryID)
-    : standalonePaperSlot(adapter, scope.libraryID, scope.paperItemID);
+    ? windowGlobalSlot(window, adapter, scope.libraryID)
+    : windowPaperSlot(window, adapter, scope.libraryID, scope.paperItemID);
+}
+
+/** Every torn window's slot that holds a key for the scope. */
+function tornSlotsFor(scope: SelectionScope): Slot<number>[] {
+  const adapter = adapterFor(scope.system);
+  const map = scope.kind === "global" ? tornGlobalByLibrary : tornPaperByPaper;
+  const scopeKey = standaloneKey(
+    adapter,
+    scope.kind === "global"
+      ? adapter.libraryStateKey(scope.libraryID)
+      : adapter.paperStateKey(scope.libraryID, scope.paperItemID),
+  );
+  const slots: Slot<number>[] = [];
+  for (const key of map.keys()) {
+    if (key.slice(key.indexOf("|") + 1) === scopeKey) {
+      slots.push(slot(map, key));
+    }
+  }
+  return slots;
+}
+
+/** Every window's active slot for the scope: the standalone window's, then each torn window's. */
+function allWindowSlotsFor(scope: SelectionScope): Slot<number>[] {
+  return [windowSlotFor("standalone", scope), ...tornSlotsFor(scope)];
+}
+
+/** The window's own choice, then each window it falls back to, then the sidebar's. */
+function recallWindowActive(
+  window: WindowSurface,
+  scope: SelectionScope,
+): number {
+  for (const surface of windowReadOrder(window)) {
+    const key = windowSlotFor(surface, scope).get();
+    if (key) return key;
+  }
+  return embeddedSlotFor(scope).get() || 0;
 }
 
 /**
- * The active (in-memory) conversation key for the scope, or 0. The standalone
- * surface reads its own slot first, then the sidebar's.
+ * The active (in-memory) conversation key for the scope, or 0. A window reads
+ * its own slot first (a torn window then the standalone window's), then the
+ * sidebar's; a side chat reads like the standalone window.
  */
 export function recallActive(scope: SelectionScope): number {
-  if (isStandaloneSurface(scope.surface)) {
-    return standaloneSlotFor(scope).get() || embeddedSlotFor(scope).get() || 0;
+  const surface = classifySurface(scope.surface);
+  switch (surface.kind) {
+    case "embedded":
+      return embeddedSlotFor(scope).get() || 0;
+    case "standalone":
+      return recallWindowActive("standalone", scope);
+    case "torn":
+      return recallWindowActive(surface.surface, scope);
+    case "side":
+      return recallWindowActive("standalone", scope);
+    default:
+      return unhandledSurface(surface);
   }
-  return embeddedSlotFor(scope).get() || 0;
 }
 
 /**
@@ -341,13 +497,14 @@ export function recall(scope: SelectionScope): number {
 }
 
 /**
- * True when any pointer names `key`: either surface's active slot or the
- * persisted pointer. A conversation either surface has chosen is legitimate.
+ * True when any pointer names `key`: any surface's active slot (the sidebar's
+ * or any window's) or the persisted pointer. A conversation any surface has
+ * chosen is legitimate.
  */
 export function isRemembered(scope: SelectionScope, key: number): boolean {
   return (
     embeddedSlotFor(scope).get() === key ||
-    standaloneSlotFor(scope).get() === key ||
+    allWindowSlotsFor(scope).some((windowSlot) => windowSlot.get() === key) ||
     recallPersisted(scope) === key
   );
 }
@@ -355,16 +512,28 @@ export function isRemembered(scope: SelectionScope, key: number): boolean {
 /**
  * Remember `key` as the active conversation: the map first, then (unless
  * `persist` is false) the persisted pointer through the runtime's wrapper.
- * The standalone surface writes its own slot only and never persists.
+ * A window writes its own slot only and never persists; a side chat writes
+ * nothing.
  */
 export function remember(
   scope: SelectionScope,
   key: number,
   options: { persist?: boolean } = {},
 ): void {
-  if (isStandaloneSurface(scope.surface)) {
-    standaloneSlotFor(scope).set(key);
-    return;
+  const surface = classifySurface(scope.surface);
+  switch (surface.kind) {
+    case "side":
+      return;
+    case "standalone":
+      windowSlotFor("standalone", scope).set(key);
+      return;
+    case "torn":
+      windowSlotFor(surface.surface, scope).set(key);
+      return;
+    case "embedded":
+      break;
+    default:
+      unhandledSurface(surface);
   }
   embeddedSlotFor(scope).set(key);
   if (options.persist === false) return;
@@ -378,23 +547,26 @@ export function remember(
 
 /**
  * Record a conversation that provisioning resolved for a load. Provisioning
- * runs on every conversation load, from either surface, without knowing which
+ * runs on every conversation load, from any surface, without knowing which
  * one asked, so it re-points only the selections that asked for it: each
  * surface whose pointer names `requestedKey` moves to `key` (the same key, or
  * the fresh key that replaced a retired one). The sidebar's pointer is also
  * written (and persisted) when it names `key` already or names nothing yet —
  * a sidebar that has chosen a different conversation keeps it. A sidebar that
- * names nothing is left alone when the window's own slot is the one that
- * asked: the window never writes the sidebar's saved chat.
+ * names nothing is left alone when a window's own slot is the one that
+ * asked: a window never writes the sidebar's saved chat.
  */
 export function rememberProvisioned(
   scope: SelectionScope,
   requestedKey: number,
   key: number,
 ): void {
-  const windowSlot = standaloneSlotFor(scope);
-  const windowAsked = windowSlot.get() === requestedKey;
-  if (windowAsked) windowSlot.set(key);
+  let windowAsked = false;
+  for (const windowSlot of allWindowSlotsFor(scope)) {
+    if (windowSlot.get() !== requestedKey) continue;
+    windowSlot.set(key);
+    windowAsked = true;
+  }
   const embeddedScope: SelectionScope = { ...scope, surface: "embedded" };
   const sidebarKey = recall(embeddedScope);
   if (!sidebarKey && windowAsked) return;
@@ -405,7 +577,7 @@ export function rememberProvisioned(
 
 /**
  * Forget the scope's selection only where it still names `expectedKey`
- * (compare-and-delete), in both surfaces' active slots whatever the scope's
+ * (compare-and-delete), in every surface's active slots whatever the scope's
  * surface. The global pref is removed only if it holds the key; a paper
  * restore target is invalidated in the restore cache (the registry row is
  * already gone), optionally only for `instanceID`.
@@ -415,7 +587,10 @@ export function forget(
   options: { expectedKey: number; instanceID?: string },
 ): void {
   const { expectedKey } = options;
-  for (const activeSlot of [embeddedSlotFor(scope), standaloneSlotFor(scope)]) {
+  for (const activeSlot of [
+    embeddedSlotFor(scope),
+    ...allWindowSlotsFor(scope),
+  ]) {
     if (Math.floor(Number(activeSlot.get() || 0)) === expectedKey) {
       activeSlot.delete();
     }
@@ -445,8 +620,9 @@ export function forget(
 /**
  * The remembered global/paper mode for a library, or null. `"active+persisted"`
  * reads the active map first; `"persisted"` reads only the pref. Callers own
- * any default (for example the upstream lock-implies-global rule). The
- * standalone surface reads its own mode first, then the sidebar's.
+ * any default (for example the upstream lock-implies-global rule). A window
+ * reads its own mode first (a torn window then the standalone window's), then
+ * the sidebar's; a side chat reads like the standalone window.
  */
 export function recallMode(
   system: ConversationSystem,
@@ -458,17 +634,18 @@ export function recallMode(
 ): ConversationSelectionMode | null {
   const adapter = adapterFor(system);
   if (options.source === "persisted") return adapter.getMode(libraryID);
-  if (isStandaloneSurface(options.surface)) {
-    const standaloneMode = standaloneModeSlot(adapter, libraryID).get();
-    if (standaloneMode) return standaloneMode;
+  const window = windowOf(classifySurface(options.surface));
+  for (const surface of window ? windowReadOrder(window) : []) {
+    const windowMode = windowModeSlot(surface, adapter, libraryID).get();
+    if (windowMode) return windowMode;
   }
   return adapter.modeSlot(libraryID).get() || adapter.getMode(libraryID);
 }
 
 /**
  * Remember the library mode: the active map first (unless `active` is false),
- * then the pref. Each runtime's pref setter keeps its own normalization. The
- * standalone surface writes its own mode only and never the pref.
+ * then the pref. Each runtime's pref setter keeps its own normalization. A
+ * window writes its own mode only and never the pref.
  */
 export function rememberMode(
   system: ConversationSystem,
@@ -476,10 +653,12 @@ export function rememberMode(
   mode: ConversationSelectionMode,
   options: { active?: boolean; surface?: SelectionSurface } = {},
 ): void {
+  if (isSideSurface(options.surface)) return;
   const adapter = adapterFor(system);
-  if (isStandaloneSurface(options.surface)) {
+  const window = windowOf(classifySurface(options.surface));
+  if (window) {
     if (options.active !== false) {
-      standaloneModeSlot(adapter, libraryID).set(mode);
+      windowModeSlot(window, adapter, libraryID).set(mode);
     }
     return;
   }
@@ -489,12 +668,26 @@ export function rememberMode(
 
 /**
  * Drop everything the standalone window has chosen. A newly opened window
- * starts from the sidebar's selection and diverges from there.
+ * starts from the sidebar's selection and diverges from there. Torn windows
+ * keep their own.
  */
 export function clearStandaloneSelection(): void {
   standaloneConversationModeByLibrary.clear();
   standaloneGlobalConversationByLibrary.clear();
   standalonePaperConversationByPaper.clear();
+}
+
+/** Drop everything one torn window has chosen; other windows keep theirs. */
+export function clearTornSelection(surface: TornSurface): void {
+  for (const map of [
+    tornModeByLibrary,
+    tornGlobalByLibrary,
+    tornPaperByPaper,
+  ] as Map<string, unknown>[]) {
+    for (const key of Array.from(map.keys())) {
+      if (key.slice(0, key.indexOf("|")) === surface) map.delete(key);
+    }
+  }
 }
 
 type GuardedRestore = {
@@ -560,28 +753,30 @@ function primeEntry<V>(params: {
  * history navigation, so the surfaces it triggers render the target. The
  * returned `restore()` undoes every primed entry, in reverse order, but only
  * if none of them has been changed since; a newer navigation always wins.
- * The standalone surface primes its own slots only, never a pref, so a window
- * navigation leaves the sidebar's selection alone.
+ * A window primes its own slots only, never a pref, so a window navigation
+ * leaves the sidebar's selection alone.
  */
 export function prime(params: SelectionPrimeParams): SelectionPrimeSnapshot {
   const libraryID = normalizePositiveInt(params.libraryID);
   if (!libraryID) return { restore: () => undefined };
+  // The side chat selects nothing (see isSideSurface).
+  if (isSideSurface(params.surface)) return { restore: () => undefined };
 
   const conversationKey = normalizePositiveInt(params.conversationKey);
   const paperItemID = normalizePositiveInt(params.paperItemID);
   const mode: ConversationSelectionMode =
     params.mode === "global" ? "global" : "paper";
   const adapter = adapterFor(params.system);
-  const standalone = isStandaloneSurface(params.surface);
+  const window = windowOf(classifySurface(params.surface));
   const restoreCallbacks: GuardedRestore[] = [];
 
   restoreCallbacks.push(
     primeEntry({
-      slot: standalone
-        ? standaloneModeSlot(adapter, libraryID)
+      slot: window
+        ? windowModeSlot(window, adapter, libraryID)
         : adapter.modeSlot(libraryID),
       value: mode,
-      persisted: standalone
+      persisted: window
         ? null
         : {
             read: () => adapter.getMode(libraryID),
@@ -595,11 +790,11 @@ export function prime(params: SelectionPrimeParams): SelectionPrimeSnapshot {
   if (mode === "global" && conversationKey) {
     restoreCallbacks.push(
       primeEntry({
-        slot: standalone
-          ? standaloneGlobalSlot(adapter, libraryID)
+        slot: window
+          ? windowGlobalSlot(window, adapter, libraryID)
           : adapter.globalSlot(libraryID),
         value: conversationKey,
-        persisted: standalone
+        persisted: window
           ? null
           : {
               read: () => adapter.getGlobal(libraryID),
@@ -612,11 +807,11 @@ export function prime(params: SelectionPrimeParams): SelectionPrimeSnapshot {
   } else if (mode === "paper" && conversationKey && paperItemID) {
     restoreCallbacks.push(
       primeEntry({
-        slot: standalone
-          ? standalonePaperSlot(adapter, libraryID, paperItemID)
+        slot: window
+          ? windowPaperSlot(window, adapter, libraryID, paperItemID)
           : adapter.paperSlot(libraryID, paperItemID),
         value: conversationKey,
-        persisted: standalone
+        persisted: window
           ? null
           : {
               read: () => adapter.getPaper(libraryID, paperItemID),

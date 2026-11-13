@@ -49,6 +49,10 @@ describe("workflow: streaming responsiveness", function () {
         assert.isTrue(result.statusVisible);
         assert.equal(result.ledgerReadsDuringText, 0);
         assert.isTrue(result.progressUpdatePreserved);
+        assert.isTrue(
+          result.closedUpdateShownOnOpen,
+          `a step sent while the drawer was closed shows when it opens: ${result.closedDrawerStepsText}`,
+        );
         assert.isTrue(result.finalAnswerVisible);
         assert.isTrue(
           result.actionCardHiddenWhileStreaming,

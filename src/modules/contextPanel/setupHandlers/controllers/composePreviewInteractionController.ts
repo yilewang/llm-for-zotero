@@ -418,6 +418,33 @@ export function attachComposePreviewInteractionController(
         return;
       }
 
+      const conversationClearBtn = target.closest(
+        ".llm-conversation-clear",
+      ) as HTMLButtonElement | null;
+      if (conversationClearBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        const index = Number.parseInt(
+          conversationClearBtn.dataset.conversationIndex || "",
+          10,
+        );
+        const conversations = composeContextStore.attachedConversations.list(
+          item.id,
+        );
+        if (
+          Number.isFinite(index) &&
+          index >= 0 &&
+          index < conversations.length
+        ) {
+          composeContextStore.attachedConversations.replace(
+            item.id,
+            conversations.filter((_, itemIndex) => itemIndex !== index),
+          );
+          deps.updatePaperPreviewPreservingScroll();
+        }
+        return;
+      }
+
       const clearBtn = target.closest(
         ".llm-paper-context-clear",
       ) as HTMLButtonElement | null;

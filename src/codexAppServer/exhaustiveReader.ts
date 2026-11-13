@@ -3,12 +3,9 @@ import {
   createExhaustiveBatchAnalyzer,
   type ExhaustiveBatchAnalyzer,
 } from "../shared/exhaustiveDocumentReader";
-import {
-  callLLM,
-  DEFAULT_CODEX_API_BASE,
-  requireCompleteModelText,
-} from "../utils/llmClient";
 import type { ModelProfileOverride } from "../modelCapabilities";
+import type { ReaderCompletion } from "../shared/readerCompletion";
+import { createCodexResponsesCompletion } from "./readerCompletion";
 
 export type CodexAppServerExhaustiveReaderSession = {
   analyzeBatch: ExhaustiveBatchAnalyzer;
@@ -32,12 +29,21 @@ function requireModel(model: string): string {
   return normalized;
 }
 
+/**
+ * Exhaustive batch reading over the Codex Responses reader completion
+ * (`createCodexResponsesCompletion`). The completion is injectable so a
+ * later caller can route a different reader model through it.
+ */
 export function createCodexAppServerExhaustiveReaderSession(params: {
   model: string;
   reasoning?: ReasoningConfig;
   profileOverride?: ModelProfileOverride;
+  complete?: ReaderCompletion;
 }): CodexAppServerExhaustiveReaderSession {
   const model = requireModel(params.model);
+  const complete =
+    params.complete ??
+    createCodexResponsesCompletion({ profileOverride: params.profileOverride });
   let disposed = false;
 
   const analyzeBatch = createExhaustiveBatchAnalyzer(
@@ -46,25 +52,14 @@ export function createCodexAppServerExhaustiveReaderSession(params: {
         throw new Error("Codex exhaustive reader session is closed");
       }
       throwIfAborted(signal);
-      // app-server turns are coding-agent turns and always expose a built-in
-      // tool surface. Batch reading is a pure completion task, so send it to
-      // the Codex Responses endpoint with no tools instead of attempting to
-      // maintain a fragile deny-list of app-server features.
-      return requireCompleteModelText(
-        await callLLM({
-          prompt,
-          systemMessages,
-          signal,
-          model,
-          reasoning: params.reasoning,
-          temperature,
-          apiBase: DEFAULT_CODEX_API_BASE,
-          authMode: "codex_auth",
-          providerProtocol: "codex_responses",
-          profileOverride: params.profileOverride,
-        }),
-        "Codex exhaustive reading batch",
-      );
+      const result = await complete(prompt, {
+        model,
+        signal,
+        systemMessages,
+        reasoning: params.reasoning,
+        temperature,
+      });
+      return result.text;
     },
   );
 

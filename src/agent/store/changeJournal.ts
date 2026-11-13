@@ -8,6 +8,7 @@
  * migrated idempotently into one-action/one-step v2 records.
  */
 
+import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import { sweepOrphanRecoveryBlobs } from "./journalRecoveryBlobStore";
 import { appLogger } from "../../core/logging";
 import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
@@ -110,6 +111,25 @@ async function inTransaction(task: () => Promise<void>): Promise<void> {
   } else {
     await task();
   }
+}
+
+/**
+ * Runs journal writes in a transaction of their own.
+ *
+ * Zotero.DB.queryAsync does not wait for a transaction another flow holds: a
+ * plain statement issued meanwhile runs inside it and is lost if that flow
+ * rolls back. A prepared action or step lost that way can no longer be
+ * claimed, and a lost outcome leaves a finished step "applying" without its
+ * inverse, so callers wrap prepare, outcome, final and audit writes in this.
+ * Never call it while the same flow holds a Zotero transaction: Zotero waits
+ * for that one to end, which stalls the flow until the 30 s wait times out.
+ */
+export async function inJournalTransaction(
+  task: () => Promise<unknown>,
+): Promise<void> {
+  await inTransaction(async () => {
+    await task();
+  });
 }
 
 function stringify(value: unknown): string | null {
@@ -486,6 +506,14 @@ export function createJournalId(prefix: string): string {
     .slice(2, 8)}`;
 }
 
+function assertDurableConversationKey(key: number, what: string): void {
+  if (isEphemeralConversationKey(key)) {
+    throw new Error(
+      `A temporary side chat cannot write a ${what}: it never persists anything.`,
+    );
+  }
+}
+
 export async function prepareJournalAction(input: {
   actionId?: string;
   runId: string;
@@ -497,6 +525,7 @@ export async function prepareJournalAction(input: {
   recovery?: string;
   now?: number;
 }): Promise<string | null> {
+  assertDurableConversationKey(input.conversationKey, "journal action");
   const db = getDb();
   if (!db) return null;
   const now = input.now ?? Date.now();
@@ -787,6 +816,63 @@ export async function registerJournalRecoveryPayloads(input: {
   }
 }
 
+/** The payload kind of a checkpointed batch's frozen per-item operations. */
+const FROZEN_OPERATIONS_KIND = "frozen_operations";
+
+/**
+ * Freeze the per-item operations a checkpointed batch will run, once, at
+ * prepare time. A resume is this list minus the steps already done, so it
+ * never asks the model which items were left. Call it in the transaction
+ * that prepares the action, so the action never exists without its list.
+ */
+export async function freezeJournalActionOperations(input: {
+  actionId: string;
+  operations: readonly unknown[];
+  now?: number;
+}): Promise<void> {
+  const db = getDb();
+  if (!db) throw new Error("The durable change journal is unavailable");
+  const json = JSON.stringify({ version: 1, operations: input.operations });
+  await db.queryAsync(
+    `INSERT INTO ${JOURNAL_PAYLOADS_TABLE}
+      (payload_id, action_id, step_id, kind, storage_kind, inline_json,
+       blob_path, checksum, size_bytes, created_at)
+     VALUES (?, ?, NULL, ?, 'inline', ?, NULL, NULL, ?, ?)`,
+    [
+      `${input.actionId}:${FROZEN_OPERATIONS_KIND}`,
+      input.actionId,
+      FROZEN_OPERATIONS_KIND,
+      json,
+      json.length,
+      input.now ?? Date.now(),
+    ],
+  );
+}
+
+/**
+ * The operations a checkpointed batch froze, or null for every other action,
+ * including every action journalled before batches were checkpointed.
+ */
+export async function readFrozenJournalActionOperations(
+  actionId: string,
+): Promise<unknown[] | null> {
+  const db = getDb();
+  if (!db || !actionId) return null;
+  const rows = (await db.queryAsync(
+    `SELECT inline_json FROM ${JOURNAL_PAYLOADS_TABLE}
+     WHERE action_id = ? AND kind = ? AND storage_kind = 'inline'`,
+    [actionId, FROZEN_OPERATIONS_KIND],
+  )) as Array<Record<string, unknown>> | null;
+  const json = Array.isArray(rows) ? rows[0]?.inline_json : undefined;
+  if (typeof json !== "string") return null;
+  try {
+    const parsed = JSON.parse(json) as { operations?: unknown };
+    return Array.isArray(parsed?.operations) ? parsed.operations : null;
+  } catch {
+    return null;
+  }
+}
+
 async function removeRecoveryBlobPaths(paths: string[]): Promise<void> {
   const io = (globalThis as { IOUtils?: any }).IOUtils;
   if (typeof io?.remove !== "function") return;
@@ -951,16 +1037,31 @@ async function retireTerminalJournalRecoveryPayloads(): Promise<void> {
            OR s.status IN ('failed','no_effect','irreversible'))`,
       [now],
     );
+    // A step of a live checkpointed batch keeps its forward payload: the
+    // batch's remaining work is its frozen list minus the steps whose forward
+    // matches an item, so a wiped no-effect step would be run again.
+    const liveBatchActions = `SELECT a.action_id FROM ${JOURNAL_ACTIONS_TABLE} a
+           WHERE a.status NOT IN ('failed','no_effect','irreversible')
+             AND EXISTS (
+               SELECT 1 FROM ${JOURNAL_PAYLOADS_TABLE} p
+               WHERE p.action_id = a.action_id
+                 AND p.kind = '${FROZEN_OPERATIONS_KIND}'
+             )`;
     await db.queryAsync(
       `UPDATE ${JOURNAL_STEPS_TABLE}
-       SET forward_json = '{}', inverse_json = NULL,
+       SET forward_json = CASE
+             WHEN action_id IN (${liveBatchActions}) THEN forward_json
+             ELSE '{}' END,
+           inverse_json = NULL,
            precondition_json = NULL, expected_postcondition_json = NULL,
            result_json = NULL
        WHERE (status IN ('failed','no_effect','irreversible')
          OR action_id IN (
            SELECT action_id FROM ${JOURNAL_ACTIONS_TABLE}
            WHERE status IN ('failed','no_effect','irreversible')
-         )) AND (forward_json <> '{}' OR inverse_json IS NOT NULL
+         )) AND ((forward_json <> '{}'
+           AND action_id NOT IN (${liveBatchActions}))
+         OR inverse_json IS NOT NULL
          OR precondition_json IS NOT NULL
          OR expected_postcondition_json IS NOT NULL
          OR result_json IS NOT NULL)`,
@@ -1111,6 +1212,17 @@ export async function listJournalActions(input: {
   runId?: string;
   limit?: number;
   pendingOnly?: boolean;
+  /** Only actions recorded under this tool name. */
+  toolName?: string;
+  /** Only actions created at or after this time (ms). */
+  createdAtOrAfter?: number;
+  /** Only actions holding an `uncertain` step of this operation. */
+  withUncertainStep?: string;
+  /**
+   * Every matching action instead of the newest `limit`, for a caller that
+   * must not miss one; the other filters keep the set small.
+   */
+  unbounded?: boolean;
 }): Promise<JournalActionWithSteps[]> {
   const db = getDb();
   if (!db) return [];
@@ -1136,15 +1248,30 @@ export async function listJournalActions(input: {
   if (input.pendingOnly) {
     clauses.push("status NOT IN ('reverted','no_effect','failed')");
   }
+  if (input.toolName !== undefined) {
+    clauses.push("tool_name = ?");
+    params.push(input.toolName);
+  }
+  if (input.createdAtOrAfter !== undefined) {
+    clauses.push("created_at >= ?");
+    params.push(input.createdAtOrAfter);
+  }
+  if (input.withUncertainStep !== undefined) {
+    clauses.push(
+      `action_id IN (SELECT action_id FROM ${JOURNAL_STEPS_TABLE}
+        WHERE operation = ? AND status = 'uncertain')`,
+    );
+    params.push(input.withUncertainStep);
+  }
   const limit =
     Number.isFinite(input.limit) && Number(input.limit) > 0
       ? Math.floor(Number(input.limit))
       : 50;
-  params.push(limit);
+  if (!input.unbounded) params.push(limit);
   const rows = (await db.queryAsync(
     `SELECT * FROM ${JOURNAL_ACTIONS_TABLE}
      ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
-     ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+     ORDER BY created_at DESC, rowid DESC${input.unbounded ? "" : " LIMIT ?"}`,
     params,
   )) as Array<Record<string, unknown>> | null;
   const actions = Array.isArray(rows) ? rows.map(toAction) : [];

@@ -16,6 +16,15 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
   var manifestURI = Services.io.newURI(rootURI + "manifest.json");
   chromeHandle = aomStartup.registerChrome(manifestURI, [
     ["content", "__addonRef__", rootURI + "content/"],
+    // Reader documents have a content principal, so chrome:// fonts there
+    // load only from a content-accessible package. Expose just KaTeX's CSS
+    // and fonts, for the Inline Ask card, not the whole content folder.
+    [
+      "content",
+      "__addonRef__-katex",
+      rootURI + "content/vendor/katex/",
+      "contentaccessible=yes",
+    ],
   ]);
 
   /**
@@ -31,7 +40,9 @@ async function startup({ id, version, resourceURI, rootURI }, reason) {
     `${rootURI}/content/scripts/__addonRef__.js`,
     ctx,
   );
-  await Zotero.__addonInstance__.hooks.onStartup();
+  await Zotero.__addonInstance__.hooks.onStartup({
+    isUpgrade: isUpgradeReason(reason),
+  });
 }
 
 async function onMainWindowLoad({ window }, reason) {
@@ -47,7 +58,9 @@ async function shutdown({ id, version, resourceURI, rootURI }, reason) {
     return;
   }
 
-  await Zotero.__addonInstance__?.hooks.onShutdown();
+  await Zotero.__addonInstance__?.hooks.onShutdown({
+    isUpgrade: isUpgradeReason(reason),
+  });
 
   if (chromeHandle) {
     chromeHandle.destruct();
@@ -56,3 +69,11 @@ async function shutdown({ id, version, resourceURI, rootURI }, reason) {
 }
 
 async function uninstall(data, reason) {}
+
+// Zotero applies a plugin update in the running app. Only the old version's
+// shutdown reliably sees the upgrade reason: Zotero's onInstalling deletes the
+// addonVersions entry before onInstalled reads it, so the new startup gets
+// ADDON_INSTALL. The isUpgrade flag at startup is informational and unused.
+function isUpgradeReason(reason) {
+  return reason === ADDON_UPGRADE || reason === ADDON_DOWNGRADE;
+}

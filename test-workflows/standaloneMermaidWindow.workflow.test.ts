@@ -67,10 +67,20 @@ describe("workflow: standalone Mermaid titlebar", function () {
           win.getComputedStyle(canvas)?.backgroundColor,
         );
       }
-      const root = doc.querySelector(".llm-mermaid-window-root") as HTMLElement;
-      const before = root.dataset.mermaidZoom;
-      buttons[1].click();
-      assert.notEqual(root.dataset.mermaidZoom, before);
+      // The toolbar is − percent + fit: zoom in changes the percent shown.
+      const percent = doc.querySelector(
+        ".llm-mermaid-window-percent",
+      ) as HTMLElement;
+      assert.isOk(percent, "the toolbar shows the zoom percent");
+      const before = percent.textContent;
+      const zoomIn = buttons.find((button) =>
+        /zoom in/i.test(
+          button.title || button.getAttribute("aria-label") || "",
+        ),
+      );
+      assert.isOk(zoomIn, "a zoom-in button");
+      zoomIn!.click();
+      assert.notEqual(percent.textContent, before);
     } finally {
       viewer?.close();
     }

@@ -68,6 +68,63 @@ export function confirmationDecision(
   return { approve: false, failure: "Unexpected confirmation" };
 }
 
+/**
+ * A journey's own answer to a confirmation card: the button it presses and
+ * the field values it sends, in the shape the real card resolves with
+ * (`AgentConfirmationResolution`). `effect` marks an answer that approves a
+ * Zotero change, so Safe mode counts it as an approval. Without `approved:
+ * false` the answer approves.
+ */
+export type CardAnswer = {
+  actionId?: string;
+  approved?: boolean;
+  data?: Record<string, unknown>;
+  effect?: boolean;
+};
+
+/**
+ * The ticked papers of a paper selection card: the field that lists them and
+ * the ids of its rows that are checked, as the card submits them. A row is
+ * ticked unless the card builder set `checked: false`; the rows of every mode
+ * view count once.
+ */
+export function tickedPaperRows(action: Pick<AgentPendingAction, "fields">): {
+  fieldId: string;
+  rowIds: string[];
+} {
+  const field = action.fields.find(
+    (entry) => entry.type === "paper_result_list",
+  );
+  check(field?.type === "paper_result_list", "The card lists no papers");
+  const rows = [
+    ...field.rows,
+    ...(field.modes || []).flatMap((mode) => mode.rows),
+  ];
+  const ticked = rows
+    .filter((row) => row.checked !== false)
+    .map((row) => row.id);
+  return { fieldId: field.id, rowIds: [...new Set(ticked)] };
+}
+
+/**
+ * Answers a paper selection card with one of its buttons and its ticked
+ * papers, as the card does when the user presses that button. The button must
+ * be one the card declares, and at least one paper must be ticked (the card
+ * disables a button with no paper ticked).
+ */
+export function paperCardAnswer(
+  action: Pick<AgentPendingAction, "fields" | "actions" | "toolName">,
+  actionId: string,
+): CardAnswer {
+  check(
+    action.actions?.some((entry) => entry.id === actionId),
+    `The ${action.toolName} card has no ${actionId} button; it has ${(action.actions || []).map((entry) => entry.id).join(", ") || "none"}`,
+  );
+  const { fieldId, rowIds } = tickedPaperRows(action);
+  check(rowIds.length, `The ${action.toolName} card has no ticked paper`);
+  return { actionId, data: { [fieldId]: rowIds } };
+}
+
 export function appendTurnHistory(
   history: ChatMessage[],
   prompt: string,

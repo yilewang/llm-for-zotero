@@ -33,7 +33,8 @@ function describeV1Service(
         "%s",
         used,
       );
-  return `MinerU ${service.version} (V1) · ${t("tiers: %s").replace("%s", service.tiers.join(", "))} · ${plan}`;
+  const api = service.protocol === "tasks" ? "V1 Tasks" : "V1";
+  return `MinerU ${service.version} (${api}) · ${t("tiers: %s").replace("%s", service.tiers.join(", "))} · ${plan}`;
 }
 
 export function bindMineruLocalPreferences(

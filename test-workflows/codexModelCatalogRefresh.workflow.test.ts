@@ -197,11 +197,9 @@ describe("workflow: Codex model catalog refresh", function () {
       modelOption(root, olderModel.model),
       "refresh failure must retain the last catalog",
     );
-    const retry = (
-      Array.from(
-        root.querySelectorAll<HTMLButtonElement>("#llm-model-menu button"),
-      ) as HTMLButtonElement[]
-    ).find((row) => !row.dataset.entryId);
+    const retry = root.querySelector<HTMLButtonElement>(
+      '#llm-model-menu [data-model-menu-action="retry"]',
+    );
     assert.isOk(retry, "failed catalog must offer retry");
     retry!.click();
     await waitFor(

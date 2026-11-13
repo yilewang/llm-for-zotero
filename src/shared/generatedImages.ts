@@ -1,4 +1,4 @@
-import type { GeneratedChatImage } from "./types";
+import type { GeneratedChatImage, GeneratedChatImageFigure } from "./types";
 
 function cleanGeneratedImageText(
   value: unknown,
@@ -18,6 +18,44 @@ export function isRenderableGeneratedImageSrc(value: unknown): value is string {
     /^https?:\/\//i.test(src) ||
     /^data:image\/[a-z0-9.+-]+[;,]/i.test(src)
   );
+}
+
+function normalizeGeneratedImageFigure(
+  value: unknown,
+): GeneratedChatImageFigure | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const record = value as Record<string, unknown>;
+  const pageIndexRaw = Number(record.pageIndex);
+  const pageIndex =
+    record.pageIndex !== undefined &&
+    record.pageIndex !== null &&
+    Number.isFinite(pageIndexRaw) &&
+    pageIndexRaw >= 0
+      ? Math.floor(pageIndexRaw)
+      : undefined;
+  const pageLabel = cleanGeneratedImageText(record.pageLabel, 40);
+  let paper: GeneratedChatImageFigure["paper"];
+  const paperRecord = record.paper;
+  if (
+    paperRecord &&
+    typeof paperRecord === "object" &&
+    !Array.isArray(paperRecord)
+  ) {
+    const p = paperRecord as Record<string, unknown>;
+    const itemId = Math.floor(Number(p.itemId));
+    const contextItemId = Math.floor(Number(p.contextItemId));
+    if (itemId > 0 && contextItemId > 0) {
+      const title = cleanGeneratedImageText(p.title, 400);
+      paper = { itemId, contextItemId, ...(title ? { title } : {}) };
+    }
+  }
+  if (pageIndex === undefined && !pageLabel && !paper) return undefined;
+  return {
+    ...(pageIndex !== undefined ? { pageIndex } : {}),
+    ...(pageLabel ? { pageLabel } : {}),
+    ...(paper ? { paper } : {}),
+  };
 }
 
 export function normalizeGeneratedChatImages(
@@ -50,6 +88,9 @@ export function normalizeGeneratedChatImages(
       ...(src ? { src } : {}),
       ...(cleanGeneratedImageText(record.revisedPrompt, 8000)
         ? { revisedPrompt: cleanGeneratedImageText(record.revisedPrompt, 8000) }
+        : {}),
+      ...(normalizeGeneratedImageFigure(record.figure)
+        ? { figure: normalizeGeneratedImageFigure(record.figure) }
         : {}),
     });
   }

@@ -1,12 +1,19 @@
 import { appLogger } from "../../core/logging";
+import { noteHtmlToModelText } from "../../services/notes/noteRendering";
 import { runCodexNativePanelTurn } from "./codexNative/turnCallbacks";
 import { getPanelRequestUI, type PanelRequestUI } from "./panelRequestUI";
+import { isLiveDocument, isLivePanelBody } from "./panelLiveness";
 export type { PanelRequestUI } from "./panelRequestUI";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 import { syncTaskProgressPanel } from "./taskProgress/panel";
+import {
+  syncTaskAnswerCitations,
+  taskTurnIndexFor,
+} from "./taskProgress/store";
 import { createProviderRequestScope } from "../../utils/providerTransport";
 import { renderMarkdownForNote } from "../../utils/markdown";
 import { HTML_NS } from "../../utils/domHelpers";
+import { wireStartPageTipActions } from "./startPageTipActions";
 import { appendSelectedTextSections } from "./selectedTextPreviewSections";
 import {
   t,
@@ -119,9 +126,11 @@ import {
 } from "../../modelCapabilities";
 import {
   applyModelInputTokenCap,
+  resolveModelInputTokenLimit,
   type ModelInputTokenLimitSource,
 } from "../../utils/modelInputCap";
 import { subscribeModelProviderGroups } from "../../utils/modelProviders";
+import { createModelProviderGroupsPanelSync } from "./modelProviderPanelSync";
 import { formatDisplayModelName } from "../../utils/modelDisplayLabel";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
 import { inferLegacyProviderProtocol } from "../../utils/providerProtocol";
@@ -142,6 +151,7 @@ import {
   writeChatScrollTop,
   persistChatScrollSnapshotForConversationKey,
   setFollowBottomChatScrollSnapshot,
+  setChatBoxConversation,
   withScrollGuard,
 } from "./chatScrollSnapshots";
 import {
@@ -153,6 +163,17 @@ import {
   updateStreamingTurnNavigator,
 } from "./conversationTurnNavigator";
 import { resizeTextareaToContent } from "./textareaSizing";
+import {
+  PROGRESSIVE_CHAT_RENDER_FILL_STEP,
+  PROGRESSIVE_CHAT_RENDER_FRAME_BUDGET_MS,
+  cancelPendingChatRender,
+  clearPendingChatRender,
+  getPendingChatRender,
+  planProgressiveChatRenderRange,
+  resolveAnchorMessageIndex,
+  setPendingChatRender,
+  type PendingChatRender,
+} from "./progressiveChatRender";
 export { withScrollGuard } from "./chatScrollSnapshots";
 
 import { type BlockStreamFlushReason } from "./blockStreamCoalescer";
@@ -162,6 +183,8 @@ import {
 } from "./assistantTurn";
 import { toStoredAssistantRow } from "./storedAssistantRow";
 import { toStoredUserRowPatch } from "./storedUserRow";
+import { createPastChatAttachHandler } from "./pastChatAttachHandler";
+import { setPastChatAttachHandler } from "../../services/pastConversations/attachSink";
 import { getStreamInterruptionLabel } from "./streamInterruption";
 import {
   restoreRetryUserSnapshot,
@@ -196,11 +219,17 @@ import {
   requireCurrentPanelOwnership,
   resolveSelectionSurfaceForBody,
 } from "./panelHostOwnership";
-import type { SelectionSurface } from "./conversationSelection";
 import {
+  isSideSurface,
+  type SelectionSurface,
+  type TornSurface,
+} from "./conversationSelection";
+import {
+  getReaderSelectionForSurface,
   getSelectedModelEntryForSurface,
   surfaceChoices,
 } from "./surfaceChoices";
+import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export {
@@ -219,6 +248,7 @@ import type {
   CollectionContextRef,
   NoteContextRef,
   TagContextRef,
+  AttachedConversationRef,
   SelectedTextContext,
   ResolvedSelectedTextAnchor,
   SelectedTextSource,
@@ -228,6 +258,13 @@ import type {
   ResolvedContextSource,
 } from "./types";
 import { resolveTargetedAssistantRerenders } from "./targetedRerender";
+import {
+  getChatPanelExtensions,
+  isChatPanelReadOnly,
+  isChatPanelTurnRewriteDisabled,
+  type ChatPanelAssistantAction,
+  type ChatPanelAssistantActionInfo,
+} from "./chatPanelExtensions";
 import { withConversationWriteLock } from "../../shared/conversationWriteFence";
 import {
   createTurnUsageRecorder,
@@ -237,6 +274,7 @@ import {
   chatHistory,
   conversationForkLinks,
   loadedConversationKeys,
+  readOnlyBorrowedConversationKeys,
   loadingConversationTasks,
   webChatIsolatedConversationKeys,
   webChatSessionConversationKeys,
@@ -315,8 +353,23 @@ import {
   normalizePaperContextRefs,
   normalizeCollectionContextRefs,
   normalizeTagContextRefs,
+  normalizeAttachedConversationRefs,
   normalizeAttachmentContentHash,
 } from "../../services/context/normalizers";
+import {
+  collectConversationAttachedRefs,
+  normalizeAttachedConversationScope,
+  withoutAgentAttachedMarker,
+} from "../../services/pastConversations/pastConversationText";
+import {
+  addAttachedPastChatsToSimpleChatHistory,
+  pastChatHistoryCurrentMessage,
+  renderCodexCurrentTurnPastChatText,
+} from "./pastChatSimpleChatHistory";
+import {
+  formatAttachedConversationLabel,
+  refreshAttachedConversationExistence,
+} from "./pastConversationSource";
 import { positionMenuAtPointer } from "./menuPositioning";
 import { FULL_PDF_UNSUPPORTED_MESSAGE } from "./pdfSupportMessages";
 import {
@@ -371,7 +424,17 @@ import {
 } from "./quoteValidation/locationWriteBack";
 import { applyStableAnimationPhase } from "./stableAnimationPhase";
 import { stripReceiptStatusForDisplay } from "../../agent/contracts/actionEvaluation";
-import { renderRenderedMarkdownInto } from "./renderedMarkdown";
+import {
+  openHtmlPreviewViewer,
+  renderRenderedMarkdownInto,
+} from "./renderedMarkdown";
+import { CONTENT_FLAT_SCOPE_CLASS } from "./contentChrome";
+import {
+  buildTurnWindow,
+  mountSavedFileCards,
+  resolveAgentFilesTargetForPanelItem,
+  resolveHomeDir,
+} from "./savedFileCards";
 import {
   disposeStreamingMarkdown,
   renderStreamingMarkdownInto,
@@ -412,10 +475,14 @@ import {
 import {
   appendAgentRunEventAfterLatest,
   getAgentRunTrace,
+  listAgentRunEventsForRuns,
 } from "../../agent/store/traceStore";
 import { deliverPendingPlanDocumentMessage } from "../../agent/documents/publication";
 import { materialRefFromDocument } from "../../agent/documents/workflowMaterial";
-import { loadDocumentIdForMessageOwner } from "../../agent/documents/store";
+import {
+  listPlanDocumentOutboxForConversation,
+  loadDocumentIdsForMessageOwners,
+} from "../../agent/documents/store";
 import type { PlanDocument } from "../../agent/documents/types";
 import {
   applyHistoryCompression,
@@ -461,6 +528,11 @@ import {
 } from "./conversationProvisioning";
 
 export { getConversationKey } from "./conversationIdentity";
+import {
+  classifyConversationKey,
+  isEphemeralConversationKey,
+} from "../../shared/conversationKeySpace";
+import { buildEphemeralBackgroundContextBlock } from "../../shared/ephemeralBackgroundContext";
 export { renderAssistantMarkdownHtmlForChat } from "./renderedMarkdown";
 
 /** Get AbortController constructor from global scope */
@@ -519,6 +591,7 @@ export function setAgentRunTraceLoaderForTests(
   loader?: AgentRunTraceLoader,
 ): void {
   agentRunTraceLoader = loader || getAgentRunTrace;
+  webSourceAnchorsByRun.clear();
   if (!loader) {
     agentRunTraceCache.clear();
     agentRunTraceLoadingTasks.clear();
@@ -531,22 +604,24 @@ export function hasAgentRunTraceForTests(runId: string): boolean {
 
 /**
  * The surface showing `item`, for paths that act for a panel but were handed
- * only its item. Both surfaces can show the same item object; the window's
- * choices apply only when no sidebar panel shows it.
+ * only its item. Several surfaces can show the same item object; a window's
+ * choices apply only when no sidebar panel shows it, and the standalone
+ * window's when it and a torn window both do.
  */
 function resolveSurfaceForMountedItem(
   item: Zotero.Item | null | undefined,
 ): SelectionSurface {
   if (!item) return "embedded";
-  let shownInWindow = false;
+  let shownInWindow: "standalone" | TornSurface | null = null;
   for (const [body, getItem] of activeContextPanels) {
     if (getItem() !== item) continue;
-    if (resolveSelectionSurfaceForBody(body) !== "standalone") {
-      return "embedded";
-    }
-    shownInWindow = true;
+    const surface = resolveSelectionSurfaceForBody(body);
+    if (surface === "embedded") return "embedded";
+    // A side chat shows its own ephemeral item, never another surface's.
+    if (isSideSurface(surface)) return surface;
+    if (surface === "standalone" || !shownInWindow) shownInWindow = surface;
   }
-  return shownInWindow ? "standalone" : "embedded";
+  return shownInWindow || "embedded";
 }
 
 /**
@@ -582,7 +657,7 @@ export function isConversationShownOutsideWebChat(
   ) => isEffectiveWebChatRequest(item, resolveSelectionSurfaceForBody(body)),
 ): boolean {
   for (const [body, getItem] of activeContextPanels) {
-    if (body === exceptBody || !body.isConnected) continue;
+    if (body === exceptBody || !isLivePanelBody(body)) continue;
     const item = getItem?.() || null;
     if (!item) continue;
     if (getPanelBodyConversationKey(body, item) !== conversationKey) continue;
@@ -707,6 +782,14 @@ async function validateConversationScopeForItem(params: {
   conversationKey: number;
   conversationSystem?: ConversationSystem | null;
 }): Promise<boolean> {
+  // A temporary side chat has no catalog or registry row: it is valid for an
+  // item of its own kind (paper or library) and is never provisioned.
+  if (isEphemeralConversationKey(params.conversationKey)) {
+    return (
+      classifyConversationKey(params.conversationKey)?.kind ===
+      resolveDisplayConversationKind(params.item)
+    );
+  }
   await provisionConversationScopeForItem({
     item: params.item,
     conversationSystem: params.conversationSystem,
@@ -956,6 +1039,86 @@ function normalizeCollectionContexts(
 
 function normalizeTagContexts(tagContexts: unknown): TagContextRef[] {
   return normalizeTagContextRefs(tagContexts, { sanitizeText });
+}
+
+function normalizeAttachedConversations(
+  attachedConversations: unknown,
+): AttachedConversationRef[] {
+  return normalizeAttachedConversationRefs(attachedConversations, {
+    sanitizeText,
+  });
+}
+
+/**
+ * Every past chat attached in a conversation (its visible user messages plus
+ * the message being sent): the chats past_chat_read may open. Deduplicated on
+ * system and key, with no cap; each message keeps its own limit of three.
+ */
+function collectAttachedConversationScope(
+  conversationKey: number,
+  currentAttachedConversations: unknown,
+): AttachedConversationRef[] {
+  return collectConversationAttachedRefs(
+    [
+      ...filterMessagesInPendingTurns(
+        conversationKey,
+        chatHistory.get(conversationKey) || [],
+      ),
+      { attachedConversations: currentAttachedConversations },
+    ],
+    { sanitizeText },
+  );
+}
+
+function collectAttachedConversationRefs(
+  messages: readonly { attachedConversations?: unknown }[],
+): AttachedConversationRef[] {
+  const refs: AttachedConversationRef[] = [];
+  for (const message of messages) {
+    if (message.attachedConversations) {
+      refs.push(
+        ...normalizeAttachedConversations(message.attachedConversations),
+      );
+    }
+  }
+  return refs;
+}
+
+/**
+ * Looks up whether the past chats attached to these messages still exist.
+ * The message renderer is synchronous and reads the result from a cache.
+ * Resolves true when a chat turned out to be deleted.
+ */
+async function refreshAttachedConversationChecks(
+  messages: readonly { attachedConversations?: unknown }[],
+): Promise<boolean> {
+  const refs = collectAttachedConversationRefs(messages);
+  if (!refs.length) return false;
+  try {
+    return await refreshAttachedConversationExistence(refs);
+  } catch (err) {
+    appLogger.warn("LLM: attached conversation check failed", err);
+    return false;
+  }
+}
+
+/** Re-checks a loaded chat's attached past chats and repaints on a change. */
+function recheckAttachedConversationsInBackground(
+  conversationKey: number,
+): void {
+  const messages = chatHistory.get(conversationKey) || [];
+  if (!collectAttachedConversationRefs(messages).length) return;
+  void refreshAttachedConversationChecks(messages).then((changed) => {
+    if (!changed) return;
+    for (const [body, getItem] of activeContextPanels) {
+      const panelItem = getItem();
+      if (!panelItem || getConversationKey(panelItem) !== conversationKey) {
+        continue;
+      }
+      refreshConversationPanels(body, panelItem);
+      return;
+    }
+  });
 }
 
 function resolveAutoLoadedPaperContextForItem(
@@ -1343,6 +1506,7 @@ export function buildAssistantResponseActionTarget(params: {
       ? webSourceAnchors.map((anchor) => ({
           offset: anchor.offset,
           sources: anchor.sources.map((source) => ({ ...source })),
+          ...(anchor.placement ? { placement: anchor.placement } : {}),
         }))
       : undefined,
     agentRunId: message.agentRunId,
@@ -1495,6 +1659,8 @@ function canShowForkActionForAssistantTurn(
   assistantTimestamp: unknown,
   assistantMessage?: Message | null,
 ): boolean {
+  // A read-only body or a side chat never forks (chatPanelExtensions).
+  if (isChatPanelTurnRewriteDisabled(body)) return false;
   return shouldShowForkActionForAssistantTurn({
     body,
     item,
@@ -1616,6 +1782,39 @@ export function appendUserMessageCopyAction(params: {
   return button;
 }
 
+function appendExtraAssistantActionButtons(params: {
+  doc: Document;
+  actions: HTMLElement;
+  extraActions: readonly ChatPanelAssistantAction[];
+  info: ChatPanelAssistantActionInfo;
+}): void {
+  for (const action of params.extraActions) {
+    const id = action.id.replace(/[^A-Za-z0-9_-]/g, "");
+    if (!id) continue;
+    const button = appendMessageMetaActionButton({
+      doc: params.doc,
+      actions: params.actions,
+      className: `llm-message-action-${id}`,
+      title: action.label,
+      conversationKey: params.info.conversationKey,
+      assistantTimestamp: params.info.timestamp,
+    });
+    button.dataset.extraAction = id;
+    button.addEventListener("click", (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+      }
+      try {
+        action.run({ ...params.info });
+      } catch (err) {
+        appLogger.warn("LLM: chat panel extra action failed", err);
+      }
+    });
+  }
+}
+
 export function appendAssistantResponseExpandAction(params: {
   body: Element;
   doc: Document;
@@ -1672,19 +1871,21 @@ export function syncUserContextAlignmentWidths(body: Element): void {
       ".llm-message-wrapper.user.llm-user-context-aligned",
     ),
   ) as HTMLDivElement[];
-  for (const wrapper of wrappers) {
+  // Read every width first, then write: a layout read after each style
+  // write forced a synchronous reflow per message. A wrapper's width only
+  // sizes its own context rows, so batching does not change the result.
+  const widths = wrappers.map((wrapper) => {
     const bubble = getUserBubbleElement(wrapper);
-    if (!bubble) {
-      wrapper.style.removeProperty("--llm-user-bubble-width");
-      continue;
-    }
-    const bubbleWidth = Math.round(bubble.getBoundingClientRect().width);
+    return bubble ? Math.round(bubble.getBoundingClientRect().width) : 0;
+  });
+  wrappers.forEach((wrapper, index) => {
+    const bubbleWidth = widths[index];
     if (bubbleWidth > 0) {
       wrapper.style.setProperty("--llm-user-bubble-width", `${bubbleWidth}px`);
     } else {
       wrapper.style.removeProperty("--llm-user-bubble-width");
     }
-  }
+  });
 }
 
 /** Legacy cumulative API token usage per conversation key for this UI session. */
@@ -1771,43 +1972,113 @@ function renderContextUsageSnapshot(
   );
 }
 
+/**
+ * Last display estimate per conversation. Every full render recomputes the
+ * gauge, and the estimate walks the whole history (and, above the soft limit,
+ * drops messages one by one), so switching back to a long conversation paid
+ * for it again although nothing had changed. The cap result depends only on
+ * the history messages and the resolved limit, so the key holds both.
+ */
+const historyContextUsageEstimates = new Map<
+  number,
+  { signature: string; snapshot: ContextUsageSnapshot | undefined }
+>();
+const HISTORY_CONTEXT_USAGE_ESTIMATE_LIMIT = 64;
+
+function buildHistoryContextUsageSignature(
+  history: Message[],
+  limitTokens: number,
+  limitSource: ModelInputTokenLimitSource,
+): string {
+  let totalTextLength = 0;
+  for (const message of history) totalTextLength += message.text?.length || 0;
+  const last = history[history.length - 1];
+  return [
+    limitTokens,
+    limitSource,
+    history.length,
+    history[0]?.timestamp ?? "",
+    last?.timestamp ?? "",
+    last?.role ?? "",
+    last?.text?.length ?? 0,
+    totalTextLength,
+  ].join("\u0000");
+}
+
 function estimateHistoryContextUsageSnapshot(
   item: Zotero.Item,
   history: Message[],
   surface?: SelectionSurface,
+  conversationKey?: number,
 ): ContextUsageSnapshot | undefined {
   if (!history.length) return undefined;
   const effectiveRequestConfig = resolveEffectiveRequestConfig({
     item,
     surface,
   });
+  const modelName = effectiveRequestConfig.model || "";
+  const inputTokenCap = effectiveRequestConfig.advanced?.inputTokenCap;
+  const identity = {
+    apiBase: effectiveRequestConfig.apiBase,
+    protocol: effectiveRequestConfig.providerProtocol,
+    authMode: effectiveRequestConfig.authMode,
+    profileOverride: effectiveRequestConfig.advanced?.profileOverride,
+  };
+  let signature = "";
+  if (typeof conversationKey === "number") {
+    const resolvedLimit = resolveModelInputTokenLimit(
+      modelName,
+      inputTokenCap,
+      identity,
+    );
+    signature = buildHistoryContextUsageSignature(
+      history,
+      resolvedLimit.limitTokens,
+      resolvedLimit.source,
+    );
+    const cached = historyContextUsageEstimates.get(conversationKey);
+    if (cached && cached.signature === signature) {
+      return cached.snapshot ? { ...cached.snapshot } : undefined;
+    }
+  }
   const messages = buildLLMHistoryMessages(history);
   const inputCap = applyModelInputTokenCap(
     messages,
-    effectiveRequestConfig.model || "",
-    effectiveRequestConfig.advanced?.inputTokenCap,
-    {
-      apiBase: effectiveRequestConfig.apiBase,
-      protocol: effectiveRequestConfig.providerProtocol,
-      authMode: effectiveRequestConfig.authMode,
-      profileOverride: effectiveRequestConfig.advanced?.profileOverride,
-    },
+    modelName,
+    inputTokenCap,
+    identity,
   );
-  if (inputCap.estimatedAfterTokens <= 0) return undefined;
-  return {
-    contextTokens: inputCap.estimatedAfterTokens,
-    contextWindow: inputCap.limitTokens,
-    inputLimitSource: inputCap.limitSource,
-    estimated: true,
-    source: "estimated",
-  };
+  const snapshot: ContextUsageSnapshot | undefined =
+    inputCap.estimatedAfterTokens <= 0
+      ? undefined
+      : {
+          contextTokens: inputCap.estimatedAfterTokens,
+          contextWindow: inputCap.limitTokens,
+          inputLimitSource: inputCap.limitSource,
+          estimated: true,
+          source: "estimated",
+        };
+  if (typeof conversationKey === "number") {
+    historyContextUsageEstimates.delete(conversationKey);
+    if (
+      historyContextUsageEstimates.size >= HISTORY_CONTEXT_USAGE_ESTIMATE_LIMIT
+    ) {
+      const oldest = historyContextUsageEstimates.keys().next().value;
+      if (oldest !== undefined) historyContextUsageEstimates.delete(oldest);
+    }
+    historyContextUsageEstimates.set(conversationKey, {
+      signature,
+      snapshot: snapshot ? { ...snapshot } : undefined,
+    });
+  }
+  return snapshot;
 }
 
 export function refreshActiveConversationPanels(
   conversationKey?: number,
 ): void {
   for (const [body, getItem] of activeContextPanels) {
-    if (!(body as Element).isConnected) {
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       continue;
     }
@@ -1822,7 +2093,42 @@ export function refreshActiveConversationPanels(
   }
 }
 
-subscribeModelProviderGroups(refreshActiveConversationPanels);
+// Saved model providers changed (Settings). Each open panel syncs its model
+// controls; chats rebuild only when the runtime model entries they render
+// with changed. See modelProviderPanelSync.ts.
+const modelProviderGroupsPanelSync = createModelProviderGroupsPanelSync({
+  listPanels: () => activeContextPanels.keys(),
+  readModelEntriesSignature: () => JSON.stringify(getAvailableModelEntries()),
+  refreshAllPanels: () => refreshActiveConversationPanels(),
+});
+
+/** Register a panel's light model-control sync for provider changes. */
+export const registerContextPanelModelSync =
+  modelProviderGroupsPanelSync.register;
+
+subscribeModelProviderGroups(
+  modelProviderGroupsPanelSync.onModelProviderGroupsChanged,
+);
+
+// The one writer of a past chat the agent attached (past_chat_attach): the
+// in-memory user message gets the chip, then its row is saved.
+setPastChatAttachHandler(
+  createPastChatAttachHandler({
+    getHistory: (conversationKey) => chatHistory.get(conversationKey),
+    isTemporaryConversation: (conversationKey) =>
+      isEphemeralConversationKey(conversationKey) ||
+      webChatIsolatedConversationKeys.has(conversationKey),
+    persistUserMessage: (request, message) =>
+      updateStoredLatestUserMessageByConversation(
+        request.conversationKey,
+        toStoredUserRowPatch(message),
+        request.conversationSystem,
+        { expectedTimestamp: request.userMessageTimestamp },
+      ),
+    refreshConversation: (conversationKey) =>
+      refreshActiveConversationPanels(conversationKey),
+  }),
+);
 
 function accumulateSessionTokens(
   conversationKey: number,
@@ -1919,6 +2225,8 @@ async function updateStoredLatestUserMessageByConversationUnlocked(
   conversationSystem?: ConversationSystem | null,
   options?: UpdateLatestUserMessageOptions,
 ): Promise<void> {
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(conversationKey)) return;
   const expectedGeneration = Number(
     (message as StoredChatMessage).conversationGeneration,
   );
@@ -1966,6 +2274,7 @@ async function publishPersistedPlanDocumentIfPresent(params: {
   documentId?: string;
   planDocumentId?: string;
 }): Promise<void> {
+  if (isEphemeralConversationKey(params.conversationKey)) return;
   const visibleMarkdown = params.text || "";
   if (!visibleMarkdown) return;
   const document = await deliverPendingPlanDocumentMessage({
@@ -1975,9 +2284,12 @@ async function publishPersistedPlanDocumentIfPresent(params: {
       ? Math.floor(Number(params.timestamp))
       : Date.now(),
     documentId: params.documentId || params.planDocumentId,
+    // Announce before the delivered mark commits: a failure here leaves the
+    // outbox entry pending, so the next first load repairs the trace.
+    beforeDelivered: (pending) =>
+      announceFinalizedMaterialForRun(params.agentRunId, pending),
   });
   if (!document) return;
-  await announceFinalizedMaterialForRun(params.agentRunId, document);
   // Delivery is what announces the finalized material. Refresh this
   // conversation's views once it is durable, so the trace paints the material
   // row, without rebuilding unrelated chats that the user may be reading.
@@ -2055,6 +2367,8 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
   conversationSystem?: ConversationSystem | null,
   options?: UpdateLatestAssistantMessageOptions,
 ): Promise<boolean> {
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(conversationKey)) return false;
   const expectedGeneration = Number(
     (message as StoredChatMessage).conversationGeneration,
   );
@@ -2173,6 +2487,8 @@ export async function updateStoredAssistantQuoteLocations(
   const conversationKey = Math.floor(Number(request.conversationKey));
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return false;
   if (!request.writes.length) return false;
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(conversationKey)) return false;
   return withConversationWriteLock(conversationKey, async () => {
     if (
       !isConversationWriteGenerationCurrent(
@@ -2245,6 +2561,8 @@ async function persistConversationMessage(
   conversationSystem?: ConversationSystem | null,
   options: { rethrow?: boolean } = {},
 ): Promise<void> {
+  // A temporary side chat's key (reserved band) is never persisted.
+  if (isEphemeralConversationKey(conversationKey)) return;
   try {
     const expectedGeneration = Number(message.conversationGeneration);
     if (
@@ -2310,6 +2628,26 @@ async function persistConversationMessage(
   } catch (err) {
     appLogger.warn("LLM: Failed to persist chat message", err);
     if (options.rethrow) throw err;
+  }
+}
+
+/**
+ * Stores finished turns, in order, in a conversation the panel is about to
+ * open (Inline Ask's Continue in sidebar), through the same store routing
+ * and upkeep as a sent message. Throws on the first row that fails.
+ */
+export async function persistSeededConversationMessages(
+  conversationKey: number,
+  messages: readonly StoredChatMessage[],
+  conversationSystem: ConversationSystem,
+): Promise<void> {
+  for (const message of messages) {
+    await persistConversationMessage(
+      conversationKey,
+      message,
+      conversationSystem,
+      { rethrow: true },
+    );
   }
 }
 
@@ -2463,6 +2801,25 @@ export function restoreConversationComposeContext(item: Zotero.Item): boolean {
   return true;
 }
 
+/**
+ * A stored conversation's messages for display only (the window's side
+ * panel shows a past chat read-only): no provisioning, no selection or
+ * scope writes, no document outbox, and nothing put in chatHistory.
+ */
+export async function loadConversationMessagesForReadOnlyView(
+  conversationKey: number,
+  conversationSystem?: ConversationSystem | null,
+): Promise<Message[]> {
+  const stored = await loadStoredConversationByKey(
+    conversationKey,
+    PERSISTED_HISTORY_LIMIT,
+    conversationSystem,
+  );
+  const messages = stored.map((message) => toPanelMessage(message));
+  await refreshAttachedConversationChecks(messages);
+  return messages;
+}
+
 function toPanelMessage(message: StoredChatMessage): Message {
   const screenshotImages = Array.isArray(message.screenshotImages)
     ? message.screenshotImages.filter((entry) => Boolean(entry))
@@ -2516,6 +2873,9 @@ function toPanelMessage(message: StoredChatMessage): Message {
     message.selectedCollectionContexts,
   );
   const selectedTagContexts = normalizeTagContexts(message.selectedTagContexts);
+  const attachedConversations = normalizeAttachedConversations(
+    message.attachedConversations,
+  );
   return {
     // Preserve the immutable database row identity through the runtime
     // history model. Turn-deletion intents use this ID as the primary fence;
@@ -2558,6 +2918,9 @@ function toPanelMessage(message: StoredChatMessage): Message {
     selectedTagContexts: selectedTagContexts.length
       ? selectedTagContexts
       : undefined,
+    attachedConversations: attachedConversations.length
+      ? attachedConversations
+      : undefined,
     paperContextsExpanded: false,
     screenshotImages,
     attachments,
@@ -2593,6 +2956,16 @@ export async function ensureConversationLoaded(
     ? resolveSelectionSurfaceForBody(options.body)
     : undefined;
   const isWebChatForCaller = () => isEffectiveWebChatRequest(item, surface);
+  // A temporary side chat lives in memory only: no provisioning, no stored
+  // history, no plan-document outbox.
+  const ephemeralKey = getConversationKey(item);
+  if (isEphemeralConversationKey(ephemeralKey)) {
+    blockedConversationLoadKeys.delete(ephemeralKey);
+    if (!chatHistory.has(ephemeralKey)) chatHistory.set(ephemeralKey, []);
+    loadedConversationKeys.add(ephemeralKey);
+    restoreConversationComposeContext(item);
+    return;
+  }
   // Provision first.  A paper's historical default key may have been
   // permanently retired; provisioning then allocates a fresh key and updates
   // the active scope before this function captures the key used by all load,
@@ -2647,21 +3020,28 @@ export async function ensureConversationLoaded(
   if (loadedConversationKeys.has(conversationKey)) {
     await loadConversationForkLinkCache(conversationKey);
     restoreConversationComposeContext(item);
+    recheckAttachedConversationsInBackground(conversationKey);
     return;
   }
   if (
     chatHistory.has(conversationKey) &&
-    !blockedConversationLoadKeys.has(conversationKey)
+    !blockedConversationLoadKeys.has(conversationKey) &&
+    !readOnlyBorrowedConversationKeys.has(conversationKey)
   ) {
     await loadConversationForkLinkCache(conversationKey, loadGeneration);
     loadedConversationKeys.add(conversationKey);
     restoreConversationComposeContext(item);
     return;
   }
-  if (blockedConversationLoadKeys.has(conversationKey)) {
+  if (
+    blockedConversationLoadKeys.has(conversationKey) ||
+    readOnlyBorrowedConversationKeys.has(conversationKey)
+  ) {
+    // A read-only view's display copy is not a load: replace it.
     chatHistory.delete(conversationKey);
     conversationForkLinks.delete(conversationKey);
     blockedConversationLoadKeys.delete(conversationKey);
+    readOnlyBorrowedConversationKeys.delete(conversationKey);
   }
 
   const existingTask = loadingConversationTasks.get(conversationKey);
@@ -2712,36 +3092,58 @@ export async function ensureConversationLoaded(
         PERSISTED_HISTORY_LIMIT,
         conversationSystem,
       );
-      for (const storedMessage of storedMessages) {
-        if (
-          storedMessage.role !== "assistant" ||
-          storedMessage.documentId ||
-          !Number.isFinite(storedMessage.timestamp)
-        ) {
-          continue;
+      const ownerlessAssistantMessages = storedMessages.filter(
+        (storedMessage) =>
+          storedMessage.role === "assistant" &&
+          !storedMessage.documentId &&
+          Number.isFinite(storedMessage.timestamp),
+      );
+      if (ownerlessAssistantMessages.length) {
+        // One query for the conversation instead of one per message.
+        const documentIdsByTimestamp = await loadDocumentIdsForMessageOwners({
+          conversationKey,
+          sourceMessageTimestamps: ownerlessAssistantMessages.map(
+            (storedMessage) => Math.floor(storedMessage.timestamp),
+          ),
+        });
+        for (const storedMessage of ownerlessAssistantMessages) {
+          storedMessage.documentId =
+            documentIdsByTimestamp.get(Math.floor(storedMessage.timestamp)) ||
+            undefined;
         }
-        storedMessage.documentId =
-          (await loadDocumentIdForMessageOwner({
-            conversationKey,
-            sourceMessageTimestamp: Math.floor(storedMessage.timestamp),
-          })) || undefined;
       }
       // A saved quote location holds only while its PDF is the file it was
       // found in; drop the others in memory so the gate checks them again.
       await reconcilePersistedQuoteLocations(storedMessages);
       // Recover the application-level document outbox after a crash between
       // durable message insertion and publication evidence/event delivery.
-      for (const storedMessage of storedMessages) {
-        if (storedMessage.role !== "assistant" || !storedMessage.text) continue;
-        await publishPersistedPlanDocumentIfPresent({
-          conversationKey,
-          text: storedMessage.text,
-          timestamp: storedMessage.timestamp,
-          agentRunId: storedMessage.agentRunId,
-          documentId: storedMessage.documentId,
-          planDocumentId: storedMessage.planDocumentId,
-        });
+      // Only a pending outbox entry needs recovery. Delivering an already
+      // delivered document again opened a transaction and refreshed every
+      // panel showing this chat, an extra full render on each first load.
+      const publishableMessages = storedMessages.filter(
+        (storedMessage) =>
+          storedMessage.role === "assistant" && Boolean(storedMessage.text),
+      );
+      const hasPendingDocumentDelivery =
+        publishableMessages.length > 0 &&
+        (await listPlanDocumentOutboxForConversation(conversationKey)).some(
+          (entry) => entry.status === "pending",
+        );
+      if (hasPendingDocumentDelivery) {
+        for (const storedMessage of publishableMessages) {
+          await publishPersistedPlanDocumentIfPresent({
+            conversationKey,
+            text: storedMessage.text,
+            timestamp: storedMessage.timestamp,
+            agentRunId: storedMessage.agentRunId,
+            documentId: storedMessage.documentId,
+            planDocumentId: storedMessage.planDocumentId,
+          });
+        }
       }
+      // Render reads the existence result from a cache; fill it before the
+      // freshness check so no await sits between that check and the write.
+      await refreshAttachedConversationChecks(storedMessages);
       if (isFrozen()) {
         chatHistory.delete(conversationKey);
         conversationForkLinks.delete(conversationKey);
@@ -2935,6 +3337,85 @@ export function ensureAgentRunTraceLoadedForTests(
   return ensureAgentRunTraceLoaded(runId, body, item);
 }
 
+/**
+ * Each run's web markers, read ahead of its full trace: an old chat's answers
+ * show their markers after one small read of the runs' final events, not
+ * after every full trace (tool results and all) has loaded.
+ */
+const webSourceAnchorsByRun = new Map<string, WebSourceAnchor[]>();
+const webSourceAnchorPreloads = new Set<string>();
+
+/** The answer's web markers: from its trace, else from the read-ahead. */
+function getMessageWebSourceAnchors(
+  message: Message,
+  traceEvents: readonly AgentRunEventRecord[],
+): WebSourceAnchor[] {
+  const fromTrace = getWebSourceAnchorsFromTrace(traceEvents);
+  const runId = message.agentRunId?.trim();
+  if (fromTrace.length || !runId || agentRunTraceCache.has(runId)) {
+    return fromTrace;
+  }
+  return webSourceAnchorsByRun.get(runId) || [];
+}
+
+function preloadWebSourceAnchors(
+  body: Element,
+  item: Zotero.Item,
+  history: readonly Message[],
+): void {
+  // Tests that stand in their own trace loader have no store to read ahead.
+  if (agentRunTraceLoader !== getAgentRunTrace) return;
+  const runIds = Array.from(
+    new Set(
+      history
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.agentRunId?.trim() || "")
+        .filter(
+          (runId) =>
+            runId &&
+            !agentRunTraceCache.has(runId) &&
+            !webSourceAnchorsByRun.has(runId) &&
+            !webSourceAnchorPreloads.has(runId),
+        ),
+    ),
+  );
+  if (!runIds.length) return;
+  const conversationKey = getConversationKey(item);
+  const isFrozen = () =>
+    pendingDeletionStore.isConversationPendingDeletion(conversationKey) ||
+    areConversationWritesFrozen(conversationKey);
+  for (const runId of runIds) webSourceAnchorPreloads.add(runId);
+  void (async () => {
+    try {
+      const events = await listAgentRunEventsForRuns(runIds, ["final"]);
+      const eventsByRun = new Map<string, AgentRunEventRecord[]>();
+      for (const event of events) {
+        const runEvents = eventsByRun.get(event.runId) || [];
+        runEvents.push(event);
+        eventsByRun.set(event.runId, runEvents);
+      }
+      const shown: string[] = [];
+      for (const runId of runIds) {
+        const anchors = getWebSourceAnchorsFromTrace(
+          eventsByRun.get(runId) || [],
+        );
+        webSourceAnchorsByRun.set(runId, anchors);
+        if (anchors.length && !agentRunTraceCache.has(runId)) {
+          shown.push(runId);
+        }
+      }
+      if (isFrozen()) return;
+      for (const runId of shown) {
+        void refreshLoadedTraceMessages(runId, body, item, isFrozen);
+      }
+    } catch (err) {
+      appLogger.warn("LLM: Failed to read web markers ahead", err);
+    } finally {
+      for (const runId of runIds) webSourceAnchorPreloads.delete(runId);
+    }
+  })();
+}
+
 function getCachedAgentRunEvents(
   runId: string | undefined,
 ): AgentRunEventRecord[] {
@@ -3024,10 +3505,13 @@ export function buildPlainMarkdownClipboardText(
   markdownText: string,
   quoteCitations?: QuoteCitation[],
 ): string | null {
-  const safeText = buildQuoteExpandedMarkdown({
-    markdown: stripReceiptStatusForDisplay(sanitizeText(markdownText)).trim(),
-    quoteCitations,
-  });
+  const safeText = buildQuoteExpandedMarkdown(
+    {
+      markdown: stripReceiptStatusForDisplay(sanitizeText(markdownText)).trim(),
+      quoteCitations,
+    },
+    { paragraphCitations: "line-labels" },
+  );
   return safeText || null;
 }
 
@@ -3116,6 +3600,33 @@ export function getSelectedReasoningForItem(
   /** Whose last-used level fills in (surfaceChoices.ts); the sidebar's when omitted. */
   surface?: SelectionSurface,
 ): LLMReasoningConfig | undefined {
+  const selected = peekSelectedReasoningForItem(
+    itemId,
+    modelName,
+    apiBase,
+    providerProtocol,
+    profileOverride,
+    surface,
+  );
+  const cacheKey = reasoningCacheKey(surface, itemId);
+  selectedReasoningCache.set(cacheKey, selected.level);
+  selectedReasoningProviderCache.set(cacheKey, selected.provider);
+  return selected;
+}
+
+/**
+ * The level getSelectedReasoningForItem resolves, without remembering it:
+ * for a reader of the surface's choice that is not the surface itself
+ * (Inline Ask reads the sidebar's level for its own model).
+ */
+export function peekSelectedReasoningForItem(
+  itemId: number,
+  modelName: string,
+  apiBase?: string,
+  providerProtocol?: ProviderProtocol,
+  profileOverride?: ModelProfileOverride,
+  surface?: SelectionSurface,
+): LLMReasoningConfig {
   const detectedProvider = detectReasoningProvider(modelName, apiBase);
   const capabilities = getModelCapabilities({
     provider: detectedProvider === "unsupported" ? undefined : detectedProvider,
@@ -3139,8 +3650,6 @@ export function getSelectedReasoningForItem(
     level: saved || "auto",
   });
   const level = selected.kind === "option" ? selected.option.id : "auto";
-  selectedReasoningCache.set(cacheKey, level);
-  selectedReasoningProviderCache.set(cacheKey, provider);
   return { provider, level };
 }
 
@@ -3328,7 +3837,7 @@ function visitConversationPanelBodies(
   ) => {
     if (visited.has(body)) return;
     visited.add(body);
-    if (!body.isConnected) {
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       return;
     }
@@ -3546,6 +4055,26 @@ function createStreamReasoningHandler(params: {
   };
 }
 
+export function shouldPreserveContextUsageWindow(
+  snapshot: ContextUsageSnapshot | undefined,
+  isCodex: boolean,
+  userLimitIsAuthoritative: boolean,
+): boolean {
+  if (userLimitIsAuthoritative) return false;
+  if (snapshot?.source === "provider") return true;
+  // Codex owns the conversation's context, including tool results that are
+  // absent from visible chat history. Keep its saved window on reopen rather
+  // than replacing it with the model registry's generic fallback. A new usage
+  // event will refresh this last-known (still marked estimated) snapshot.
+  return Boolean(
+    isCodex &&
+    snapshot?.source === "persisted" &&
+    typeof snapshot.contextWindow === "number" &&
+    Number.isFinite(snapshot.contextWindow) &&
+    snapshot.contextWindow > 0,
+  );
+}
+
 export function resolveUsageContextWindow(params: {
   providerContextWindow?: number;
   providerContextWindowIsAuthoritative?: boolean;
@@ -3644,7 +4173,7 @@ function createStreamUsageHandler(params: {
       fallbackContextWindow: params.fallbackContextWindow,
       fallbackInputLimitSource: params.fallbackInputLimitSource,
     });
-    if (!snapshot) return;
+    if (!snapshot || !isLivePanelBody(params.body)) return;
     renderContextUsageSnapshot(params.body, params.tokenUsageEl, snapshot);
   };
 }
@@ -3986,7 +4515,10 @@ type CodexSendRequestSite = {
   conversationGeneration?: number;
   userMessage: Pick<
     Message,
-    "timestamp" | "citationPaperContexts" | "pinnedPaperContexts"
+    | "timestamp"
+    | "citationPaperContexts"
+    | "pinnedPaperContexts"
+    | "attachedConversations"
   >;
   item: Zotero.Item;
   shownQuestion: string;
@@ -4049,6 +4581,7 @@ function codexSendRequestContext({
     citationPaperContexts: userMessage.citationPaperContexts,
     selectedCollectionContexts: selectedCollectionContextsForMessage,
     selectedTagContexts: selectedTagContextsForMessage,
+    attachedConversations: userMessage.attachedConversations,
     attachments: modelAttachments || attachments,
     skillAttachments: attachments,
     localDocuments,
@@ -4093,6 +4626,7 @@ type CodexRetryRequestSite = {
       | "citationPaperContexts"
       | "forcedSkillIds"
       | "pinnedPaperContexts"
+      | "attachedConversations"
     >;
   };
   item: Zotero.Item;
@@ -4140,6 +4674,7 @@ function codexRetryRequestContext({
     citationPaperContexts: retryPair.userMessage.citationPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
+    attachedConversations: retryPair.userMessage.attachedConversations,
     attachments,
     skillAttachments: attachments,
     localDocuments: retryLocalDocuments,
@@ -4200,26 +4735,42 @@ async function prepareFinalContextPlanChatRequest(params: {
   requestParams: ChatParams;
   contextPlan: ContextPlanForRequest;
   combinedContext: string;
+  /** The conversation sent on; a side chat's adds its background block. */
+  conversationKey?: number;
 }): Promise<PreparedContextPlanChatRequest> {
-  const previewSystemMessages = buildContextPlanSystemMessages({
-    strategy: params.contextPlan.strategy,
-    assistantInstruction: params.contextPlan.assistantInstruction,
-    coverageReceiptText:
-      params.contextPlan.fullReadReceipt?.text ||
-      params.contextPlan.coverageReceipt?.text,
-  });
+  // A temporary side chat reads the window's main chat as background, as a
+  // system message: never a chip, never a user message, never stored.
+  const ephemeralBackgroundBlock =
+    params.conversationKey === undefined
+      ? ""
+      : buildEphemeralBackgroundContextBlock(params.conversationKey);
+  const withEphemeralBackground = (messages: string[]): string[] =>
+    ephemeralBackgroundBlock
+      ? [...messages, ephemeralBackgroundBlock]
+      : messages;
+  const previewSystemMessages = withEphemeralBackground(
+    buildContextPlanSystemMessages({
+      strategy: params.contextPlan.strategy,
+      assistantInstruction: params.contextPlan.assistantInstruction,
+      coverageReceiptText:
+        params.contextPlan.fullReadReceipt?.text ||
+        params.contextPlan.coverageReceipt?.text,
+    }),
+  );
   const preview = prepareChatRequest({
     ...params.requestParams,
     systemMessages: previewSystemMessages,
   });
-  const systemMessages = buildContextPlanSystemMessages({
-    strategy: params.contextPlan.strategy,
-    assistantInstruction: params.contextPlan.assistantInstruction,
-    coverageReceiptText:
-      params.contextPlan.fullReadReceipt?.text ||
-      params.contextPlan.coverageReceipt?.text,
-    inputCapEffects: preview.inputCap.effects,
-  });
+  const systemMessages = withEphemeralBackground(
+    buildContextPlanSystemMessages({
+      strategy: params.contextPlan.strategy,
+      assistantInstruction: params.contextPlan.assistantInstruction,
+      coverageReceiptText:
+        params.contextPlan.fullReadReceipt?.text ||
+        params.contextPlan.coverageReceipt?.text,
+      inputCapEffects: preview.inputCap.effects,
+    }),
+  );
   const finalPrepared = prepareChatRequest({
     ...params.requestParams,
     systemMessages,
@@ -4235,6 +4786,10 @@ async function prepareFinalContextPlanChatRequest(params: {
           typeof message.content === "string"
             ? message.content
             : JSON.stringify(message.content ?? ""),
+        ),
+        providerProtocol: finalPrepared.providerProtocol,
+        finalMessageRoles: finalPrepared.messages.map(
+          (message) => message.role,
         ),
         combinedContext: params.combinedContext,
         strategy: params.contextPlan.strategy,
@@ -4482,7 +5037,9 @@ function createQueuedRefresh(
       body?.ownerDocument?.defaultView || Zotero.getMainWindow?.(),
     run: () => {
       if (body) queuedPanelRefreshes.get(body)?.delete(scheduler);
-      if (!body || body.isConnected) refresh();
+      // A closed sender still runs the refresh: it skips the dead body and
+      // keeps the other panels showing the conversation up to date.
+      refresh();
     },
   });
   const schedule = () => {
@@ -4966,6 +5523,13 @@ function buildHistoryMessageForLLM(message: Message): ChatMessage {
 
 function buildLLMHistoryMessages(history: Message[]): ChatMessage[] {
   return history.map((message) => buildHistoryMessageForLLM(message));
+}
+
+/** Stored messages as a loaded chat sends them to the model as history. */
+export function buildLLMHistoryFromStoredMessagesForTests(
+  messages: readonly StoredChatMessage[],
+): ChatMessage[] {
+  return buildLLMHistoryMessages(messages.map(toPanelMessage));
 }
 
 function normalizeModelFileAttachments(
@@ -5481,6 +6045,14 @@ function syncComposeContextForInlineEdit(
     userMessage.selectedTagContexts,
   );
   composeContextStore.tags.replace(item.id, selectedTagContexts);
+  // A chat the agent attached comes back as a user chip: sent again from
+  // the composer, it is the user's choice.
+  composeContextStore.attachedConversations.replace(
+    item.id,
+    withoutAgentAttachedMarker(
+      normalizeAttachedConversations(userMessage.attachedConversations),
+    ),
+  );
   // Clear existing mode overrides for this item, then set full-next for each full-text paper
   composeContextStore.paperSendModes.clearOwner(item.id);
   for (const paperContext of fullTextPaperContexts) {
@@ -5523,6 +6095,7 @@ export async function editLatestUserMessageAndRetry(
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
+    attachedConversations,
     attachments,
     modelAttachments,
     localDocuments: _localDocuments,
@@ -5775,6 +6348,15 @@ export async function editLatestUserMessageAndRetry(
     selectedTagContextsForMessage.length
       ? selectedTagContextsForMessage
       : undefined;
+  if (attachedConversations !== undefined) {
+    const attachedConversationsForMessage = normalizeAttachedConversations(
+      attachedConversations,
+    );
+    retryPair.userMessage.attachedConversations =
+      attachedConversationsForMessage.length
+        ? attachedConversationsForMessage
+        : undefined;
+  }
   retryPair.userMessage.paperContextsExpanded = false;
   retryPair.userMessage.attachments = attachmentsForMessage.length
     ? attachmentsForMessage
@@ -5820,6 +6402,7 @@ export async function editLatestUserMessageAndRetry(
         selectedCollectionContexts:
           retryPair.userMessage.selectedCollectionContexts,
         selectedTagContexts: retryPair.userMessage.selectedTagContexts,
+        attachedConversations: retryPair.userMessage.attachedConversations,
         attachments: retryPair.userMessage.attachments,
         modelAttachments: retryPair.userMessage.modelAttachments,
         modelName: retryPair.userMessage.modelName,
@@ -6202,6 +6785,11 @@ export async function retryLatestAssistantResponse(
     return;
   }
 
+  // A retry streams a new answer into this panel's latest turn; follow it
+  // like a send does.
+  if (ui.chatBox) {
+    setFollowBottomChatScrollSnapshot(conversationKey, ui.chatBox);
+  }
   refreshChatSafely();
   // Local usage ledger for this retry. A retry's tokens are real and are
   // recorded, but the question was already counted when it was first asked.
@@ -6238,6 +6826,18 @@ export async function retryLatestAssistantResponse(
     assistantTurn.rollback();
     restoreAssistantSnapshot(assistantMessage, assistantSnapshot);
     restoreRetryUserSnapshot(retryPair.userMessage, userSnapshot);
+    // The retry started its question afresh: it lists the passages of the
+    // answer brought back.
+    syncTaskAnswerCitations(
+      conversationKey,
+      {
+        turn: taskTurnIndexFor(
+          chatHistory.get(conversationKey) || [],
+          retryPair.userMessage,
+        ),
+      },
+      assistantMessage,
+    );
     refreshChatSafely();
   };
   // Every retry write targets the retried pair's own user row by its stored
@@ -6409,7 +7009,43 @@ export async function retryLatestAssistantResponse(
       await preflightClaudeBridgeLocalPdfCapability();
       if (await stopRetryPreparation()) return;
     }
-    const llmHistory = buildLLMHistoryMessages(historyForLLM);
+    const rawLLMHistory = buildLLMHistoryMessages(historyForLLM);
+    // Attached past chats go into the model messages only; historyForLLM
+    // (the chat messages) stays as it is for the retry bookkeeping. The
+    // retried question is the prompt, so its chats go last, unless the
+    // retry continues an answer and the question is still in the history.
+    const pastChatReadAvailable = shouldUseCodexNativeLightContext({
+      isCodexNativeTurn,
+    });
+    const retriedMessage = continueIncomplete
+      ? undefined
+      : retryPair.userMessage;
+    const llmHistory = await addAttachedPastChatsToSimpleChatHistory({
+      conversationKey,
+      conversationSystem: effectiveConversationSystem,
+      includeCodex: isCodexNativeTurn,
+      pastChatReadAvailable,
+      libraryID: item.libraryID,
+      messages: historyForLLM,
+      rawHistory: rawLLMHistory,
+      currentMessage: pastChatHistoryCurrentMessage(
+        isCodexNativeTurn,
+        retriedMessage,
+      ),
+      effectiveRequestConfig,
+    });
+    // A retry sends the block into the thread again, as it sends the
+    // question again.
+    const codexPastChatText = isCodexNativeTurn
+      ? await renderCodexCurrentTurnPastChatText({
+          conversationKey,
+          libraryID: item.libraryID,
+          message: retriedMessage,
+          pastChatReadAvailable,
+          effectiveRequestConfig,
+        })
+      : null;
+    if (await stopRetryPreparation()) return;
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
     if (effectiveConversationSystem === "upstream") {
       await preflightRequestModelCapabilities({
@@ -6527,6 +7163,7 @@ export async function retryLatestAssistantResponse(
         requestParams,
         contextPlan,
         combinedContext,
+        conversationKey,
       });
     if (await stopRetryPreparation()) return;
     if (workflowTestIntercepted) {
@@ -6629,6 +7266,7 @@ export async function retryLatestAssistantResponse(
             conversationGeneration,
             model: effectiveRequestConfig.model,
             messages: finalPrepared.messages,
+            attachedPastChatText: codexPastChatText || undefined,
             reasoning: effectiveRequestConfig.reasoning,
             signal: getAbortController(conversationKey)?.signal,
             codexPath: getEffectiveCodexAppServerBinaryPath(
@@ -6904,6 +7542,7 @@ export async function editUserTurnAndRetry(opts: {
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  attachedConversations?: AttachedConversationRef[];
   attachments?: ChatAttachment[];
   modelAttachments?: ChatAttachment[];
   localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
@@ -6944,6 +7583,7 @@ export async function editUserTurnAndRetry(opts: {
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
+    attachedConversations,
     attachments,
     modelAttachments,
     localDocuments: _localDocuments,
@@ -7269,6 +7909,14 @@ export async function editUserTurnAndRetry(opts: {
   userMsg.selectedTagContexts = selectedTagContextsForMessage.length
     ? selectedTagContextsForMessage
     : undefined;
+  if (attachedConversations !== undefined) {
+    const attachedConversationsForMessage = normalizeAttachedConversations(
+      attachedConversations,
+    );
+    userMsg.attachedConversations = attachedConversationsForMessage.length
+      ? attachedConversationsForMessage
+      : undefined;
+  }
   userMsg.paperContextsExpanded = false;
   userMsg.attachments = attachmentsForMessage.length
     ? attachmentsForMessage
@@ -7308,6 +7956,7 @@ export async function editUserTurnAndRetry(opts: {
         citationPaperContexts: getMessageCitationPaperContexts(userMsg),
         selectedCollectionContexts: userMsg.selectedCollectionContexts,
         selectedTagContexts: userMsg.selectedTagContexts,
+        attachedConversations: userMsg.attachedConversations,
         attachments: userMsg.attachments,
         modelAttachments: userMsg.modelAttachments,
         modelName: userMsg.modelName,
@@ -7420,7 +8069,7 @@ function buildActiveNoteRuntimeContext(
     title: noteSession.title,
     noteKind: noteSession.noteKind,
     parentItemId: noteSession.parentItemId,
-    noteText: snapshot.text,
+    noteText: noteHtmlToModelText(snapshot.html),
     noteHtml,
   };
 }
@@ -7747,6 +8396,17 @@ async function buildAgentRuntimeRequest(
     // is temporarily unavailable.
   }
   const conversationInstanceID = registeredConversation?.instanceID;
+  const attachedConversations = normalizeAttachedConversations(
+    params.attachedConversations,
+  );
+  const attachedConversationScope = collectAttachedConversationScope(
+    params.conversationKey,
+    attachedConversations,
+  );
+  // A carried-over list can hold more than one message's three chats.
+  const deliveredConversations = normalizeAttachedConversationScope(
+    params.deliveredConversations,
+  );
   return {
     conversationKey: params.conversationKey,
     conversationGeneration: params.conversationGeneration,
@@ -7783,6 +8443,15 @@ async function buildAgentRuntimeRequest(
       params.selectedCollectionContexts,
     ),
     selectedTagContexts: normalizeTagContexts(params.selectedTagContexts),
+    attachedConversations: attachedConversations.length
+      ? attachedConversations
+      : undefined,
+    deliveredConversations: deliveredConversations.length
+      ? deliveredConversations
+      : undefined,
+    attachedConversationScope: attachedConversationScope.length
+      ? attachedConversationScope
+      : undefined,
     availableAttachmentResources: attachmentResourcePool.resources,
     attachmentResourceSummaries: attachmentResourcePool.summaries,
     attachments: params.attachments,
@@ -7810,6 +8479,18 @@ async function buildAgentRuntimeRequest(
             | "max")
         : undefined,
     advanced: params.effectiveRequestConfig.advanced,
+    // The reader model picked for this runtime in the composer's model menu.
+    readerSelection:
+      getReaderSelectionForSurface(
+        readerRuntimeKeyForSystem(
+          params.effectiveRequestConfig.authMode === "codex_app_server"
+            ? "codex"
+            : params.effectiveRequestConfig.modelProviderLabel === "Claude Code"
+              ? "claude_code"
+              : "upstream",
+        ),
+        params.surface || resolveSurfaceForMountedItem(params.item),
+      ) || undefined,
     history: params.history,
     item: params.item,
     systemPrompt: getStringPref("systemPrompt") || undefined,
@@ -8145,6 +8826,12 @@ async function retryLatestAgentResponse(
   if (!retryIsActive()) return true;
   await initAgentSubsystem();
   if (!retryIsActive()) return true;
+  // A retry streams a new answer into this panel's latest turn; follow it
+  // like a send does.
+  const retryChatBox = getPanelRequestUI(body).chatBox;
+  if (agentRetryConversationKey && retryChatBox) {
+    setFollowBottomChatScrollSnapshot(agentRetryConversationKey, retryChatBox);
+  }
   await retryAgentTurn(
     body,
     item,
@@ -8206,6 +8893,7 @@ async function sendAgentQuestion(opts: {
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  attachedConversations?: AttachedConversationRef[];
   attachments?: ChatAttachment[];
   modelAttachments?: ChatAttachment[];
   localDocuments?: readonly import("../../shared/types").LocalDocumentResource[];
@@ -8286,6 +8974,7 @@ export async function sendQuestion(
     fullTextPaperContexts,
     selectedCollectionContexts,
     selectedTagContexts,
+    attachedConversations,
     attachments,
     modelAttachments,
     localDocuments,
@@ -8424,6 +9113,7 @@ export async function sendQuestion(
         fullTextPaperContexts,
         selectedCollectionContexts,
         selectedTagContexts,
+        attachedConversations,
         attachments,
         modelAttachments,
         localDocuments,
@@ -8513,6 +9203,12 @@ export async function sendQuestion(
   };
   if (!reuseAgentFallbackPlaceholder) {
     provisionalHistory.push(optimisticUserMessage, optimisticAssistantMessage);
+    // A send moves this panel to the new turn; a panel left in manual mode
+    // would otherwise draw it below the fold. Other surfaces keep their own
+    // position, and the reader can still scroll away while the answer streams.
+    if (ui.chatBox) {
+      setFollowBottomChatScrollSnapshot(provisionalConversationKey, ui.chatBox);
+    }
   }
   const optimisticHelpers = createPanelUpdateHelpers(
     body,
@@ -8789,6 +9485,9 @@ export async function sendQuestion(
   );
   const selectedTagContextsForMessage =
     normalizeTagContexts(selectedTagContexts);
+  const attachedConversationsForMessage = normalizeAttachedConversations(
+    attachedConversations,
+  );
   let {
     paperContexts: paperContextsForMessage,
     fullTextPaperContexts: fullTextPaperContextsForMessage,
@@ -8877,6 +9576,9 @@ export async function sendQuestion(
     selectedTagContexts: selectedTagContextsForMessage.length
       ? selectedTagContextsForMessage
       : undefined,
+    attachedConversations: attachedConversationsForMessage.length
+      ? attachedConversationsForMessage
+      : undefined,
     forcedSkillIds: opts.forcedSkillIds?.length
       ? opts.forcedSkillIds.slice()
       : undefined,
@@ -8922,6 +9624,7 @@ export async function sendQuestion(
         citationPaperContexts: userMessage.citationPaperContexts,
         selectedCollectionContexts: userMessage.selectedCollectionContexts,
         selectedTagContexts: userMessage.selectedTagContexts,
+        attachedConversations: userMessage.attachedConversations,
         screenshotImages: userMessage.screenshotImages,
         attachments: userMessage.attachments,
         modelAttachments: userMessage.modelAttachments,
@@ -9233,8 +9936,40 @@ export async function sendQuestion(
   try {
     const rawLLMHistory = buildLLMHistoryMessages(historyForLLM);
     // Apply auto-summary compression when the history grows long.
-    const llmHistory =
+    const compressedLLMHistory =
       applyHistoryCompression(conversationKey, rawLLMHistory) ?? rawLLMHistory;
+    // Attached past chats go into the model messages only, never into
+    // historyForLLM or the summary input. The question being sent is the
+    // prompt, so its own chats go last in the history; a native Codex turn
+    // puts them into its turn input instead (codexPastChatText).
+    const pastChatReadAvailable = shouldUseCodexNativeLightContext({
+      isCodexNativeTurn,
+    });
+    const llmHistory = await addAttachedPastChatsToSimpleChatHistory({
+      conversationKey,
+      conversationSystem: effectiveConversationSystem,
+      includeCodex: isCodexNativeTurn,
+      pastChatReadAvailable,
+      libraryID: item.libraryID,
+      messages: historyForLLM,
+      rawHistory: rawLLMHistory,
+      history: compressedLLMHistory,
+      currentMessage: pastChatHistoryCurrentMessage(
+        isCodexNativeTurn,
+        userMessage,
+      ),
+      effectiveRequestConfig,
+    });
+    const codexPastChatText = isCodexNativeTurn
+      ? await renderCodexCurrentTurnPastChatText({
+          conversationKey,
+          libraryID: item.libraryID,
+          message: userMessage,
+          pastChatReadAvailable,
+          effectiveRequestConfig,
+        })
+      : null;
+    if (await stopInactiveRequest()) return;
     const recentPaperContexts = collectRecentPaperContexts(historyForLLM);
 
     if (effectiveConversationSystem === "upstream") {
@@ -9351,6 +10086,7 @@ export async function sendQuestion(
         requestParams,
         contextPlan,
         combinedContext,
+        conversationKey,
       });
     if (await stopInactiveRequest()) return;
     if (workflowTestIntercepted) {
@@ -9454,6 +10190,7 @@ export async function sendQuestion(
             conversationGeneration,
             model: effectiveRequestConfig.model,
             messages: finalPrepared.messages,
+            attachedPastChatText: codexPastChatText || undefined,
             reasoning: effectiveRequestConfig.reasoning,
             signal: getAbortController(conversationKey)?.signal,
             codexPath: getEffectiveCodexAppServerBinaryPath(
@@ -9713,11 +10450,16 @@ function buildInlineEditWidget(
       setInlineEditSavedDraft(body, "");
       // The chips' questions belong to the turn that was edited; they must not
       // ride along with the next message.
-      if (
-        stripSelectedTextQuestionsForItem(
-          editConversationKey ?? getConversationKey(item),
-        )
-      ) {
+      let composerChanged = stripSelectedTextQuestionsForItem(
+        editConversationKey ?? getConversationKey(item),
+      );
+      // Past chats are one-shot like the questions: the edit restored them
+      // into the composer, and they must not attach to the next message.
+      if (composeContextStore.attachedConversations.has(item.id)) {
+        composeContextStore.attachedConversations.delete(item.id);
+        composerChanged = true;
+      }
+      if (composerChanged) {
         activeContextPanelStateSync.get(body)?.();
       }
       if (superseded) {
@@ -9864,6 +10606,8 @@ type MountedAssistantView = {
   text: string;
   quoteCitations?: Message["quoteCitations"];
   quoteOverride?: Message["quoteDisplayOverride"];
+  /** The web markers the answer was drawn with (see webSourceAnchorsKey). */
+  webSourceAnchorsKey: string;
   answer?: HTMLElement;
   streaming?: boolean;
   documentId?: string;
@@ -10011,6 +10755,22 @@ export const createReasoningPanelForTests = createReasoningPanel;
 export const renderReasoningPartForTests = renderReasoningPart;
 export const disposeMountedAssistantViewForTests = disposeMountedAssistantView;
 
+/**
+ * What the answer's web markers depend on. An old chat's answers are drawn
+ * before their run traces load, so the markers arrive later with the same
+ * answer text: this tells an in-place refresh to redraw the answer then.
+ */
+function webSourceAnchorsKey(anchors: readonly WebSourceAnchor[]): string {
+  return anchors
+    .map(
+      (anchor) =>
+        `${anchor.offset}:${anchor.placement || ""}:${anchor.sources
+          .map((source) => source.url)
+          .join(",")}`,
+    )
+    .join("|");
+}
+
 /** Text/activity refreshes never rebuild the conversation or restore its scroll snapshot. */
 function updateMountedAssistantViews(
   body: Element,
@@ -10044,9 +10804,13 @@ function updateMountedAssistantViews(
   }
   for (const message of messages) {
     const view = views.get(message)!;
-    const events = message.agentRunId
-      ? getCachedAgentRunEvents(message.agentRunId)
+    // As the full render: the live events stand in until the run is cached.
+    const cachedEvents = getCachedAgentRunEvents(message.agentRunId);
+    const events = cachedEvents.length
+      ? cachedEvents
       : message.pendingAgentTraceEvents || [];
+    const webSourceAnchors = getMessageWebSourceAnchors(message, events);
+    const anchorsKey = webSourceAnchorsKey(webSourceAnchors);
     let interleaved = false;
     if (view.trace) {
       const trace = renderAgentTrace({
@@ -10056,6 +10820,7 @@ function updateMountedAssistantViews(
         userMessage: view.user,
         events,
         previous: view.trace,
+        readOnly: isChatPanelReadOnly(body),
         actionSummaryHost: view.actionSummaryHost,
         onInterleavedText: () => {
           interleaved = true;
@@ -10071,12 +10836,13 @@ function updateMountedAssistantViews(
     if (
       message.text !== view.text ||
       message.quoteCitations !== view.quoteCitations ||
-      message.quoteDisplayOverride !== view.quoteOverride
+      message.quoteDisplayOverride !== view.quoteOverride ||
+      anchorsKey !== view.webSourceAnchorsKey
     ) {
       const expandedQuoteCards = collectExpandedQuoteCardKeys(view.answer);
       if (!view.answer) {
         view.answer = box.ownerDocument.createElement("div");
-        view.answer.className = "llm-assistant-answer";
+        view.answer.className = `llm-assistant-answer ${CONTENT_FLAT_SCOPE_CLASS}`;
         view.bubble.insertBefore(
           view.answer,
           view.actionSummaryHost.parentElement === view.bubble
@@ -10084,13 +10850,16 @@ function updateMountedAssistantViews(
             : null,
         );
       }
+      // Task progress's "Show in answer" finds the run's answer by it.
+      const answerRunId = message.agentRunId?.trim();
+      if (answerRunId) view.answer.dataset.agentRunId = answerRunId;
       renderAssistantRichText({
         body,
         panelItem: item,
         bubble: view.answer as HTMLDivElement,
         assistantMessage: message,
         pairedUserMessage: view.user,
-        webSourceAnchors: getWebSourceAnchorsFromTrace(events),
+        webSourceAnchors,
         incremental: true,
         onContentRendered: () =>
           scheduleChatScrollReconciliation(getConversationKey(item), box),
@@ -10099,6 +10868,7 @@ function updateMountedAssistantViews(
       view.text = message.text;
       view.quoteCitations = message.quoteCitations;
       view.quoteOverride = message.quoteDisplayOverride;
+      view.webSourceAnchorsKey = anchorsKey;
       updateStreamingTurnNavigator(body, message);
       if (message.text) {
         view.bubble.classList.toggle("streaming", Boolean(message.streaming));
@@ -10120,10 +10890,45 @@ export function refreshChat(
   item?: Zotero.Item | null,
   options: RefreshChatOptions = {},
 ) {
+  renderChatForPanel(body, item, options);
+  const afterRender = getChatPanelExtensions(body)?.afterRender;
+  if (!afterRender || !isLiveDocument(body.ownerDocument)) return;
+  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
+  if (!chatBox) return;
+  try {
+    afterRender(chatBox);
+  } catch (err) {
+    appLogger.warn("LLM: chat panel afterRender failed", err);
+  }
+}
+
+function renderChatForPanel(
+  body: Element,
+  item?: Zotero.Item | null,
+  options: RefreshChatOptions = {},
+) {
+  // A closed window's body draws nothing (writing into it crashes Zotero).
+  if (!isLiveDocument(body.ownerDocument)) return;
   if (item && !isPanelConversationCurrent(body, item)) return;
   const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
   if (!chatBox) return;
   if (item) initializeChatScrollViewport(getConversationKey(item), chatBox);
+  const pendingRender = getPendingChatRender(chatBox);
+  if (
+    item &&
+    options.rerenderAssistantMessages?.size &&
+    pendingRender?.conversationKey === getConversationKey(item)
+  ) {
+    // A message still waiting to be drawn is drawn from its current state
+    // when its turn comes; only the drawn ones need the targeted update.
+    const drawnRerenders = new Set(
+      Array.from(options.rerenderAssistantMessages).filter(
+        (message) => !pendingRender.isPending(message),
+      ),
+    );
+    if (!drawnRerenders.size) return;
+    options = { ...options, rerenderAssistantMessages: drawnRerenders };
+  }
   if (item && options.rerenderAssistantMessages) {
     const rerenderConversationKey = getConversationKey(item);
     let updatedInPlace = false;
@@ -10140,6 +10945,13 @@ export function refreshChat(
     if (updatedInPlace) return;
   }
   const doc = body.ownerDocument!;
+  const panelExtensions = getChatPanelExtensions(body);
+  // A read-only body shows a conversation without any control that writes
+  // to it or starts an edit; display toggles, copy, note, and expand stay.
+  const readOnly = panelExtensions?.readOnly === true;
+  // A side chat's turns are in memory only: no inline edit, retry, or fork.
+  const turnRewriteDisabled = readOnly || panelExtensions?.sideChat === true;
+  const extraAssistantActions = panelExtensions?.extraAssistantActions || [];
   setPromptMenuTarget(body, null);
   const paperContextDisplayCache: PaperContextDisplayCache = new Map();
   const resolvePaperContextForCardDisplay = (
@@ -10147,7 +10959,10 @@ export function refreshChat(
   ): PaperContextRef =>
     resolvePaperContextDisplayRef(paperContext, paperContextDisplayCache);
 
+  wireStartPageTipActions(chatBox, body);
   if (!item) {
+    cancelPendingChatRender(chatBox);
+    setChatBoxConversation(chatBox, null);
     chatBox.innerHTML = getPaperChatStartPageHtml();
     const panelRoot = body.querySelector("#llm-main") as HTMLElement | null;
     if (panelRoot) panelRoot.dataset.startPageActive = "true";
@@ -10181,6 +10996,7 @@ export function refreshChat(
   // Turns queued for deletion stay in memory and DB until the undo window
   // closes; they are only hidden from the render.
   const history = filterMessagesInPendingTurns(conversationKey, rawHistory);
+  preloadWebSourceAnchors(body, item, history);
   const requestedRerenders = options.rerenderAssistantMessages;
   const renderedWrappers = requestedRerenders?.size
     ? (Array.from(chatBox.children) as HTMLElement[])
@@ -10198,12 +11014,16 @@ export function refreshChat(
       item,
       history,
       resolveSelectionSurfaceForBody(body),
+      conversationKey,
     );
     const configuredLimitIsUserAuthoritative =
       recomputedSnapshot?.inputLimitSource === "advanced" ||
       recomputedSnapshot?.inputLimitSource === "user";
-    const providerWindowRemainsEligible =
-      snapshot?.source === "provider" && !configuredLimitIsUserAuthoritative;
+    const providerWindowRemainsEligible = shouldPreserveContextUsageWindow(
+      snapshot,
+      resolveConversationSystemForItem(item) === "codex",
+      configuredLimitIsUserAuthoritative,
+    );
     const reconciledSnapshot =
       snapshot && recomputedSnapshot && !providerWindowRemainsEligible
         ? setContextUsageSnapshot(conversationKey, {
@@ -10270,6 +11090,12 @@ export function refreshChat(
     endInlineEdit(body);
   }
 
+  if (!useTargetedRerender) {
+    // A full rebuild replaces whatever an earlier render still had to draw,
+    // and from here the box shows this conversation.
+    cancelPendingChatRender(chatBox);
+    setChatBoxConversation(chatBox, conversationKey);
+  }
   if (history.length === 0) {
     // [webchat] Show webchat-specific welcome instead of generic instructions
     const effectiveRequestConfig = resolveEffectiveRequestConfig({
@@ -10332,8 +11158,11 @@ export function refreshChat(
     item,
     surface: resolveSelectionSurfaceForBody(body),
   }).providerProtocol;
-  const conversationIsIdle = !history.some((m) => m.streaming);
+  // Older messages of a long conversation can be drawn on later frames; they
+  // read the conversation's busy state when they are drawn.
+  let conversationIsIdle = !history.some((m) => m.streaming);
   const canEditPromptAt = (index: number) =>
+    !turnRewriteDisabled &&
     canEditUserPromptTurn({
       isUser: history[index]?.role === "user",
       hasItem: Boolean(item),
@@ -10363,15 +11192,17 @@ export function refreshChat(
       }
     }
   }
-  for (const [index, msg] of history.entries()) {
-    if (useTargetedRerender && !targetedMessageWrappers.has(msg)) {
-      continue;
-    }
+  const renderMessageInto = (
+    index: number,
+    msg: Message,
+    target: Node,
+  ): void => {
     const isUser = msg.role === "user";
     const assistantPairMsg = history[index + 1];
     const hasAssistantPair = isUser && assistantPairMsg?.role === "assistant";
     const canEditUserPrompt = canEditPromptAt(index);
-    const isInlineEditBubble = panelEditIndex >= 0 && index === panelEditIndex;
+    const isInlineEditBubble =
+      !turnRewriteDisabled && panelEditIndex >= 0 && index === panelEditIndex;
     let hasUserContext = false;
     const wrapper = doc.createElement("div") as HTMLDivElement;
     wrapper.className = `llm-message-wrapper ${isUser ? "user" : "assistant"}`;
@@ -10410,6 +11241,7 @@ export function refreshChat(
       let papersExpanded: HTMLDivElement | null = null;
       let collectionsExpanded: HTMLDivElement | null = null;
       let tagsExpanded: HTMLDivElement | null = null;
+      let attachedConversationsExpanded: HTMLDivElement | null = null;
       let filesExpanded: HTMLDivElement | null = null;
       const selectedTexts = getMessageSelectedTexts(msg);
       const selectedTextSources = normalizeSelectedTextSources(
@@ -10437,11 +11269,15 @@ export function refreshChat(
         msg.selectedCollectionContexts,
       );
       const selectedTagContexts = normalizeTagContexts(msg.selectedTagContexts);
+      const attachedConversationRefs = normalizeAttachedConversations(
+        msg.attachedConversations,
+      );
       hasUserContext =
         hasScreenshotContext ||
         hasSelectedTextContext ||
         selectedCollectionContexts.length > 0 ||
-        selectedTagContexts.length > 0;
+        selectedTagContexts.length > 0 ||
+        attachedConversationRefs.length > 0;
       if (hasScreenshotContext) {
         const screenshotBar = doc.createElementNS(
           HTML_NS,
@@ -10479,7 +11315,9 @@ export function refreshChat(
         previewWrap.appendChild(previewImg);
 
         const thumbButtons: HTMLButtonElement[] = [];
-        screenshotImages.forEach((imageUrl, index) => {
+        const thumbImages: HTMLImageElement[] = [];
+        let thumbSourcesSet = false;
+        screenshotImages.forEach((_imageUrl, index) => {
           const thumbBtn = doc.createElementNS(
             HTML_NS,
             "button",
@@ -10490,8 +11328,10 @@ export function refreshChat(
 
           const thumbImg = doc.createElement("img") as HTMLImageElement;
           thumbImg.className = "llm-user-screenshot-thumb-img";
-          thumbImg.src = imageUrl;
+          // The source is set on first expand (see applyScreenshotState):
+          // decoding base64 images for a collapsed strip slowed every render.
           thumbImg.alt = `Screenshot ${index + 1}`;
+          thumbImages.push(thumbImg);
           thumbBtn.appendChild(thumbImg);
 
           const activateScreenshotThumb = (e: Event) => {
@@ -10539,7 +11379,15 @@ export function refreshChat(
           );
           screenshotExpandedEl.hidden = !expanded;
           screenshotExpandedEl.style.display = expanded ? "flex" : "none";
-          previewImg.src = screenshotImages[activeIndex];
+          if (expanded) {
+            if (!thumbSourcesSet) {
+              thumbSourcesSet = true;
+              thumbImages.forEach((thumbImg, index) => {
+                thumbImg.src = screenshotImages[index];
+              });
+            }
+            previewImg.src = screenshotImages[activeIndex];
+          }
           thumbButtons.forEach((btn, index) => {
             btn.classList.toggle("active", index === activeIndex);
           });
@@ -10749,6 +11597,95 @@ export function refreshChat(
         });
 
         contextBadgesRow.appendChild(tagsBar);
+        hasContextBadge = true;
+      }
+
+      if (attachedConversationRefs.length) {
+        const conversationsBar = doc.createElementNS(
+          HTML_NS,
+          "button",
+        ) as HTMLButtonElement;
+        conversationsBar.type = "button";
+        conversationsBar.className =
+          "llm-user-papers-bar llm-user-conversations-bar";
+
+        const conversationsIcon = createContextIcon(
+          doc,
+          "model",
+          "llm-user-papers-icon",
+        );
+        const conversationsLabel = doc.createElement("span") as HTMLSpanElement;
+        conversationsLabel.className = "llm-user-papers-label";
+        conversationsLabel.textContent =
+          attachedConversationRefs.length === 1 ? "Past chat" : "Past chats";
+        const conversationTexts = attachedConversationRefs.map(
+          formatAttachedConversationLabel,
+        );
+        conversationsLabel.title = conversationTexts.join("\n");
+        conversationsBar.append(conversationsIcon, conversationsLabel);
+
+        const conversationsExpandedEl = doc.createElement(
+          "div",
+        ) as HTMLDivElement;
+        conversationsExpandedEl.className =
+          "llm-user-papers-expanded llm-user-conversations-expanded";
+        attachedConversationsExpanded = conversationsExpandedEl;
+        const conversationsList = doc.createElement("div") as HTMLDivElement;
+        conversationsList.className =
+          "llm-user-papers-list llm-user-conversations-list";
+        conversationTexts.forEach((text) => {
+          const conversationItem = doc.createElement("div") as HTMLDivElement;
+          conversationItem.className =
+            "llm-user-papers-item llm-user-conversations-item";
+          const conversationTitle = doc.createElement(
+            "span",
+          ) as HTMLSpanElement;
+          conversationTitle.className = "llm-user-papers-item-title";
+          conversationTitle.textContent = text;
+          conversationTitle.title = text;
+          conversationItem.append(conversationTitle);
+          conversationsList.appendChild(conversationItem);
+        });
+        conversationsExpandedEl.appendChild(conversationsList);
+
+        const applyConversationsState = () => {
+          const expanded = Boolean(msg.attachedConversationsExpanded);
+          conversationsBar.classList.toggle("expanded", expanded);
+          conversationsBar.setAttribute(
+            "aria-expanded",
+            expanded ? "true" : "false",
+          );
+          conversationsExpandedEl.hidden = !expanded;
+          conversationsExpandedEl.style.display = expanded ? "block" : "none";
+          conversationsBar.title = expanded
+            ? "Collapse past chats"
+            : "Expand past chats";
+        };
+        const toggleConversationsExpanded = () => {
+          msg.attachedConversationsExpanded =
+            !msg.attachedConversationsExpanded;
+          applyConversationsState();
+        };
+        applyConversationsState();
+        conversationsBar.addEventListener("mousedown", (e: Event) => {
+          const mouse = e as MouseEvent;
+          if (mouse.button !== 0) return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleConversationsExpanded();
+        });
+        conversationsBar.addEventListener("click", (e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        conversationsBar.addEventListener("keydown", (e: KeyboardEvent) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleConversationsExpanded();
+        });
+
+        contextBadgesRow.appendChild(conversationsBar);
         hasContextBadge = true;
       }
 
@@ -10997,6 +11934,9 @@ export function refreshChat(
       if (tagsExpanded) {
         wrapper.appendChild(tagsExpanded);
       }
+      if (attachedConversationsExpanded) {
+        wrapper.appendChild(attachedConversationsExpanded);
+      }
       if (papersExpanded) {
         wrapper.appendChild(papersExpanded);
       }
@@ -11233,7 +12173,7 @@ export function refreshChat(
         bubble.style.display = "none";
         // The hidden body no longer carries the edit entry; each expanded
         // question does.
-        if (hasAssistantPair) {
+        if (hasAssistantPair && !turnRewriteDisabled) {
           const questionEls = Array.from(
             wrapper.querySelectorAll(
               ".llm-user-selected-text-expanded .llm-selected-context-question",
@@ -11253,13 +12193,13 @@ export function refreshChat(
       } else {
         renderUserBubbleContent(bubble, sanitizeText(msg.text || ""), doc);
         bubble.classList.toggle("llm-bubble-editable", canEditUserPrompt);
-        if (hasAssistantPair) {
+        if (hasAssistantPair && !turnRewriteDisabled) {
           bubble.addEventListener("click", (e: Event) =>
             startInlineEditFromClick(e, bubble),
           );
         }
       }
-      if (hasPromptTurnPair) {
+      if (hasPromptTurnPair && !readOnly) {
         // A hidden body leaves the turn's chips as the prompt surface.
         const promptMenuSurface = bubble.hidden ? wrapper : bubble;
         promptMenuSurface.addEventListener("contextmenu", (e: Event) => {
@@ -11352,7 +12292,7 @@ export function refreshChat(
       const traceEvents = cachedTraceEvents.length
         ? cachedTraceEvents
         : msg.pendingAgentTraceEvents || [];
-      const webSourceAnchors = getWebSourceAnchorsFromTrace(traceEvents);
+      const webSourceAnchors = getMessageWebSourceAnchors(msg, traceEvents);
       responseWebSourceAnchors = webSourceAnchors;
       let agentUsesInterleavedText = false;
       const actionSummaryHost = doc.createElement("div");
@@ -11365,6 +12305,7 @@ export function refreshChat(
               message: msg,
               userMessage: previousUserMessage,
               events: traceEvents,
+              readOnly: isChatPanelReadOnly(body),
               actionSummaryHost,
               onTraceMissing:
                 agentRunId && !hasCachedTrace
@@ -11380,13 +12321,18 @@ export function refreshChat(
       const agentTraceReplacesAssistantTurn =
         agentTraceEl?.dataset.llmAssistantTurnReplacement === "true";
       let answerHost: HTMLElement | undefined;
+      // renderAssistantRichText decorates citations inside the answer host;
+      // the whole-bubble pass below is only needed for other content.
+      let answerCitationsDecorated = false;
       if (hasAnswerText && !agentUsesInterleavedText) {
         const safeText = buildAssistantDisplayMarkdownForRender(
           msg,
           webSourceAnchors,
         );
         answerHost = doc.createElement("div");
-        answerHost.className = "llm-assistant-answer";
+        answerHost.className = `llm-assistant-answer ${CONTENT_FLAT_SCOPE_CLASS}`;
+        // Task progress's "Show in answer" finds the run's answer by it.
+        if (agentRunId) answerHost.dataset.agentRunId = agentRunId;
         bubble.appendChild(answerHost);
         if (msg.streaming) bubble.classList.add("streaming");
         if (msg.compactMarker) {
@@ -11410,6 +12356,7 @@ export function refreshChat(
                 scheduleChatScrollReconciliation(conversationKey, chatBox);
               },
             });
+            answerCitationsDecorated = true;
           } catch (err) {
             appLogger.warn("LLM render error:", err);
             answerHost.textContent = safeText;
@@ -11509,6 +12456,7 @@ export function refreshChat(
           documentId: msg.documentId || msg.planDocumentId,
           quoteCitations: msg.quoteCitations,
           quoteOverride: msg.quoteDisplayOverride,
+          webSourceAnchorsKey: webSourceAnchorsKey(webSourceAnchors),
           reasoning: mountedReasoning,
         });
       }
@@ -11520,6 +12468,8 @@ export function refreshChat(
       if (hasGeneratedImages) {
         if (!agentTraceReplacesAssistantTurn) {
           renderAssistantGeneratedImagesInto(bubble, generatedImages, doc, {
+            // Part of the answer: the flat style, like the answer text.
+            flatChrome: true,
             onImageLoaded: () => {
               scheduleChatScrollReconciliation(conversationKey, chatBox);
             },
@@ -11533,7 +12483,16 @@ export function refreshChat(
         }
       }
 
-      if (!agentTraceReplacesAssistantTurn) {
+      // A second, whole-bubble pass covers citations that live outside the
+      // answer host: trace text (including interleaved answer text), the
+      // reasoning panel, and generated images. When the answer host is the
+      // only content, it was already decorated while it rendered.
+      const bubbleHasOnlyDecoratedAnswer =
+        answerCitationsDecorated &&
+        !agentTraceEl &&
+        !mountedReasoning &&
+        !hasGeneratedImages;
+      if (!agentTraceReplacesAssistantTurn && !bubbleHasOnlyDecoratedAnswer) {
         decorateCompletedAssistantCitationLinks({
           body,
           panelItem: item,
@@ -11557,7 +12516,7 @@ export function refreshChat(
         bubble.appendChild(typing);
       }
 
-      if (!msg.compactMarker && !agentTraceReplacesAssistantTurn) {
+      if (!msg.compactMarker && !agentTraceReplacesAssistantTurn && !readOnly) {
         attachAssistantResponseContextMenu({
           body,
           doc,
@@ -11567,6 +12526,38 @@ export function refreshChat(
           pairedUserMessage: previousUserMessage,
           conversationKey,
         });
+      }
+      // Files the finished turn saved to disk, as cards under the answer.
+      if (!msg.streaming && !msg.compactMarker && hasAnswerText) {
+        const savedFilesHost = doc.createElement("div");
+        savedFilesHost.className = "llm-saved-files";
+        savedFilesHost.hidden = true;
+        bubble.appendChild(savedFilesHost);
+        const nextUserMessage = history
+          .slice(index + 1)
+          .find((entry) => entry.role === "user");
+        void mountSavedFileCards(savedFilesHost, {
+          target: resolveAgentFilesTargetForPanelItem(item),
+          conversationKey,
+          assistantTimestamp: msg.timestamp,
+          text: msg.text,
+          window: buildTurnWindow({
+            userTimestamp: previousUserMessage?.timestamp || 0,
+            assistantTimestamp: msg.timestamp,
+            nextUserTimestamp: nextUserMessage?.timestamp,
+          }),
+          homeDir: resolveHomeDir(),
+          openViewer: (source, anchor) =>
+            openHtmlPreviewViewer(doc, source, anchor),
+          renderMarkdown: (target, markdown) =>
+            renderRenderedMarkdownInto(
+              target,
+              markdown,
+              target.ownerDocument || doc,
+            ),
+          onMounted: () =>
+            scheduleChatScrollReconciliation(conversationKey, chatBox),
+        }).catch((err) => appLogger.warn("LLM: saved file cards failed", err));
       }
       if (agentTraceEl) bubble.appendChild(actionSummaryHost);
     }
@@ -11621,6 +12612,7 @@ export function refreshChat(
       actions.className = "llm-message-actions";
 
       if (
+        !turnRewriteDisabled &&
         index === latestAssistantIndex &&
         msg.text.trim() &&
         msg.runMode !== "agent" &&
@@ -11663,6 +12655,7 @@ export function refreshChat(
       }
 
       const canShowForkAction =
+        !readOnly &&
         actionUserTimestamp > 0 &&
         canShowForkActionForAssistantTurn(
           body,
@@ -11685,7 +12678,7 @@ export function refreshChat(
           assistantTimestamp: actionAssistantTimestamp,
         });
       }
-      if (actionUserTimestamp > 0) {
+      if (!readOnly && actionUserTimestamp > 0) {
         appendMessageMetaActionButton({
           body,
           doc,
@@ -11699,6 +12692,24 @@ export function refreshChat(
           assistantTimestamp: actionAssistantTimestamp,
         });
       }
+      const extraActionInfo: ChatPanelAssistantActionInfo | null =
+        actionContent?.contentText
+          ? {
+              contentText: actionContent.contentText,
+              conversationKey: actionConversationKey,
+              timestamp: actionAssistantTimestamp,
+            }
+          : null;
+      // Extra actions go before the expand button.
+      if (extraAssistantActions.length && extraActionInfo) {
+        appendExtraAssistantActionButtons({
+          doc,
+          actions,
+          extraActions: extraAssistantActions,
+          info: extraActionInfo,
+        });
+      }
+
       if (actionResponseTarget) {
         appendAssistantResponseExpandAction({
           body,
@@ -11782,7 +12793,9 @@ export function refreshChat(
             }, 2000);
           }
         });
-        webchatStatusRow.appendChild(refreshBtn);
+        // Re-fetching replaces the stored history, so a read-only body
+        // leaves it out.
+        if (!readOnly) webchatStatusRow.appendChild(refreshBtn);
       }
     }
 
@@ -11866,7 +12879,7 @@ export function refreshChat(
           { continueIncomplete: true },
         );
       });
-      outputLimitRow.appendChild(continueButton);
+      if (!readOnly) outputLimitRow.appendChild(continueButton);
     }
 
     if (isUser && inlineEditEl) {
@@ -11902,7 +12915,7 @@ export function refreshChat(
       existingTargetedWrapper.replaceWith(wrapper);
       restoreExpandedQuoteCards(wrapper, expandedQuoteCards);
     } else {
-      chatBox.appendChild(wrapper);
+      target.appendChild(wrapper);
     }
     if (
       !useTargetedRerender &&
@@ -11917,11 +12930,259 @@ export function refreshChat(
       markerBubble.className = "llm-bubble";
       renderForkSourceMarkerInto(markerBubble, body, doc, forkLink);
       markerWrapper.appendChild(markerBubble);
-      chatBox.appendChild(markerWrapper);
+      target.appendChild(markerWrapper);
     }
     if (isUser && hasUserContext) {
       wrapper.classList.add("llm-user-context-aligned");
     }
+  };
+
+  // A long conversation draws the messages at the reading position (the
+  // newest ones, or the ones around a restored scroll anchor) now and the
+  // rest on later frames (see progressiveChatRender.ts).
+  const renderMessagesProgressively = (): void => {
+    const total = history.length;
+    const anchorIndex =
+      baselineSnapshot.mode === "manual"
+        ? resolveAnchorMessageIndex(history, baselineSnapshot.anchor)
+        : -1;
+    const firstPassRange = planProgressiveChatRenderRange({
+      total,
+      allowed:
+        !panelExtensions?.afterRender &&
+        !panelExtensions?.readOnly &&
+        !panelExtensions?.sideChat,
+      scrollMode: baselineSnapshot.mode,
+      anchorIndex,
+      requiredIndices: panelEditIndex >= 0 ? [panelEditIndex] : [],
+    });
+    const firstPass = doc.createDocumentFragment();
+    for (
+      let index = firstPassRange.start;
+      index < firstPassRange.end;
+      index += 1
+    ) {
+      renderMessageInto(index, history[index], firstPass);
+    }
+    chatBox.appendChild(firstPass);
+    if (firstPassRange.start <= 0 && firstPassRange.end >= total) return;
+
+    // Messages [drawnFrom, drawnTo) are in the DOM.
+    let drawnFrom = firstPassRange.start;
+    let drawnTo = firstPassRange.end;
+    const messageWrapperAt = (index: number): HTMLElement | null => {
+      for (const child of Array.from(chatBox.children) as HTMLElement[]) {
+        if (child.dataset.messageIndex === `${index}`) return child;
+      }
+      return null;
+    };
+    // Older messages go before the first drawn one; newer ones after the
+    // last drawn one and its fork marker, before any card that follows.
+    const insertionPoint = (
+      side: "above" | "below",
+    ): { parent: HTMLDivElement; before: ChildNode | null } | null => {
+      if (side === "above") {
+        const first = messageWrapperAt(drawnFrom);
+        return first ? { parent: chatBox, before: first } : null;
+      }
+      const last = messageWrapperAt(drawnTo - 1);
+      if (!last) return null;
+      let before = last.nextElementSibling;
+      while (before?.classList.contains("llm-fork-source-marker-wrapper")) {
+        before = before.nextElementSibling;
+      }
+      return { parent: chatBox, before };
+    };
+    const drawRange = (from: number, to: number, side: "above" | "below") => {
+      const point = insertionPoint(side);
+      if (!point) return false;
+      const fragment = doc.createDocumentFragment();
+      for (let index = from; index < to; index += 1) {
+        renderMessageInto(index, history[index], fragment);
+      }
+      point.parent.insertBefore(fragment, point.before);
+      return true;
+    };
+    // The first paint has two viewports of messages on each side of the
+    // reading position (the bottom, or the restored anchor), so the position
+    // lands exactly and a short scroll never reaches an edge before the
+    // next frame adds more.
+    const readingTop = (): number | null => {
+      if (anchorIndex < 0) return null;
+      const anchor = messageWrapperAt(anchorIndex);
+      return anchor ? anchor.getBoundingClientRect().top : null;
+    };
+    const heightAbove = (): number => {
+      const first = messageWrapperAt(drawnFrom);
+      const top = readingTop();
+      if (!first) return Number.POSITIVE_INFINITY;
+      if (top === null) return chatBox.scrollHeight;
+      return top - first.getBoundingClientRect().top;
+    };
+    const heightBelow = (): number => {
+      const last = messageWrapperAt(drawnTo - 1);
+      const top = readingTop();
+      if (!last || top === null) return Number.POSITIVE_INFINITY;
+      return last.getBoundingClientRect().bottom - top;
+    };
+    const wanted = () => chatBox.clientHeight * 2;
+    while (
+      drawnTo < total &&
+      chatBox.clientHeight > 0 &&
+      heightBelow() < wanted()
+    ) {
+      const to = Math.min(total, drawnTo + PROGRESSIVE_CHAT_RENDER_FILL_STEP);
+      if (!drawRange(drawnTo, to, "below")) break;
+      drawnTo = to;
+    }
+    while (
+      drawnFrom > 0 &&
+      chatBox.clientHeight > 0 &&
+      heightAbove() < wanted()
+    ) {
+      const from = Math.max(0, drawnFrom - PROGRESSIVE_CHAT_RENDER_FILL_STEP);
+      if (!drawRange(from, drawnFrom, "above")) break;
+      drawnFrom = from;
+    }
+    if (drawnFrom <= 0 && drawnTo >= total) return;
+
+    const win = doc.defaultView;
+    const now = () => win?.performance?.now?.() ?? Date.now();
+    const rawHistoryAtRender = rawHistory;
+    const rawLengthAtRender = rawHistory.length;
+    const waiting = new Set<Message>([
+      ...history.slice(0, drawnFrom),
+      ...history.slice(drawnTo),
+    ]);
+    let frameHandle: number | null = null;
+    let done = false;
+    const stop = () => {
+      done = true;
+      if (frameHandle !== null) win?.cancelAnimationFrame(frameHandle);
+      frameHandle = null;
+      waiting.clear();
+      clearPendingChatRender(chatBox, pending);
+    };
+    const isStillShown = () =>
+      isLivePanelBody(chatBox) &&
+      Number(panelRoot?.dataset.itemId || 0) === conversationKey;
+    const drawWaiting = (budgetMs: number) => {
+      frameHandle = null;
+      if (done) return;
+      if (
+        !isStillShown() ||
+        chatHistory.get(conversationKey) !== rawHistoryAtRender ||
+        rawHistoryAtRender.length !== rawLengthAtRender
+      ) {
+        // The history changed under the waiting messages without a full
+        // render of this panel; draw it again from the current history.
+        const redraw = isStillShown();
+        stop();
+        if (redraw) refreshChat(body, item);
+        return;
+      }
+      conversationIsIdle = !history.some((m) => m.streaming);
+      const started = now();
+      const overBudget = () => now() - started >= budgetMs;
+      let inserted = true;
+      withScrollGuard(chatBox, conversationKey, () => {
+        // Newer messages first: the end of the conversation is where new
+        // turns and their cards arrive.
+        if (drawnTo < total) {
+          const point = insertionPoint("below");
+          if (!point) {
+            inserted = false;
+            return;
+          }
+          const fragment = doc.createDocumentFragment();
+          let to = drawnTo;
+          do {
+            renderMessageInto(to, history[to], fragment);
+            waiting.delete(history[to]);
+            to += 1;
+          } while (to < total && !overBudget());
+          // A render started while these were built owns the box now.
+          if (
+            done ||
+            (point.before && point.before.parentNode !== point.parent)
+          ) {
+            inserted = false;
+            return;
+          }
+          point.parent.insertBefore(fragment, point.before);
+          drawnTo = to;
+        }
+        if (drawnFrom > 0 && !overBudget()) {
+          const point = insertionPoint("above");
+          if (!point) {
+            inserted = false;
+            return;
+          }
+          const fragment = doc.createDocumentFragment();
+          let from = drawnFrom;
+          do {
+            from -= 1;
+            const messageNodes = doc.createDocumentFragment();
+            renderMessageInto(from, history[from], messageNodes);
+            fragment.insertBefore(messageNodes, fragment.firstChild);
+            waiting.delete(history[from]);
+          } while (from > 0 && !overBudget());
+          if (
+            done ||
+            (point.before && point.before.parentNode !== point.parent)
+          ) {
+            inserted = false;
+            return;
+          }
+          point.parent.insertBefore(fragment, point.before);
+          drawnFrom = from;
+        }
+        syncUserContextAlignmentWidths(body);
+      });
+      if (!inserted) {
+        stop();
+        return;
+      }
+      if (drawnFrom > 0 || drawnTo < total) {
+        schedule();
+        return;
+      }
+      stop();
+      syncConversationTurnNavigator(body, history, { conversationKey });
+    };
+    const schedule = () => {
+      if (done || frameHandle !== null) return;
+      if (win?.requestAnimationFrame) {
+        frameHandle = win.requestAnimationFrame(() =>
+          drawWaiting(PROGRESSIVE_CHAT_RENDER_FRAME_BUDGET_MS),
+        );
+      } else {
+        drawWaiting(Number.POSITIVE_INFINITY);
+      }
+    };
+    const pending: PendingChatRender = {
+      conversationKey,
+      isPending: (message) => waiting.has(message as Message),
+      flush: () => {
+        if (done) return;
+        if (frameHandle !== null) win?.cancelAnimationFrame(frameHandle);
+        frameHandle = null;
+        drawWaiting(Number.POSITIVE_INFINITY);
+      },
+      cancel: stop,
+    };
+    setPendingChatRender(chatBox, pending);
+    schedule();
+  };
+
+  if (useTargetedRerender) {
+    for (const [index, msg] of history.entries()) {
+      if (targetedMessageWrappers.has(msg)) {
+        renderMessageInto(index, msg, chatBox);
+      }
+    }
+  } else {
+    renderMessagesProgressively();
   }
 
   syncTaskProgressPanel(body);
@@ -11961,6 +13222,9 @@ export function refreshConversationPanels(
   const conversationKey = getConversationKey(primaryItem);
   const refreshedPanels = new Set<Element>();
   const refreshOne = (body: Element, item: Zotero.Item) => {
+    // A closed sending window is skipped (the loop below unregisters it);
+    // the panels that remain still get every chunk and the final answer.
+    if (!isLivePanelBody(body)) return;
     if (!isPanelConversationCurrent(body, item)) return;
     const chatBox = body.querySelector(
       "#llm-chat-box",
@@ -11985,7 +13249,7 @@ export function refreshConversationPanels(
   refreshOne(primaryBody, primaryItem);
 
   for (const [body, getItem] of activeContextPanels.entries()) {
-    if (!(body as Element).isConnected) {
+    if (!isLivePanelBody(body)) {
       unregisterContextPanel(body);
       continue;
     }
