@@ -23,7 +23,7 @@ npm ci --ignore-scripts --prefix integrations/deepseek-harness
 
 ## 接入方式与研究依据
 
-采用官方 `@deepseek-ai/dsh-agent-loop` 等内核包，以 **0.2.0-rc.2** 锁定版本及依赖。Zotero 的 Firefox 运行环境通过原有 Gecko Subprocess 能力启动 Node 工作进程，使用私有标准输入/输出管道交换请求、流事件与工具结果。
+采用官方 `@deepseek-ai/dsh-agent-loop` 等内核包，以 **0.2.2-rc.2** 锁定版本及依赖。Zotero 的 Firefox 运行环境通过原有 Gecko Subprocess 能力启动 Node 工作进程，使用私有标准输入/输出管道交换请求、流事件与工具结果。
 
 官方 TypeScript SDK 使用 Node 子进程；ACP 提供会话、取消和审批协议。此集成直接组合官方 Agent、Session、SystemPrompt、Tools、LLM 和 AgentLoop 服务，使现有 Zotero 工具注册表成为每次调用的执行入口，保留完整的原生工具目录和原生权限评估。
 

@@ -7,6 +7,7 @@ import Compaction from "@deepseek-ai/dsh-compaction-basic";
 import ToolResultPruner from "@deepseek-ai/dsh-compaction-tool-result-pruner";
 import TokenMeter from "@deepseek-ai/dsh-token-meter";
 import Agents from "@deepseek-ai/dsh-agent";
+import agentPackage from "@deepseek-ai/dsh-agent/package.json" with { type: "json" };
 import AgentLoop from "@deepseek-ai/dsh-agent-loop";
 import Llm, {
   createAssistantMessage,
@@ -18,7 +19,8 @@ import Sessions from "@deepseek-ai/dsh-session";
 import Projections from "@deepseek-ai/dsh-session-projection";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import Tools from "@deepseek-ai/dsh-tools";
-import Persistence from "@deepseek-ai/dsh-session-persistence-jsonl";
+import * as NativeToolExecutor from "@deepseek-ai/dsh-tool-executor-native";
+import * as Persistence from "@deepseek-ai/dsh-session-persistence-jsonl";
 import * as Retry from "@deepseek-ai/dsh-llm-retry";
 import { DurableConversation } from "./durable.mjs";
 
@@ -38,6 +40,7 @@ let apiKey = "";
 let durable;
 let checkpointing = false;
 let activeRun;
+let usageSequence = 0;
 
 const send = (message) =>
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n");
@@ -46,6 +49,38 @@ const safeError = (error) => {
   const message = error instanceof Error ? error.message : String(error);
   return apiKey ? message.split(apiKey).join("[redacted]") : message;
 };
+
+function reportUsage(usage, contextWindow) {
+  const {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens = 0,
+    cacheWriteTokens = 0,
+  } = usage;
+  const counts = [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens];
+  if (!counts.every((count) => Number.isSafeInteger(count) && count >= 0))
+    return;
+  const promptTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
+  const countedTokens = promptTokens + outputTokens;
+  // PiAi also returns an all-zero sample when the provider supplied no usage.
+  if (!Number.isSafeInteger(countedTokens) || countedTokens === 0) return;
+  event({
+    type: "usage",
+    round: ++usageSequence,
+    promptTokens,
+    completionTokens: outputTokens,
+    totalTokens: usage.totalTokens ?? countedTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+    ...(contextWindow && promptTokens > 0
+      ? {
+          contextTokens: promptTokens,
+          contextWindow,
+          contextWindowIsAuthoritative: true,
+        }
+      : {}),
+  });
+}
 
 function callHost(name, args, signal) {
   if (signal.aborted) return Promise.reject(new Error("Cancelled"));
@@ -117,7 +152,8 @@ async function initialize(config) {
     includeRuntimeContext: false,
     personaPrefix: config.systemPrompt || "",
   });
-  await context.plugin(Tools, { mode: "native" });
+  await context.plugin(Tools);
+  await context.plugin(NativeToolExecutor);
   await context.plugin(Agents);
   await context.plugin(PiAi, {
     providers: {
@@ -177,6 +213,28 @@ async function initialize(config) {
   });
   await context.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 });
   await context.plugin(Retry);
+  context.on("llm/stream", async function* (options, next) {
+    if (!options.signal?.aborted) event({ type: "provider_dispatched" });
+    let usage;
+    let finish;
+    try {
+      for await (const chunk of next()) {
+        if (chunk.type === "usage") usage = chunk.usage;
+        if (chunk.type === "finish") finish = chunk.reason.kind;
+        yield chunk;
+      }
+    } finally {
+      // The last sample covers this call, even if it did not commit a message.
+      if (usage) {
+        const isMainContext =
+          options.purpose === undefined &&
+          (finish === "stop" ||
+            finish === "tool-calls" ||
+            finish === "max-tokens");
+        reportUsage(usage, isMainContext ? contextWindow : undefined);
+      }
+    }
+  });
   if (Number.isFinite(config.temperature)) {
     context.on("agent/request", async (_payload, next) => ({
       ...(await next()),
@@ -278,7 +336,7 @@ async function initialize(config) {
       text: `Resumed Harness session ${agent.id}; completed tool results and compaction history restored`,
     });
   initialized = true;
-  return { version: "0.2.0-rc.2", sessionId: agent.id };
+  return { version: agentPackage.version, sessionId: agent.id };
 }
 
 async function run(text, resume = false) {
@@ -290,25 +348,6 @@ async function run(text, resume = false) {
   let failure;
   let stopReason;
   const disposers = [];
-  let usageSequence = 0;
-  const reportUsage = (usage) =>
-    event({
-      type: "usage",
-      round: ++usageSequence,
-      promptTokens:
-        usage.inputTokens +
-        (usage.cacheReadTokens || 0) +
-        (usage.cacheWriteTokens || 0),
-      completionTokens: usage.outputTokens,
-      totalTokens:
-        usage.totalTokens ??
-        usage.inputTokens +
-          (usage.cacheReadTokens || 0) +
-          (usage.cacheWriteTokens || 0) +
-          usage.outputTokens,
-      cacheReadTokens: usage.cacheReadTokens,
-      cacheWriteTokens: usage.cacheWriteTokens,
-    });
   try {
     disposers.push(
       context.on("agent/assistant-stream", ({ frame }) => {
@@ -322,7 +361,6 @@ async function run(text, resume = false) {
             round: frame.revision,
             details: chunk.text,
           });
-        if (chunk.type === "usage") reportUsage(chunk.usage);
       }),
     );
     disposers.push(
@@ -340,8 +378,6 @@ async function run(text, resume = false) {
         }
         if (entry.type === "compaction/start")
           event({ type: "status", text: "Compacting context" });
-        if (entry.type === "compaction/summary" && entry.data.usage)
-          reportUsage(entry.data.usage);
         if (entry.type === "compaction/end" && !entry.data.error)
           event({ type: "context_compacted", automatic: true });
         if (entry.type === "tool/result" && entry.surfaceOp?.op === "replace")

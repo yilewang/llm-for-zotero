@@ -112,7 +112,14 @@ async function fixture(t, respond) {
   };
 }
 
-function stream(response, delta, finish = "stop") {
+function stream(
+  response,
+  delta,
+  finish = "stop",
+  usageSamples = [
+    { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+  ],
+) {
   response.writeHead(200, { "Content-Type": "text/event-stream" });
   for (const choice of [
     { delta: { role: "assistant", ...delta }, finish_reason: null },
@@ -121,9 +128,8 @@ function stream(response, delta, finish = "stop") {
     response.write(
       `data: ${JSON.stringify({ id: "completion-1", object: "chat.completion.chunk", model: "fixture-model", choices: [{ index: 0, ...choice }] })}\n\n`,
     );
-  response.write(
-    `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 } })}\n\n`,
-  );
+  for (const usage of usageSamples)
+    response.write(`data: ${JSON.stringify({ choices: [], usage })}\n\n`);
   response.end("data: [DONE]\n\n");
 }
 
@@ -150,7 +156,16 @@ test(
           },
           "tool_calls",
         );
-      else stream(response, { content: "Found 7 papers." });
+      else
+        stream(response, { content: "Found 7 papers." }, "stop", [
+          { prompt_tokens: 50, completion_tokens: 2, total_tokens: 52 },
+          {
+            prompt_tokens: 90,
+            completion_tokens: 10,
+            total_tokens: 100,
+            prompt_tokens_details: { cached_tokens: 25, cache_write_tokens: 5 },
+          },
+        ]);
     });
     await f.request("initialize", {
       ...f.configuration,
@@ -193,7 +208,67 @@ test(
         .join(""),
       result.text,
     );
-    assert(f.events.some((e) => e.type === "usage" && e.promptTokens === 20));
+    assert.deepEqual(
+      f.events.filter((e) => e.type === "usage"),
+      [
+        {
+          type: "usage",
+          round: 1,
+          promptTokens: 20,
+          completionTokens: 10,
+          totalTokens: 30,
+          contextTokens: 20,
+          contextWindow: 131072,
+          contextWindowIsAuthoritative: true,
+        },
+        {
+          type: "usage",
+          round: 2,
+          promptTokens: 90,
+          completionTokens: 10,
+          totalTokens: 100,
+          cacheReadTokens: 25,
+          cacheWriteTokens: 5,
+          contextTokens: 90,
+          contextWindow: 131072,
+          contextWindowIsAuthoritative: true,
+        },
+      ],
+    );
+    assert.equal(
+      f.events.filter((e) => e.type === "provider_dispatched").length,
+      2,
+    );
+  },
+);
+
+test(
+  "reports dispatch without invented usage and keeps usage rounds unique across runs",
+  { timeout: 20000 },
+  async (t) => {
+    const f = await fixture(t, (response, _request, round) =>
+      stream(
+        response,
+        { content: "Answered." },
+        "stop",
+        round === 2 ? [] : undefined,
+      ),
+    );
+    await f.request("initialize", f.configuration);
+    for (const text of ["First", "Second", "Third"])
+      await f.request("run", { text });
+    assert.deepEqual(
+      f.events
+        .filter((e) => e.type === "provider_dispatched" || e.type === "usage")
+        .map((e) => e.round ?? e.type),
+      [
+        "provider_dispatched",
+        1,
+        "provider_dispatched",
+        "provider_dispatched",
+        2,
+      ],
+    );
   },
 );
 
@@ -313,11 +388,13 @@ test(
   "compacts imported history before the first answer and accounts for summary usage",
   { timeout: 20000 },
   async (t) => {
-    const f = await fixture(t, (response, request) =>
-      stream(response, {
-        content: isSummary(request) ? checkpoint : "KEY-42 preserved.",
-      }),
-    );
+    const f = await fixture(t, (response, request) => {
+      if (isSummary(request)) {
+        stream(response, { content: checkpoint }, "stop", [
+          { prompt_tokens: 3000, completion_tokens: 40, total_tokens: 3040 },
+        ]);
+      } else stream(response, { content: "KEY-42 preserved." });
+    });
     await f.request("initialize", {
       ...f.configuration,
       contextWindow: 4096,
@@ -350,6 +427,14 @@ test(
     const usage = f.events.filter((e) => e.type === "usage");
     assert.equal(usage.length, f.requests.length);
     assert.equal(new Set(usage.map((e) => e.round)).size, usage.length);
+    assert.deepEqual(
+      usage.map((e) => [e.promptTokens, e.contextTokens]),
+      [
+        [3000, undefined],
+        [20, 20],
+      ],
+    );
+    assert.equal(usage[1].contextWindow, 4096);
     assert.equal(
       f.events
         .filter((e) => e.type === "message_delta")
@@ -445,6 +530,18 @@ test(
       JSON.stringify(f.requests[2].messages).includes("<compacted-summary>"),
     );
     assert(f.events.some((e) => e.type === "context_compacted"));
+    assert.deepEqual(
+      f.events
+        .filter((e) => e.type === "provider_dispatched" || e.type === "usage")
+        .map((e) => e.round ?? e.type),
+      [
+        "provider_dispatched",
+        "provider_dispatched",
+        1,
+        "provider_dispatched",
+        2,
+      ],
+    );
   },
 );
 
@@ -636,6 +733,11 @@ test(
       JSON.stringify(f.requests[1].messages).includes("Archive checkpoint 0"),
     );
     assert(!f.events.some((e) => e.type === "context_compacted"));
+    const usage = f.events.filter((e) => e.type === "usage");
+    assert.equal(usage.length, 2);
+    assert.equal(usage[0].promptTokens, 20);
+    assert.equal(usage[0].contextTokens, undefined);
+    assert.equal(usage[1].contextTokens, 20);
   },
 );
 

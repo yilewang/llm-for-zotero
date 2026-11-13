@@ -148,7 +148,11 @@ export async function runHarnessProcess(
               entry.resolve(message.result);
             }
           } else if (message.method === "event") {
-            if (message.params?.type === "usage" && !hostTasks.size)
+            if (
+              message.params?.type === "usage" &&
+              typeof message.params.round === "number" &&
+              !hostTasks.size
+            )
               for (const entry of pending.values()) entry.resume(true);
             events = events.then(() => options.onEvent(message.params));
             void events.catch((error) => fail(error));
@@ -251,5 +255,7 @@ export async function runHarnessProcess(
       clearTimeout(timer);
     }
     await Promise.allSettled([read, errors]);
+    // Drain final provider usage even when the run was cancelled or failed.
+    await events.catch(() => undefined);
   }
 }

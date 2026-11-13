@@ -316,8 +316,21 @@ async function runTurn(
         signal: controller.signal,
         onStop: () => controller.abort(),
         onEvent: async (value) => {
-          if (!live()) throw new Error("Conversation was cleared or cancelled");
+          if ((value as { type?: unknown })?.type === "provider_dispatched") {
+            if (generationCurrent()) usage.markDispatched();
+            return;
+          }
           const event = value as AgentEvent;
+          if (event.type === "usage") {
+            // A billable request can finish just as the user stops the turn.
+            if (generationCurrent() && "round" in event) {
+              usage.markDispatched();
+              usage.record(event, { segment: event.round });
+            }
+            if (live()) await emit(event);
+            return;
+          }
+          if (!live()) throw new Error("Conversation was cleared or cancelled");
           if (
             event.type === "message_delta" &&
             typeof event.text === "string"
@@ -331,11 +344,6 @@ async function runTurn(
             event.type === "context_compacted"
           )
             await emit(event);
-          else if (event.type === "usage" && "round" in event) {
-            usage.markDispatched();
-            usage.record(event, { segment: event.round });
-            await emit(event);
-          }
         },
         onToolCall: async (call) => {
           if (
