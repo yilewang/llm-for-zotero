@@ -59,6 +59,7 @@ const LAYERS = [
       // Conversation backends the agent layer drives and imports back.
       "src/claudeCode/",
       "src/codexAppServer/",
+      "src/deepseekHarness/",
       "src/webchat/",
     ],
   },
@@ -178,6 +179,7 @@ const SEALED_EXPORTS = [
       "src/agent/runtime.ts",
       // Codex and Claude Code bridge runs finish their own runs.
       "src/agent/externalBackendBridge.ts",
+      "src/deepseekHarness/runtime.ts",
     ],
   },
 ];

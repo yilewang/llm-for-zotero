@@ -496,6 +496,9 @@ export function buildContextUsagePresentation(params: {
     0,
     Math.min(100, Math.round((normalizedTokens / params.contextWindow) * 100)),
   );
+  const belowOnePercent = normalizedTokens < params.contextWindow / 100;
+  const used = belowOnePercent ? "<1" : String(percentage);
+  const remaining = belowOnePercent ? ">99" : String(100 - percentage);
   const prefix = params.estimated
     ? t("Estimated active context window usage")
     : t("Active context window usage");
@@ -504,12 +507,12 @@ export function buildContextUsagePresentation(params: {
       ? `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} input tokens — approaching limit, run /compact`
       : `${prefix}: ${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} input tokens`;
   return {
-    text: `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} (${percentage}%)`,
+    text: `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} (${used}%)`,
     title: params.cacheLines?.length
       ? `${title}\n${params.cacheLines.join("\n")}`
       : title,
     label: t("Context window:"),
-    summary: `${percentage}% ${t("used")} (${100 - percentage}% ${t("left")})`,
+    summary: `${used}% ${t("used")} (${remaining}% ${t("left")})`,
     detail: `${formatTokenCount(normalizedTokens)} / ${formatTokenCount(params.contextWindow)} ${t("tokens used")}`,
     warning: percentage > 80,
   };

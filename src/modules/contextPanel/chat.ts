@@ -467,7 +467,11 @@ import {
   getMessageQuoteDisplay,
   QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
-import { getCoreAgentRuntime, initAgentSubsystem } from "../../agent/index";
+import {
+  getCoreAgentRuntime,
+  getOriginalAgentRuntime,
+  initAgentSubsystem,
+} from "../../agent/index";
 import {
   appendAgentRunEventAfterLatest,
   getAgentRunTrace,
@@ -4055,9 +4059,14 @@ export function shouldPreserveContextUsageWindow(
   snapshot: ContextUsageSnapshot | undefined,
   isCodex: boolean,
   userLimitIsAuthoritative: boolean,
+  configuredWindow?: number,
 ): boolean {
+  if (snapshot?.source === "provider") {
+    return (
+      !userLimitIsAuthoritative || snapshot.contextWindow === configuredWindow
+    );
+  }
   if (userLimitIsAuthoritative) return false;
-  if (snapshot?.source === "provider") return true;
   // Codex owns the conversation's context, including tool results that are
   // absent from visible chat history. Keep its saved window on reopen rather
   // than replacing it with the model registry's generic fallback. A new usage
@@ -8754,7 +8763,7 @@ function buildAgentEngineDeps(
             getClaudeBridgeRuntime(getCoreAgentRuntime()),
             "claude_code",
           ) as unknown as ReturnType<typeof getCoreAgentRuntime>)
-        : getCoreAgentRuntime(),
+        : getOriginalAgentRuntime(),
     maxSelectedImages: MAX_SELECTED_IMAGES,
   };
 }
@@ -11019,6 +11028,7 @@ function renderChatForPanel(
       snapshot,
       resolveConversationSystemForItem(item) === "codex",
       configuredLimitIsUserAuthoritative,
+      recomputedSnapshot?.contextWindow,
     );
     const reconciledSnapshot =
       snapshot && recomputedSnapshot && !providerWindowRemainsEligible

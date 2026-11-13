@@ -333,6 +333,10 @@ Agent Mode is disabled by default. Turn on **Original Agent** in `Preferences`
 -> **Agent** tab. While it is on, new chats use the Agent. If you also turn on Codex or
 Claude Code, click the runtime badge in the message box to switch between them.
 
+The **Agent** tab also offers **DeepSeek Harness** as an alternative Agent engine.
+It uses the selected OpenAI-compatible API provider and the same tool approval
+controls. See the [DeepSeek Harness setup guide](integrations/deepseek-harness/README.md).
+
 It can read and search your library, draft notes, update metadata or tags with
 confirmation, and undo recent write actions from the conversation.
 
