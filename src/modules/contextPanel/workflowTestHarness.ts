@@ -5352,7 +5352,7 @@ function readStandaloneSidePanelDiagnostics(): WorkflowTestStandaloneSidePanelDi
               "[data-side-read-only-action]",
             ).map((button) => button.dataset.sideReadOnlyAction || ""),
             statusText: textOf(query(readOnlyBody, "#llm-status")),
-            editableBubbles: countIn(readOnlyBody, ".llm-bubble-editable"),
+            editButtons: countIn(readOnlyBody, ".llm-message-action-edit"),
             retryButtons: countIn(readOnlyBody, ".llm-message-action-retry"),
             deleteButtons: countIn(readOnlyBody, ".llm-message-action-delete"),
             forkButtons: countIn(readOnlyBody, ".llm-message-action-fork"),
@@ -5376,7 +5376,7 @@ function readStandaloneSidePanelDiagnostics(): WorkflowTestStandaloneSidePanelDi
             inputHeightPx: sideInput?.getBoundingClientRect().height || 0,
             sendMainButtons: countIn(sideBody, ".llm-message-action-send-main"),
             retryButtons: countIn(sideBody, ".llm-message-action-retry"),
-            editableBubbles: countIn(sideBody, ".llm-bubble-editable"),
+            editButtons: countIn(sideBody, ".llm-message-action-edit"),
             forkButtons: countIn(sideBody, ".llm-message-action-fork"),
             deleteButtons: countIn(sideBody, ".llm-message-action-delete"),
             contextNotes: queryAll(sideBody, ".llm-side-chat-context-note").map(

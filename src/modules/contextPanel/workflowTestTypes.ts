@@ -329,7 +329,7 @@ export type WorkflowTestStandaloneSidePanelDiagnostics = {
     placeholder: string;
     actionButtons: string[];
     statusText: string;
-    editableBubbles: number;
+    editButtons: number;
     retryButtons: number;
     deleteButtons: number;
     forkButtons: number;
@@ -347,7 +347,7 @@ export type WorkflowTestStandaloneSidePanelDiagnostics = {
     inputHeightPx: number;
     sendMainButtons: number;
     retryButtons: number;
-    editableBubbles: number;
+    editButtons: number;
     forkButtons: number;
     deleteButtons: number;
     contextNotes: string[];

@@ -7154,14 +7154,6 @@
   word-spacing: var(--llm-message-word-spacing, normal);
 }
 
-/* Editable user bubble — shows a pointer and subtle hover feedback */
-.llm-bubble-editable {
-  cursor: pointer;
-}
-.llm-bubble-editable:hover {
-  opacity: 0.88;
-}
-
 /* Inline edit widget — the full .llm-input-section is physically moved here */
 .llm-inline-edit-wrapper {
   --llm-inline-edit-border-radius: 10px;
@@ -8245,7 +8237,7 @@
 .llm-message-actions {
   display: inline-flex;
   align-items: center;
-  gap: calc(3px * var(--llm-font-scale, 1));
+  gap: calc(1px * var(--llm-font-scale, 1));
 }
 
 .llm-edit-latest,
@@ -8299,6 +8291,42 @@
 .llm-message-action-copy::before {
   mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%20%3Cpath%20fill%3D%22currentColor%22%20d%3D%22M8%207a3%203%200%200%201%203-3h7a3%203%200%200%201%203%203v7a3%203%200%200%201-3%203h-1v-2h1a1%201%200%200%200%201-1V7a1%201%200%200%200-1-1h-7a1%201%200%200%200-1%201v1H8V7Z%22%2F%3E%20%3Cpath%20fill%3D%22currentColor%22%20d%3D%22M3%2011a3%203%200%200%201%203-3h7a3%203%200%200%201%203%203v7a3%203%200%200%201-3%203H6a3%203%200%200%201-3-3v-7Zm3-1a1%201%200%200%200-1%201v7a1%201%200%200%200%201%201h7a1%201%200%200%200%201-1v-7a1%201%200%200%200-1-1H6Z%22%2F%3E%20%3C%2Fsvg%3E");
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%3E%20%3Cpath%20fill%3D%22currentColor%22%20d%3D%22M8%207a3%203%200%200%201%203-3h7a3%203%200%200%201%203%203v7a3%203%200%200%201-3%203h-1v-2h1a1%201%200%200%200%201-1V7a1%201%200%200%200-1-1h-7a1%201%200%200%200-1%201v1H8V7Z%22%2F%3E%20%3Cpath%20fill%3D%22currentColor%22%20d%3D%22M3%2011a3%203%200%200%201%203-3h7a3%203%200%200%201%203%203v7a3%203%200%200%201-3%203H6a3%203%200%200%201-3-3v-7Zm3-1a1%201%200%200%200-1%201v7a1%201%200%200%200%201%201h7a1%201%200%200%200%201-1v-7a1%201%200%200%200-1-1H6Z%22%2F%3E%20%3C%2Fsvg%3E");
+}
+
+/* A prompt whose turn is busy keeps its edit button hidden. */
+.llm-message-action-edit[hidden] {
+  display: none;
+}
+
+.llm-message-action-edit::before {
+  mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%20%3Cpath%20d%3D%22M11%205H7a3%203%200%200%200-3%203v9a3%203%200%200%200%203%203h9a3%203%200%200%200%203-3v-4%22%20%2F%3E%20%3Cpath%20d%3D%22M18.4%203.6a2%202%200%200%201%202.8%202.8L13%2014.6l-3.5%201%201-3.5z%22%20%2F%3E%20%3C%2Fsvg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%23000%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%20%3Cpath%20d%3D%22M11%205H7a3%203%200%200%200-3%203v9a3%203%200%200%200%203%203h9a3%203%200%200%200%203-3v-4%22%20%2F%3E%20%3Cpath%20d%3D%22M18.4%203.6a2%202%200%200%201%202.8%202.8L13%2014.6l-3.5%201%201-3.5z%22%20%2F%3E%20%3C%2Fsvg%3E");
+}
+
+/* Secondary answer actions show in place of the "more" button. */
+.llm-message-actions-more {
+  display: inline-flex;
+  align-items: center;
+}
+.llm-message-actions-overflow {
+  display: none;
+  align-items: center;
+  gap: calc(1px * var(--llm-font-scale, 1));
+}
+.llm-message-actions-more:hover > .llm-message-actions-overflow,
+.llm-message-actions-more:focus-within > .llm-message-actions-overflow,
+.llm-message-actions-more.is-open > .llm-message-actions-overflow {
+  display: inline-flex;
+}
+.llm-message-actions-more:hover > .llm-message-action-more,
+.llm-message-actions-more:focus-within > .llm-message-action-more,
+.llm-message-actions-more.is-open > .llm-message-action-more {
+  display: none;
+}
+
+.llm-message-action-more::before {
+  mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22%23000%22%3E%20%3Ccircle%20cx%3D%225%22%20cy%3D%2212%22%20r%3D%221.9%22%20%2F%3E%20%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%221.9%22%20%2F%3E%20%3Ccircle%20cx%3D%2219%22%20cy%3D%2212%22%20r%3D%221.9%22%20%2F%3E%20%3C%2Fsvg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22%23000%22%3E%20%3Ccircle%20cx%3D%225%22%20cy%3D%2212%22%20r%3D%221.9%22%20%2F%3E%20%3Ccircle%20cx%3D%2212%22%20cy%3D%2212%22%20r%3D%221.9%22%20%2F%3E%20%3Ccircle%20cx%3D%2219%22%20cy%3D%2212%22%20r%3D%221.9%22%20%2F%3E%20%3C%2Fsvg%3E");
 }
 
 .llm-message-action-note::before {
