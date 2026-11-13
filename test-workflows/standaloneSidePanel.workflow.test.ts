@@ -831,7 +831,7 @@ describe("workflow: standalone side panel", function () {
     );
     assert.deepEqual(readOnly.actionButtons, ["add-paper", "open-main"]);
     assert.equal(readOnly.statusText, "Read-only");
-    assert.equal(readOnly.editableBubbles, 0, "no inline edit");
+    assert.equal(readOnly.editButtons, 0, "no inline edit");
     assert.equal(readOnly.retryButtons, 0, "no retry");
     assert.equal(readOnly.deleteButtons, 0, "no delete");
     assert.equal(readOnly.forkButtons, 0, "no fork");
@@ -992,7 +992,7 @@ describe("workflow: standalone side panel", function () {
     );
     assertSameDesign(side);
     pressFontScaleShortcut("0");
-    assert.equal(side.sideChat!.editableBubbles, 0, "no inline edit");
+    assert.equal(side.sideChat!.editButtons, 0, "no inline edit");
     assert.equal(side.sideChat!.forkButtons, 0, "no fork");
     const firstSideTab = side.activeTab!;
     const firstSideKey = side.sideChat!.conversationKey;

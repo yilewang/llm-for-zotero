@@ -1738,6 +1738,43 @@ function appendMessageMetaActionButton(params: {
   return button;
 }
 
+/**
+ * Shows secondary footer actions behind a "more" button; hovering or focusing
+ * the group shows them in its place. A single action stays visible.
+ */
+function appendMessageActionsOverflow(
+  doc: Document,
+  actions: HTMLElement,
+  overflow: HTMLElement,
+): void {
+  if (overflow.childElementCount === 0) return;
+  if (overflow.childElementCount === 1) {
+    actions.appendChild(overflow.firstElementChild!);
+    return;
+  }
+  const group = doc.createElement("span") as HTMLSpanElement;
+  group.className = "llm-message-actions-more";
+  const more = appendMessageMetaActionButton({
+    doc,
+    actions: group,
+    className: "llm-message-action-more",
+    title: "More actions",
+  });
+  more.setAttribute("aria-haspopup", "true");
+  more.addEventListener("click", (event: Event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    group.classList.add("is-open");
+    (overflow.firstElementChild as HTMLElement | null)?.focus();
+  });
+  group.addEventListener("focusout", (event: Event) => {
+    const next = (event as FocusEvent).relatedTarget as Node | null;
+    if (!next || !group.contains(next)) group.classList.remove("is-open");
+  });
+  group.appendChild(overflow);
+  actions.appendChild(group);
+}
+
 export function appendUserMessageCopyAction(params: {
   body: Element;
   doc: Document;
@@ -11168,24 +11205,14 @@ function renderChatForPanel(
     });
   if (useTargetedRerender) {
     // Completion unlocks every paired prompt, including wrappers retained from
-    // the busy render. Their click handlers read this current eligibility.
+    // the busy render, by showing their edit buttons again.
     for (const wrapper of renderedWrappers) {
       if (wrapper.dataset.messageRole !== "user") continue;
       const editable = canEditPromptAt(Number(wrapper.dataset.messageIndex));
-      wrapper
-        .querySelector(".llm-bubble.user")
-        ?.classList.toggle("llm-bubble-editable", editable);
-      // A hidden-body turn carries the edit cue on its expanded questions.
-      if (wrapper.querySelector(".llm-bubble.user")?.hasAttribute("hidden")) {
-        const questionEls = Array.from(
-          wrapper.querySelectorAll(
-            ".llm-user-selected-text-expanded .llm-selected-context-question",
-          ),
-        ) as Element[];
-        for (const questionEl of questionEls) {
-          questionEl.classList.toggle("llm-bubble-editable", editable);
-        }
-      }
+      const editButton = wrapper.querySelector(
+        ".llm-message-action-edit",
+      ) as HTMLElement | null;
+      if (editButton) editButton.hidden = !editable;
     }
   }
   const renderMessageInto = (
@@ -11220,6 +11247,9 @@ function renderChatForPanel(
       );
     }
     let inlineEditEl: HTMLElement | null = null;
+    // Opens the turn's inline edit; set for every prompt that has an answer.
+    let startPromptInlineEdit: ((e: Event) => void) | null = null;
+    let promptEditable = false;
     let responseWebSourceAnchors: readonly WebSourceAnchor[] = [];
 
     if (isUser) {
@@ -12122,15 +12152,13 @@ function renderChatForPanel(
       const canDeletePromptTurn = Boolean(
         hasPromptTurnPair && !assistantPairMsg?.streaming,
       );
-      const startInlineEditFromClick = (e: Event, editSurface: Element) => {
+      const startInlineEditFromClick = (e: Event) => {
         if (
-          !editSurface.classList.contains("llm-bubble-editable") ||
           !item ||
           !isPanelConversationCurrent(body, item) ||
           chatHistory.get(conversationKey)?.some((message) => message.streaming)
         )
           return;
-        if ((e.target as Element | null)?.closest("a, button")) return;
         e.preventDefault();
         e.stopPropagation();
         const win = body.ownerDocument?.defaultView;
@@ -12167,33 +12195,15 @@ function renderChatForPanel(
         // Each question already shows under its own selection above.
         bubble.hidden = true;
         bubble.style.display = "none";
-        // The hidden body no longer carries the edit entry; each expanded
-        // question does.
-        if (hasAssistantPair && !turnRewriteDisabled) {
-          const questionEls = Array.from(
-            wrapper.querySelectorAll(
-              ".llm-user-selected-text-expanded .llm-selected-context-question",
-            ),
-          ) as Element[];
-          for (const questionEl of questionEls) {
-            questionEl.classList.toggle(
-              "llm-bubble-editable",
-              canEditUserPrompt,
-            );
-            questionEl.addEventListener("click", (e: Event) => {
-              e.stopPropagation();
-              startInlineEditFromClick(e, questionEl);
-            });
-          }
-        }
       } else {
         renderUserBubbleContent(bubble, sanitizeText(msg.text || ""), doc);
-        bubble.classList.toggle("llm-bubble-editable", canEditUserPrompt);
-        if (hasAssistantPair && !turnRewriteDisabled) {
-          bubble.addEventListener("click", (e: Event) =>
-            startInlineEditFromClick(e, bubble),
-          );
-        }
+      }
+      // Editing starts only from the footer edit button, so the prompt text
+      // stays free to select and copy.
+      // A busy turn hides the button; completion shows it again.
+      if (!isInlineEditBubble && hasAssistantPair && !turnRewriteDisabled) {
+        startPromptInlineEdit = startInlineEditFromClick;
+        promptEditable = canEditUserPrompt;
       }
       if (hasPromptTurnPair && !readOnly) {
         // A hidden body leaves the turn's chips as the prompt surface.
@@ -12565,7 +12575,10 @@ function renderChatForPanel(
     time.className = "llm-message-time";
     time.textContent = formatTime(msg.timestamp);
     meta.appendChild(time);
-    if (isUser && shouldShowUserFooterCopyAction(msg)) {
+    if (
+      isUser &&
+      (shouldShowUserFooterCopyAction(msg) || startPromptInlineEdit)
+    ) {
       const actions = doc.createElement("div") as HTMLDivElement;
       actions.className = "llm-message-actions";
       appendUserMessageCopyAction({
@@ -12574,6 +12587,21 @@ function renderChatForPanel(
         actions,
         message: msg,
       });
+      if (startPromptInlineEdit) {
+        const startEdit = startPromptInlineEdit;
+        const editButton = appendMessageMetaActionButton({
+          doc,
+          actions,
+          className: "llm-message-action-edit",
+          title: "Edit query",
+        });
+        editButton.dataset.userAction = "edit";
+        editButton.hidden = !promptEditable;
+        editButton.addEventListener("click", (e: Event) => {
+          if (editButton.hidden) return;
+          startEdit(e);
+        });
+      }
       if (actions.childElementCount > 0) {
         meta.appendChild(actions);
       }
@@ -12650,6 +12678,9 @@ function renderChatForPanel(
         });
       }
 
+      // Fork, delete, extras, and expand sit behind a "more" button.
+      const overflow = doc.createElement("span") as HTMLSpanElement;
+      overflow.className = "llm-message-actions-overflow";
       const canShowForkAction =
         !readOnly &&
         actionUserTimestamp > 0 &&
@@ -12664,7 +12695,7 @@ function renderChatForPanel(
         appendMessageMetaActionButton({
           body,
           doc,
-          actions,
+          actions: overflow,
           className: "llm-message-action-fork",
           title: "Fork this turn",
           responseAction: "fork",
@@ -12678,7 +12709,7 @@ function renderChatForPanel(
         appendMessageMetaActionButton({
           body,
           doc,
-          actions,
+          actions: overflow,
           className: "llm-message-action-delete",
           title: "Delete this turn",
           responseAction: "delete",
@@ -12700,7 +12731,7 @@ function renderChatForPanel(
       if (extraAssistantActions.length && extraActionInfo) {
         appendExtraAssistantActionButtons({
           doc,
-          actions,
+          actions: overflow,
           extraActions: extraAssistantActions,
           info: extraActionInfo,
         });
@@ -12710,10 +12741,12 @@ function renderChatForPanel(
         appendAssistantResponseExpandAction({
           body,
           doc,
-          actions,
+          actions: overflow,
           target: actionResponseTarget,
         });
       }
+
+      appendMessageActionsOverflow(doc, actions, overflow);
 
       if (actions.childElementCount > 0) {
         meta.appendChild(actions);

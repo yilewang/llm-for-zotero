@@ -1287,14 +1287,29 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
 
   async function openEditIn(root: () => HTMLElement | null, marker: string) {
     let bubble: HTMLElement | null = null;
+    let editButton: HTMLElement | null = null;
     await until(
       () => {
         bubble = userBubble(root(), marker);
-        return Boolean(bubble?.classList.contains("llm-bubble-editable"));
+        editButton =
+          (bubble
+            ?.closest(".llm-message-wrapper")
+            ?.querySelector(
+              ".llm-message-action-edit",
+            ) as HTMLElement | null) || null;
+        return Boolean(editButton);
       },
-      () => `the prompt "${marker}" is editable`,
+      () => `the prompt "${marker}" shows an edit button`,
     );
+    // Clicking the prompt text leaves it selectable; only the button edits.
     bubble!.click();
+    await Zotero.Promise.delay(100);
+    assert.lengthOf(
+      editWidgets(root()),
+      0,
+      `clicking the prompt "${marker}" does not open the edit widget`,
+    );
+    editButton!.click();
     await until(
       () => editWidgets(root()).length === 1,
       () =>

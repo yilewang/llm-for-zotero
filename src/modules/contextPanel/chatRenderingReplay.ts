@@ -291,11 +291,8 @@ export function createChatTurnPromptProbes(body: HTMLElement): {
     return probe;
   };
   const isPromptEditable = (message: Message): boolean =>
-    Boolean(
-      wrapperOf(message)
-        ?.querySelector(".llm-bubble.user")
-        ?.classList.contains("llm-bubble-editable"),
-    );
+    wrapperOf(message)?.querySelector<HTMLElement>(".llm-message-action-edit")
+      ?.hidden === false;
   return { wrapperOf, probePromptMenu, isPromptEditable, hidePromptMenu };
 }
 
@@ -391,7 +388,7 @@ export async function exerciseCompletedChatTurnRefresh(panel: {
     const promptLockedWhileStreaming =
       !isPromptEditable(prompt) && streamingProbe?.enabled === false;
     wrapperOf(earlierPrompt)
-      ?.querySelector<HTMLElement>(".llm-bubble")
+      ?.querySelector<HTMLElement>(".llm-message-action-edit")
       ?.click();
     await settle();
     const earlierPromptLockedWhileStreaming =
@@ -471,7 +468,7 @@ export async function exerciseCompletedChatTurnRefresh(panel: {
       ),
     };
     wrapperOf(earlierPrompt)
-      ?.querySelector<HTMLElement>(".llm-bubble")
+      ?.querySelector<HTMLElement>(".llm-message-action-edit")
       ?.click();
     await settle();
     return {
