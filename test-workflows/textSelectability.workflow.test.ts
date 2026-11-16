@@ -199,6 +199,24 @@ describe("workflow: hint and message text is selectable", function () {
     });
     fixtures.push(fixture);
     await api.openStandaloneForItem(fixture.parentItemId);
+    // An empty chat shows only the start page, whose title letters are
+    // aria-hidden and whose actionable tips are buttons, so it carries too
+    // little plain text to audit. Seed a turn: message text is what users copy.
+    await api.seedStandaloneConversation([
+      { role: "user", text: "Standalone selectability question" },
+      {
+        role: "assistant",
+        text:
+          "## A heading the user must be able to copy\n\n" +
+          "Standalone assistant answer that the user must be able to copy.\n\n" +
+          "- A list item the user must be able to copy.\n" +
+          "- Another list item the user must be able to copy.\n" +
+          "- A third list item the user must be able to copy.\n\n" +
+          "A second paragraph the user must be able to copy.\n\n" +
+          "> A quoted line the user must be able to copy.\n\n" +
+          "A closing paragraph the user must be able to copy.",
+      },
+    ]);
     const win = getStandaloneWindow();
     const root = win.document.documentElement;
     assert.isOk(root, "standalone document root");
