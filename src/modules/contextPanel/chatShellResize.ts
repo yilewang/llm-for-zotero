@@ -6,9 +6,10 @@ function parseCssPixels(value: string | null | undefined): number | null {
 
 /**
  * Drag on the sidebar's corner handle (`.llm-chat-shell-resize-handle`) to
- * change the chat area's height. The new height is the start height plus the
- * pointer's vertical travel, within the chat shell's computed min-height and
- * max-height. The handle shows its arc while the drag runs.
+ * change the chat area's height (stored in `--llm-chat-shell-height`). The
+ * new height is the start height plus the pointer's vertical travel, within
+ * the chat shell's computed min-height and max-height. The handle shows its
+ * arc while the drag runs.
  */
 export function installChatShellResizeBehavior(
   win: Window,
@@ -22,6 +23,7 @@ export function installChatShellResizeBehavior(
     minHeight: number;
     maxHeight: number;
     lastHeight: number;
+    growth: number;
   };
 
   let activeDrag: ActiveDrag | null = null;
@@ -45,6 +47,7 @@ export function installChatShellResizeBehavior(
     if (!handle || !root.contains(handle)) return;
     const shell = root.querySelector("#llm-chat-shell") as HTMLElement | null;
     if (!shell) return;
+    const panel = shell.closest<HTMLElement>(".llm-panel");
     const rect = shell.getBoundingClientRect();
     if (!rect.height) return;
 
@@ -68,6 +71,12 @@ export function installChatShellResizeBehavior(
       maxHeight:
         parseCssPixels(computed?.maxHeight) ?? Number.POSITIVE_INFINITY,
       lastHeight: startHeight,
+      // The shell is shorter by the composer's growth; the stored height is
+      // the one-line-composer height, so the shell follows the pointer.
+      growth:
+        parseCssPixels(
+          panel?.style.getPropertyValue("--llm-composer-growth"),
+        ) ?? 0,
     };
     handle.classList.add("llm-resize-handle-active");
     try {
@@ -90,7 +99,10 @@ export function installChatShellResizeBehavior(
       ),
     );
     if (next !== drag.lastHeight) {
-      drag.shell.style.height = `${Math.round(next * 100) / 100}px`;
+      drag.shell.style.setProperty(
+        "--llm-chat-shell-height",
+        `${Math.round((next + drag.growth) * 100) / 100}px`,
+      );
       drag.lastHeight = next;
     }
     event.preventDefault();
