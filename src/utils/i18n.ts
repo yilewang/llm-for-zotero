@@ -954,8 +954,11 @@ const zhCN: Record<string, string> = {
   "Invalid API URL for models endpoint.": "模型列表接口的 API URL 无效。",
   "Failed to fetch models. You can still enter a model ID manually.":
     "获取模型列表失败，你仍可手动输入模型 ID。",
-  "Select a model…": "请选择模型…",
-  "Customized…": "自定义…",
+  "Show models": "显示模型",
+  'Use "{text}"': "使用“{text}”",
+  "not in list": "不在列表中",
+  "{matched} of {total} models match": "{total} 个模型中有 {matched} 个匹配",
+  "{total} models": "{total} 个模型",
   "Loading Codex models…": "正在加载 Codex 模型…",
   "Refreshing Codex models…": "正在刷新 Codex 模型…",
   "Could not refresh Codex models. Showing the last known list.":

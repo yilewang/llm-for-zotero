@@ -1,9 +1,8 @@
 /**
- * Decision logic for the preferences model dropdown (fetch & select).
+ * Decision logic for the preferences model field (fetch & search).
  *
  * The preferences pane owns the DOM; everything that can be decided without a
- * document lives here so the dropdown behaves identically under unit tests
- * and in the Gecko preferences window.
+ * document lives here so the field behaves the same in every host window.
  */
 
 import type { DiscoveredModel } from "../modelCapabilities";
@@ -55,43 +54,61 @@ export function sortModelOptions(models: DiscoveredModel[]): DiscoveredModel[] {
 }
 
 /**
- * Sentinel `<option>` value for the "Customized…" row. Choosing it reveals
- * the manual text input instead of writing a model name.
+ * Suggestions for the searchable model field. `sortedIds` is the catalog
+ * already ordered by `sortModelOptions`. The query is split on whitespace and
+ * every word must occur in the ID (substring, case-insensitive). An empty
+ * query matches everything. `offerCustom` is true when the trimmed query is
+ * not itself a catalog ID, so the list can offer to use the typed text.
  */
-export const CUSTOMIZED_MODEL_OPTION_VALUE = "__llm-for-zotero-customized__";
-
-export type ProviderModelSelectRow =
-  | { kind: "placeholder" }
-  | { kind: "model"; id: string; fromCatalog: boolean }
-  | { kind: "customized" };
+export function filterModelSuggestions(
+  sortedIds: readonly string[],
+  query: string,
+): {
+  matches: string[];
+  total: number;
+  matchCount: number;
+  offerCustom: boolean;
+} {
+  const trimmed = query.trim();
+  const tokens = trimmed.toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = tokens.length
+    ? sortedIds.filter((id) => {
+        const lower = id.toLowerCase();
+        return tokens.every((token) => lower.includes(token));
+      })
+    : [...sortedIds];
+  return {
+    matches,
+    total: sortedIds.length,
+    matchCount: matches.length,
+    offerCustom: Boolean(trimmed) && !sortedIds.includes(trimmed),
+  };
+}
 
 /**
- * Rows for the model `<select>`: the sorted live catalog, plus a saved model
- * the catalog does not know (so an existing configuration never disappears),
- * plus the trailing "Customized…" row. While the manual input is active the
- * saved text lives in that input, so it is not duplicated as an option.
+ * Character ranges `[start, end)` of `id` to highlight for `query`: the first
+ * case-insensitive occurrence of each whitespace-separated word, sorted, with
+ * overlapping or touching ranges merged.
  */
-export function buildProviderModelSelectRows(args: {
-  savedModel: string;
-  catalog: DiscoveredModel[];
-  customizedActive: boolean;
-}): ProviderModelSelectRow[] {
-  const saved = args.savedModel.trim();
-  const sorted = sortModelOptions(args.catalog);
-  const rows: ProviderModelSelectRow[] = [];
-  if (!saved && !args.customizedActive) rows.push({ kind: "placeholder" });
-  if (
-    saved &&
-    !args.customizedActive &&
-    !sorted.some((model) => model.id === saved)
-  ) {
-    rows.push({ kind: "model", id: saved, fromCatalog: false });
+export function highlightRanges(
+  id: string,
+  query: string,
+): Array<[number, number]> {
+  const lower = id.toLowerCase();
+  const ranges: Array<[number, number]> = [];
+  for (const token of query.toLowerCase().split(/\s+/)) {
+    if (!token) continue;
+    const start = lower.indexOf(token);
+    if (start >= 0) ranges.push([start, start + token.length]);
   }
-  for (const model of sorted) {
-    rows.push({ kind: "model", id: model.id, fromCatalog: true });
+  ranges.sort((left, right) => left[0] - right[0]);
+  const merged: Array<[number, number]> = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+    else merged.push([range[0], range[1]]);
   }
-  rows.push({ kind: "customized" });
-  return rows;
+  return merged;
 }
 
 /**
@@ -247,20 +264,4 @@ export function formatModelDiscoveryStatusHint(args: {
     return { text: MODEL_LIST_UNAVAILABLE_HINT, isError: true };
   }
   return null;
-}
-
-/**
- * Which field the model row should present: the catalog dropdown or the plain
- * text input. Manual entry wins while the catalog is unavailable, while the
- * user explicitly chose "Customized…", and always while the input has focus —
- * a late catalog refresh must never yank the field out from under typing.
- */
-export function resolveModelEntryMode(args: {
-  status: ProviderModelFetchStatus;
-  userCustomized: boolean;
-  inputFocused: boolean;
-}): "select" | "manual" {
-  if (args.userCustomized || args.inputFocused) return "manual";
-  if (args.status.kind === "manual_entry") return "manual";
-  return "select";
 }

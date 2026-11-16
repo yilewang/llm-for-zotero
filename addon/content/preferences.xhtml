@@ -257,6 +257,45 @@
     display: flex; align-items: center; gap: 6px; } .llm-pref-panel
     .llm-pref-model-control-slot > .llm-pref-input, .llm-pref-panel
     .llm-pref-model-control-slot > .llm-pref-select { flex: 1; min-width: 0; }
+    /* Searchable model field: the chevron sits inside the input's right edge,
+    and the suggestion list sits in normal flow under the controls row because
+    the card clips overflow. */ .llm-pref-panel .llm-pref-model-control-slot {
+    position: relative; } .llm-pref-panel .llm-pref-model-control-slot >
+    .llm-pref-input[role="combobox"] { padding-right: 28px; } .llm-pref-panel
+    .llm-pref-model-chevron { position: absolute; right: 2px; top: 50%;
+    transform: translateY(-50%); display: flex; align-items: center;
+    justify-content: center; width: 24px; height: 22px; padding: 0; border:
+    none; border-radius: 4px; background: transparent; color: FieldText;
+    opacity: 0.6; font-size: 0; line-height: 0; cursor: pointer; }
+    .llm-pref-panel .llm-pref-model-chevron::before { content: ""; display:
+    block; width: 14px; height: 14px; background-color: currentColor;
+    mask-image:
+    url("chrome://__addonRef__/content/icons/model-field-chevron-down.svg");
+    mask-repeat: no-repeat; mask-position: center; mask-size: contain;
+    transition: transform 120ms ease; } .llm-pref-panel
+    .llm-pref-input[aria-expanded="true"] + .llm-pref-model-chevron::before {
+    transform: rotate(180deg); } .llm-pref-panel .llm-pref-model-chevron:hover {
+    opacity: 0.9; background: rgba(128, 128, 128, 0.12); } .llm-pref-panel
+    .llm-pref-model-list { display: flex; flex-direction: column; border: 1px
+    solid var(--llm-pref-stroke); border-radius: 6px; background:
+    var(--llm-pref-field); color: FieldText; overflow: hidden; } .llm-pref-panel
+    .llm-pref-model-options { position: relative; max-height: 240px; box-sizing:
+    border-box; overflow-y: auto; padding: 2px 0; } .llm-pref-panel
+    .llm-pref-model-option { padding: 3px 8px; font-size: 12px; line-height:
+    1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor:
+    pointer; -moz-user-select: none; user-select: none; } .llm-pref-panel
+    .llm-pref-model-option:hover { background: rgba(128, 128, 128, 0.12); }
+    .llm-pref-panel .llm-pref-model-option[aria-selected="true"] { background:
+    color-mix(in srgb, var(--color-accent, #2563eb) 18%, transparent); }
+    .llm-pref-panel .llm-pref-model-option-match { border-radius: 2px;
+    background: color-mix(in srgb, var(--color-accent, #2563eb) 24%,
+    transparent); font-weight: 600; } .llm-pref-panel
+    .llm-pref-model-option--custom { border-top: 1px solid
+    var(--llm-pref-stroke); } .llm-pref-panel .llm-pref-model-option-note {
+    margin-left: 6px; font-size: 11px; color: var(--fill-secondary, #888); }
+    .llm-pref-panel .llm-pref-model-list-footer { padding: 3px 8px; font-size:
+    11px; color: var(--fill-secondary, #888); border-top: 1px solid
+    var(--llm-pref-stroke); -moz-user-select: none; user-select: none; }
     .llm-pref-panel .llm-pref-advanced-rule { border-top: 1px solid
     var(--llm-pref-stroke); opacity: 0.6; margin: 2px 0; } /* ── Add-provider
     row (AI Providers tab) ─────────────────────────────── An empty slot shaped
