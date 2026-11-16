@@ -97,10 +97,7 @@ import {
   SIDEBAR_TURN_NAVIGATOR_MIN_WIDTH_PX,
   STANDALONE_TURN_NAVIGATOR_MIN_WIDTH_PX,
 } from "./conversationTurnNavigator";
-import {
-  clearManualTextareaHeight,
-  resizeTextareaToContent,
-} from "./textareaSizing";
+import { resizeTextareaToContent } from "./textareaSizing";
 import {
   noteQuoteValidationUserActivity,
   QUOTE_PROVENANCE_REVALIDATION_REQUEST_EVENT,
@@ -677,6 +674,7 @@ import {
   createCodexGlobalPortalItem,
   createCodexPaperPortalItem,
 } from "../../codexAppServer/portal";
+import { installChatShellResizeBehavior } from "./chatShellResize";
 import type { CodexReasoningChoice } from "../../codex/catalogSelection";
 import {
   createCodexDirectModelReasoningController,
@@ -956,6 +954,13 @@ export function setupHandlers(
   const unbindTaskProgressToggle =
     taskProgressToggleBtn && !isStandalonePanel
       ? bindTaskProgressToggle(body, taskProgressToggleBtn)
+      : null;
+  // The sidebar's corner handle resizes the chat area. The standalone window
+  // has none: users resize the window itself.
+  const shellResizeWin = body.ownerDocument?.defaultView;
+  const uninstallChatShellResize =
+    !isStandalonePanel && shellResizeWin
+      ? installChatShellResizeBehavior(shellResizeWin, body as HTMLElement)
       : null;
   const chatShell = body.querySelector(
     "#llm-chat-shell",
@@ -8129,7 +8134,6 @@ export function setupHandlers(
   }
 
   const resetComposerInputHeight = (): void => {
-    clearManualTextareaHeight(inputBox);
     resizeTextareaToContent(inputBox);
   };
 
@@ -9501,6 +9505,7 @@ export function setupHandlers(
     disposeHistoryActivity?.();
     // Before the panel's teardown, which would repaint the button.
     unbindTaskProgressToggle?.();
+    uninstallChatShellResize?.();
     disposeTaskProgressPanel(body);
     disposeConversationTurnNavigator(body);
     disposeChatRendering(body);

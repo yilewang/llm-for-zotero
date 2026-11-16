@@ -1,5 +1,3 @@
-import { applyManualTextareaHeight } from "./textareaSizing";
-
 export const STANDALONE_CONTEXT_FIT_MARGIN_PX = 24;
 export const STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX = 220;
 export const STANDALONE_SIDEBAR_MIN_WIDTH_PX = 160;
@@ -23,27 +21,6 @@ type StandaloneContextFitMetrics = {
 type StandaloneContextFitOptions = {
   marginPx?: number;
   shouldRun?: () => boolean;
-};
-
-export type StandaloneManualVerticalResizeParams = {
-  startScreenY: number;
-  currentScreenY: number;
-  startWindowHeight: number;
-  startElementHeight: number;
-  minWindowHeight: number;
-  minElementHeight: number;
-  maxElementHeight?: number;
-  /** The tallest the window may grow, such as the screen's usable height. */
-  maxWindowHeight?: number;
-};
-
-export type StandaloneManualVerticalResizeFrame = {
-  windowHeight: number;
-  elementHeight: number;
-};
-
-type StandaloneManualResizeOptions = {
-  minWindowHeight?: number;
 };
 
 export type StandaloneSidebarWidthParams = {
@@ -113,12 +90,6 @@ function ceilPositive(value: unknown): number | null {
 function finiteNonNegative(value: unknown, fallback: number): number {
   const parsed = finiteNumber(value);
   return parsed !== null && parsed >= 0 ? parsed : fallback;
-}
-
-function parseCssPixels(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const parsed = Number.parseFloat(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
 export function clampStandaloneSidebarPreferredWidth(
@@ -531,198 +502,6 @@ export function computeStandaloneWindowWidthChange(
     width = Math.max(outerWidth, Math.min(width, roomRight));
   }
   return { width, applied: width - outerWidth };
-}
-
-/**
- * Keep the resized standalone surface attached to the window's lower edge.
- * The same effective height delta is applied to the element and outer window,
- * so growing the composer never steals space from the chat above it.
- */
-export function computeStandaloneManualVerticalResize(
-  params: StandaloneManualVerticalResizeParams,
-): StandaloneManualVerticalResizeFrame {
-  const startScreenY = finiteNumber(params.startScreenY) ?? 0;
-  const currentScreenY = finiteNumber(params.currentScreenY) ?? startScreenY;
-  const startWindowHeight = finiteNonNegative(params.startWindowHeight, 0);
-  const startElementHeight = finiteNonNegative(params.startElementHeight, 0);
-  const minWindowHeight = finiteNonNegative(params.minWindowHeight, 0);
-  const minElementHeight = finiteNonNegative(params.minElementHeight, 0);
-  const maxElementHeight = Math.max(
-    minElementHeight,
-    finiteNonNegative(params.maxElementHeight, Number.POSITIVE_INFINITY),
-  );
-  const pointerDelta = currentScreenY - startScreenY;
-  const requestedElementHeight = Math.min(
-    maxElementHeight,
-    Math.max(minElementHeight, startElementHeight + pointerDelta),
-  );
-  const elementDelta = requestedElementHeight - startElementHeight;
-  const maxWindowHeight = Math.max(
-    startWindowHeight,
-    finiteNonNegative(params.maxWindowHeight, Number.POSITIVE_INFINITY),
-  );
-  const windowDelta = Math.min(
-    Math.max(elementDelta, minWindowHeight - startWindowHeight),
-    Math.max(0, maxWindowHeight - startWindowHeight),
-  );
-  const elementHeight = Math.min(
-    maxElementHeight,
-    Math.max(minElementHeight, startElementHeight + windowDelta),
-  );
-  const appliedDelta = elementHeight - startElementHeight;
-
-  return {
-    windowHeight: Math.max(minWindowHeight, startWindowHeight + appliedDelta),
-    elementHeight,
-  };
-}
-
-/**
- * Replace the native composer resize with a window-aware drag. Sidebar
- * panels retain their native CSS resizing behavior.
- */
-export function installStandaloneVerticalResizeBehavior(
-  win: Window,
-  root: HTMLElement,
-  options: StandaloneManualResizeOptions = {},
-): () => void {
-  type ActiveDrag = {
-    handle: HTMLElement;
-    element: HTMLTextAreaElement;
-    startScreenY: number;
-    startWindowHeight: number;
-    startWindowWidth: number;
-    startWindowTop: number;
-    screenTop: number;
-    screenBottom: number;
-    startElementHeight: number;
-    minElementHeight: number;
-    maxElementHeight: number;
-    lastWindowHeight: number;
-    lastElementHeight: number;
-  };
-
-  let activeDrag: ActiveDrag | null = null;
-  const minWindowHeight = finiteNonNegative(options.minWindowHeight, 500);
-
-  const endDrag = () => {
-    const drag = activeDrag;
-    activeDrag = null;
-    root.classList.remove("llm-standalone-resizing");
-    try {
-      (drag?.handle as any)?.releaseCapture?.();
-    } catch {
-      // Gecko can throw if capture was already released by window teardown.
-    }
-  };
-
-  const onMouseDown = (event: MouseEvent) => {
-    if (event.button !== 0) return;
-    const eventElement = event.target as HTMLElement | null;
-    const handle = eventElement?.closest?.(
-      ".llm-standalone-resize-handle",
-    ) as HTMLElement | null;
-    if (!handle || !root.contains(handle)) return;
-    if (handle.dataset.resizeTarget !== "input") return;
-
-    const element = handle.parentElement?.querySelector(
-      ".llm-input",
-    ) as HTMLTextAreaElement | null;
-    if (!element) return;
-    const rect = element.getBoundingClientRect();
-    const startWindowHeight = finiteNonNegative(
-      win.outerHeight || win.innerHeight,
-      0,
-    );
-    const startWindowWidth = finiteNonNegative(
-      win.outerWidth || win.innerWidth,
-      0,
-    );
-    if (!startWindowHeight || !startWindowWidth || !rect.height) return;
-
-    const computed = win.getComputedStyle(element);
-    const minElementHeight = parseCssPixels(computed?.minHeight) ?? 0;
-    const maxElementHeight =
-      parseCssPixels(computed?.maxHeight) ?? Number.POSITIVE_INFINITY;
-    const screenTop = finiteNumber(win.screen?.availTop) ?? 0;
-    const screenHeight = ceilPositive(win.screen?.availHeight);
-    activeDrag = {
-      handle,
-      element,
-      startScreenY: event.screenY,
-      startWindowHeight,
-      startWindowWidth,
-      startWindowTop: finiteNumber(win.screenY) ?? 0,
-      screenTop,
-      screenBottom:
-        screenHeight === null
-          ? Number.POSITIVE_INFINITY
-          : screenTop + screenHeight,
-      startElementHeight: rect.height,
-      minElementHeight,
-      maxElementHeight,
-      lastWindowHeight: startWindowHeight,
-      lastElementHeight: rect.height,
-    };
-    root.classList.add("llm-standalone-resizing");
-    try {
-      (handle as any).setCapture?.(true);
-    } catch {
-      // Window-level listeners still keep the drag active without capture.
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  };
-
-  const onMouseMove = (event: MouseEvent) => {
-    const drag = activeDrag;
-    if (!drag) return;
-    const frame = computeStandaloneManualVerticalResize({
-      startScreenY: drag.startScreenY,
-      currentScreenY: event.screenY,
-      startWindowHeight: drag.startWindowHeight,
-      startElementHeight: drag.startElementHeight,
-      minWindowHeight,
-      minElementHeight: drag.minElementHeight,
-      maxElementHeight: drag.maxElementHeight,
-      maxWindowHeight: drag.screenBottom - drag.screenTop,
-    });
-
-    if (frame.elementHeight !== drag.lastElementHeight) {
-      applyManualTextareaHeight(drag.element, frame.elementHeight);
-      drag.lastElementHeight = frame.elementHeight;
-    }
-    if (frame.windowHeight !== drag.lastWindowHeight) {
-      // At the screen's lower edge the window grows upward instead, so the
-      // composer stays on screen.
-      const overflow =
-        drag.startWindowTop + frame.windowHeight - drag.screenBottom;
-      if (overflow > 0 && frame.windowHeight > drag.startWindowHeight) {
-        const top = Math.max(
-          drag.screenTop,
-          Math.min(drag.startWindowTop, drag.startWindowTop - overflow),
-        );
-        win.moveTo?.(win.screenX, top);
-      }
-      win.resizeTo(drag.startWindowWidth, frame.windowHeight);
-      drag.lastWindowHeight = frame.windowHeight;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  };
-
-  root.addEventListener("mousedown", onMouseDown, true);
-  win.addEventListener("mousemove", onMouseMove, true);
-  win.addEventListener("mouseup", endDrag, true);
-  win.addEventListener("blur", endDrag);
-
-  return () => {
-    endDrag();
-    root.removeEventListener("mousedown", onMouseDown, true);
-    win.removeEventListener("mousemove", onMouseMove, true);
-    win.removeEventListener("mouseup", endDrag, true);
-    win.removeEventListener("blur", endDrag);
-  };
 }
 
 export function computeStandaloneContextFitHeight(

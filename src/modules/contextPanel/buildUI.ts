@@ -59,6 +59,32 @@ function createActionDropdown(doc: Document, spec: ActionDropdownSpec) {
   return { slot, button, menu };
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// The arc is concentric with the composer section's 16px corner, 4.5px outside
+// it, with 6px tails along both edges. The corner sits at (12, 12) in the 18px
+// view box.
+const RESIZE_ARC_PATH = "M16.5 -10V-4A20.5 20.5 0 0 1 -4 16.5H-10";
+
+/** The arc a corner handle shows on hover. */
+function createResizeArc(doc: Document): Element {
+  const arc = createElement(doc, "div", "llm-resize-arc");
+  const svg = doc.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 18 18");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2.5");
+  svg.setAttribute("stroke-linecap", "round");
+  const path = doc.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", RESIZE_ARC_PATH);
+  svg.appendChild(path);
+  arc.appendChild(svg);
+  return arc;
+}
+
 function buildUI(body: Element, item?: Zotero.Item | null) {
   // Read before the rebuild clears the old panel root, which may carry it.
   const selectionSurface = resolveSelectionSurfaceForBody(body);
@@ -99,6 +125,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     // `auto`, making the host a scroll container that can paint a second
     // scrollbar beside the .llm-messages one.
     hostBody.style.overflowX = "clip";
+    // Room for the composer's corner arc, which reaches past the panel edge
+    // into the item pane's padding. The margin does not affect layout.
+    hostBody.style.overflowClipMargin = "8px";
     hostBody.style.boxSizing = "border-box";
   }
 
@@ -1013,23 +1042,21 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     disabled: !hasItem,
   });
   inputBox.rows = 1;
-  if (isStandaloneBody) {
-    const inputResizeWrap = createElement(
+  composeArea.appendChild(inputBox);
+
+  // The sidebar's corner handle wraps the composer section's outer
+  // bottom-right corner and resizes the chat area. The standalone window has
+  // none: users resize the window itself.
+  if (!isStandaloneBody) {
+    const shellResizeHandle = createElement(
       doc,
       "div",
-      "llm-standalone-input-resize-wrap",
+      "llm-chat-shell-resize-handle",
     );
-    const inputResizeHandle = createElement(
-      doc,
-      "div",
-      "llm-standalone-resize-handle",
-    );
-    inputResizeHandle.dataset.resizeTarget = "input";
-    inputResizeHandle.setAttribute("aria-hidden", "true");
-    inputResizeWrap.append(inputBox, inputResizeHandle);
-    composeArea.appendChild(inputResizeWrap);
-  } else {
-    composeArea.appendChild(inputBox);
+    shellResizeHandle.dataset.resizeTarget = "shell";
+    shellResizeHandle.setAttribute("aria-hidden", "true");
+    shellResizeHandle.appendChild(createResizeArc(doc));
+    inputSection.appendChild(shellResizeHandle);
   }
 
   // Actions row
