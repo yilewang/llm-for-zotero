@@ -457,7 +457,7 @@ describe("workflow: standalone document chat", function () {
     );
   });
 
-  it("starts the standalone composer at one line with only its own resize handle", async function () {
+  it("starts the standalone composer at one line with no resize handle", async function () {
     const fixture = await api.createPaperWithPdfFixture({
       title: "Workflow One Line Composer",
       pdfTitle: "Workflow One Line Composer PDF",
@@ -465,31 +465,16 @@ describe("workflow: standalone document chat", function () {
     fixtures.push(fixture);
     await api.openStandaloneForItem(fixture.parentItemId);
 
-    const resize = await api.exerciseStandaloneComposerManualResize();
+    const composer = await api.inspectStandaloneComposer();
 
-    assert.deepEqual(resize.resizeHandleTargets, ["input"]);
-    assert.closeTo(resize.heightBeforeDrag, resize.oneLineHeight, 1);
+    assert.closeTo(composer.composerHeight, composer.oneLineHeight, 1);
     // The composer text starts where the mode label above it starts.
-    if (resize.textOffsetFromModeLabel !== null) {
-      assert.closeTo(resize.textOffsetFromModeLabel, 0, 0.5);
+    if (composer.textOffsetFromModeLabel !== null) {
+      assert.closeTo(composer.textOffsetFromModeLabel, 0, 0.5);
     }
-    // Only the window-aware handle resizes the standalone composer.
-    assert.equal(resize.nativeResize, "none");
-  });
-
-  it("preserves a manually resized standalone composer while typing", async function () {
-    const fixture = await api.createPaperWithPdfFixture({
-      title: "Workflow Manual Composer Resize",
-      pdfTitle: "Workflow Manual Composer Resize PDF",
-    });
-    fixtures.push(fixture);
-    await api.openStandaloneForItem(fixture.parentItemId);
-
-    const resize = await api.exerciseStandaloneComposerManualResize();
-
-    assert.isAbove(resize.heightAfterDrag, resize.heightBeforeDrag);
-    assert.equal(resize.heightAfterInput, resize.heightAfterDrag);
-    assert.isTrue(resize.manualHeightMarked);
+    // Users resize the window itself: no corner handle, no native grip.
+    assert.equal(composer.resizeHandleCount, 0);
+    assert.equal(composer.nativeResize, "none");
   });
 
   it("keeps unsupported standalone attachments in Library Chat with status feedback", async function () {

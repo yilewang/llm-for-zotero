@@ -877,15 +877,12 @@ export type WorkflowTestFooterLayout = {
   spaceAboveStatus: number;
 };
 
-export type WorkflowTestStandaloneComposerResizeDiagnostics = {
+export type WorkflowTestStandaloneComposerDiagnostics = {
   oneLineHeight: number;
-  resizeHandleTargets: string[];
+  composerHeight: number;
+  resizeHandleCount: number;
   textOffsetFromModeLabel: number | null;
   nativeResize: string;
-  heightBeforeDrag: number;
-  heightAfterDrag: number;
-  heightAfterInput: number;
-  manualHeightMarked: boolean;
 };
 
 export type WorkflowTestDiagnostics = {
@@ -1869,7 +1866,7 @@ export type WorkflowTestApi = {
     width: number;
     fontScale: number;
   }) => Promise<WorkflowTestRuntimeGeometry>;
-  exerciseStandaloneComposerManualResize: () => Promise<WorkflowTestStandaloneComposerResizeDiagnostics>;
+  inspectStandaloneComposer: () => Promise<WorkflowTestStandaloneComposerDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
   withPendingStandaloneSend: (
     text: string,

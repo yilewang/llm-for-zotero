@@ -5372,46 +5372,50 @@
   resize: none;
 }
 
-.llm-standalone-input-resize-wrap {
-  position: relative;
-  display: flex;
-  min-width: 0;
+/* The sidebar panel's 2px padding leaves no room for the corner arc, which
+   reaches 5.75px outside the composer section. `overflow: clip` with a clip
+   margin lets just that much show; the plain `overflow: hidden` above is the
+   fallback. */
+.llm-panel:not([data-standalone="true"]) {
+  overflow: hidden;
+  overflow: clip;
+  overflow-clip-margin: 8px;
 }
 
-.llm-standalone-input-resize-wrap > .llm-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  resize: none;
-}
-
-/* Replaces the native grip, which sits at the composer's padding corner. The
-   standalone controller grows the OS window by the same vertical delta, while
-   the sidebar keeps its native element-only resize behavior. */
-.llm-standalone-resize-handle {
+/* The sidebar's corner handle wraps the composer section's outer bottom-right
+   corner (16px radius, 1px border), so the corner sits at (12, 12) in the
+   18px hit area: 11px inside the padding box, 6px outside. On hover, or while
+   a drag from it runs, an arc fades in around the corner. The send button
+   ends 10px inside the section, so the hit area stays clear of it. A drag
+   resizes the chat area. */
+.llm-chat-shell-resize-handle {
   position: absolute;
-  /* The composer's right and bottom borders, plus its 1px bottom margin. */
-  right: 10px;
-  bottom: 9px;
-  z-index: 3;
-  width: 12px;
-  height: 12px;
-  cursor: nwse-resize;
-  /* Three diagonal lines, like the native grip. */
-  background: var(--fill-secondary);
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12'%3E%3Cpath d='M11 1 1 11M11 5 5 11M11 9 9 11' stroke='black' stroke-linecap='round'/%3E%3C/svg%3E")
-    no-repeat center / 12px 12px;
+  right: -7px;
+  bottom: -7px;
+  z-index: 20;
+  width: 18px;
+  height: 18px;
+  cursor: ns-resize;
+  touch-action: none;
 }
 
-/* The window's vertical resize controller is bound to the main column only,
-   so the side panel's composer handle would do nothing. */
-.llm-standalone-side-body .llm-standalone-resize-handle {
-  display: none;
+.llm-resize-arc {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  color: var(--fill-secondary);
 }
 
-.llm-standalone-resizing,
-.llm-standalone-resizing * {
-  cursor: nwse-resize !important;
-  user-select: none !important;
+.llm-resize-arc > svg {
+  display: block;
+  overflow: visible;
+}
+
+.llm-chat-shell-resize-handle:hover > .llm-resize-arc,
+.llm-chat-shell-resize-handle.llm-resize-handle-active > .llm-resize-arc {
+  opacity: 1;
 }
 
 /* Centered responsive width for standalone chat content */
@@ -5420,14 +5424,15 @@
   width: min(100%, var(--llm-standalone-chat-max-width));
   max-width: min(100%, var(--llm-standalone-chat-max-width));
   margin: 0 auto;
+  /* 6px at the bottom leaves room for the composer corner arc. */
   padding: 5px 12px;
 }
 
 /* ---- Chat start page (shared layout for all modes) ---- */
 
-/* Center welcome content inside the default-sized shell so .llm-chat-shell's
-   native `resize: vertical` keeps working on the start page. Shrinking the
-   shell (height: auto / overflow: visible) hides the user-agent resize grip. */
+/* Center welcome content inside the default-sized shell so the chat-area
+   resize handle keeps working on the start page. Shrinking the shell
+   (height: auto / overflow: visible) would make that resize meaningless. */
 [data-start-page-active="true"] .llm-start-page {
   flex: 1;
   justify-content: center;
@@ -5708,8 +5713,11 @@
 /* Messages Area */
 .llm-chat-shell,
 .llm-input {
-  resize: vertical;
+  resize: none;
 }
+
+/* The chat area resizes through its corner handle
+   (.llm-chat-shell-resize-handle); the composer grows with its text. */
 
 .llm-chat-shell {
   position: relative;

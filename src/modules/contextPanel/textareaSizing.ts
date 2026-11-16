@@ -1,7 +1,6 @@
 const DEFAULT_MIN_HEIGHT = 60;
 const DEFAULT_MAX_HEIGHT = 220;
 const HEIGHT_EPSILON = 0.5;
-const MANUAL_HEIGHT_DATASET_KEY = "llmManualHeight";
 
 export type AdaptiveTextareaHeightParams = {
   scrollHeight: number;
@@ -51,20 +50,6 @@ function formatCssPixels(value: number): string {
   return `${Math.round(value * 100) / 100}px`;
 }
 
-export function applyManualTextareaHeight(
-  textarea: HTMLTextAreaElement,
-  height: number,
-): void {
-  textarea.style.height = formatCssPixels(
-    finiteNonNegative(height, DEFAULT_MIN_HEIGHT),
-  );
-  textarea.dataset[MANUAL_HEIGHT_DATASET_KEY] = "true";
-}
-
-export function clearManualTextareaHeight(textarea: HTMLTextAreaElement): void {
-  delete textarea.dataset[MANUAL_HEIGHT_DATASET_KEY];
-}
-
 /**
  * Grow or shrink the shared composer textarea to its rendered wrapped content.
  * Content only scrolls after the CSS max-height is reached.
@@ -87,23 +72,6 @@ export function resizeTextareaToContent(
       ? (parseCssPixels(computed.borderTopWidth) ?? 0) +
         (parseCssPixels(computed.borderBottomWidth) ?? 0)
       : 0;
-  const manualHeight =
-    textarea.dataset?.[MANUAL_HEIGHT_DATASET_KEY] === "true"
-      ? parseCssPixels(textarea.style.height)
-      : null;
-  if (manualHeight !== null) {
-    const height = Math.min(maxHeight, Math.max(minHeight, manualHeight));
-    const naturalHeight =
-      finiteNonNegative(textarea.scrollHeight, minHeight) + borderHeight;
-    const result: AdaptiveTextareaHeight = {
-      height,
-      overflowY: naturalHeight > height + HEIGHT_EPSILON ? "auto" : "hidden",
-    };
-    textarea.style.height = formatCssPixels(result.height);
-    textarea.style.overflowY = result.overflowY;
-    return result;
-  }
-
   textarea.style.height = "auto";
   const result = calculateAdaptiveTextareaHeight({
     scrollHeight: textarea.scrollHeight,

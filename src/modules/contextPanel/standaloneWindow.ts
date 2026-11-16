@@ -191,7 +191,6 @@ import {
 } from "./conversationRenameEligibility";
 import {
   installStandaloneColumnResizeBehavior,
-  installStandaloneVerticalResizeBehavior,
   scheduleStandaloneWindowFitForElement,
   STANDALONE_SIDEBAR_DEFAULT_WIDTH_PX,
   STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
@@ -1235,7 +1234,6 @@ function openChatWindowInstance(
   let ownConversationOpener:
     | ((identity: TornChatIdentity) => Promise<boolean>)
     | null = null;
-  let cleanupStandaloneVerticalResize: (() => void) | null = null;
   let cleanupStandaloneSidebarResize: (() => void) | null = null;
   let cleanupStandaloneSidebarFlyout: (() => void) | null = null;
   let unbindStandaloneTaskProgressToggle: (() => void) | null = null;
@@ -2011,13 +2009,6 @@ function openChatWindowInstance(
       // window offers.
       if (linkedToReader) root.append(convCtxMenu);
       if (followerMoreMenu) root.append(followerMoreMenu);
-      cleanupStandaloneVerticalResize = installStandaloneVerticalResizeBehavior(
-        newWin,
-        contentArea,
-        {
-          minWindowHeight,
-        },
-      );
       // Set once the side panel exists (below); the History pane leaves it
       // its width.
       let standaloneSidePanel: StandaloneSidePanelController | null = null;
@@ -6932,8 +6923,6 @@ function openChatWindowInstance(
     cleanupStandaloneTabFollow = null;
     cleanupTornPaperWatch?.();
     cleanupTornPaperWatch = null;
-    cleanupStandaloneVerticalResize?.();
-    cleanupStandaloneVerticalResize = null;
     cleanupStandaloneSidebarResize?.();
     cleanupStandaloneSidebarResize = null;
     cleanupStandaloneSidebarFlyout?.();

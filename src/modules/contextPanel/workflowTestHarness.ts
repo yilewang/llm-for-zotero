@@ -123,7 +123,7 @@ import type {
   WorkflowTestRuntimeGeometry,
   WorkflowTestRuntimeBadge,
   WorkflowTestRuntimeSystemToggle,
-  WorkflowTestStandaloneComposerResizeDiagnostics,
+  WorkflowTestStandaloneComposerDiagnostics,
   WorkflowTestStandaloneDiagnostics,
   WorkflowTestChatWindowEntry,
   WorkflowTestStandaloneNoteFixture,
@@ -4271,18 +4271,15 @@ async function measureStandaloneRuntimeGeometry(input: {
   }
 }
 
-async function exerciseStandaloneComposerManualResize(): Promise<WorkflowTestStandaloneComposerResizeDiagnostics> {
+async function inspectStandaloneComposer(): Promise<WorkflowTestStandaloneComposerDiagnostics> {
   assertWorkflowTestEnabled();
   const doc = await waitForStandaloneReady();
   const win = getStandaloneWindowForTest();
   const input = doc.querySelector(
     ".llm-standalone-content #llm-input",
   ) as HTMLTextAreaElement | null;
-  const handle = doc.querySelector(
-    '.llm-standalone-resize-handle[data-resize-target="input"]',
-  ) as HTMLElement | null;
-  if (!win || !input || !handle) {
-    throw new Error("Standalone composer resize controls were not rendered");
+  if (!win || !input) {
+    throw new Error("Standalone composer was not rendered");
   }
 
   const computed = win.getComputedStyle(input);
@@ -4293,12 +4290,11 @@ async function exerciseStandaloneComposerManualResize(): Promise<WorkflowTestSta
       Number.parseFloat(computed.borderTopWidth) +
       Number.parseFloat(computed.borderBottomWidth)
     : 0;
-  const resizeHandleTargets = Array.from(
-    doc.querySelectorAll(
-      ".llm-standalone-content .llm-standalone-resize-handle",
-    ),
-    (element) => (element as HTMLElement).dataset.resizeTarget || "",
-  );
+  // The window has no corner resize handle, in the main column or the side
+  // panel: users resize the window itself.
+  const resizeHandleCount = doc.querySelectorAll(
+    ".llm-chat-shell-resize-handle",
+  ).length;
   const modeLabel = input
     .closest(".llm-input-section")
     ?.querySelector(".llm-agent-toggle-label") as HTMLElement | null;
@@ -4311,38 +4307,13 @@ async function exerciseStandaloneComposerManualResize(): Promise<WorkflowTestSta
     modeLabelRect && modeLabelRect.width > 0
       ? textLeft - modeLabelRect.left
       : null;
-  const nativeResize = computed?.resize || "";
-  const heightBeforeDrag = input.getBoundingClientRect().height;
-  const startScreenY = 500;
-  handle.dispatchEvent(
-    new win.MouseEvent("mousedown", {
-      bubbles: true,
-      button: 0,
-      screenY: startScreenY,
-    }),
-  );
-  win.dispatchEvent(
-    new win.MouseEvent("mousemove", {
-      bubbles: true,
-      screenY: startScreenY + 60,
-    }),
-  );
-  win.dispatchEvent(new win.MouseEvent("mouseup", { bubbles: true }));
-  const heightAfterDrag = Number.parseFloat(input.style.height || "0") || 0;
-
-  input.value = "Manual standalone composer height survives typed input.";
-  input.dispatchEvent(new win.Event("input", { bubbles: true }));
-  const heightAfterInput = Number.parseFloat(input.style.height || "0") || 0;
 
   return {
     oneLineHeight,
-    resizeHandleTargets,
+    composerHeight: input.getBoundingClientRect().height,
+    resizeHandleCount,
     textOffsetFromModeLabel,
-    nativeResize,
-    heightBeforeDrag,
-    heightAfterDrag,
-    heightAfterInput,
-    manualHeightMarked: input.dataset.llmManualHeight === "true",
+    nativeResize: computed?.resize || "",
   };
 }
 
@@ -12365,7 +12336,7 @@ export function installWorkflowTestHarness(targetAddon: {
     clickStandaloneSystemToggle,
     clickStandaloneSystemTogglesRapidly,
     measureStandaloneRuntimeGeometry,
-    exerciseStandaloneComposerManualResize,
+    inspectStandaloneComposer,
     askStandalone,
     withPendingStandaloneSend,
     startNewStandaloneConversation,
