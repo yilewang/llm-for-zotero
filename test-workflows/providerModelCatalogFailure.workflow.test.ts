@@ -73,6 +73,14 @@ describe("workflow: model catalog failure hint in Preferences", function () {
     const row = preferences!.document.querySelector(rowSelector)!;
     if (row.getAttribute("data-open") !== "true")
       row.querySelector<HTMLButtonElement>(".llm-pref-row-toggle")!.click();
+    // Gecko fires focus events only in the active window, and a test window
+    // behind another app cannot take activation on macOS. The focus
+    // manager's test mode lets win.focus() raise it the way a click would.
+    preferences!.focus();
+    await waitFor(
+      () => preferences!.document.hasFocus(),
+      "Preferences must take focus",
+    );
     return preferences!;
   }
 
@@ -89,13 +97,51 @@ describe("workflow: model catalog failure hint in Preferences", function () {
     return win.document.querySelector(`${rowSelector} ${selector}`) as T;
   }
 
+  function storedModel(): string | undefined {
+    const groups = JSON.parse(
+      String(Zotero.Prefs.get(prefix + "modelProviderGroups", true) || "[]"),
+    ) as Array<{ id: string; models: Array<{ model: string }> }>;
+    return groups.find((group) => group.id === groupId)?.models[0]?.model;
+  }
+
+  /** Whether the model field's suggestion list offers `modelId`. */
+  async function waitForListedModel(
+    win: Window,
+    modelId: string,
+    message: string,
+  ): Promise<void> {
+    await waitFor(
+      () => isVisible(part(win, ".llm-pref-model-chevron")),
+      message,
+    );
+    const input = part<HTMLInputElement>(win, ".llm-pref-model-row input");
+    input.focus();
+    await waitFor(
+      () =>
+        isVisible(part(win, ".llm-pref-model-list")) &&
+        Array.from(
+          win.document.querySelectorAll<HTMLElement>(
+            `${rowSelector} .llm-pref-model-option`,
+          ) as unknown as HTMLElement[],
+        ).some((option) => option.dataset.modelId === modelId),
+      message,
+    );
+  }
+
+  const testModePref = "focusmanager.testmode";
+  let savedTestMode: unknown;
+
   beforeEach(async function () {
     api = (Zotero as any).LLMForZotero.api.workflowTest;
     await api.reset();
+    savedTestMode = Zotero.Prefs.get(testModePref, true);
+    Zotero.Prefs.set(testModePref, true, true);
   });
 
   afterEach(async function () {
     await closePreferences();
+    if (savedTestMode === undefined) Zotero.Prefs.clear(testModePref, true);
+    else Zotero.Prefs.set(testModePref, savedTestMode as never, true);
     await api.reset();
     for (const [key, value] of previous) {
       if (value === undefined) Zotero.Prefs.clear(prefix + key, true);
@@ -125,8 +171,24 @@ describe("workflow: model catalog failure hint in Preferences", function () {
     const hint = hintOf();
     assert.isNotEmpty(api.getModelCatalogRequests());
     assert.include(hint.title, "404");
-    assert.isTrue(isVisible(part(win, ".llm-pref-model-row input")));
-    assert.isFalse(isVisible(part(win, ".llm-pref-model-row select")));
+    const input = part<HTMLInputElement>(win, ".llm-pref-model-row input");
+    assert.isTrue(isVisible(input));
+    assert.isFalse(
+      isVisible(part(win, ".llm-pref-model-chevron")),
+      "without a catalog the field has no list to open",
+    );
+    assert.isFalse(isVisible(part(win, ".llm-pref-model-list")));
+
+    // Without a catalog every keystroke is saved, as before.
+    input.focus();
+    input.value = "typed-manual-model";
+    input.dispatchEvent(
+      new (win as any).InputEvent("input", { bubbles: true }),
+    );
+    assert.equal(storedModel(), "typed-manual-model");
+    assert.isFalse(isVisible(part(win, ".llm-pref-model-list")));
+    input.blur();
+
     const refresh = part<HTMLButtonElement>(win, ".llm-pref-model-refresh");
     assert.exists(refresh);
 
@@ -135,17 +197,17 @@ describe("workflow: model catalog failure hint in Preferences", function () {
       body: { data: [{ id: "workflow-model-a" }] },
     });
     refresh.click();
-    await waitFor(
-      () =>
-        Boolean(
-          part(win, ".llm-pref-model-row select")?.querySelector(
-            'option[value="workflow-model-a"]',
-          ),
-        ),
-      "Refresh must list the fetched model in the dropdown",
+    await waitForListedModel(
+      win,
+      "workflow-model-a",
+      "Refresh must list the fetched model in the model field",
     );
     assert.isFalse(isVisible(part(win, ".llm-pref-model-row .llm-pref-hint")));
-    assert.isTrue(isVisible(part(win, ".llm-pref-model-row select")));
+    assert.equal(
+      input.value,
+      "typed-manual-model",
+      "a saved model that is not in the catalog stays the field value",
+    );
   });
 
   it("shows the unauthorized message for a 401 catalog", async function () {
@@ -164,7 +226,7 @@ describe("workflow: model catalog failure hint in Preferences", function () {
     assert.include(hint.textContent || "", "401");
   });
 
-  it("offers the model dropdown for a customized provider", async function () {
+  it("offers the model list for a customized provider", async function () {
     useProvider("customized", {
       presetIdOverride: "customized",
       apiBase: "https://llm.example.test/v1",
@@ -175,14 +237,10 @@ describe("workflow: model catalog failure hint in Preferences", function () {
       body: { data: [{ id: "workflow-custom-a" }] },
     });
     const win = await openPreferences();
-    await waitFor(
-      () =>
-        Boolean(
-          part(win, ".llm-pref-model-row select")?.querySelector(
-            'option[value="workflow-custom-a"]',
-          ),
-        ),
-      "the customized provider must list the fetched model in the dropdown",
+    await waitForListedModel(
+      win,
+      "workflow-custom-a",
+      "the customized provider must list the fetched model",
     );
     assert.include(
       api.getModelCatalogRequests(),
@@ -203,13 +261,9 @@ describe("workflow: model catalog failure hint in Preferences", function () {
       body: { data: [{ id: "workflow-zen-a" }] },
     });
     const win = await openPreferences();
-    await waitFor(
-      () =>
-        Boolean(
-          part(win, ".llm-pref-model-row select")?.querySelector(
-            'option[value="workflow-zen-a"]',
-          ),
-        ),
+    await waitForListedModel(
+      win,
+      "workflow-zen-a",
       "OpenCode Zen must list the fetched model without a key",
     );
     const hint = part<HTMLElement>(win, ".llm-pref-model-row .llm-pref-hint");

@@ -48,20 +48,15 @@ import {
   type WebChatProviderGroup,
 } from "../utils/modelProviders";
 import {
-  CUSTOMIZED_MODEL_OPTION_VALUE,
-  buildProviderModelSelectRows,
   canFetchProviderModels,
+  filterModelSuggestions,
   formatModelDiscoveryStatusHint,
+  highlightRanges,
   providerGroupRequiresApiKey,
-  createSelectRebuildGate,
-  resolveModelEntryMode,
   resolveProviderModelFetchStatus,
-  runAfterSelectChangeDispatch,
+  sortModelOptions,
 } from "../utils/providerModelPicker";
-import {
-  attachCodexDirectCatalogInteractions,
-  canOfferCodexDirectAuthMode,
-} from "../utils/codexDirectProviderCard";
+import { canOfferCodexDirectAuthMode } from "../utils/codexDirectProviderCard";
 import {
   PROVIDER_MODEL_INPUT_CLASS,
   PROVIDER_MODEL_SELECT_CLASS,
@@ -80,6 +75,7 @@ import {
   isModelCatalogExpired,
   refreshModelCatalog,
   subscribeModelCapabilities,
+  type DiscoveredModel,
   type ModelProfileOverride,
 } from "../modelCapabilities";
 import { createModelProfileEditor } from "./modelProfileEditor";
@@ -576,18 +572,22 @@ function registerLiveProfileEditor(entry: LiveProfileEditor) {
   });
 }
 
-// ── Provider model select (fetch & choose) ─────────────────────────
+// ── Provider model field (fetch & search) ──────────────────────────
 
 /**
- * Replace a provider-card model input with a native dropdown listing the
- * provider's live model catalog plus a trailing "Customized…" option.
- * Choosing "Customized…" reveals the classic text input for manual entry;
- * choosing a model from the list hides it again. The text input element is
- * the caller's — its existing listeners keep persisting typed values.
+ * Turn a provider-card model input into a searchable field: the input stays
+ * the one place the model name is shown and typed, and a list under the row
+ * offers the provider's live catalog filtered by what is typed. The text
+ * input element is the caller's; while no catalog exists its own `input`
+ * listener keeps saving every keystroke. Once a catalog exists, typed text is
+ * a draft (`isDraftMode()`): it only filters the list and is saved on a pick,
+ * Enter, or leaving the field.
  *
- * Returns the row container and the status line to place under the row.
+ * Returns the field container, the list (the caller puts it under the
+ * controls row, in normal flow, because the card clips overflow), and the
+ * status line to place under the row.
  */
-export function attachProviderModelSelect(args: {
+export function attachProviderModelCombobox(args: {
   doc: Document;
   input: HTMLInputElement;
   group: Exclude<ModelProviderGroup, WebChatProviderGroup>;
@@ -596,21 +596,40 @@ export function attachProviderModelSelect(args: {
   onCatalogRefreshed?: () => void;
 }): {
   container: HTMLElement;
+  listEl: HTMLElement;
   refreshBtn: HTMLButtonElement;
   statusEl: HTMLElement;
   refresh: (options?: { force?: boolean }) => void;
   sync: () => void;
+  isDraftMode: () => boolean;
+  commitPendingDraft: () => void;
 } {
   const { doc, input, group, modelEntry } = args;
 
   const container = createElement(doc, "div", PROVIDER_MODEL_SLOT_CLASS);
-  const select = createElement(doc, "select", PROVIDER_MODEL_SELECT_CLASS);
-  container.append(select, input);
+  const chevron = createElement(doc, "button", "llm-pref-model-chevron", {
+    type: "button",
+    tabIndex: -1,
+  });
+  chevron.title = t("Show models");
+  chevron.setAttribute("aria-label", t("Show models"));
+  container.append(input, chevron);
+
+  const idBase = `llm-model-list-${group.id}-${modelEntry.id}`.replace(
+    /[^A-Za-z0-9_-]/g,
+    "_",
+  );
+  const listEl = createElement(doc, "div", "llm-pref-model-list");
+  const optionsEl = createElement(doc, "div", "llm-pref-model-options");
+  optionsEl.id = `${idBase}-options`;
+  optionsEl.setAttribute("role", "listbox");
+  const footerEl = createElement(doc, "div", "llm-pref-model-list-footer");
+  listEl.append(optionsEl, footerEl);
+  listEl.style.display = "none";
 
   const statusEl = createElement(doc, "span", "llm-pref-hint");
   statusEl.style.display = "none";
 
-  let userCustomized = false;
   let loading = false;
   let fetchToken = 0;
 
@@ -649,82 +668,319 @@ export function attachProviderModelSelect(args: {
       requiresApiKey: requiresApiKey(),
     });
 
-  // The manual text input takes over while the catalog is unavailable, while
-  // "Customized…" is explicitly active, and while the input has focus; the
-  // dropdown returns once a catalog exists and the input is idle.
-  // For on-demand discovery providers before the first fetch attempt
-  // (readSnapshot() === null), keep the dropdown visible so focusing/clicking
-  // it triggers the on-demand catalog request.
-  const currentMode = () => {
-    const snapshot = readSnapshot();
-    if (
-      isOnDemandDiscovery() &&
-      snapshot === null &&
-      !userCustomized &&
-      doc.activeElement !== input
-    ) {
-      return "select";
+  /** A catalog is shown: typed text is a draft until committed. */
+  const isDraftMode = () => currentStatus().kind === "ready";
+
+  // Sorting 400+ IDs on every keystroke is wasted work; the snapshot's model
+  // array is replaced on each fetch, so its identity keys the cache.
+  let sortedFor: DiscoveredModel[] | null = null;
+  let sortedIds: string[] = [];
+  const catalogIds = () => {
+    const models = readSnapshot()?.models || [];
+    if (models !== sortedFor) {
+      sortedFor = models;
+      sortedIds = sortModelOptions(models).map((model) => model.id);
     }
-    return resolveModelEntryMode({
-      status: currentStatus(),
-      userCustomized,
-      inputFocused: doc.activeElement === input,
-    });
+    return sortedIds;
   };
 
-  const syncModes = () => {
-    const manual = currentMode() === "manual";
-    input.style.display = manual ? "" : "none";
-    select.style.display = manual ? "none" : "";
+  // ── List state ──
+  let isOpen = false;
+  /** Text the list is filtered by; empty shows the whole catalog. */
+  let filterQuery = "";
+  /** Model ID of the active row; CUSTOM_ROW for the "Use …" row. */
+  const CUSTOM_ROW = "\u0000custom";
+  let activeId: string | null = null;
+  let rowIds: string[] = [];
+  let renderedSignature = "";
+  /** A press outside the field closes the list on mouseup, not mousedown. */
+  let closeOnMouseUp = false;
+  let pointerDownInList = false;
+  let renderAfterPointer = false;
+
+  const optionId = (index: number) => `${idBase}-option-${index}`;
+
+  const committedValue = () => modelEntry.model;
+
+  const commit = (value: string) => {
+    // An emptied field is a cleared search, not a model name: keep the
+    // saved model. (Without a catalog each keystroke already saved it.)
+    if (!value.trim()) {
+      input.value = modelEntry.model;
+      return;
+    }
+    input.value = value;
+    if (value !== modelEntry.model) args.onModelPicked(value);
   };
 
-  let renderedOptionsSignature = "";
-  const rewriteOptions = () => {
-    const manual = currentMode() === "manual";
-    const rows = buildProviderModelSelectRows({
-      savedModel: modelEntry.model,
-      catalog: readSnapshot()?.models || [],
-      customizedActive: manual,
-    });
-    const desiredValue = manual
-      ? CUSTOMIZED_MODEL_OPTION_VALUE
-      : modelEntry.model.trim();
-    // Skip the DOM rewrite when nothing changed: a TTL-cached refresh resolves
-    // right after mousedown, and replacing options under the just-opened
-    // native popup can flicker or close it.
-    const signature =
-      rows
-        .map((row) => `${row.kind}:${row.kind === "model" ? row.id : ""}`)
-        .join("\n") + `\u0000${desiredValue}`;
-    if (signature === renderedOptionsSignature) return;
-    renderedOptionsSignature = signature;
-    select.textContent = "";
-    for (const row of rows) {
-      const option = el(doc, "option") as HTMLOptionElement;
-      if (row.kind === "placeholder") {
-        option.value = "";
-        option.textContent = t("Select a model…");
-        option.disabled = true;
-      } else if (row.kind === "model") {
-        option.value = row.id;
-        option.textContent = row.id;
-      } else {
-        option.value = CUSTOMIZED_MODEL_OPTION_VALUE;
-        option.textContent = t("Customized…");
+  const applyActive = (): HTMLElement | null => {
+    let activeEl: HTMLElement | null = null;
+    for (let index = 0; index < rowIds.length; index += 1) {
+      const row = optionsEl.children[index] as HTMLElement | undefined;
+      if (!row) continue;
+      const active = rowIds[index] === activeId;
+      row.setAttribute("aria-selected", active ? "true" : "false");
+      if (active) activeEl = row;
+    }
+    if (activeEl) input.setAttribute("aria-activedescendant", activeEl.id);
+    else input.removeAttribute("aria-activedescendant");
+    return activeEl;
+  };
+
+  const scrollRowIntoView = (row: HTMLElement | null, center: boolean) => {
+    if (!row) return;
+    const top = row.offsetTop;
+    const bottom = top + row.offsetHeight;
+    const viewTop = optionsEl.scrollTop;
+    const viewHeight = optionsEl.clientHeight;
+    if (center) {
+      optionsEl.scrollTop = Math.max(
+        0,
+        top - (viewHeight - row.offsetHeight) / 2,
+      );
+    } else if (top < viewTop) {
+      optionsEl.scrollTop = top;
+    } else if (bottom > viewTop + viewHeight) {
+      optionsEl.scrollTop = bottom - viewHeight;
+    }
+  };
+
+  const appendHighlighted = (target: HTMLElement, id: string) => {
+    let cursor = 0;
+    for (const [start, end] of highlightRanges(id, filterQuery)) {
+      if (start > cursor)
+        target.appendChild(doc.createTextNode(id.slice(cursor, start)));
+      target.appendChild(
+        createElement(doc, "span", "llm-pref-model-option-match", {
+          textContent: id.slice(start, end),
+        }),
+      );
+      cursor = end;
+    }
+    if (cursor < id.length)
+      target.appendChild(doc.createTextNode(id.slice(cursor)));
+  };
+
+  /** Rebuild rows and footer; keeps the active row when it is still listed. */
+  const renderList = () => {
+    if (pointerDownInList) {
+      // Replacing rows between mousedown and mouseup would lose the click.
+      renderAfterPointer = true;
+      return;
+    }
+    const ids = catalogIds();
+    const result = filterModelSuggestions(ids, filterQuery);
+    const typed = filterQuery.trim();
+    const nextRowIds = result.offerCustom
+      ? [...result.matches, CUSTOM_ROW]
+      : result.matches;
+    const signature = `${filterQuery}\u0000${result.total}\u0000${nextRowIds.join("\n")}`;
+    if (activeId !== null && !nextRowIds.includes(activeId)) activeId = null;
+    if (signature !== renderedSignature) {
+      renderedSignature = signature;
+      rowIds = nextRowIds;
+      optionsEl.textContent = "";
+      rowIds.forEach((id, index) => {
+        const row = createElement(doc, "div", "llm-pref-model-option");
+        row.id = optionId(index);
+        row.setAttribute("role", "option");
+        if (id === CUSTOM_ROW) {
+          row.classList.add("llm-pref-model-option--custom");
+          row.dataset.custom = "true";
+          row.append(
+            doc.createTextNode(
+              t('Use "{text}"').replace("{text}", () => typed),
+            ),
+            createElement(doc, "span", "llm-pref-model-option-note", {
+              textContent: t("not in list"),
+            }),
+          );
+        } else {
+          row.dataset.modelId = id;
+          row.title = id;
+          appendHighlighted(row, id);
+        }
+        optionsEl.appendChild(row);
+      });
+      footerEl.textContent = typed
+        ? t("{matched} of {total} models match")
+            .replace("{matched}", String(result.matchCount))
+            .replace("{total}", String(result.total))
+        : t("{total} models").replace("{total}", String(result.total));
+    }
+    applyActive();
+  };
+
+  /** Case-insensitive exact match of the field text, if listed. */
+  const exactMatchId = () => {
+    const value = input.value.trim().toLowerCase();
+    if (!value) return null;
+    return (
+      rowIds.find((id) => id !== CUSTOM_ROW && id.toLowerCase() === value) ||
+      null
+    );
+  };
+
+  /** A press on a scrollbar part scrolls; it is not a click on content. */
+  const isScrollbarPress = (event: Event) => {
+    const name = (
+      (event as unknown as { originalTarget?: { localName?: string } })
+        .originalTarget?.localName || ""
+    ).toLowerCase();
+    return (
+      name === "scrollbar" ||
+      name === "slider" ||
+      name === "thumb" ||
+      name === "scrollbarbutton" ||
+      name === "scrollcorner"
+    );
+  };
+
+  // A scrollbar press would move focus to the nearest focusable ancestor
+  // (the pane), which blurs the field and commits the draft. Preventing
+  // default skips that focus move; the scrollbar still scrolls and drags.
+  // It is tied to focus, not to the open list: the draft outlives the list.
+  const onDocScrollbarDown = (event: Event) => {
+    if (!input.isConnected) {
+      doc.removeEventListener("mousedown", onDocScrollbarDown, true);
+      return;
+    }
+    if (isScrollbarPress(event)) event.preventDefault();
+  };
+
+  const onDocMouseDown = (event: Event) => {
+    // The card was rebuilt while the list was open; this field is gone.
+    if (!input.isConnected) {
+      closeList();
+      return;
+    }
+    // A scrollbar press neither commits nor closes; the guard above keeps focus.
+    if (isScrollbarPress(event)) return;
+    const target = event.target as Node | null;
+    if (target && (container.contains(target) || listEl.contains(target)))
+      return;
+    // Commit now so a click on Test uses the shown model; close on mouseup so
+    // content below the list does not move under the pointer mid-click.
+    if (input.value !== modelEntry.model) commit(input.value);
+    closeOnMouseUp = true;
+  };
+  const onDocMouseUp = () => {
+    if (!input.isConnected) {
+      closeList();
+      return;
+    }
+    // Flush after the click event, so a press on a row is not dropped by a
+    // re-render between mouseup and click.
+    setTimeout(() => {
+      pointerDownInList = false;
+      if (renderAfterPointer) {
+        renderAfterPointer = false;
+        if (isOpen) renderList();
       }
-      select.appendChild(option);
+    }, 0);
+    if (closeOnMouseUp) {
+      closeOnMouseUp = false;
+      closeList();
     }
-    select.value = desiredValue;
   };
-  // Rewriting the options or hiding the select while the native popup is open
-  // crashes Gecko's popup helper (SelectChild "this.element is null"), so
-  // rebuilds and mode switches triggered by an async catalog refresh wait
-  // until the popup is provably closed.
-  const rebuildGate = createSelectRebuildGate(() => {
-    syncModes();
-    rewriteOptions();
+
+  const openList = (query: string) => {
+    if (!isDraftMode()) return;
+    filterQuery = query;
+    const wasOpen = isOpen;
+    if (!wasOpen) {
+      isOpen = true;
+      closeOnMouseUp = false;
+      listEl.style.display = "";
+      input.setAttribute("aria-expanded", "true");
+      doc.addEventListener("mousedown", onDocMouseDown, true);
+      doc.addEventListener("mouseup", onDocMouseUp, true);
+    }
+    renderList();
+    activeId = exactMatchId();
+    const activeEl = applyActive();
+    if (!wasOpen) {
+      // Bring the whole list into the pane so no pane scrollbar is needed.
+      listEl.scrollIntoView({ block: "nearest" });
+      scrollRowIntoView(activeEl, true);
+    } else if (activeEl) scrollRowIntoView(activeEl, false);
+    else optionsEl.scrollTop = 0;
+  };
+
+  function closeList() {
+    if (!isOpen) return;
+    isOpen = false;
+    closeOnMouseUp = false;
+    pointerDownInList = false;
+    renderAfterPointer = false;
+    activeId = null;
+    listEl.style.display = "none";
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    doc.removeEventListener("mousedown", onDocMouseDown, true);
+    doc.removeEventListener("mouseup", onDocMouseUp, true);
+  }
+
+  const pickRow = (id: string) => {
+    commit(id === CUSTOM_ROW ? input.value : id);
+    closeList();
+  };
+
+  const moveActive = (step: 1 | -1) => {
+    if (!rowIds.length) return;
+    const index = activeId === null ? -1 : rowIds.indexOf(activeId);
+    const next =
+      index < 0
+        ? step > 0
+          ? 0
+          : rowIds.length - 1
+        : Math.min(rowIds.length - 1, Math.max(0, index + step));
+    activeId = rowIds[next];
+    scrollRowIntoView(applyActive(), false);
+  };
+
+  /** Show or hide the chevron and list to match whether a catalog exists. */
+  const syncView = () => {
+    const ready = isDraftMode();
+    chevron.style.display = ready ? "" : "none";
+    if (!ready) {
+      closeList();
+      input.removeAttribute("role");
+      input.removeAttribute("aria-autocomplete");
+      input.removeAttribute("aria-controls");
+      input.removeAttribute("aria-expanded");
+      return;
+    }
+    input.setAttribute("role", "combobox");
+    input.setAttribute("aria-autocomplete", "list");
+    input.setAttribute("aria-controls", optionsEl.id);
+    input.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    if (isOpen) renderList();
+  };
+
+  // The list takes no focus: presses on it and on the chevron keep the caret
+  // in the input, so focus-driven opening and the chevron toggle agree.
+  listEl.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+    // A scrollbar press is not a press on a row; it must not defer renders.
+    if ((event as MouseEvent).button === 0 && !isScrollbarPress(event))
+      pointerDownInList = true;
   });
-  const rebuildOptions = rebuildGate.requestRebuild;
+  optionsEl.addEventListener("click", (event) => {
+    const row = (event.target as Element | null)?.closest?.(
+      ".llm-pref-model-option",
+    ) as HTMLElement | null;
+    if (!row || !optionsEl.contains(row)) return;
+    pointerDownInList = false;
+    pickRow(row.dataset.custom === "true" ? CUSTOM_ROW : row.dataset.modelId!);
+  });
+  chevron.addEventListener("mousedown", (event) => event.preventDefault());
+  chevron.addEventListener("click", () => {
+    const wasOpen = isOpen;
+    if (doc.activeElement !== input) input.focus();
+    if (wasOpen) closeList();
+    else openList("");
+  });
 
   const updateStatus = () => {
     const needsKey = requiresApiKey();
@@ -749,7 +1005,7 @@ export function attachProviderModelSelect(args: {
       statusEl.removeAttribute("title");
       statusEl.style.display = "none";
     }
-    rebuildOptions();
+    syncView();
   };
 
   const refreshCatalog = async (options?: { force?: boolean }) => {
@@ -758,6 +1014,7 @@ export function attachProviderModelSelect(args: {
       return;
     }
     const token = ++fetchToken;
+    const hadCatalog = isDraftMode();
     loading = true;
     updateStatus();
     try {
@@ -767,8 +1024,10 @@ export function attachProviderModelSelect(args: {
     } finally {
       if (token === fetchToken) {
         loading = false;
-        rebuildOptions();
         updateStatus();
+        // A catalog that first lands while the user is in the field opens its
+        // list; a refresh does not reopen a list the user closed.
+        if (!hadCatalog && !isOpen && doc.activeElement === input) openList("");
         args.onCatalogRefreshed?.();
       }
     }
@@ -778,11 +1037,7 @@ export function attachProviderModelSelect(args: {
     void refreshCatalog({ force: true });
   });
 
-  const triggerSelectorEntryFetch = () => {
-    if (!isOnDemandDiscovery()) {
-      void refreshCatalog();
-      return;
-    }
+  const triggerOnDemandFetch = () => {
     if (loading) return;
     if (requiresApiKey() && !group.apiKey.trim()) {
       updateStatus();
@@ -811,56 +1066,69 @@ export function attachProviderModelSelect(args: {
     }
   };
 
-  // The refresh is TTL-cached, so re-checking on every open stays cheap and
-  // picks up an API key the user pasted since the card rendered. Both
-  // handlers run before the popup opens, so the gate can still flush a
-  // pending rebuild into the popup the user is about to see.
-  attachCodexDirectCatalogInteractions({
-    target: select,
-    popupMayOpen: () => rebuildGate.popupMayOpen(),
-    refreshCatalog: () => triggerSelectorEntryFetch(),
-  });
   input.addEventListener("focus", () => {
-    if (isOnDemandDiscovery() && !userCustomized) {
-      triggerSelectorEntryFetch();
-    }
+    // Same function and capture flag: a repeat add is ignored.
+    doc.addEventListener("mousedown", onDocScrollbarDown, true);
+    // The refresh is TTL-cached, so re-checking on every visit stays cheap and
+    // picks up an API key the user pasted since the card rendered.
+    if (isOnDemandDiscovery()) triggerOnDemandFetch();
+    else if (isDraftMode()) void refreshCatalog();
+    openList("");
   });
-  select.addEventListener("blur", () => rebuildGate.popupClosed());
-  const applyModelChoice = (chosenValue: string) => {
-    rebuildGate.popupClosed();
-    if (chosenValue === CUSTOMIZED_MODEL_OPTION_VALUE) {
-      userCustomized = true;
-      input.value = modelEntry.model;
-      syncModes();
-      rebuildOptions();
-      input.focus();
-      return;
-    }
-    userCustomized = false;
-    input.value = chosenValue;
-    args.onModelPicked(chosenValue);
-    syncModes();
-    rebuildOptions();
-  };
-  select.addEventListener("change", () => {
-    // Hiding the select (Customized…) or rewriting its options inside the
-    // change dispatch re-enters Gecko's popup teardown and crashes it
-    // ("this.element is null" in SelectChild.sys.mjs) — same invariant as the
-    // deferred rerender() in the auth-mode/preset selects below.
-    const chosenValue = select.value;
-    runAfterSelectChangeDispatch(() => applyModelChoice(chosenValue));
+  input.addEventListener("click", () => {
+    if (!isOpen) openList("");
   });
-
-  const exitCustomized = () => {
-    userCustomized = false;
-    // With the catalog still unavailable the mode stays manual, so the typed
-    // value keeps its field; otherwise the dropdown returns with it listed.
-    syncModes();
-    rebuildOptions();
-  };
-  input.addEventListener("blur", exitCustomized);
+  input.addEventListener("input", () => {
+    if (!isDraftMode()) return;
+    openList(input.value);
+  });
+  input.addEventListener("focusout", (event) => {
+    const next = (event as FocusEvent).relatedTarget as Node | null;
+    if (next && (container.contains(next) || listEl.contains(next))) return;
+    doc.removeEventListener("mousedown", onDocScrollbarDown, true);
+    if (input.value !== modelEntry.model) commit(input.value);
+    // The card is about to re-render, or a press closes the list on mouseup.
+    if (next && (next as Element).localName === "select") closeList();
+    // A pointer press outside closes the list on its mouseup instead.
+    if (!closeOnMouseUp) closeList();
+  });
   input.addEventListener("keydown", (event) => {
-    if ((event as KeyboardEvent).key === "Enter") input.blur();
+    const keyEvent = event as KeyboardEvent;
+    if (keyEvent.isComposing) return;
+    const consume = () => {
+      keyEvent.preventDefault();
+      keyEvent.stopPropagation();
+    };
+    switch (keyEvent.key) {
+      case "ArrowDown":
+        if (!isDraftMode()) return;
+        consume();
+        if (!isOpen) openList("");
+        else moveActive(1);
+        return;
+      case "ArrowUp":
+        if (!isOpen) return;
+        consume();
+        moveActive(-1);
+        return;
+      case "Enter":
+        if (!isOpen) {
+          input.blur();
+          return;
+        }
+        consume();
+        if (activeId !== null) pickRow(activeId);
+        else {
+          commit(input.value);
+          closeList();
+        }
+        return;
+      case "Escape":
+        if (isOpen) consume();
+        if (isDraftMode()) input.value = committedValue();
+        closeList();
+        return;
+    }
   });
 
   const sync = () => {
@@ -873,11 +1141,6 @@ export function attachProviderModelSelect(args: {
       }
       invalidateModelCatalog(buildProviderCatalogIdentity(group));
     }
-    if (doc.activeElement !== select) {
-      rebuildGate.popupClosed();
-    }
-    syncModes();
-    rebuildOptions();
     updateStatus();
   };
 
@@ -888,10 +1151,17 @@ export function attachProviderModelSelect(args: {
 
   return {
     container,
+    listEl,
     refreshBtn,
     statusEl,
     refresh: (options?: { force?: boolean }) => void refreshCatalog(options),
     sync,
+    isDraftMode,
+    // Closing the window with a draft in the field may fire no focusout.
+    commitPendingDraft: () => {
+      if (input.isConnected && input.value !== modelEntry.model)
+        commit(input.value);
+    },
   };
 }
 
@@ -1777,6 +2047,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   });
   // Typed provider edits notify open chat panels once the field loses focus
   // or the window closes, without waiting for the pause.
+  // One close listener commits every model field of the current render. It is
+  // registered before the flush below so the commit reaches the notifier first.
+  let modelPickerCommitters: Array<() => void> = [];
+  const commitModelDraftsOnClose = () => {
+    for (const commit of modelPickerCommitters) commit();
+  };
+  _window.addEventListener("pagehide", commitModelDraftsOnClose);
+  _window.addEventListener("unload", commitModelDraftsOnClose, { once: true });
   const flushTypedGroups = () => typedGroupsNotifier.flush();
   modelSections.addEventListener("focusout", flushTypedGroups);
   _window.addEventListener("unload", flushTypedGroups, { once: true });
@@ -1785,6 +2063,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
   const rerender = () => {
     disposeDirectCardControllers();
+    modelPickerCommitters = [];
     modelSections.innerHTML = "";
 
     modelSections.appendChild(
@@ -2635,11 +2914,14 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
 
         const advGearBtn = iconBtn(doc, "⚙", t("Advanced options"));
 
-        // Status line owned by the fetch-and-select model dropdown, when used.
+        // Status line and suggestion list owned by the searchable model
+        // field, when used.
         let pickerStatusEl: HTMLElement | null = null;
+        let pickerListEl: HTMLElement | null = null;
+        let pickerIsDraftMode: () => boolean = () => false;
 
         if (canFetchProviderModels(group)) {
-          const picker = attachProviderModelSelect({
+          const picker = attachProviderModelCombobox({
             doc,
             input: modelInput,
             group,
@@ -2658,8 +2940,11 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
             },
           });
           pickerStatusEl = picker.statusEl;
+          pickerListEl = picker.listEl;
+          pickerIsDraftMode = picker.isDraftMode;
           modelPickerRefreshers.push(picker.refresh);
           modelPickerSyncers.push(picker.sync);
+          modelPickerCommitters.push(picker.commitPendingDraft);
           mainRow.append(
             picker.container,
             picker.refreshBtn,
@@ -3019,6 +3304,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         });
 
         modelInput.addEventListener("input", () => {
+          // With a catalog shown, typed text is a search draft; the model
+          // field saves it on a pick, Enter, or leaving the field.
+          if (pickerIsDraftMode()) return;
           const previousModel = modelEntry.model;
           modelEntry.model = modelInput.value;
           onSelectedModelChanged(previousModel);
@@ -3159,6 +3447,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         testBtn.addEventListener("click", () => void runTest());
         testBtn.addEventListener("command", () => void runTest());
 
+        if (pickerListEl) rowWrap.append(pickerListEl);
         if (pickerStatusEl) rowWrap.append(pickerStatusEl);
         rowWrap.append(statusLine, advRow);
         modelsWrap.appendChild(rowWrap);
