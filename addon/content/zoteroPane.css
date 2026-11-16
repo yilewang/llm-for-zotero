@@ -201,6 +201,9 @@
      (chatFloatingComposer.ts sets the two heights). */
   --llm-floating-composer: var(--llm-composer-overlay, 0px);
   --llm-floating-shortcuts: var(--llm-shortcuts-overlay, 0px);
+  /* How far the composer text box has grown past one line
+     (chatFloatingComposer.ts). The sidebar chat gives that height back. */
+  --llm-chat-growth: var(--llm-composer-growth, 0px);
   --llm-chat-floor: calc(
     var(--llm-floating-composer) + var(--llm-floating-shortcuts) +
       min(var(--llm-floating-shortcuts), 6px)
@@ -210,6 +213,7 @@
 /* The start page has no chat to run on under the composer: lay it out
    below the chat as before. */
 .llm-panel[data-start-page-active="true"] {
+  --llm-chat-growth: 0px;
   --llm-floating-composer: 0px;
   --llm-floating-shortcuts: 0px;
 }
@@ -5806,6 +5810,12 @@
 
 .llm-panel:not([data-standalone="true"]) .llm-chat-shell {
   margin-top: -16px;
+  /* The chat is shorter by the composer's growth, so the panel's total
+     height stays constant while the user types. A drag on the corner handle
+     sets --llm-chat-shell-height (the height with a one-line composer). */
+  height: calc(
+    var(--llm-chat-shell-height, 50vh) - var(--llm-chat-growth, 0px)
+  );
 }
 
 :root:not([data-llm-pane-view="stacked"])
@@ -16943,7 +16953,9 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   width: 100%;
   /* One text line plus the vertical insets; grows with content. */
   min-height: calc(var(--llm-fs-12) * 1.35 + 16px);
-  max-height: 220px;
+  /* Long prompts may use up to 40% of the window height before the text
+     scrolls; short windows keep the old 220px floor. */
+  max-height: clamp(220px, 40vh, 480px);
   font: inherit;
   font-size: var(--llm-fs-12);
   line-height: 1.35;
