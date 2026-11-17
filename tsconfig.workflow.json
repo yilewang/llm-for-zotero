@@ -4,5 +4,12 @@
   "compilerOptions": {
     "composite": false
   },
-  "include": ["src", "typings", "test-workflows", "test-live", "test-isolated"]
+  "include": [
+    "src",
+    "typings",
+    "test-workflows",
+    "test-live",
+    "test-isolated",
+    "test/helpers/acp"
+  ]
 }

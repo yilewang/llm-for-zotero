@@ -1,0 +1,269 @@
+{
+  "source": "agy 1.5.10, `agy acp`, recorded 2026-11-17; account tier and session id replaced",
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "load_session": true,
+      "promptCapabilities": {
+        "image": true,
+        "audio": false,
+        "embeddedContext": true
+      },
+      "sessionCapabilities": {
+        "resume": {},
+        "close": {},
+        "load": {},
+        "list": {},
+        "additionalDirectories": {}
+      },
+      "session_capabilities": {
+        "resume": {},
+        "close": {},
+        "load": {},
+        "list": {},
+        "additionalDirectories": {}
+      },
+      "auth": {
+        "logout": {}
+      },
+      "_meta": {
+        "antigravity": {
+          "tier": true,
+          "systemPrompt": {
+            "append": true
+          }
+        }
+      }
+    },
+    "agentInfo": {
+      "name": "Antigravity ACP Server",
+      "version": "1.5.10"
+    },
+    "authMethods": [
+      {
+        "id": "oauth-personal",
+        "name": "Log in with Google",
+        "description": "Log in with your Google account"
+      },
+      {
+        "id": "oauth-business",
+        "name": "Log in with Gemini Enterprise",
+        "description": "Log in with your Gemini Enterprise account"
+      },
+      {
+        "id": "gemini-api-key",
+        "name": "Gemini API key",
+        "description": "Use an API key with Gemini Developer API"
+      },
+      {
+        "id": "agent-platform",
+        "name": "Gemini Enterprise Agent Platform",
+        "description": "Use Gemini Enterprise Agent Platform (formerly Vertex AI) with Application Default Credentials"
+      }
+    ]
+  },
+  "sessionNew": {
+    "sessionId": "00000000-0000-4000-8000-000000000000",
+    "models": {
+      "availableModels": [
+        {
+          "modelId": "gemini-4-argon-medium",
+          "name": "Gemini 4 Argon (Medium)"
+        },
+        {
+          "modelId": "gemini-4-argon-high",
+          "name": "Gemini 4 Argon (High)"
+        },
+        {
+          "modelId": "gemini-4-argon-low",
+          "name": "Gemini 4 Argon (Low)"
+        },
+        {
+          "modelId": "gemini-4-hydrogen-high",
+          "name": "Gemini 4 Hydrogen (High)"
+        },
+        {
+          "modelId": "gemini-4-hydrogen-xhigh",
+          "name": "Gemini 4 Hydrogen (XHigh)"
+        },
+        {
+          "modelId": "gemini-4-hydrogen-medium",
+          "name": "Gemini 4 Hydrogen (Medium)"
+        },
+        {
+          "modelId": "gemini-4-hydrogen-low",
+          "name": "Gemini 4 Hydrogen (Low)"
+        },
+        {
+          "modelId": "gemini-pro-orchestrator-g1-pro",
+          "name": "Orchestrator (Argon)"
+        },
+        {
+          "modelId": "gemini-3.8-flash-high",
+          "name": "Gemini 3.8 Flash (High)"
+        },
+        {
+          "modelId": "gemini-3.8-flash-medium",
+          "name": "Gemini 3.8 Flash (Medium)"
+        },
+        {
+          "modelId": "gemini-3.8-flash-low",
+          "name": "Gemini 3.8 Flash (Low)"
+        },
+        {
+          "modelId": "claude-opus-5-5-low",
+          "name": "Claude Opus 5.5 (Low)"
+        },
+        {
+          "modelId": "claude-opus-5-5-medium",
+          "name": "Claude Opus 5.5 (Medium)"
+        },
+        {
+          "modelId": "claude-opus-5-5-high",
+          "name": "Claude Opus 5.5 (High)"
+        },
+        {
+          "modelId": "claude-sonnet-5-5-low",
+          "name": "Claude Sonnet 5.5 (Low)"
+        },
+        {
+          "modelId": "claude-sonnet-5-5-medium",
+          "name": "Claude Sonnet 5.5 (Medium)"
+        },
+        {
+          "modelId": "claude-sonnet-5-5-high",
+          "name": "Claude Sonnet 5.5 (High)"
+        },
+        {
+          "modelId": "gpt-oss-120b-medium",
+          "name": "GPT-OSS 120B (Medium)"
+        }
+      ],
+      "currentModelId": "gemini-4-argon-medium"
+    },
+    "modes": {
+      "currentModeId": "default",
+      "availableModes": [
+        {
+          "id": "default",
+          "name": "Default",
+          "description": "Ask before edits and commands, per your permission settings."
+        },
+        {
+          "id": "accept-edits",
+          "name": "Accept edits",
+          "description": "Approve file edits in the workspace without asking."
+        },
+        {
+          "id": "auto",
+          "name": "Auto",
+          "description": "Approve edits and safe commands; ask before irreversible actions."
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "description": "Plan carefully before executing a task."
+        }
+      ]
+    },
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gemini-4-argon",
+        "options": [
+          {
+            "value": "gemini-4-argon",
+            "name": "Gemini 4 Argon"
+          },
+          {
+            "value": "gemini-4-hydrogen",
+            "name": "Gemini 4 Hydrogen"
+          },
+          {
+            "value": "gemini-pro-orchestrator-g1-pro",
+            "name": "Orchestrator (Argon)"
+          },
+          {
+            "value": "gemini-3.8-flash",
+            "name": "Gemini 3.8 Flash"
+          },
+          {
+            "value": "claude-opus-5-5",
+            "name": "Claude Opus 5.5"
+          },
+          {
+            "value": "claude-sonnet-5-5",
+            "name": "Claude Sonnet 5.5"
+          },
+          {
+            "value": "gpt-oss-120b-medium",
+            "name": "GPT-OSS 120B (Medium)"
+          }
+        ]
+      },
+      {
+        "id": "thought_level",
+        "name": "Thinking Level",
+        "category": "thought_level",
+        "type": "select",
+        "currentValue": "medium",
+        "options": [
+          {
+            "value": "low",
+            "name": "Low"
+          },
+          {
+            "value": "medium",
+            "name": "Medium"
+          },
+          {
+            "value": "high",
+            "name": "High"
+          }
+        ]
+      },
+      {
+        "id": "mode",
+        "name": "Mode",
+        "category": "mode",
+        "type": "select",
+        "currentValue": "default",
+        "options": [
+          {
+            "value": "default",
+            "name": "Default",
+            "description": "Ask before edits and commands, per your permission settings."
+          },
+          {
+            "value": "accept-edits",
+            "name": "Accept edits",
+            "description": "Approve file edits in the workspace without asking."
+          },
+          {
+            "value": "auto",
+            "name": "Auto",
+            "description": "Approve edits and safe commands; ask before irreversible actions."
+          },
+          {
+            "value": "plan",
+            "name": "Plan",
+            "description": "Plan carefully before executing a task."
+          }
+        ]
+      }
+    ],
+    "_meta": {
+      "antigravity": {
+        "tier": {
+          "name": "Example Tier",
+          "id": "example-tier",
+          "upgradeUri": "https://example.invalid/upgrade"
+        }
+      }
+    }
+  }
+}
