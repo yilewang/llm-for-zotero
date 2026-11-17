@@ -115,6 +115,15 @@ export const ZOTERO_MCP_TOKEN_PREF_KEY = `${config.prefsPrefix}.codexZoteroMcpBe
 
 const SERVER_VERSION = "1.0.0";
 const MCP_PROTOCOL_VERSION = "2025-06-18";
+/**
+ * The revisions this server speaks, newest first. `initialize` answers with
+ * one of these, never with a string it cannot serve.
+ */
+const MCP_SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [
+  "2025-06-18",
+  "2025-03-26",
+  "2024-11-05",
+];
 const DEFAULT_ZOTERO_HTTP_PORT = 23119;
 const SCOPED_MCP_SCOPE_TTL_MS = 2 * 60 * 60 * 1000;
 export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
@@ -122,6 +131,7 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   "library_search",
   "library_read",
   "library_retrieve",
+  "library_cite",
   "paper_read",
   "literature_search",
   // Reads one outside paper's abstract and open-access text; it stays
@@ -171,6 +181,8 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "zotero_script",
   "undo",
   "annotate_pdf",
+  "collection_update",
+  "apply_tags",
   "file_io",
   "run_command",
   // list and syncStatus read; set changes a Zotero preference. The client's
@@ -181,9 +193,12 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "note_write_batch",
 ] as const;
 
+
+
 /**
  * Registered tools deliberately NOT exposed over MCP, and why: the single
  * owner of every plugin-only reason.
+ *
  *
  * This list exists so a missing tool reads as a decision rather than drift —
  * the registry and these curated arrays are maintained by hand and have
@@ -243,6 +258,63 @@ const MCP_GUIDANCE_TOOL_NAMES = new Set<string>([
   "library_retrieve",
 ]);
 const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
+
+/**
+ * Tool groups a client opts into. `core` is always exposed; the rest start
+ * off, because a tool catalog is paid for on every request. Shipping all 33
+ * tools to a chat client costs thousands of tokens before the user types,
+ * and most clients only ever need to read.
+ */
+const MCP_TOOL_GROUP_PREF_KEY = `${config.prefsPrefix}.mcpToolGroups`;
+/** Read tools plus the literature search every research client expects. */
+const DEFAULT_MCP_TOOL_GROUPS = "core,literature";
+const MCP_TOOL_GROUPS: Readonly<Record<string, ReadonlySet<string>>> = {
+  core: new Set<string>([
+    "library_search",
+    "library_retrieve",
+    "library_read",
+    "library_cite",
+    "paper_read",
+    "read_attachment",
+  ]),
+  literature: new Set<string>(["literature_search", "literature_read"]),
+  write: CURATED_WRITE_TOOL_NAMES,
+  agent: new Set<string>([
+    ...ZOTERO_MCP_PLAN_TOOL_NAMES,
+    "load_skill",
+    "paper_digest",
+    "record_paper_decisions",
+    "review_coverage",
+    "past_chat_read",
+    "past_chat_search",
+    "past_chat_attach",
+    "reader_open",
+  ]),
+};
+
+/** The groups this install exposes; `core` is always among them. */
+function getEnabledMcpToolGroups(): Set<string> {
+  const raw = String(
+    getZoteroPrefs()?.get?.(MCP_TOOL_GROUP_PREF_KEY, true) ?? DEFAULT_MCP_TOOL_GROUPS,
+  );
+  const groups = new Set<string>(["core"]);
+  for (const part of raw.split(",")) {
+    const name = part.trim().toLowerCase();
+    if (!name) continue;
+    if (name === "all") return new Set(Object.keys(MCP_TOOL_GROUPS));
+    if (MCP_TOOL_GROUPS[name]) groups.add(name);
+  }
+  return groups;
+}
+
+/** Whether a tool's group is on. A tool in no group stays visible. */
+function isToolExposedByGroup(name: string): boolean {
+  const groups = getEnabledMcpToolGroups();
+  for (const [groupName, members] of Object.entries(MCP_TOOL_GROUPS)) {
+    if (members.has(name)) return groups.has(groupName);
+  }
+  return true;
+}
 /**
  * MCP-only descriptions for tools whose in-plugin description routes through
  * a tool the MCP catalog excludes (see ZOTERO_MCP_EXCLUDED_TOOL_NAMES), or
@@ -480,6 +552,8 @@ type EndpointOptions = {
   method: string;
   data: unknown;
   headers?: Record<string, string>;
+  pathname?: string;
+  query?: Record<string, string>;
 };
 
 type McpHttpResponse = {
@@ -503,6 +577,46 @@ const conversationScopeTokens = new Map<
 >();
 let registeredMcpDeps: McpServerDeps | null = null;
 let scopelessRunId: string | null = null;
+/**
+ * Tool calls a client can still cancel, by JSON-RPC id. A batch or a second
+ * client may reuse an id, so the entry is replaced by the newer call and
+ * removed when that call settles.
+ */
+const inFlightMcpCalls = new Map<
+  string,
+  { controller: AbortController; dispose: () => void }
+>();
+
+/**
+ * One signal that aborts when either input does: the host's turn signal and a
+ * client's cancel must both stop the same call, and `AbortSignal.any` is newer
+ * than the Gecko this plugin runs on.
+ */
+function linkAbortSignals(
+  first?: AbortSignal,
+  second?: AbortSignal,
+): { signal?: AbortSignal; dispose: () => void } {
+  const active = [first, second].filter((signal): signal is AbortSignal =>
+    Boolean(signal),
+  );
+  if (active.length === 0) return { signal: undefined, dispose: () => {} };
+  if (active.length === 1) return { signal: active[0], dispose: () => {} };
+  const controller = createAbortController();
+  const forward = () => controller.abort();
+  for (const signal of active) {
+    if (signal.aborted) {
+      controller.abort();
+      break;
+    }
+    signal.addEventListener("abort", forward, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      for (const signal of active) signal.removeEventListener("abort", forward);
+    },
+  };
+}
 
 /**
  * A client that registers no scope is still one session, so its calls share a
@@ -1571,15 +1685,59 @@ function clearMcpReadDedupeCacheAfterToolResult(
   mcpReadDedupeCache.clear();
 }
 
-function isAuthorized(headers: Record<string, string> | undefined): boolean {
+function authorizeCaller(headers: Record<string, string> | undefined): boolean {
   const expected = getOrCreateZoteroMcpBearerToken();
-  const authorization = getHeader(headers, ZOTERO_MCP_AUTH_HEADER);
-  return authorization.trim() === `Bearer ${expected}`;
+  const authorization = getHeader(headers, ZOTERO_MCP_AUTH_HEADER).trim();
+  return authorization === `Bearer ${expected}`;
 }
 
-async function handleInitialize(): Promise<McpServerInfo> {
+/** What a request without the bearer token gets. */
+const MCP_UNAUTHORIZED_BODY = makeError(
+  null,
+  -32001,
+  "Unauthorized",
+  {
+    hint: "Copy the bearer token from Zotero Preferences -> Agent -> Zotero MCP and send it as 'Authorization: Bearer <token>'.",
+    endpoint: ZOTERO_MCP_ENDPOINT_PATH,
+  },
+);
+
+/**
+ * True when the client can only take an event stream. A client that also
+ * lists application/json keeps the plain body, which every client handles.
+ */
+function wantsEventStream(headers: Record<string, string> | undefined): boolean {
+  const accept = getHeader(headers, "Accept").toLowerCase();
+  return (
+    accept.includes("text/event-stream") && !accept.includes("application/json")
+  );
+}
+
+/** One SSE event carrying the whole JSON-RPC response. */
+function toEventStreamBody(body: string): string {
+  return `event: message
+data: ${body}
+
+`;
+}
+
+/**
+ * The revision to answer with: the client's when this server speaks it,
+ * otherwise this server's own, which the client then accepts or drops the
+ * session. Echoing a version the server cannot serve moved the failure to
+ * the client's next request instead of the handshake.
+ */
+function negotiateProtocolVersion(clientVersion: string): string {
+  return MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(clientVersion)
+    ? clientVersion
+    : MCP_PROTOCOL_VERSION;
+}
+
+async function handleInitialize(
+  clientProtocolVersion?: string,
+): Promise<McpServerInfo> {
   return {
-    protocolVersion: MCP_PROTOCOL_VERSION,
+    protocolVersion: negotiateProtocolVersion(clientProtocolVersion || ""),
     serverInfo: {
       name: "llm-for-zotero",
       version: SERVER_VERSION,
@@ -1658,6 +1816,10 @@ function handleToolsList(
   const tools: McpToolDefinition[] = toolRegistry
     .listTools()
     .filter((tool) => isMcpToolVisibleInScope(tool, scope))
+    // Groups narrow what a standalone client pays for. A scoped turn belongs
+    // to a built-in runtime that already decided which tools it needs, so its
+    // catalog stays whole.
+    .filter((tool) => (scope ? true : isToolExposedByGroup(tool.name)))
     .map(({ name, description, inputSchema, executionClass }) => {
       const mutability =
         executionClass === "external_effect" ? "write" : "read";
@@ -1693,6 +1855,10 @@ function handleToolsList(
         annotations: getMcpToolAnnotations(name, executionClass),
       };
     });
+
+  // `MCP_TOOL_NAME_ALIASES` is resolved at call time, not listed here: a
+  // catalog that repeats every tool under a second name doubles what the
+  // client pays for and makes the model choose between synonyms.
   return { tools };
 }
 
@@ -2053,6 +2219,8 @@ function createToolContext(
   rawArgs: unknown,
   callScope: ResolvedMcpCallScope,
   zoteroGateway?: ZoteroGateway,
+  /** This call's own abort signal, so a client can cancel it. */
+  abortSignal?: AbortSignal,
 ): AgentToolContext {
   const { scope, libraryID, activeItemId, activeContextItemId } = callScope;
   const runId = scope?.runId || scopelessRunIdentity();
@@ -2300,7 +2468,7 @@ function createToolContext(
         : scope?.runtimeAuthority === "codex"
           ? "codex"
           : undefined,
-    signal: scope?.signal,
+    signal: abortSignal || scope?.signal,
     runId,
     item,
     currentAnswerText: "",
@@ -2536,14 +2704,38 @@ async function handleToolsCall(
   headers?: Record<string, string>,
   id?: string | number | null,
 ): Promise<McpToolCallResult> {
-  const { name, arguments: rawArgs } = params;
+  const { arguments: rawArgs } = params;
+  const name = params.name;
 
+  // A standalone client sees the groups, so it must not reach a tool outside
+  // them by name either.
   const callScope = resolveMcpCallScope({
     toolName: name,
     rawArgs,
     headers,
   });
   const { scopeArgs, scope } = callScope;
+  if (!scope && !isToolExposedByGroup(name)) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Zotero MCP tool ${name} belongs to a tool group that is off. Turn its group on in Zotero Preferences -> Agent -> Zotero MCP.`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const callKey = id === null || id === undefined ? "" : String(id);
+  const callAbort = createAbortController();
+  const linkedSignal = linkAbortSignals(scope?.signal, callAbort.signal);
+  if (callKey) {
+    inFlightMcpCalls.set(callKey, {
+      controller: callAbort,
+      dispose: linkedSignal.dispose,
+    });
+  }
   const tool = deps.toolRegistry.getTool(name);
   const toolLabel = getMcpToolPresentationLabel(deps, name);
   const workCategory = tool
@@ -2741,6 +2933,7 @@ async function handleToolsCall(
       rawArgs,
       callScope,
       deps.zoteroGateway,
+      linkedSignal.signal,
     );
     toolContext.extendAttachedConversationScope = (ref) =>
       extendScopedMcpAttachedConversationScope(headers, ref);
@@ -2893,30 +3086,29 @@ async function handleToolsCall(
   }
 }
 
+/** True for one JSON-RPC 2.0 request object. */
+function isJsonRpcRequest(value: unknown): value is JsonRpcRequest {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { jsonrpc?: unknown }).jsonrpc === "2.0" &&
+    typeof (value as { method?: unknown }).method === "string"
+  );
+}
+
+/**
+ * One HTTP body: a single JSON-RPC request, or a JSON array of them, which
+ * some clients send as a batch. A batch answers every request it carried and
+ * nothing for the notifications in it.
+ */
 async function handleRequest(
   body: string,
   deps: McpServerDeps,
   headers?: Record<string, string>,
 ): Promise<McpHttpResponse> {
-  let request: JsonRpcRequest;
-
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(body);
-    if (
-      typeof parsed !== "object" ||
-      parsed === null ||
-      parsed.jsonrpc !== "2.0" ||
-      typeof parsed.method !== "string"
-    ) {
-      return makeJsonRpcHttpResponse(
-        makeError(
-          null,
-          RPC_ERRORS.INVALID_REQUEST.code,
-          RPC_ERRORS.INVALID_REQUEST.message,
-        ),
-      );
-    }
-    request = parsed as JsonRpcRequest;
+    parsed = JSON.parse(body);
   } catch {
     return makeJsonRpcHttpResponse(
       makeError(
@@ -2927,16 +3119,86 @@ async function handleRequest(
     );
   }
 
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) {
+      return makeJsonRpcHttpResponse(
+        makeError(
+          null,
+          RPC_ERRORS.INVALID_REQUEST.code,
+          RPC_ERRORS.INVALID_REQUEST.message,
+        ),
+      );
+    }
+    const responses: unknown[] = [];
+    for (const entry of parsed) {
+      if (!isJsonRpcRequest(entry)) {
+        responses.push(
+          makeError(
+            null,
+            RPC_ERRORS.INVALID_REQUEST.code,
+            RPC_ERRORS.INVALID_REQUEST.message,
+          ),
+        );
+        continue;
+      }
+      const single = await handleSingleRequest(entry, deps, headers);
+      if (single.status === 202) continue;
+      try {
+        responses.push(JSON.parse(single.body));
+      } catch {
+        // A body that is not JSON cannot belong to a JSON-RPC batch.
+      }
+    }
+    if (responses.length === 0) return makeJsonRpcNotificationResponse();
+    return makeJsonRpcHttpResponse(responses);
+  }
+
+  if (!isJsonRpcRequest(parsed)) {
+    return makeJsonRpcHttpResponse(
+      makeError(
+        null,
+        RPC_ERRORS.INVALID_REQUEST.code,
+        RPC_ERRORS.INVALID_REQUEST.message,
+      ),
+    );
+  }
+
+  return handleSingleRequest(parsed, deps, headers);
+}
+
+async function handleSingleRequest(
+  request: JsonRpcRequest,
+  deps: McpServerDeps,
+  headers?: Record<string, string>,
+): Promise<McpHttpResponse> {
   const { id, method, params } = request;
   const isNotification = !hasJsonRpcId(request);
 
   try {
     if (method === MCP_METHODS.INITIALIZE) {
-      const result = await handleInitialize();
+      const clientProtocolVersion =
+        params && typeof params === "object" && "protocolVersion" in params
+          ? String((params as { protocolVersion?: unknown }).protocolVersion || "")
+          : undefined;
+      const result = await handleInitialize(clientProtocolVersion);
       return makeJsonRpcHttpResponse(makeResult(id ?? null, result));
     }
 
     if (method === MCP_METHODS.INITIALIZED) {
+      return makeJsonRpcNotificationResponse();
+    }
+
+    // A client cancels a slow read instead of waiting for it. The tool call
+    // aborts at its next checkpoint, which is what the plugin's own runtime
+    // already does when a turn is stopped.
+    if (method === "notifications/cancelled") {
+      const requestId =
+        params && typeof params === "object"
+          ? (params as { requestId?: unknown }).requestId
+          : undefined;
+      if (requestId !== undefined && requestId !== null) {
+        inFlightMcpCalls.get(String(requestId))?.controller.abort();
+      }
       return makeJsonRpcNotificationResponse();
     }
 
@@ -2967,13 +3229,21 @@ async function handleRequest(
           ),
         );
       }
-      const result = await handleToolsCall(
-        params as McpToolCallParams,
-        deps,
-        headers,
-        id ?? null,
-      );
-      return makeJsonRpcHttpResponse(makeResult(id ?? null, result));
+      try {
+        const result = await handleToolsCall(
+          params as McpToolCallParams,
+          deps,
+          headers,
+          id ?? null,
+        );
+        return makeJsonRpcHttpResponse(makeResult(id ?? null, result));
+      } finally {
+        if (id !== null && id !== undefined) {
+          const entry = inFlightMcpCalls.get(String(id));
+          entry?.dispose();
+          inFlightMcpCalls.delete(String(id));
+        }
+      }
     }
 
     if (isNotification) {
@@ -3017,17 +3287,31 @@ export function registerMcpServer(deps: McpServerDeps): void {
   scopelessRunId = null;
 
   class McpEndpoint {
-    supportedMethods = ["POST"];
+    supportedMethods = ["POST", "GET"];
     supportedDataTypes = ["application/json"];
 
     init = async (
       options: EndpointOptions,
     ): Promise<[number, string, string]> => {
-      if (!isAuthorized(options.headers)) {
+      if (options.method === "GET") {
+        return [
+          200,
+          "application/json",
+          JSON.stringify({
+            status: "ok",
+            name: "llm-for-zotero",
+            version: SERVER_VERSION,
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            description: "Zotero Built-in MCP Server",
+            endpoint: ZOTERO_MCP_ENDPOINT_PATH,
+          }),
+        ];
+      }
+      if (!authorizeCaller(options.headers)) {
         return [
           401,
           "application/json",
-          JSON.stringify({ error: "unauthorized" }),
+          JSON.stringify(MCP_UNAUTHORIZED_BODY),
         ];
       }
       const body =
@@ -3035,7 +3319,14 @@ export function registerMcpServer(deps: McpServerDeps): void {
           ? options.data
           : JSON.stringify(options.data);
 
-      const response = await handleRequest(body, capturedDeps, options.headers);
+      const response = await handleRequest(
+        body,
+        capturedDeps,
+        options.headers,
+      );
+      if (response.status === 200 && wantsEventStream(options.headers)) {
+        return [200, "text/event-stream", toEventStreamBody(response.body)];
+      }
       return [response.status, response.contentType, response.body];
     };
   }
@@ -3048,14 +3339,21 @@ export async function invokeRegisteredZoteroMcpEndpoint(
 ): Promise<[number, string, string] | null> {
   const deps = registeredMcpDeps;
   if (!deps) return null;
-  if (!isAuthorized(options.headers)) {
-    return [401, "application/json", JSON.stringify({ error: "unauthorized" })];
+  if (!authorizeCaller(options.headers)) {
+    return [
+      401,
+      "application/json",
+      JSON.stringify(MCP_UNAUTHORIZED_BODY),
+    ];
   }
   const body =
     typeof options.data === "string"
       ? options.data
       : JSON.stringify(options.data);
   const response = await handleRequest(body, deps, options.headers);
+  if (response.status === 200 && wantsEventStream(options.headers)) {
+    return [200, "text/event-stream", toEventStreamBody(response.body)];
+  }
   return [response.status, response.contentType, response.body];
 }
 
