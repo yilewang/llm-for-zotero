@@ -20,6 +20,10 @@ import {
   type ConversationCatalogEntry,
 } from "../../core/conversations/repository";
 import type { ConversationSystem } from "../../shared/types";
+import {
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 
 /** Display order of the runtimes; it never decides a row's position. */
 export const UNIFIED_HISTORY_SYSTEM_ORDER: readonly ConversationSystem[] = [
@@ -41,12 +45,15 @@ export function resolveUnifiedHistorySystems(params: {
   singleSystem: boolean;
 }): ConversationSystem[] {
   if (params.singleSystem) return [params.activeSystem];
+  const runtimeEnabled: Record<RuntimeConversationSystem, boolean> = {
+    codex: params.codexEnabled,
+    claude_code: params.claudeEnabled,
+  };
   return UNIFIED_HISTORY_SYSTEM_ORDER.filter(
     (system) =>
       system === "upstream" ||
       system === params.activeSystem ||
-      (system === "codex" && params.codexEnabled) ||
-      (system === "claude_code" && params.claudeEnabled),
+      (isRuntimeConversationSystem(system) && runtimeEnabled[system]),
   );
 }
 

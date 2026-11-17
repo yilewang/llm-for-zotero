@@ -1,12 +1,27 @@
 import type { ConversationSystem } from "../../shared/types";
+import {
+  getRuntimeConversationSystemDescriptor,
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import { createElement } from "../../utils/domHelpers";
 
-export type RuntimeConversationSystem = Exclude<ConversationSystem, "upstream">;
+export { isRuntimeConversationSystem, type RuntimeConversationSystem };
 
-export const RUNTIME_CONVERSATION_SYSTEMS = [
+/** Display order of the runtime toggles (not the registry order). */
+export const RUNTIME_SYSTEM_DISPLAY_ORDER = [
   "codex",
   "claude_code",
 ] as const satisfies readonly RuntimeConversationSystem[];
+
+// Fails to compile when a runtime is missing from the display order above.
+const RUNTIME_DISPLAY_ORDER_IS_COMPLETE: Exclude<
+  RuntimeConversationSystem,
+  (typeof RUNTIME_SYSTEM_DISPLAY_ORDER)[number]
+> extends never
+  ? true
+  : never = true;
+void RUNTIME_DISPLAY_ORDER_IS_COMPLETE;
 
 type RuntimeSystemButtonMap<T> = Record<RuntimeConversationSystem, T>;
 
@@ -45,22 +60,15 @@ type CreateRuntimeSystemControlsOptions = {
   buttonIds?: Partial<RuntimeSystemButtonMap<string>>;
 };
 
-const RUNTIME_SYSTEM_LABELS: RuntimeSystemButtonMap<string> = {
-  codex: "Codex",
-  claude_code: "Claude Code",
-};
-
 function isRuntimeSystemEnabled(
   system: RuntimeConversationSystem,
   input: RuntimeSystemControlsStateInput,
 ): boolean {
-  return system === "codex" ? input.codexEnabled : input.claudeEnabled;
-}
-
-export function isRuntimeConversationSystem(
-  value: unknown,
-): value is RuntimeConversationSystem {
-  return value === "codex" || value === "claude_code";
+  const enabled: RuntimeSystemButtonMap<boolean> = {
+    codex: input.codexEnabled,
+    claude_code: input.claudeEnabled,
+  };
+  return enabled[system];
 }
 
 export function resolveRuntimeSystemToggleTarget(
@@ -77,7 +85,7 @@ export function resolveRuntimeSystemControlsState(
   const buttons = {} as RuntimeSystemControlState["buttons"];
   let groupVisible = false;
 
-  for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+  for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
     const visible = isRuntimeSystemEnabled(system, input);
     const active = visible && input.activeSystem === system;
     groupVisible ||= visible;
@@ -87,7 +95,7 @@ export function resolveRuntimeSystemControlsState(
       disabled: visible && busy,
       label: active
         ? "Switch to upstream mode"
-        : `Switch to ${RUNTIME_SYSTEM_LABELS[system]} mode`,
+        : `Switch to ${getRuntimeConversationSystemDescriptor(system).label} mode`,
     };
   }
 
@@ -114,7 +122,7 @@ export function createRuntimeSystemControls(
   group.setAttribute("aria-label", "Conversation runtime");
 
   const buttons = {} as CreatedRuntimeSystemControls["buttons"];
-  for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+  for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
     const button = createElement(
       doc,
       "button",
@@ -127,7 +135,7 @@ export function createRuntimeSystemControls(
         .join(" "),
       {
         type: "button",
-        title: `Switch to ${RUNTIME_SYSTEM_LABELS[system]} mode`,
+        title: `Switch to ${getRuntimeConversationSystemDescriptor(system).label} mode`,
       },
     );
     const buttonId = options.buttonIds?.[system];
@@ -160,7 +168,7 @@ export function syncRuntimeSystemControls(
 ): RuntimeSystemControlState {
   const state = resolveRuntimeSystemControlsState(input);
   if (controls.group) {
-    const visibleCount = RUNTIME_CONVERSATION_SYSTEMS.filter(
+    const visibleCount = RUNTIME_SYSTEM_DISPLAY_ORDER.filter(
       (system) => state.buttons[system].visible,
     ).length;
     controls.group.style.display = state.groupVisible ? "inline-flex" : "none";
@@ -181,7 +189,7 @@ export function syncRuntimeSystemControls(
     }
   }
 
-  for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+  for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
     const button = controls.buttons[system];
     if (!button) continue;
     const buttonState = state.buttons[system];

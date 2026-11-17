@@ -453,7 +453,13 @@ export function configurePendingDeletionSubsystem(): void {
                 },
               );
             }
+            return;
           }
+          // The built-in runtime has no provider session to detach.  The
+          // check is compile-time only: queued rows are read back from disk
+          // unvalidated, and an unknown system must stay a silent no-op.
+          if (turn.system === "upstream") return;
+          turn.system satisfies never;
         },
       });
     },

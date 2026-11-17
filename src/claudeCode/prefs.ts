@@ -1,7 +1,10 @@
 declare const Zotero: any;
 
 import { config } from "../../package.json";
-import type { ConversationSystem } from "../shared/types";
+import {
+  isRuntimeConversationSystemEnabled,
+  setRuntimeConversationSystemEnabled,
+} from "../shared/conversationSystemPrefs";
 import {
   normalizeClaudePermissionMode,
   type ClaudePermissionMode,
@@ -98,26 +101,6 @@ function setJsonStringPref(key: string, value: Record<string, string>): void {
   setPref(key, JSON.stringify(value));
 }
 
-export function getConversationSystemPref(): ConversationSystem {
-  return getStoredConversationSystemPref() || "upstream";
-}
-
-export function getStoredConversationSystemPref(): ConversationSystem | null {
-  const raw = getStringPref("conversationSystem").trim().toLowerCase();
-  if (raw === "claude_code") return "claude_code";
-  if (raw === "codex") return "codex";
-  if (raw === "upstream") return "upstream";
-  return null;
-}
-
-export function setConversationSystemPref(system: ConversationSystem): void {
-  if (system === "claude_code" || system === "codex") {
-    setPref("conversationSystem", system);
-    return;
-  }
-  setPref("conversationSystem", "upstream");
-}
-
 export function getLastUsedClaudeConversationMode(
   libraryID: number,
 ): "global" | "paper" | null {
@@ -146,18 +129,11 @@ export function removeLastUsedClaudeConversationMode(libraryID: number): void {
 }
 
 export function isClaudeCodeModeEnabled(): boolean {
-  const value = getZoteroPrefs()?.get?.(prefKey("enableClaudeCodeMode"), true);
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-  }
-  return false;
+  return isRuntimeConversationSystemEnabled("claude_code");
 }
 
 export function setClaudeCodeModeEnabled(enabled: boolean): void {
-  setPref("enableClaudeCodeMode", Boolean(enabled));
+  setRuntimeConversationSystemEnabled("claude_code", enabled);
 }
 
 export const DEFAULT_CLAUDE_BRIDGE_URL = "http://127.0.0.1:19787";

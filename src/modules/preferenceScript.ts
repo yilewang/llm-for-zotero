@@ -239,6 +239,7 @@ import {
   restartClaudeBridge,
   type ClaudeBridgeStatus,
 } from "../claudeCode/bridgeProcess";
+import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
 import {
   getClaudeAutoCompactThresholdPercent,
   getClaudeBridgeExtraArgsPref,
@@ -259,7 +260,6 @@ import {
   getClaudeSettingSourcesByPref,
   isClaudeAutoCompactEnabled,
   isClaudeBlockStreamingEnabled,
-  getConversationSystemPref,
   getLastUsedClaudeGlobalConversationKey,
   getLastUsedClaudePaperConversationKey,
   isClaudeCodeModeEnabled,

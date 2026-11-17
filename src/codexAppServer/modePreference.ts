@@ -2,7 +2,7 @@ import type { ConversationSystem } from "../shared/types";
 import {
   getConversationSystemPref,
   setConversationSystemPref,
-} from "../claudeCode/prefs";
+} from "../shared/conversationSystemPrefs";
 import { setCodexAppServerModeEnabled } from "./prefs";
 
 type CodexModePreferenceChangeDeps = {

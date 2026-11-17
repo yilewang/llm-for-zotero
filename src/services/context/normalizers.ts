@@ -8,6 +8,7 @@ import type {
   SelectedTextSource,
   TagContextRef,
 } from "../../shared/types";
+import { isConversationSystem } from "../../core/conversations/conversationSystems";
 
 type TextSanitizer = (value: string) => string;
 
@@ -483,8 +484,7 @@ export function normalizeAttachedConversationRefs(
     if (!entry || typeof entry !== "object") continue;
     const typed = entry as Record<string, unknown>;
     const system = typed.system;
-    if (system !== "upstream" && system !== "claude_code" && system !== "codex")
-      continue;
+    if (!isConversationSystem(system)) continue;
     const conversationKey = normalizePositiveInt(typed.conversationKey);
     const libraryID = normalizePositiveInt(typed.libraryID);
     if (!conversationKey || !libraryID) continue;

@@ -265,7 +265,8 @@ export type ActiveNoteContext = {
   noteHtml?: string;
 };
 
-export type ConversationSystem = "upstream" | "claude_code" | "codex";
+import type { ConversationSystem } from "../core/conversations/conversationSystems";
+export type { ConversationSystem };
 
 export type GlobalConversationSummary = {
   conversationID: string;

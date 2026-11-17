@@ -38,14 +38,16 @@ import {
 } from "./store";
 import type { StoredChatMessage } from "../utils/chatStore";
 import {
+  getConversationSystemPref,
+  setConversationSystemPref,
+} from "../shared/conversationSystemPrefs";
+import {
   getClaudeBridgeUrl,
   getClaudePermissionModePref,
   getClaudeReasoningModePref,
   getClaudeRuntimeModelPref,
-  getConversationSystemPref,
   getLastUsedClaudeGlobalConversationKey,
   getLastUsedClaudePaperConversationKey,
-  setConversationSystemPref,
   setLastUsedClaudeGlobalConversationKey,
   setLastUsedClaudePaperConversationKey,
 } from "./prefs";

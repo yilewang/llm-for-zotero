@@ -1,4 +1,10 @@
 import type { ConversationSystem } from "../../shared/types";
+import {
+  getRuntimeConversationSystemDescriptor,
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
+import { RUNTIME_SYSTEM_DISPLAY_ORDER } from "./runtimeSystemControls";
 
 /** One entry of the runtime badge menu. */
 export type RuntimeBadgeItem = {
@@ -37,15 +43,21 @@ export function getRuntimeBadgeLabel(
   system: ConversationSystem,
   agentEnabled: boolean,
 ): string {
-  if (system === "codex") return "Codex";
-  if (system === "claude_code") return "Claude";
-  return agentEnabled ? "Agent" : "Chat";
+  return isRuntimeConversationSystem(system)
+    ? getRuntimeConversationSystemDescriptor(system).shortLabel
+    : agentEnabled
+      ? "Agent"
+      : "Chat";
 }
 
 export function resolveRuntimeBadgeState(
   input: RuntimeBadgeStateInput,
 ): RuntimeBadgeState {
   const label = getRuntimeBadgeLabel(input.system, input.agentEnabled);
+  const runtimeEnabled: Record<RuntimeConversationSystem, boolean> = {
+    codex: input.codexEnabled,
+    claude_code: input.claudeEnabled,
+  };
   const items: RuntimeBadgeItem[] = input.isTornWindow
     ? [{ system: input.system, label }]
     : [
@@ -55,17 +67,20 @@ export function resolveRuntimeBadgeState(
         },
       ];
   if (!input.isSideChat && !input.isTornWindow) {
-    if (input.codexEnabled) items.push({ system: "codex", label: "Codex" });
-    if (input.claudeEnabled) {
-      items.push({ system: "claude_code", label: "Claude" });
+    for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
+      if (runtimeEnabled[system]) {
+        items.push({
+          system,
+          label: getRuntimeBadgeLabel(system, input.agentEnabled),
+        });
+      }
     }
   }
   // A panel already running Codex or Claude keeps its label even if that
   // runtime was just turned off in Preferences, as the static badge did.
   const anyRuntimeOn =
     input.agentEnabled ||
-    input.codexEnabled ||
-    input.claudeEnabled ||
+    RUNTIME_SYSTEM_DISPLAY_ORDER.some((system) => runtimeEnabled[system]) ||
     input.system !== "upstream";
   const visible = !input.isWebChat && anyRuntimeOn;
   return {

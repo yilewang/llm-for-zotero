@@ -1,9 +1,6 @@
 declare const Zotero: any;
 
-import {
-  CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-  RUNTIME_CONVERSATION_KEY_END,
-} from "../shared/conversationKeySpace";
+import { getRuntimeConversationKeySpan } from "../shared/conversationKeySpace";
 import { cleanupRememberedConversationKeyPrefs } from "../shared/conversationKeyPrefCleanup";
 import {
   CODEX_HISTORY_LIMIT,
@@ -34,6 +31,8 @@ import {
   createRuntimeConversationStore,
   ensureColumn,
 } from "../services/providers/runtimeConversationStore";
+
+const CODEX_KEY_SPAN = getRuntimeConversationKeySpan("codex");
 
 /**
  * The Codex conversation store: the shared runtime store over the Codex
@@ -292,10 +291,10 @@ async function findMisroutedCodexConversationKeys(): Promise<number[]> {
      )
      ORDER BY conversation_key ASC`,
     [
-      CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-      RUNTIME_CONVERSATION_KEY_END,
-      CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-      RUNTIME_CONVERSATION_KEY_END,
+      CODEX_KEY_SPAN.start,
+      CODEX_KEY_SPAN.endExclusive,
+      CODEX_KEY_SPAN.start,
+      CODEX_KEY_SPAN.endExclusive,
     ],
   )) as Array<{ conversationKey?: unknown }> | undefined;
   return (rows || [])

@@ -5,6 +5,10 @@ declare const Services:
     }
   | undefined;
 
+import {
+  isRuntimeConversationSystemEnabled,
+  setRuntimeConversationSystemEnabled,
+} from "../shared/conversationSystemPrefs";
 import { config } from "../../package.json";
 import {
   DEFAULT_CODEX_RUNTIME_MODEL,
@@ -127,21 +131,11 @@ function setJsonStringPref(key: string, value: Record<string, string>): void {
 }
 
 export function isCodexAppServerModeEnabled(): boolean {
-  const value = getZoteroPrefs()?.get?.(
-    prefKey("enableCodexAppServerMode"),
-    true,
-  );
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-  }
-  return false;
+  return isRuntimeConversationSystemEnabled("codex");
 }
 
 export function setCodexAppServerModeEnabled(enabled: boolean): void {
-  setPref("enableCodexAppServerMode", Boolean(enabled));
+  setRuntimeConversationSystemEnabled("codex", enabled);
 }
 
 export function getCodexRuntimeModelPref(): CodexRuntimeModel {

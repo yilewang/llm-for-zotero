@@ -16,6 +16,7 @@ import type {
   ConversationSystem,
   SelectedTextContext,
 } from "../../shared/types";
+import { assertNeverConversationSystem } from "../../core/conversations/conversationSystems";
 import { normalizeConversationTitleSeed } from "./setupHandlers/controllers/conversationHistoryController";
 import { SIDECHAT_SELECTED_TEXT_MAX_LENGTH } from "./constants";
 import { buildTranscriptContext } from "./sideChatContext";
@@ -155,7 +156,15 @@ export const SEEDED_CONVERSATION_HANDOVER_SOURCE = "inlineask" as const;
 export function seededConversationNeedsHandover(
   system: ConversationSystem,
 ): boolean {
-  return system === "claude_code";
+  switch (system) {
+    case "claude_code":
+      return true;
+    case "codex":
+    case "upstream":
+      return false;
+    default:
+      return assertNeverConversationSystem(system);
+  }
 }
 
 /** Leads the handover when its oldest turns were cut for length. */

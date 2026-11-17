@@ -1,4 +1,8 @@
 import type { ConversationSystem } from "../../../../shared/types";
+import {
+  getRuntimeConversationSystemDescriptor,
+  isRuntimeConversationSystem,
+} from "../../../../core/conversations/conversationSystems";
 import { resolveContextAttachmentSupportFromMetadata } from "../../../../services/paperContent/contextAttachmentSupport";
 import { sanitizeText } from "../../../../utils/textSanitization";
 
@@ -36,9 +40,9 @@ export type HistoryEntrySourceState = "active" | "orphan";
  * Rows of the built-in runtime (Agent) have no name.
  */
 export function getHistoryRowRuntimeLabel(system: ConversationSystem): string {
-  if (system === "codex") return "Codex";
-  if (system === "claude_code") return "Claude";
-  return "";
+  return isRuntimeConversationSystem(system)
+    ? getRuntimeConversationSystemDescriptor(system).shortLabel
+    : "";
 }
 export type HistoryEntryLabelType = "paper" | "library" | "orphan";
 

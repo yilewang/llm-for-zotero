@@ -6,6 +6,7 @@ import {
   getConversationKeyLedgerEntry,
   isConversationKeyLedgerStoreInitialized,
 } from "./conversationKeyLedger";
+import { isConversationSystem } from "../core/conversations/conversationSystems";
 
 export type ConversationForkScopeKind = "global" | "paper";
 
@@ -46,9 +47,7 @@ function normalizePositiveInt(value: unknown): number {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): ConversationForkScopeKind | null {

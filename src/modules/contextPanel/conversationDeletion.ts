@@ -1,5 +1,9 @@
 import type { ConversationSystem } from "../../shared/types";
 import {
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
+import {
   chatHistory,
   getAbortController,
   getPendingRequestId,
@@ -73,6 +77,15 @@ import {
 
 type ConversationDeletionKind = "global" | "paper";
 
+// The provider cleanup job each runtime persists for a deleted conversation.
+const RUNTIME_PROVIDER_CLEANUP_OPERATIONS: Record<
+  RuntimeConversationSystem,
+  ConversationCleanupJob["operation"]
+> = {
+  claude_code: "claude_invalidate",
+  codex: "codex_archive",
+};
+
 export type ConversationDeletionTarget = {
   instanceID?: string;
   conversationID?: string;
@@ -86,7 +99,7 @@ export type ConversationDeletionTarget = {
   /** Provider sessions captured by pending turn intents folded into this delete. */
   additionalProviderCleanup?: Array<{
     operation: "codex_archive" | "claude_invalidate";
-    system: "codex" | "claude_code";
+    system: RuntimeConversationSystem;
     providerSessionId: string;
     providerScope?: ConversationCleanupProviderScope;
   }>;
@@ -490,10 +503,7 @@ async function clearRememberedSelection(
       },
       { expectedKey: conversationKey },
     );
-    if (
-      target.conversationSystem === "claude_code" ||
-      target.conversationSystem === "codex"
-    ) {
+    if (isRuntimeConversationSystem(target.conversationSystem)) {
       return;
     }
     // The library lock is an upstream-only pointer.
@@ -615,10 +625,10 @@ export async function finalizeConversationDeletion(
       (
         turn,
       ): turn is PendingTurnDeletionEntry & {
-        system: "codex" | "claude_code";
+        system: RuntimeConversationSystem;
         providerSessionId: string;
       } =>
-        (turn.system === "codex" || turn.system === "claude_code") &&
+        isRuntimeConversationSystem(turn.system) &&
         (Boolean(turn.providerSessionId?.trim()) ||
           (turn.system === "claude_code" &&
             Boolean(turn.libraryID && turn.conversationKind) &&
@@ -628,10 +638,7 @@ export async function finalizeConversationDeletion(
           turn.instanceID === normalizedTarget.instanceID),
     )
     .map((turn) => ({
-      operation:
-        turn.system === "codex"
-          ? ("codex_archive" as const)
-          : ("claude_invalidate" as const),
+      operation: RUNTIME_PROVIDER_CLEANUP_OPERATIONS[turn.system],
       system: turn.system,
       providerSessionId: String(turn.providerSessionId || "").trim(),
       providerScope:
@@ -1068,12 +1075,11 @@ async function ensureQueuedProviderCleanupJob(
 ): Promise<boolean> {
   if (entry.providerCleanupState === "complete") return true;
   const providerSessionId = normalizeProviderSessionId(entry.providerSessionId);
-  if (entry.system !== "codex" && entry.system !== "claude_code") return true;
+  if (!isRuntimeConversationSystem(entry.system)) return true;
   if (!providerSessionId && entry.system !== "claude_code") return true;
   try {
     const job = await enqueueConversationCleanupJob({
-      operation:
-        entry.system === "codex" ? "codex_archive" : "claude_invalidate",
+      operation: RUNTIME_PROVIDER_CLEANUP_OPERATIONS[entry.system],
       system: entry.system,
       conversationKey: entry.conversationKey,
       providerScope: getClaudeProviderScope({

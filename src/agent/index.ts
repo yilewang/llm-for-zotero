@@ -1,9 +1,7 @@
 import { getClaudeCommandCatalog } from "../claudeCode/commandCatalog";
 import type { ClaudeBridgeGateOptions } from "./externalBackendBridge";
-import {
-  getConversationSystemPref,
-  isClaudeCodeModeEnabled,
-} from "../claudeCode/prefs";
+import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
+import { isClaudeCodeModeEnabled } from "../claudeCode/prefs";
 import {
   getClaudeBridgeRuntime,
   resetClaudeBridgeRuntime,

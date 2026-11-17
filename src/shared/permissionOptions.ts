@@ -1,5 +1,9 @@
 import type { OriginalAgentPermissionMode } from "./originalAgentPermissionMode";
 import type { ClaudePermissionMode } from "./claudePermissionMode";
+import {
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+  runtimeConversationSystemForPermissionProvider,
+} from "../core/conversations/conversationSystems";
 
 export type PermissionProvider = "original" | "claude" | "codex";
 
@@ -135,12 +139,12 @@ export function getClaudePermissionModeFromSelectionKey(
 export function buildPermissionAccessibleLabel(
   option: PermissionOption,
 ): string {
-  const provider =
-    option.provider === "claude"
-      ? "Claude Code"
-      : option.provider === "codex"
-        ? "Codex"
-        : "Original Agent";
+  const runtime = runtimeConversationSystemForPermissionProvider(
+    option.provider,
+  );
+  const provider = runtime
+    ? RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[runtime].label
+    : "Original Agent";
   const description = option.description.trim();
   return `${provider} permission mode: ${option.fullLabel}${description ? ` — ${description}` : ""}`;
 }

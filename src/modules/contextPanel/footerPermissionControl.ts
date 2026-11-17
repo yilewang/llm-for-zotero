@@ -1,4 +1,9 @@
 import type { ConversationSystem } from "../../shared/types";
+import {
+  assertNeverConversationSystem,
+  getRuntimeConversationSystemDescriptor,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPermissionMode";
 import type { ClaudePermissionMode } from "../../shared/claudePermissionMode";
 import { t } from "../../utils/i18n";
@@ -83,27 +88,35 @@ export function resolvePermissionSurface(params: {
   claudeOptions?: PermissionOption[];
   codexCatalog?: CodexPermissionOptionCatalog;
 }): PermissionSurface {
-  if (params.conversationSystem === "claude_code") {
-    return params.claudeOptions
-      ? {
-          kind: "claude",
-          selectedKey: `claude:${params.claudeSelectedId}`,
-          options: params.claudeOptions,
-        }
-      : {
-          kind: "loading",
-          provider: "claude",
-          message: "Loading permissions…",
-        };
-  }
-  if (params.conversationSystem === "codex") {
-    return params.codexCatalog
-      ? {
-          kind: "codex",
-          selectedKey: params.codexCatalog.selectedKey,
-          options: params.codexCatalog.options,
-        }
-      : { kind: "loading", provider: "codex", message: "Loading permissions…" };
+  switch (params.conversationSystem) {
+    case "claude_code":
+      return params.claudeOptions
+        ? {
+            kind: "claude",
+            selectedKey: `claude:${params.claudeSelectedId}`,
+            options: params.claudeOptions,
+          }
+        : {
+            kind: "loading",
+            provider: "claude",
+            message: "Loading permissions…",
+          };
+    case "codex":
+      return params.codexCatalog
+        ? {
+            kind: "codex",
+            selectedKey: params.codexCatalog.selectedKey,
+            options: params.codexCatalog.options,
+          }
+        : {
+            kind: "loading",
+            provider: "codex",
+            message: "Loading permissions…",
+          };
+    case "upstream":
+      break;
+    default:
+      return assertNeverConversationSystem(params.conversationSystem);
   }
   if (params.runtimeMode !== "agent") return { kind: "hidden" };
   return {
@@ -132,7 +145,7 @@ export function attachFooterPermissionControl(params: {
   let surface: PermissionSurface = { kind: "hidden" };
   let codexCatalog: CodexPermissionOptionCatalog | null = null;
   let inFlightCatalog: {
-    provider: "claude_code" | "codex";
+    provider: RuntimeConversationSystem;
     key: string;
     promise: Promise<PermissionOption[] | CodexPermissionOptionCatalog>;
   } | null = null;
@@ -287,6 +300,23 @@ export function attachFooterPermissionControl(params: {
         codexPath: getConfiguredCodexAppServerBinaryPath(),
         cwd: resolveCodexNativeRuntimeCwd(),
       }));
+  const catalogLoaders: Record<
+    RuntimeConversationSystem,
+    () => Promise<PermissionOption[] | CodexPermissionOptionCatalog>
+  > = {
+    claude_code: loadClaude,
+    codex: loadCodex,
+  };
+  const resolveCatalogKey = (provider: RuntimeConversationSystem): string => {
+    switch (provider) {
+      case "claude_code":
+        return `${getClaudeBridgeUrl()}\u0000${getClaudeSettingSourcesByPref().join(",")}`;
+      case "codex":
+        return `${getConfiguredCodexAppServerBinaryPath()}\u0000${resolveCodexNativeRuntimeCwd()}`;
+      default:
+        return assertNeverConversationSystem(provider);
+    }
+  };
 
   const sync = async () => {
     if (disposed) return;
@@ -309,18 +339,14 @@ export function attachFooterPermissionControl(params: {
       return;
     }
     render(resolvePermissionSurface(common));
-    const catalogKey =
-      provider === "claude_code"
-        ? `${getClaudeBridgeUrl()}\u0000${getClaudeSettingSourcesByPref().join(",")}`
-        : `${getConfiguredCodexAppServerBinaryPath()}\u0000${resolveCodexNativeRuntimeCwd()}`;
+    const catalogKey = resolveCatalogKey(provider);
     let requestedPromise =
       inFlightCatalog?.provider === provider &&
       inFlightCatalog.key === catalogKey
         ? inFlightCatalog.promise
         : null;
     if (!requestedPromise) {
-      requestedPromise =
-        provider === "claude_code" ? loadClaude() : loadCodex();
+      requestedPromise = catalogLoaders[provider]();
       inFlightCatalog = {
         provider,
         key: catalogKey,
@@ -337,27 +363,33 @@ export function attachFooterPermissionControl(params: {
         return;
       }
       if (inFlightCatalog?.promise === requestedPromise) inFlightCatalog = null;
-      if (provider === "claude_code") {
-        const options = result as PermissionOption[];
-        const reconciliation = reconcileClaudePermissionMode({
-          selectedId: getClaudePermissionModePref(),
-          options,
-        });
-        if (reconciliation.selectedId !== getClaudePermissionModePref()) {
-          setClaudePermissionModePref(reconciliation.selectedId);
-          if (reconciliation.warning)
-            params.onWarning?.(reconciliation.warning);
+      switch (provider) {
+        case "claude_code": {
+          const options = result as PermissionOption[];
+          const reconciliation = reconcileClaudePermissionMode({
+            selectedId: getClaudePermissionModePref(),
+            options,
+          });
+          if (reconciliation.selectedId !== getClaudePermissionModePref()) {
+            setClaudePermissionModePref(reconciliation.selectedId);
+            if (reconciliation.warning)
+              params.onWarning?.(reconciliation.warning);
+          }
+          render(
+            resolvePermissionSurface({
+              ...common,
+              claudeSelectedId: reconciliation.selectedId,
+              claudeOptions: options,
+            }),
+          );
+          break;
         }
-        render(
-          resolvePermissionSurface({
-            ...common,
-            claudeSelectedId: reconciliation.selectedId,
-            claudeOptions: options,
-          }),
-        );
-      } else {
-        codexCatalog = result as CodexPermissionOptionCatalog;
-        render(resolvePermissionSurface({ ...common, codexCatalog }));
+        case "codex":
+          codexCatalog = result as CodexPermissionOptionCatalog;
+          render(resolvePermissionSurface({ ...common, codexCatalog }));
+          break;
+        default:
+          assertNeverConversationSystem(provider);
       }
     } catch (error) {
       if (inFlightCatalog?.promise === requestedPromise) inFlightCatalog = null;
@@ -370,7 +402,8 @@ export function attachFooterPermissionControl(params: {
       }
       render({
         kind: "error",
-        provider: provider === "claude_code" ? "claude" : "codex",
+        provider:
+          getRuntimeConversationSystemDescriptor(provider).permissionProvider,
         message: error instanceof Error ? error.message : String(error),
       });
     }

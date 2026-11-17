@@ -47,6 +47,11 @@ import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import type { ConversationSystem } from "../../shared/types";
 import {
+  isConversationSystem,
+  isRuntimeConversationSystem as isRuntimeSystem,
+} from "../../core/conversations/conversationSystems";
+import { isRuntimeConversationSystemEnabled } from "../../shared/conversationSystemPrefs";
+import {
   getModelEntryById,
   getModelProviderGroups,
 } from "../../utils/modelProviders";
@@ -442,7 +447,7 @@ import {
 import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import {
-  RUNTIME_CONVERSATION_SYSTEMS,
+  RUNTIME_SYSTEM_DISPLAY_ORDER,
   resolveRuntimeSystemToggleTarget,
   syncRuntimeSystemControls,
   type RuntimeConversationSystem,
@@ -761,14 +766,13 @@ export function setupHandlers(
     return;
   }
   disposeSetupHandlers(body);
-  const preferredConversationSystem =
-    existingPanelRoot?.dataset?.conversationSystem === "claude_code"
-      ? "claude_code"
-      : existingPanelRoot?.dataset?.conversationSystem === "codex"
-        ? "codex"
-        : existingPanelRoot?.dataset?.conversationSystem === "upstream"
-          ? "upstream"
-          : resolveConversationSystemForItem(initialItem);
+  const existingConversationSystem =
+    existingPanelRoot?.dataset?.conversationSystem;
+  const preferredConversationSystem = isConversationSystem(
+    existingConversationSystem,
+  )
+    ? existingConversationSystem
+    : resolveConversationSystemForItem(initialItem);
   const preferredConversationMode =
     existingPanelRoot?.dataset?.conversationKind === "global"
       ? "global"
@@ -1111,15 +1115,15 @@ export function setupHandlers(
   };
   const isGlobalMode = () => resolveDisplayConversationKind(item) === "global";
   const isPaperMode = () => resolveDisplayConversationKind(item) === "paper";
-  const initialConversationSystem: ConversationSystem =
-    panelRoot.dataset.conversationSystem === "claude_code"
-      ? "claude_code"
-      : panelRoot.dataset.conversationSystem === "codex"
-        ? "codex"
-        : resolvePreferredConversationSystem({
-            item,
-            surface: selectionSurface(),
-          });
+  const mountedConversationSystem = panelRoot.dataset.conversationSystem;
+  const initialConversationSystem: ConversationSystem = isRuntimeSystem(
+    mountedConversationSystem,
+  )
+    ? mountedConversationSystem
+    : resolvePreferredConversationSystem({
+        item,
+        surface: selectionSurface(),
+      });
   let currentConversationSystem: ConversationSystem =
     resolvePreferredConversationSystem({
       item,
@@ -1132,7 +1136,7 @@ export function setupHandlers(
     getConversationSystem() === "claude_code";
   const isCodexConversationSystem = () => getConversationSystem() === "codex";
   const isRuntimeConversationSystem = () =>
-    isClaudeConversationSystem() || isCodexConversationSystem();
+    isRuntimeSystem(getConversationSystem());
   const shouldRenderDynamicSlashMenuForCurrentConversation = () =>
     shouldRenderDynamicSlashMenu({
       itemPresent: Boolean(item),
@@ -1151,10 +1155,8 @@ export function setupHandlers(
   syncQueuedFollowUpRegistration();
   // A side chat is never saved, so it cannot use a runtime that keeps
   // provider-side state (Claude Code, Codex): their switches stay hidden.
-  const isClaudeModeAvailable = () =>
-    !isSidePanel && getClaudeCodeModeEnabled();
-  const isCodexModeAvailable = () =>
-    !isSidePanel && isCodexAppServerModeEnabled();
+  const isRuntimeModeAvailable = (system: RuntimeConversationSystem) =>
+    !isSidePanel && isRuntimeConversationSystemEnabled(system);
   let claudeModelCatalogStatus: "idle" | "loading" | "ready" | "error" = "idle";
   let claudeModelCatalogError = "";
   let claudeModelCatalogModels: ClaudeModelCatalogEntry[] = [];
@@ -1445,8 +1447,8 @@ export function setupHandlers(
     return resolveRuntimeBadgeState({
       system: getConversationSystem(),
       agentEnabled: getAgentModeEnabled(),
-      codexEnabled: isCodexModeAvailable(),
-      claudeEnabled: isClaudeModeAvailable(),
+      codexEnabled: isRuntimeModeAvailable("codex"),
+      claudeEnabled: isRuntimeModeAvailable("claude_code"),
       isWebChat: webChatActive,
       isSideChat: isSidePanel,
       isTornWindow: isTornSurface(selectionSurface()),
@@ -1516,8 +1518,8 @@ export function setupHandlers(
   const updateRuntimeSystemToggles = () => {
     const state = syncRuntimeSystemControls(panelRuntimeSystemControls, {
       activeSystem: getConversationSystem(),
-      codexEnabled: isCodexModeAvailable(),
-      claudeEnabled: isClaudeModeAvailable(),
+      codexEnabled: isRuntimeModeAvailable("codex"),
+      claudeEnabled: isRuntimeModeAvailable("claude_code"),
       busy: runtimeSystemSwitchInFlight,
     });
     // The divider before the runtime systems goes when they do. Their
@@ -1528,7 +1530,7 @@ export function setupHandlers(
   };
   let claudeWarmupInFlight: Promise<void> | null = null;
   const warmClaudeModeCaches = () => {
-    if (!isClaudeModeAvailable()) return;
+    if (!isRuntimeModeAvailable("claude_code")) return;
     if (claudeWarmupInFlight) return;
     claudeWarmupInFlight = initAgentSubsystem()
       .then((coreRuntime) => {
@@ -1652,8 +1654,8 @@ export function setupHandlers(
       if (options?.target) return false;
       const resolvedNextSystem = resolveNoteFocusSystemSwitch({
         nextSystem,
-        codexAvailable: isCodexModeAvailable(),
-        claudeAvailable: isClaudeModeAvailable(),
+        codexAvailable: isRuntimeModeAvailable("codex"),
+        claudeAvailable: isRuntimeModeAvailable("claude_code"),
       });
       if (!resolvedNextSystem) return false;
       if (resolvedNextSystem === getConversationSystem()) return true;
@@ -1803,35 +1805,27 @@ export function setupHandlers(
         return true;
       }
       const surface = selectionSurface();
-      const nextConversationKey =
-        nextSystem === "claude_code"
-          ? recall({
-              system: "claude_code",
+      const nextConversationKey = isRuntimeSystem(nextSystem)
+        ? recall({ system: nextSystem, libraryID, kind: "global", surface })
+        : (() => {
+            // The library lock is the sidebar's; the window has none.
+            const lockedKey =
+              surface !== "embedded"
+                ? null
+                : getLockedGlobalConversationKey(libraryID);
+            if (lockedKey !== null) return lockedKey;
+            // Upstream reads the active map only here, not the pref.
+            const activeKey = recallActive({
+              system: "upstream",
               libraryID,
               kind: "global",
               surface,
-            })
-          : nextSystem === "codex"
-            ? recall({ system: "codex", libraryID, kind: "global", surface })
-            : (() => {
-                // The library lock is the sidebar's; the window has none.
-                const lockedKey =
-                  surface !== "embedded"
-                    ? null
-                    : getLockedGlobalConversationKey(libraryID);
-                if (lockedKey !== null) return lockedKey;
-                // Upstream reads the active map only here, not the pref.
-                const activeKey = recallActive({
-                  system: "upstream",
-                  libraryID,
-                  kind: "global",
-                  surface,
-                });
-                if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
-                return activeKey === GLOBAL_CONVERSATION_KEY_BASE
-                  ? buildDefaultUpstreamGlobalConversationKey(libraryID)
-                  : Math.floor(activeKey);
-              })();
+            });
+            if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
+            return activeKey === GLOBAL_CONVERSATION_KEY_BASE
+              ? buildDefaultUpstreamGlobalConversationKey(libraryID)
+              : Math.floor(activeKey);
+          })();
       if (nextConversationKey > 0) {
         await switchGlobalConversation(nextConversationKey);
       } else {
@@ -5592,8 +5586,8 @@ export function setupHandlers(
     getHistorySystems: () =>
       resolveUnifiedHistorySystems({
         activeSystem: getConversationSystem(),
-        codexEnabled: isCodexModeAvailable(),
-        claudeEnabled: isClaudeModeAvailable(),
+        codexEnabled: isRuntimeModeAvailable("codex"),
+        claudeEnabled: isRuntimeModeAvailable("claude_code"),
         singleSystem: isSidePanel || isNoteSession(),
       }),
     isRuntimeSystemSwitchInFlight: () => runtimeSystemSwitchInFlight,
@@ -5678,8 +5672,7 @@ export function setupHandlers(
     if (
       runtimeSystemSwitchInFlight ||
       !item ||
-      (targetSystem === "codex" && !isCodexModeAvailable()) ||
-      (targetSystem === "claude_code" && !isClaudeModeAvailable())
+      (isRuntimeSystem(targetSystem) && !isRuntimeModeAvailable(targetSystem))
     ) {
       return;
     }
@@ -5708,8 +5701,7 @@ export function setupHandlers(
     if (
       runtimeSystemSwitchInFlight ||
       !item ||
-      (system === "codex" && !isCodexModeAvailable()) ||
-      (system === "claude_code" && !isClaudeModeAvailable())
+      (isRuntimeSystem(system) && !isRuntimeModeAvailable(system))
     ) {
       return false;
     }
@@ -5727,7 +5719,7 @@ export function setupHandlers(
       updateRuntimeModeButton();
     }
   };
-  for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+  for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
     const button = panelRuntimeSystemControls.buttons[system];
     if (!button) continue;
     button.addEventListener("click", (event: Event) => {

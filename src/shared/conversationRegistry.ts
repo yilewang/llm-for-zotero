@@ -5,6 +5,7 @@ import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
 import { getConversationCatalogTable } from "./conversationStore/storeTables";
+import { isConversationSystem } from "../core/conversations/conversationSystems";
 
 export type RegistryConversationKind = "global" | "paper";
 
@@ -121,9 +122,7 @@ function normalizeText(value: unknown, maxLength = 256): string {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): RegistryConversationKind | null {

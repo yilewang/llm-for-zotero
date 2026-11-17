@@ -70,6 +70,10 @@ import {
 import { getCodexProfileSignature } from "../../codexAppServer/constants";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
   isCodexAppServerModeEnabled,
@@ -2275,20 +2279,32 @@ async function updateStoredLatestUserMessageByConversationUnlocked(
     conversationSystem,
   });
   if (!storageSystem) return;
-  const written =
-    storageSystem === "claude_code"
-      ? await updateLatestClaudeConversationUserMessageWithinWriteLock(
-          conversationKey,
-          message,
-          options,
-        )
-      : storageSystem === "codex"
-        ? await updateLatestCodexUserMessage(conversationKey, message, options)
-        : await updateStoredLatestUserMessage(
-            conversationKey,
-            message,
-            options,
-          );
+  let written: boolean;
+  switch (storageSystem) {
+    case "claude_code":
+      written = await updateLatestClaudeConversationUserMessageWithinWriteLock(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    case "codex":
+      written = await updateLatestCodexUserMessage(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    case "upstream":
+      written = await updateStoredLatestUserMessage(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    default:
+      return assertNeverConversationSystem(storageSystem);
+  }
   if (!written && options?.expectedTimestamp !== undefined) {
     // The row is gone (for example, the turn was deleted), so nothing was
     // written. Not an error for the caller, but worth a trace.
@@ -2433,24 +2449,33 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
           : latestContextSnapshot?.contextWindow,
     };
   };
-  const written =
-    storageSystem === "claude_code"
-      ? await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+  let written: boolean;
+  switch (storageSystem) {
+    case "claude_code":
+      written =
+        await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
           conversationKey,
           withContextUsage(),
           options,
-        )
-      : storageSystem === "codex"
-        ? await updateLatestCodexAssistantMessage(
-            conversationKey,
-            withContextUsage(),
-            options,
-          )
-        : await updateStoredLatestAssistantMessage(
-            conversationKey,
-            message,
-            options,
-          );
+        );
+      break;
+    case "codex":
+      written = await updateLatestCodexAssistantMessage(
+        conversationKey,
+        withContextUsage(),
+        options,
+      );
+      break;
+    case "upstream":
+      written = await updateStoredLatestAssistantMessage(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    default:
+      return assertNeverConversationSystem(storageSystem);
+  }
   if (!written && options?.expectedTimestamp !== undefined) {
     // The row is gone (for example, the turn was deleted), so nothing was
     // written, and there is no answer to publish a plan document for.
@@ -2542,23 +2567,28 @@ export async function updateStoredAssistantQuoteLocations(
       timestamp: request.timestamp,
       messageId: request.messageId,
     };
-    return storageSystem === "claude_code"
-      ? updateClaudeAssistantMessageQuoteLocations(
+    switch (storageSystem) {
+      case "claude_code":
+        return updateClaudeAssistantMessageQuoteLocations(
           conversationKey,
           target,
           request.writes,
-        )
-      : storageSystem === "codex"
-        ? updateCodexAssistantMessageQuoteLocations(
-            conversationKey,
-            target,
-            request.writes,
-          )
-        : updateStoredAssistantMessageQuoteLocations(
-            conversationKey,
-            target,
-            request.writes,
-          );
+        );
+      case "codex":
+        return updateCodexAssistantMessageQuoteLocations(
+          conversationKey,
+          target,
+          request.writes,
+        );
+      case "upstream":
+        return updateStoredAssistantMessageQuoteLocations(
+          conversationKey,
+          target,
+          request.writes,
+        );
+      default:
+        return assertNeverConversationSystem(storageSystem);
+    }
   });
 }
 
@@ -2621,18 +2651,27 @@ async function persistConversationMessage(
         conversationSystem,
       });
       if (!storageSystem) return;
-      if (storageSystem === "claude_code") {
-        await appendClaudeConversationMessageWithinWriteLock(
-          conversationKey,
-          message,
-          undefined,
-        );
-      } else if (storageSystem === "codex") {
-        await appendCodexMessage(conversationKey, message, undefined);
-        await pruneCodexConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
-      } else {
-        await appendStoredMessage(conversationKey, message, undefined);
-        await pruneConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+      switch (storageSystem) {
+        case "claude_code":
+          await appendClaudeConversationMessageWithinWriteLock(
+            conversationKey,
+            message,
+            undefined,
+          );
+          break;
+        case "codex":
+          await appendCodexMessage(conversationKey, message, undefined);
+          await pruneCodexConversation(
+            conversationKey,
+            PERSISTED_HISTORY_LIMIT,
+          );
+          break;
+        case "upstream":
+          await appendStoredMessage(conversationKey, message, undefined);
+          await pruneConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+          break;
+        default:
+          assertNeverConversationSystem(storageSystem);
       }
       if (message.role === "assistant") {
         await publishPersistedPlanDocumentIfPresent({
@@ -3699,10 +3738,27 @@ type QueuedInputDrainScope = {
   webChatActive?: boolean;
 };
 
+/** A turn's run mode: fixed per runtime; upstream keeps the chosen one. */
+function resolveConversationSystemRuntimeMode(
+  system: ConversationSystem,
+  upstreamRuntimeMode: ChatRuntimeMode,
+): ChatRuntimeMode {
+  switch (system) {
+    case "claude_code":
+      return "agent";
+    case "codex":
+      return "chat";
+    case "upstream":
+      return upstreamRuntimeMode;
+    default:
+      return assertNeverConversationSystem(system);
+  }
+}
+
 function normalizeQueuedInputConversationSystem(
   value: ConversationSystem | string | null | undefined,
 ): ConversationSystem {
-  return value === "claude_code" || value === "codex" ? value : "upstream";
+  return isRuntimeConversationSystem(value) ? value : "upstream";
 }
 
 function transferPanelRequest(
@@ -7478,76 +7534,86 @@ async function detachProviderForEdit(
 ): Promise<boolean> {
   if (!catalog) return false;
   const providerSessionId = String(catalog.providerSessionId || "").trim();
-  if (catalog.system === "codex") {
-    if (!providerSessionId) return true;
-    const job = await enqueueConversationCleanupJob({
-      operation: "codex_archive",
-      system: "codex",
-      conversationKey,
-      instanceID: catalog.instanceID,
-      conversationKind: catalog.kind,
-      libraryID: catalog.libraryID,
-      paperItemID: catalog.paperItemID,
-      providerSessionId,
-    });
-    if (!job) return false;
-    const attempt = await performConversationCleanupJobAttempt(
-      job,
-      async () => {
-        try {
-          await archiveCodexAppServerThread({ threadId: providerSessionId });
-        } catch (error) {
-          if (!/not found|unknown thread|does not exist/i.test(String(error))) {
-            throw error;
+  switch (catalog.system) {
+    case "codex": {
+      if (!providerSessionId) return true;
+      const job = await enqueueConversationCleanupJob({
+        operation: "codex_archive",
+        system: "codex",
+        conversationKey,
+        instanceID: catalog.instanceID,
+        conversationKind: catalog.kind,
+        libraryID: catalog.libraryID,
+        paperItemID: catalog.paperItemID,
+        providerSessionId,
+      });
+      if (!job) return false;
+      const attempt = await performConversationCleanupJobAttempt(
+        job,
+        async () => {
+          try {
+            await archiveCodexAppServerThread({ threadId: providerSessionId });
+          } catch (error) {
+            if (
+              !/not found|unknown thread|does not exist/i.test(String(error))
+            ) {
+              throw error;
+            }
           }
-        }
-      },
-    );
-    if (!attempt.ok) return false;
-    await clearCodexConversationSessionMetadata(
-      conversationKey,
-      providerSessionId,
-      catalog.instanceID,
-    );
-    return true;
-  }
-  if (catalog.system === "claude_code") {
-    const scope = buildClaudeScope({
-      libraryID: catalog.libraryID,
-      kind: catalog.kind,
-      paperItemID: catalog.paperItemID,
-    });
-    if (!catalog.instanceID || (!providerSessionId && !scope.scopeId)) {
-      return !providerSessionId;
-    }
-    const job = await enqueueConversationCleanupJob({
-      operation: "claude_invalidate",
-      system: "claude_code",
-      conversationKey,
-      instanceID: catalog.instanceID,
-      conversationKind: catalog.kind,
-      libraryID: catalog.libraryID,
-      paperItemID: catalog.paperItemID,
-      providerScope: scope,
-      providerSessionId,
-    });
-    if (!job) return false;
-    const attempt = await performConversationCleanupJobAttempt(job, async () =>
-      invalidateClaudeConversationSessionWithinWriteLock(
-        await initAgentSubsystem(),
-        {
-          conversationKey,
-          scope,
-          metadata: {
-            ...(providerSessionId ? { providerSessionId } : {}),
-            instanceID: catalog.instanceID,
-          },
         },
-      ),
-    );
-    if (!attempt.ok) return false;
+      );
+      if (!attempt.ok) return false;
+      await clearCodexConversationSessionMetadata(
+        conversationKey,
+        providerSessionId,
+        catalog.instanceID,
+      );
+      return true;
+    }
+    case "claude_code": {
+      const scope = buildClaudeScope({
+        libraryID: catalog.libraryID,
+        kind: catalog.kind,
+        paperItemID: catalog.paperItemID,
+      });
+      if (!catalog.instanceID || (!providerSessionId && !scope.scopeId)) {
+        return !providerSessionId;
+      }
+      const job = await enqueueConversationCleanupJob({
+        operation: "claude_invalidate",
+        system: "claude_code",
+        conversationKey,
+        instanceID: catalog.instanceID,
+        conversationKind: catalog.kind,
+        libraryID: catalog.libraryID,
+        paperItemID: catalog.paperItemID,
+        providerScope: scope,
+        providerSessionId,
+      });
+      if (!job) return false;
+      const attempt = await performConversationCleanupJobAttempt(
+        job,
+        async () =>
+          invalidateClaudeConversationSessionWithinWriteLock(
+            await initAgentSubsystem(),
+            {
+              conversationKey,
+              scope,
+              metadata: {
+                ...(providerSessionId ? { providerSessionId } : {}),
+                instanceID: catalog.instanceID,
+              },
+            },
+          ),
+      );
+      if (!attempt.ok) return false;
+      return true;
+    }
+    case "upstream":
+      return true;
+    default:
+      return assertNeverConversationSystem(catalog.system);
   }
-  return true;
 }
 
 /**
@@ -9111,12 +9177,10 @@ export async function sendQuestion(
       item,
       conversationSystem: effectiveConversationSystem,
     }) || effectiveConversationSystem;
-  const effectiveRuntimeMode: ChatRuntimeMode =
-    effectiveConversationSystem === "claude_code"
-      ? "agent"
-      : effectiveConversationSystem === "codex"
-        ? "chat"
-        : runtimeMode;
+  const effectiveRuntimeMode = resolveConversationSystemRuntimeMode(
+    effectiveConversationSystem,
+    runtimeMode,
+  );
   if (effectiveRuntimeMode === "agent" && !skipAgentDispatch) {
     try {
       await sendAgentQuestion({

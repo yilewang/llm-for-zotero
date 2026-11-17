@@ -101,6 +101,10 @@ import {
 } from "./conversationCleanupJobs";
 import { copyPlanDocumentOwnersForFork } from "../../agent/documents/store";
 import { notifyBackgroundCleanupNeeded } from "../maintenance/backgroundCleanupSignals";
+import {
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "./conversationSystems";
 
 export type ConversationCatalogKind = "global" | "paper";
 
@@ -179,7 +183,7 @@ type ConversationCatalogMutationTarget = {
    */
   additionalProviderCleanup?: Array<{
     operation: "codex_archive" | "claude_invalidate";
-    system: "codex" | "claude_code";
+    system: RuntimeConversationSystem;
     providerSessionId: string;
     providerScope?: ConversationCleanupProviderScope;
   }>;
@@ -430,7 +434,7 @@ function fromCodexSummary(
 }
 
 async function repairRuntimeRegistryFromSummary(
-  system: "claude_code" | "codex",
+  system: RuntimeConversationSystem,
   summary: ClaudeConversationSummary | CodexConversationSummary,
 ): Promise<void> {
   const existing = await getRegisteredConversationScope(
@@ -662,7 +666,7 @@ type ConversationStoreAdapter = {
   /** The provider job a deleted conversation queues (runtime stores only). */
   providerCleanup?: {
     operation: "codex_archive" | "claude_invalidate";
-    system: "codex" | "claude_code";
+    system: RuntimeConversationSystem;
     /** A Claude scope alone (without a session) witnesses a provider session. */
     scopeIsSessionWitness: boolean;
   };
@@ -879,7 +883,7 @@ const UPSTREAM_STORE: ConversationStoreAdapter = {
 
 /** The store functions a runtime backend (Claude Code, Codex) exports. */
 type RuntimeStoreFunctions = {
-  system: "claude_code" | "codex";
+  system: RuntimeConversationSystem;
   fromSummary(
     summary: ClaudeConversationSummary | null | undefined,
   ): ConversationCatalogEntry | null;
@@ -1140,16 +1144,14 @@ const CODEX_STORE = createRuntimeStoreAdapter(
  * store is served by the upstream store, as the repository always did.
  */
 const STORES: Readonly<
-  Record<"claude_code" | "codex", ConversationStoreAdapter>
+  Record<RuntimeConversationSystem, ConversationStoreAdapter>
 > = {
   claude_code: CLAUDE_CODE_STORE,
   codex: CODEX_STORE,
 };
 
 function storeFor(system: ConversationSystem): ConversationStoreAdapter {
-  return system === "claude_code" || system === "codex"
-    ? STORES[system]
-    : UPSTREAM_STORE;
+  return isRuntimeConversationSystem(system) ? STORES[system] : UPSTREAM_STORE;
 }
 
 export const conversationRepository = {

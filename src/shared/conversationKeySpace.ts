@@ -1,4 +1,11 @@
-import type { ConversationSystem } from "./types";
+import {
+  CONVERSATION_SYSTEMS,
+  RUNTIME_CONVERSATION_KEY_BAND_SIZE,
+  RUNTIME_CONVERSATION_SYSTEMS,
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+  type ConversationSystem,
+  type RuntimeConversationSystem,
+} from "../core/conversations/conversationSystems";
 
 export type ConversationKeyKind = "global" | "paper";
 
@@ -22,11 +29,42 @@ export const RUNTIME_PROFILE_SLOT_MOD = 999_999;
 export const RUNTIME_DEFAULT_CONVERSATION_KEY_OFFSET = 100_000_000;
 export const RUNTIME_ALLOCATED_CONVERSATION_KEY_OFFSET = 500_000_000;
 
-export const CLAUDE_GLOBAL_CONVERSATION_KEY_BASE = 3_000_000_000_000_000;
-export const CLAUDE_PAPER_CONVERSATION_KEY_BASE = 4_000_000_000_000_000;
-export const CODEX_GLOBAL_CONVERSATION_KEY_BASE = 5_000_000_000_000_000;
-export const CODEX_PAPER_CONVERSATION_KEY_BASE = 6_000_000_000_000_000;
-export const RUNTIME_CONVERSATION_KEY_END = 7_000_000_000_000_000;
+export const CLAUDE_GLOBAL_CONVERSATION_KEY_BASE =
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.claude_code.keyBases.global;
+export const CLAUDE_PAPER_CONVERSATION_KEY_BASE =
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.claude_code.keyBases.paper;
+export const CODEX_GLOBAL_CONVERSATION_KEY_BASE =
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.codex.keyBases.global;
+export const CODEX_PAPER_CONVERSATION_KEY_BASE =
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.codex.keyBases.paper;
+
+/** A runtime's band for one kind: its base plus one band width. */
+export function getRuntimeKindKeyBand(
+  system: RuntimeConversationSystem,
+  kind: ConversationKeyKind,
+): ConversationKeyRange {
+  const start = RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].keyBases[kind];
+  return { start, endExclusive: start + RUNTIME_CONVERSATION_KEY_BAND_SIZE };
+}
+
+/** Every key a runtime may own, both kinds: lowest base to highest band end. */
+export function getRuntimeConversationKeySpan(
+  system: RuntimeConversationSystem,
+): ConversationKeyRange {
+  const global = getRuntimeKindKeyBand(system, "global");
+  const paper = getRuntimeKindKeyBand(system, "paper");
+  return {
+    start: Math.min(global.start, paper.start),
+    endExclusive: Math.max(global.endExclusive, paper.endExclusive),
+  };
+}
+
+/** End of the highest runtime band; no conversation key reaches it. */
+export const RUNTIME_CONVERSATION_KEY_END = Math.max(
+  ...RUNTIME_CONVERSATION_SYSTEMS.map(
+    (system) => getRuntimeConversationKeySpan(system).endExclusive,
+  ),
+);
 
 function normalizeConversationKey(value: number): number | null {
   if (!Number.isFinite(value)) return null;
@@ -74,26 +112,7 @@ function fullKindRange(
           endExclusive: UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
         };
   }
-  if (system === "claude_code") {
-    return kind === "global"
-      ? {
-          start: CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
-          endExclusive: CLAUDE_PAPER_CONVERSATION_KEY_BASE,
-        }
-      : {
-          start: CLAUDE_PAPER_CONVERSATION_KEY_BASE,
-          endExclusive: CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-        };
-  }
-  return kind === "global"
-    ? {
-        start: CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-        endExclusive: CODEX_PAPER_CONVERSATION_KEY_BASE,
-      }
-    : {
-        start: CODEX_PAPER_CONVERSATION_KEY_BASE,
-        endExclusive: RUNTIME_CONVERSATION_KEY_END,
-      };
+  return getRuntimeKindKeyBand(system, kind);
 }
 
 export function getConversationKeyRange(
@@ -104,14 +123,7 @@ export function getConversationKeyRange(
   if (system === "upstream" || profileSignature === undefined) {
     return fullKindRange(system, kind);
   }
-  const base =
-    system === "claude_code"
-      ? kind === "global"
-        ? CLAUDE_GLOBAL_CONVERSATION_KEY_BASE
-        : CLAUDE_PAPER_CONVERSATION_KEY_BASE
-      : kind === "global"
-        ? CODEX_GLOBAL_CONVERSATION_KEY_BASE
-        : CODEX_PAPER_CONVERSATION_KEY_BASE;
+  const base = RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].keyBases[kind];
   const start = base + getProfileKeyOffset(profileSignature);
   return {
     start,
@@ -120,7 +132,7 @@ export function getConversationKeyRange(
 }
 
 export function getRuntimeDefaultConversationKeyRange(
-  system: Exclude<ConversationSystem, "upstream">,
+  system: RuntimeConversationSystem,
   kind: ConversationKeyKind,
   profileSignature?: string | null,
 ): ConversationKeyRange {
@@ -132,7 +144,7 @@ export function getRuntimeDefaultConversationKeyRange(
 }
 
 export function getRuntimeAllocatedConversationKeyRange(
-  system: Exclude<ConversationSystem, "upstream">,
+  system: RuntimeConversationSystem,
   kind: ConversationKeyKind,
   profileSignature?: string | null,
 ): ConversationKeyRange {
@@ -172,9 +184,8 @@ export function classifyConversationKey(
 ): ConversationKeyClassification | null {
   const key = normalizeConversationKey(value);
   if (!key) return null;
-  const systems: ConversationSystem[] = ["upstream", "claude_code", "codex"];
   const kinds: ConversationKeyKind[] = ["global", "paper"];
-  for (const system of systems) {
+  for (const system of CONVERSATION_SYSTEMS) {
     for (const kind of kinds) {
       if (containsKey(fullKindRange(system, kind), key)) {
         return { system, kind };
@@ -201,19 +212,12 @@ export function isConversationKeyForKind(
 }
 
 export function isRuntimeAllocatedConversationKeyForKind(
-  system: Exclude<ConversationSystem, "upstream">,
+  system: RuntimeConversationSystem,
   kind: ConversationKeyKind,
   key: number,
 ): boolean {
   if (!isConversationKeyForKind(system, kind, key)) return false;
-  const base =
-    system === "claude_code"
-      ? kind === "global"
-        ? CLAUDE_GLOBAL_CONVERSATION_KEY_BASE
-        : CLAUDE_PAPER_CONVERSATION_KEY_BASE
-      : kind === "global"
-        ? CODEX_GLOBAL_CONVERSATION_KEY_BASE
-        : CODEX_PAPER_CONVERSATION_KEY_BASE;
+  const base = RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].keyBases[kind];
   const offsetWithinProfile =
     (Math.floor(key) - base) % RUNTIME_PROFILE_KEY_MULTIPLIER;
   return offsetWithinProfile >= RUNTIME_ALLOCATED_CONVERSATION_KEY_OFFSET;

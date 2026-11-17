@@ -9,6 +9,26 @@ import {
   resetConversationWriteFenceForTests,
   unfreezeConversationWrites,
 } from "../../shared/conversationWriteFence";
+import {
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "./conversationSystems";
+
+/**
+ * Whether deleting a runtime conversation leaves provider-side state to clean
+ * up: a Codex thread to archive, or a Claude session or project to invalidate.
+ */
+const RUNTIME_PROVIDER_CLEANUP_REQUIRED: Readonly<
+  Record<
+    RuntimeConversationSystem,
+    (input: { providerSessionId?: string; libraryID?: number }) => boolean
+  >
+> = {
+  codex: (input) => Boolean(input.providerSessionId?.trim()),
+  claude_code: (input) =>
+    Boolean(input.providerSessionId?.trim()) ||
+    Number(input.libraryID || 0) > 0,
+};
 
 export const PENDING_DELETIONS_TABLE = "llm_for_zotero_pending_deletions";
 export const DELETION_UNDO_WINDOW_MS = 6_000;
@@ -1275,11 +1295,8 @@ export const pendingDeletionStore = {
           catalogCreatedAt,
           state: "undoable",
           providerCleanupState:
-            (input.system === "codex" &&
-              Boolean(input.providerSessionId?.trim())) ||
-            (input.system === "claude_code" &&
-              (Boolean(input.providerSessionId?.trim()) ||
-                Number(input.libraryID || 0) > 0))
+            isRuntimeConversationSystem(input.system) &&
+            RUNTIME_PROVIDER_CLEANUP_REQUIRED[input.system](input)
               ? "pending"
               : "not_required",
           identityDigest: identityDigest(input),

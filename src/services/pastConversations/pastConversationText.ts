@@ -17,6 +17,10 @@ import type {
 } from "../../shared/types";
 import { normalizeAttachedConversationRefs } from "../context/normalizers";
 import { estimateTextTokens } from "../../utils/modelInputCap";
+import {
+  isRuntimeConversationSystem,
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+} from "../../core/conversations/conversationSystems";
 
 /** First line of every past-chat message; the compactor recognises it. */
 export const PAST_CHAT_MESSAGE_TITLE =
@@ -109,9 +113,9 @@ export function parsePastConversationId(
 
 /** User-visible name of the system a past chat belongs to. */
 export function pastConversationModeLabel(system: ConversationSystem): string {
-  if (system === "codex") return "Codex";
-  if (system === "claude_code") return "Claude Code";
-  return "Chat";
+  return isRuntimeConversationSystem(system)
+    ? RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].label
+    : "Chat";
 }
 
 /**

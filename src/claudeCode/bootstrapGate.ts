@@ -3,10 +3,9 @@ import type { ConversationSystem } from "../shared/types";
 import { ensureClaudeProjectBootstrap } from "./bootstrap";
 import {
   getConversationSystemPref,
-  isClaudeCodeModeEnabled,
-  setClaudeCodeModeEnabled,
   setConversationSystemPref,
-} from "./prefs";
+} from "../shared/conversationSystemPrefs";
+import { isClaudeCodeModeEnabled, setClaudeCodeModeEnabled } from "./prefs";
 
 type ClaudeProjectBootstrapGateDeps = {
   isClaudeCodeModeEnabled: () => boolean;

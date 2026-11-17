@@ -131,6 +131,7 @@ import {
   type ConversationLocalRowStore,
   type TurnDeletionBeforeCommit,
 } from "../../shared/conversationStore/localRowDeletion";
+import { type RuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 
 /**
  * One conversation store for the two runtime backends (Claude Code and Codex).
@@ -144,7 +145,7 @@ import {
  * templated, so persisted names (tables, indexes, triggers) never change.
  */
 
-export type RuntimeConversationSystem = "claude_code" | "codex";
+export type { RuntimeConversationSystem };
 export type RuntimeConversationKind = "global" | "paper";
 /** The Codex summary is the superset; Claude never sets the extra field. */
 export type RuntimeConversationSummary = CodexConversationSummary;

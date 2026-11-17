@@ -41,13 +41,16 @@
  * work — keep reading the prefs directly.
  */
 import type { ConversationSystem } from "../../shared/types";
+import { isRuntimeConversationSystem } from "../../core/conversations/conversationSystems";
+import {
+  getConversationSystemPref,
+  setConversationSystemPref,
+} from "../../shared/conversationSystemPrefs";
 import {
   getClaudeReasoningModePref,
   getClaudeRuntimeModelPref,
-  getConversationSystemPref,
   setClaudeReasoningModePref,
   setClaudeRuntimeModelPref,
-  setConversationSystemPref,
 } from "../../claudeCode/prefs";
 import {
   CLAUDE_REASONING_OPTIONS,
@@ -408,7 +411,7 @@ const conversationSystem = surfaceChoice<ConversationSystem>({
   getPref: getConversationSystemPref,
   setPref: setConversationSystemPref,
   normalize: (system) =>
-    system === "claude_code" || system === "codex" ? system : "upstream",
+    isRuntimeConversationSystem(system) ? system : "upstream",
   // The side chat is never saved, so it runs only on the API runtime.
   side: () => "upstream",
 });

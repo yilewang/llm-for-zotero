@@ -2,6 +2,7 @@ declare const Zotero: any;
 
 import type { ConversationSystem } from "../../shared/types";
 import { getMaintenanceQueryOptions } from "../logging";
+import { isConversationSystem } from "./conversationSystems";
 
 export type ConversationCleanupProviderScope = {
   scopeType: "paper" | "open";
@@ -121,9 +122,7 @@ function normalizeOperation(
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {

@@ -141,6 +141,10 @@ import type { ChatMessage } from "../../../utils/llmClient";
 import type { StoredChatMessage } from "../../../utils/chatStore";
 import type { Message } from "../types";
 import { isClaudeBlockStreamingEnabled } from "../../../claudeCode/prefs";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem,
+} from "../../../core/conversations/conversationSystems";
 import { recordContextCacheTelemetry } from "../../../contextCache/manager";
 import {
   buildSelectedTextQuoteCitations,
@@ -2136,6 +2140,22 @@ export async function sendAgentTurn(
   }
 }
 
+/** Whether a retry sends the turn's PDFs as local files to its runtime. */
+function runtimeUsesLocalPdfTransport(
+  conversationSystem: string,
+  authMode: string | undefined,
+): boolean {
+  if (!isRuntimeConversationSystem(conversationSystem)) return false;
+  switch (conversationSystem) {
+    case "claude_code":
+      return true;
+    case "codex":
+      return authMode === "codex_app_server";
+    default:
+      return assertNeverConversationSystem(conversationSystem);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // retryAgentTurn — extracted from retryLatestAgentResponse in chat.ts
 // ---------------------------------------------------------------------------
@@ -2267,10 +2287,10 @@ export async function retryAgentTurn(
     advanced,
   });
   const conversationSystem = deps.getConversationSystem();
-  const usesLocalPdfTransport =
-    conversationSystem === "claude_code" ||
-    (conversationSystem === "codex" &&
-      effectiveRequestConfig.authMode === "codex_app_server");
+  const usesLocalPdfTransport = runtimeUsesLocalPdfTransport(
+    conversationSystem,
+    effectiveRequestConfig.authMode,
+  );
 
   let retryLocalDocuments: readonly LocalDocumentResource[] | undefined;
   try {

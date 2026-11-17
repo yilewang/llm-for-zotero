@@ -25,6 +25,7 @@ import {
   listTaskPaperScope,
   type TaskPaperScopeListing,
 } from "../../../agent/context/taskPaperScopeListing";
+import { isRuntimeConversationSystem } from "../../../core/conversations/conversationSystems";
 import { libraryIndexService } from "../../../services/libraryIndexService";
 import { t } from "../../../utils/i18n";
 import { reconcileChatScroll } from "../chatScrollSnapshots";
@@ -394,8 +395,7 @@ function resolvePanelInput(body: Element): TaskProgressViewInput | null {
   const system = panelRoot.dataset.conversationSystem || "";
   const recordsReads =
     panelRoot.dataset.runtimeMode === "agent" ||
-    system === "codex" ||
-    system === "claude_code";
+    isRuntimeConversationSystem(system);
   if (!(conversationKey > 0)) {
     return {
       conversationKey: null,

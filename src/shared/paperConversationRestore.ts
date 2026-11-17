@@ -13,6 +13,10 @@ import {
 } from "./conversationSchemaMigrations";
 import type { ConversationSystem } from "./types";
 import { CONVERSATION_STORE_TABLES_BY_SYSTEM } from "./conversationStore/storeTables";
+import {
+  CONVERSATION_SYSTEMS,
+  isConversationSystem,
+} from "../core/conversations/conversationSystems";
 
 /** Only upstream paper conversations live in a catalog of their own. */
 const UPSTREAM_PAPER_CATALOG_TABLE =
@@ -26,9 +30,8 @@ export type PaperRestoreScope = {
 };
 
 export type PaperRestoreRuntimeReadiness = {
-  chatStoreReady: boolean;
-  claudeStoreReady: boolean;
-  codexStoreReady: boolean;
+  /** Whether each conversation system's store finished initializing. */
+  storeReady: Readonly<Record<ConversationSystem, boolean>>;
 };
 
 type RestoreEntry = {
@@ -329,9 +332,7 @@ function normalizeEligibleRows(rows: unknown): EligibleRegistryRow[] {
     const paperItemID = normalizePositiveInt(row.paperItemID);
     const profileSignature = normalizeText(row.profileSignature);
     if (
-      (system !== "upstream" &&
-        system !== "claude_code" &&
-        system !== "codex") ||
+      !isConversationSystem(system) ||
       !conversationKey ||
       !libraryID ||
       !paperItemID ||
@@ -555,10 +556,9 @@ export async function initializePaperRestoreSelections(
   readiness: PaperRestoreRuntimeReadiness,
 ): Promise<void> {
   acceptingWrites = true;
-  const readySystems: ConversationSystem[] = [];
-  if (readiness.chatStoreReady) readySystems.push("upstream");
-  if (readiness.claudeStoreReady) readySystems.push("claude_code");
-  if (readiness.codexStoreReady) readySystems.push("codex");
+  const readySystems: ConversationSystem[] = CONVERSATION_SYSTEMS.filter(
+    (system) => readiness.storeReady[system],
+  );
   for (const [key] of stagedStartupCandidates) {
     const system = key.split(":")[1] as ConversationSystem | undefined;
     if (system && !readySystems.includes(system)) {

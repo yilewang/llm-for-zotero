@@ -2,6 +2,7 @@
  * Order of the window sidebar's "Conversations" list, picked from the sort
  * menu on its heading, and the short date a row may show at its end.
  */
+import { getRuntimeConversationSystemDescriptor } from "../../core/conversations/conversationSystems";
 
 export type StandaloneSidebarSortOrder = "recent" | "created" | "title";
 
@@ -112,9 +113,8 @@ export const DEFAULT_STANDALONE_SIDEBAR_GROUP_ORDER: readonly StandaloneSidebarG
 export function getStandaloneSidebarGroupLabel(
   key: StandaloneSidebarGroupKey,
 ): string {
-  if (key === "codex") return "Codex";
-  if (key === "claude_code") return "Claude";
-  return "Agent";
+  if (key === "upstream") return "Agent";
+  return getRuntimeConversationSystemDescriptor(key).shortLabel;
 }
 
 /** The saved order; unknown names are dropped and missing ones go last. */

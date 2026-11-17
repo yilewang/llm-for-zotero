@@ -5,6 +5,7 @@ import {
   classifyConversationKey,
 } from "./conversationKeySpace";
 import { CONVERSATION_MESSAGE_TABLES } from "./conversationStore/storeTables";
+import { isConversationSystem } from "../core/conversations/conversationSystems";
 
 export type ConversationKeyLedgerKind = "global" | "paper";
 
@@ -126,9 +127,7 @@ function normalizeText(value: unknown, maxLength = 256): string {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): ConversationKeyLedgerKind | null {

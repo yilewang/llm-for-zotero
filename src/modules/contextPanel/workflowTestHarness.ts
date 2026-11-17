@@ -290,6 +290,10 @@ import {
   getModelEntryById,
 } from "../../utils/modelProviders";
 import type { RuntimeConversationSystem } from "./runtimeSystemControls";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import { collectReaderSelectionDocuments } from "../../services/pdf/readerSelection";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import { closeReaderSelectionPromptOverlay } from "./selectionPrompt/readerSelectionPromptOverlay";
@@ -689,15 +693,36 @@ async function appendWorkflowStoredMessage(
   conversationKey: number,
   message: Parameters<typeof appendMessage>[1],
 ): Promise<void> {
-  if (system === "codex") {
-    await appendCodexMessage(conversationKey, message);
-    return;
+  switch (system) {
+    case "codex":
+      await appendCodexMessage(conversationKey, message);
+      return;
+    case "claude_code":
+      await appendClaudeMessage(conversationKey, message);
+      return;
+    case "upstream":
+      await appendMessage(conversationKey, message);
+      return;
+    default:
+      assertNeverConversationSystem(system);
   }
-  if (system === "claude_code") {
-    await appendClaudeMessage(conversationKey, message);
-    return;
+}
+
+async function loadWorkflowStoredConversation(
+  system: ConversationSystem,
+  conversationKey: number,
+  limit: number,
+): Promise<Awaited<ReturnType<typeof loadConversation>>> {
+  switch (system) {
+    case "codex":
+      return await loadCodexConversation(conversationKey, limit);
+    case "claude_code":
+      return await loadClaudeConversation(conversationKey, limit);
+    case "upstream":
+      return await loadConversation(conversationKey, limit);
+    default:
+      return assertNeverConversationSystem(system);
   }
-  await appendMessage(conversationKey, message);
 }
 
 function readRuntimeBadge(
@@ -801,7 +826,7 @@ function readRuntimeSystemToggles(
   )
     .map((button) => {
       const system = button.dataset.conversationSystem;
-      if (system !== "codex" && system !== "claude_code") return null;
+      if (!isRuntimeConversationSystem(system)) return null;
       return {
         system,
         visible: groupVisible && button.style.display !== "none",
@@ -1103,13 +1128,10 @@ async function setWorkflowProviderSession(
   providerSessionId: string,
 ): Promise<void> {
   assertWorkflowTestEnabled();
-  if (system !== "codex" && system !== "claude_code") {
+  if (!isRuntimeConversationSystem(system)) {
     throw new Error(`Provider sessions are not supported for ${system}`);
   }
-  const table =
-    system === "codex"
-      ? "llm_for_zotero_codex_conversations"
-      : "llm_for_zotero_claude_conversations";
+  const table = WORKFLOW_CONVERSATION_PERSISTENCE_TABLES[system].catalogs[0];
   const normalizedSessionID = String(providerSessionId || "").trim();
   if (!normalizedSessionID) throw new Error("Provider session ID is required");
   await Zotero.DB.queryAsync(
@@ -2358,7 +2380,7 @@ async function seedPanelStoredUserMessage(
       .conversationSystem || "upstream";
   try {
     await appendWorkflowStoredMessage(
-      conversationSystem === "codex" || conversationSystem === "claude_code"
+      isRuntimeConversationSystem(conversationSystem)
         ? conversationSystem
         : "upstream",
       conversationKey,
@@ -4385,7 +4407,7 @@ async function seedStandaloneUserMessage(
       .conversationSystem || "upstream";
   try {
     await appendWorkflowStoredMessage(
-      conversationSystem === "codex" || conversationSystem === "claude_code"
+      isRuntimeConversationSystem(conversationSystem)
         ? conversationSystem
         : "upstream",
       conversationKey,
@@ -4518,10 +4540,9 @@ async function seedStandaloneConversation(
   const conversationSystem =
     (contentArea.querySelector("#llm-main") as HTMLElement | null)?.dataset
       .conversationSystem || "upstream";
-  const storedSystem =
-    conversationSystem === "codex" || conversationSystem === "claude_code"
-      ? conversationSystem
-      : "upstream";
+  const storedSystem = isRuntimeConversationSystem(conversationSystem)
+    ? conversationSystem
+    : "upstream";
   for (const message of messages) {
     // Persist only the plain turn shape; volatile streaming/trace fields are
     // session-only presentation state and stay in chatHistory.
@@ -5840,10 +5861,11 @@ async function attachPastChatAsAgentInPanel(
   const datasetSystem = (
     panel.body.querySelector("#llm-main") as HTMLElement | null
   )?.dataset.conversationSystem;
-  const conversationSystem: ConversationSystem =
-    datasetSystem === "codex" || datasetSystem === "claude_code"
-      ? datasetSystem
-      : "upstream";
+  const conversationSystem: ConversationSystem = isRuntimeConversationSystem(
+    datasetSystem,
+  )
+    ? datasetSystem
+    : "upstream";
   const latestUser = [...(chatHistory.get(conversationKey) || [])]
     .reverse()
     .find((message) => message.role === "user");
@@ -5861,12 +5883,11 @@ async function attachPastChatAsAgentInPanel(
     },
   });
   await Zotero.Promise.delay(100);
-  const stored =
-    conversationSystem === "codex"
-      ? await loadCodexConversation(conversationKey, 200)
-      : conversationSystem === "claude_code"
-        ? await loadClaudeConversation(conversationKey, 200)
-        : await loadConversation(conversationKey, 200);
+  const stored = await loadWorkflowStoredConversation(
+    conversationSystem,
+    conversationKey,
+    200,
+  );
   const storedUser = [...stored]
     .reverse()
     .find((message) => message.role === "user");
@@ -11134,10 +11155,9 @@ async function seedPanelStoredTurn(
   const conversationSystem =
     (panel.body.querySelector("#llm-main") as HTMLElement | null)?.dataset
       .conversationSystem || "upstream";
-  const system =
-    conversationSystem === "codex" || conversationSystem === "claude_code"
-      ? conversationSystem
-      : "upstream";
+  const system = isRuntimeConversationSystem(conversationSystem)
+    ? conversationSystem
+    : "upstream";
   await appendWorkflowStoredMessage(system, conversationKey, userMessage);
   await appendWorkflowStoredMessage(system, conversationKey, assistantMessage);
   const existing = chatHistory.get(conversationKey) || [];

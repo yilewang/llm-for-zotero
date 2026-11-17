@@ -10,6 +10,7 @@ import {
 import { COMPOSER_BOUND_KEYS } from "./composerKeyBindings";
 import { getConversationKey } from "./conversationIdentity";
 import type { ConversationSystem } from "../../shared/types";
+import { isRuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import {
   parseSelectionSurface,
   type SelectionSurface,
@@ -353,11 +354,9 @@ function resolveMountedScope(body: Element): ConversationScopeIdentity | null {
         : null;
   if (!kind || !conversationKey || !libraryID) return null;
   return {
-    system:
-      root.dataset.conversationSystem === "claude_code" ||
-      root.dataset.conversationSystem === "codex"
-        ? root.dataset.conversationSystem
-        : "upstream",
+    system: isRuntimeConversationSystem(root.dataset.conversationSystem)
+      ? root.dataset.conversationSystem
+      : "upstream",
     conversationKey,
     kind,
     libraryID,

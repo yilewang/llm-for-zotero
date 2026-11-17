@@ -260,6 +260,10 @@ import type {
   AgentUserMessage,
   ResolvedAgentRuntimeRequest,
 } from "./types";
+import {
+  isRuntimeConversationSystem,
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+} from "../core/conversations/conversationSystems";
 
 type AgentRuntimeDeps = {
   registry: AgentToolRegistry;
@@ -831,12 +835,12 @@ export class AgentRuntime {
     const usageConversationSystem = classifyConversationKey(
       request.conversationKey,
     )?.system;
-    const usageRuntime: UsageEventRuntime =
-      usageConversationSystem === "claude_code"
-        ? "claude-code"
-        : usageConversationSystem === "codex"
-          ? "codex"
-          : "agent";
+    const usageRuntime: UsageEventRuntime = isRuntimeConversationSystem(
+      usageConversationSystem,
+    )
+      ? RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[usageConversationSystem]
+          .usageSource
+      : "agent";
     const usageRecorder = createTurnUsageRecorder({
       conversationKey: request.conversationKey,
       conversationGeneration: request.conversationGeneration,

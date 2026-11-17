@@ -7,10 +7,10 @@ import {
   MAX_FULL_TEXT_PAPER_CONTEXTS,
   MAX_SELECTED_PAPER_CONTEXTS,
 } from "../shared/contextLimits";
+import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
 import {
   getClaudeBridgeUrl,
   getClaudeCustomInstructionPref,
-  getConversationSystemPref,
 } from "../claudeCode/prefs";
 import {
   fetchClaudeModelCatalog,

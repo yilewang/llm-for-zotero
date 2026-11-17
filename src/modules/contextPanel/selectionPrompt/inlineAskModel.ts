@@ -18,6 +18,10 @@
  */
 import { CODEX_DIRECT_RESPONSES_URL } from "../../../codexAuth/auth";
 import type { AdvancedModelParams } from "../../../shared/types";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem,
+} from "../../../core/conversations/conversationSystems";
 import type {
   ModelProviderAuthMode,
   RuntimeModelEntry,
@@ -136,14 +140,19 @@ export function resolveInlineAskModelTarget(
     if (isInlineAskApiEntry(chosen)) return fromEntry(chosen, "inline_choice");
   }
   const sidebar = input.sidebarEntry;
-  if (input.conversationSystem === "codex") {
-    return (
-      codexRuntimeTarget(input, input.codexDirect.runtimeModel) ||
-      firstApiTarget(input.entries)
-    );
-  }
-  if (input.conversationSystem === "claude_code") {
-    return firstApiTarget(input.entries);
+  const system = input.conversationSystem;
+  if (isRuntimeConversationSystem(system)) {
+    switch (system) {
+      case "codex":
+        return (
+          codexRuntimeTarget(input, input.codexDirect.runtimeModel) ||
+          firstApiTarget(input.entries)
+        );
+      case "claude_code":
+        return firstApiTarget(input.entries);
+      default:
+        return assertNeverConversationSystem(system);
+    }
   }
   if (sidebar?.authMode === "codex_app_server") {
     return (
@@ -201,12 +210,18 @@ export function buildInlineAskModelMenu(
 export function inlineAskModelMenuNote(
   input: Pick<InlineAskModelRuleInput, "conversationSystem" | "sidebarEntry">,
 ): "claude_code" | "webchat" | null {
-  if (input.conversationSystem === "claude_code") return "claude_code";
-  if (
-    input.conversationSystem !== "codex" &&
-    input.sidebarEntry?.authMode === "webchat"
-  )
-    return "webchat";
+  const system = input.conversationSystem;
+  if (isRuntimeConversationSystem(system)) {
+    switch (system) {
+      case "claude_code":
+        return "claude_code";
+      case "codex":
+        return null;
+      default:
+        return assertNeverConversationSystem(system);
+    }
+  }
+  if (input.sidebarEntry?.authMode === "webchat") return "webchat";
   return null;
 }
 

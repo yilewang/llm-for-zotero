@@ -1,4 +1,8 @@
 import type { ConversationSystem } from "../../shared/types";
+import {
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import type { ChatRuntimeMode } from "./types";
 
 export type SlashActionChatMode = "paper" | "library";
@@ -37,11 +41,14 @@ export function shouldRenderDynamicSlashMenu(params: {
 }): boolean {
   if (params.itemPresent === false || params.isWebChat) return false;
   if (params.runtimeMode === "agent") return true;
-  return (
-    params.conversationSystem === "codex" ||
-    params.conversationSystem === "claude_code"
-  );
+  return isRuntimeConversationSystem(params.conversationSystem);
 }
+
+/** Whether each external runtime shows the skill slash menu, in any mode. */
+const RUNTIME_SKILL_SLASH_MENU: Record<RuntimeConversationSystem, boolean> = {
+  claude_code: false,
+  codex: true,
+};
 
 export function shouldRenderSkillSlashMenu(params: {
   itemPresent?: boolean;
@@ -50,7 +57,8 @@ export function shouldRenderSkillSlashMenu(params: {
   conversationSystem?: ConversationSystem | string | null;
 }): boolean {
   if (params.itemPresent === false || params.isWebChat) return false;
-  if (params.conversationSystem === "claude_code") return false;
-  if (params.runtimeMode === "agent") return true;
-  return params.conversationSystem === "codex";
+  if (isRuntimeConversationSystem(params.conversationSystem)) {
+    return RUNTIME_SKILL_SLASH_MENU[params.conversationSystem];
+  }
+  return params.runtimeMode === "agent";
 }
