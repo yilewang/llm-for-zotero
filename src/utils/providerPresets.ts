@@ -14,6 +14,7 @@ export type SupportedProviderPresetId =
   | "siliconflow"
   | "opencode"
   | "opencode_go"
+  | "teapotrouter"
   | "copilot"
   | "ollama"
   | "local_openai";
@@ -256,6 +257,12 @@ const KIMI_PATHS = [
   "/coding/v1/chat/completions",
 ];
 const MIMO_PATHS = ["/", "/v1", "/v1/chat/completions"];
+const TEAPOTROUTER_PATHS = [
+  "/",
+  "/v1",
+  "/v1/chat/completions",
+  "/v1/messages",
+];
 const SILICONFLOW_PATHS = [
   "/",
   "/v1",
@@ -503,6 +510,17 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     matches: makeHostAndPathMatcher(["opencode.ai"], OPENCODE_GO_PATHS),
     supportsEmbeddings: false,
     catalogRequiresApiKey: false,
+  },
+  {
+    id: "teapotrouter",
+    label: "TeapotRouter",
+    defaultApiBase: "https://api.teapotrouter.com/v1",
+    defaultProtocol: "openai_chat_compat",
+    supportedProtocols: ["openai_chat_compat", "anthropic_messages"],
+    helperText:
+      "Gateway for Claude and GPT model families on one key; serves both OpenAI-compatible and Anthropic Messages endpoints.",
+    matches: makeHostAndPathMatcher(["api.teapotrouter.com"], TEAPOTROUTER_PATHS),
+    supportsEmbeddings: false,
   },
   {
     id: "copilot",
