@@ -114,3 +114,8 @@ pref("libraryTextIndexEnabled", true);
 pref("libraryTextIndexVectors", false);
 pref("libraryTextIndexBudgetMB", 500);
 pref("lastSeenVersion", "");
+pref("codexZoteroMcpBearerToken", "");
+// Which MCP tool groups this server lists: core always, plus any of
+// literature, write, agent, or "all". Kept narrow because a catalog is paid
+// for on every request.
+pref("mcpToolGroups", "core,literature");

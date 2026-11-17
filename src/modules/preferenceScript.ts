@@ -333,6 +333,11 @@ import {
 } from "../claudeCode/projectSkills";
 import { applyClaudeCodeModePreferenceChange } from "../claudeCode/bootstrapGate";
 import {
+  getOrCreateZoteroMcpBearerToken,
+  resetZoteroMcpBearerToken,
+  ZOTERO_MCP_ENDPOINT_PATH,
+} from "../agent/mcp/server";
+import {
   getTavilyApiKey,
   setTavilyApiKey,
   isWebAccessConfigured,
@@ -4838,6 +4843,132 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       /* ignore */
     }
   };
+
+  // ── External MCP clients: config generation and tool groups ──
+  const mcpPresetSelect = doc.querySelector(
+    `#${config.addonRef}-mcp-client-preset`,
+  ) as HTMLSelectElement | null;
+  const mcpCopyConfigButton = doc.querySelector(
+    `#${config.addonRef}-mcp-copy-config`,
+  ) as HTMLButtonElement | null;
+  const mcpRegenerateButton = doc.querySelector(
+    `#${config.addonRef}-mcp-regenerate-token`,
+  ) as HTMLButtonElement | null;
+  const mcpStatusLine = doc.querySelector(
+    `#${config.addonRef}-mcp-status`,
+  ) as HTMLSpanElement | null;
+  const mcpGroupBoxes: Array<[string, HTMLInputElement | null]> = [
+    [
+      "write",
+      doc.querySelector(
+        `#${config.addonRef}-mcp-group-write`,
+      ) as HTMLInputElement | null,
+    ],
+    [
+      "literature",
+      doc.querySelector(
+        `#${config.addonRef}-mcp-group-literature`,
+      ) as HTMLInputElement | null,
+    ],
+    [
+      "agent",
+      doc.querySelector(
+        `#${config.addonRef}-mcp-group-agent`,
+      ) as HTMLInputElement | null,
+    ],
+  ];
+  const mcpToolGroupsPrefKey = `${config.prefsPrefix}.mcpToolGroups`;
+
+  const getMcpEndpointUrl = () => {
+    const port = Number(Zotero.Prefs?.get("httpServer.port", true)) || 23119;
+    return `http://127.0.0.1:${port}${ZOTERO_MCP_ENDPOINT_PATH}`;
+  };
+
+  const setMcpStatus = (
+    message: string,
+    color = "var(--fill-secondary, #888)",
+  ) => {
+    if (!mcpStatusLine) return;
+    mcpStatusLine.textContent = message;
+    mcpStatusLine.style.color = color;
+  };
+
+  const readMcpToolGroups = (): string[] => {
+    const raw = String(
+      Zotero.Prefs.get(mcpToolGroupsPrefKey, true) || "core,literature",
+    );
+    return raw
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  };
+
+  const writeMcpToolGroups = (groups: string[]) => {
+    const unique = ["core", ...groups.filter((name) => name !== "core")];
+    Zotero.Prefs.set(mcpToolGroupsPrefKey, unique.join(","), true);
+  };
+
+  for (const [groupName, box] of mcpGroupBoxes) {
+    if (!box) continue;
+    box.checked = readMcpToolGroups().includes(groupName);
+    box.addEventListener("change", () => {
+      const groups = readMcpToolGroups().filter((name) => name !== groupName);
+      if (box.checked) groups.push(groupName);
+      writeMcpToolGroups(groups);
+      setMcpStatus(
+        `MCP tool groups: ${readMcpToolGroups().join(", ")}`,
+        "green",
+      );
+    });
+  }
+
+  const buildMcpClientConfig = (preset: string): string => {
+    const token = getOrCreateZoteroMcpBearerToken();
+    const url = getMcpEndpointUrl();
+    if (preset === "dsh") {
+      return [
+        "    - id: panel-mcp-zotero",
+        '      name: "@deepseek-ai/dsh-mcp-client"',
+        "      config:",
+        "        serverName: zotero",
+        "        transport: streamable-http",
+        `        url: ${url}`,
+        "        headers:",
+        `          Authorization: Bearer ${token}`,
+      ].join("\n");
+    }
+    return JSON.stringify(
+      {
+        mcpServers: {
+          zotero: {
+            type: "http",
+            url,
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        },
+      },
+      null,
+      2,
+    );
+  };
+
+  if (mcpCopyConfigButton) {
+    mcpCopyConfigButton.addEventListener("click", async () => {
+      const preset = mcpPresetSelect?.value || "http";
+      await copyTextToClipboard(buildMcpClientConfig(preset));
+      setMcpStatus(t("MCP client configuration copied."), "green");
+    });
+  }
+
+  if (mcpRegenerateButton) {
+    mcpRegenerateButton.addEventListener("click", () => {
+      resetZoteroMcpBearerToken();
+      setMcpStatus(
+        t("Bearer token regenerated. Reconnect your MCP clients."),
+        "green",
+      );
+    });
+  }
 
   const ensureDirectory = async (dirPath: string) => {
     const IOUtils = (globalThis as any).IOUtils as

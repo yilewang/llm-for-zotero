@@ -118,6 +118,8 @@ declare namespace _ZoteroTypes {
       "libraryTextIndexVectors": boolean;
       "libraryTextIndexBudgetMB": number;
       "lastSeenVersion": string;
+      "codexZoteroMcpBearerToken": string;
+      "mcpToolGroups": string;
     };
   }
 }

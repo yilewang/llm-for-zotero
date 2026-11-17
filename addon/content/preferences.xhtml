@@ -2398,54 +2398,125 @@
             </html:div>
           </html:div>
 
-          <!-- ── Zotero MCP: both clients in one panel ── -->
+          <!-- ── Zotero MCP: one panel for built-in runtimes and external clients ── -->
           <html:div id="__addonRef__-shared-runtime-tools" class="llm-pref-row">
             <html:div class="llm-pref-row-body" style="border-top: none">
               <html:span class="llm-pref-section-title">Zotero MCP</html:span>
               <html:span class="llm-pref-hint">
                 A curated local MCP server that exposes Zotero library and PDF
-                reading plus write operations. The calling client controls
-                approval with its own permission settings. Zotero validates
-                operations, records recovery data, and verifies changes without
-                duplicate permission prompts.
+                reading plus write operations. The built-in Codex and Claude
+                Code turns and any external MCP client reach it through the same
+                endpoint, so an outside agent needs no second server and no Node
+                runtime. The calling client controls approval with its own
+                permission settings; Zotero validates operations, records
+                recovery data, and verifies changes without duplicate prompts.
               </html:span>
 
-              <html:div class="llm-pref-section">
-                <html:span class="llm-pref-section-title"
-                  >Built-in runtimes</html:span
+              <html:label class="llm-pref-check" style="margin-top: 4px">
+                <html:input
+                  id="__addonRef__-codex-app-server-mcp-enable"
+                  type="checkbox"
+                ></html:input>
+                <html:span>
+                  Enable Zotero MCP tools for native Codex and Claude Code turns
+                </html:span>
+              </html:label>
+
+              <html:div class="llm-pref-line" style="flex-wrap: wrap">
+                <html:button
+                  id="__addonRef__-codex-app-server-mcp-setup"
+                  class="llm-pref-button"
+                  type="button"
                 >
-                <html:label class="llm-pref-check">
+                  Install/update Zotero MCP config
+                </html:button>
+                <html:span
+                  id="__addonRef__-codex-app-server-mcp-status"
+                  class="llm-pref-hint"
+                  style="overflow-wrap: anywhere; min-width: 0"
+                ></html:span>
+              </html:div>
+              <html:span class="llm-pref-hint">
+                For Codex, Zotero writes a local bearer-token protected MCP
+                entry into Codex config and asks app-server to reload MCP
+                servers. Claude Code receives a scoped MCP server directly for
+                each turn. User-level Codex skills, plugins, and other MCP setup
+                remain owned by Codex.
+              </html:span>
+
+              <html:div
+                style="height: 1px; background: var(--llm-pref-stroke, #dadada); margin: 12px 0"
+              ></html:div>
+
+              <html:span class="llm-pref-hint">
+                External clients share this endpoint. Pick a client below and
+                copy its configuration.
+              </html:span>
+              <html:div
+                class="llm-pref-line"
+                style="gap: 8px; flex-wrap: wrap; margin-top: 6px"
+              >
+                <html:select
+                  id="__addonRef__-mcp-client-preset"
+                  class="llm-pref-select"
+                  style="flex: 1; min-width: 220px"
+                >
+                  <html:option value="http">
+                    HTTP client (Claude Desktop, Cursor, Cherry Studio)
+                  </html:option>
+                  <html:option value="dsh">dsh (streamable HTTP)</html:option>
+                </html:select>
+                <html:button
+                  id="__addonRef__-mcp-copy-config"
+                  class="llm-pref-button"
+                  type="button"
+                >
+                  Copy config
+                </html:button>
+                <html:button
+                  id="__addonRef__-mcp-regenerate-token"
+                  class="llm-pref-button"
+                  type="button"
+                >
+                  Regenerate token
+                </html:button>
+              </html:div>
+              <html:div
+                class="llm-pref-line"
+                style="gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px"
+              >
+                <html:label style="display: flex; align-items: center; gap: 6px">
                   <html:input
-                    id="__addonRef__-codex-app-server-mcp-enable"
+                    id="__addonRef__-mcp-group-write"
                     type="checkbox"
                   ></html:input>
-                  <html:span>
-                    Enable Zotero MCP tools for native Codex and Claude Code
-                    turns
-                  </html:span>
+                  Write tools
                 </html:label>
-                <html:div class="llm-pref-line">
-                  <html:button
-                    id="__addonRef__-codex-app-server-mcp-setup"
-                    class="llm-pref-button"
-                    type="button"
-                  >
-                    Install/update Zotero MCP config
-                  </html:button>
-                  <html:span
-                    id="__addonRef__-codex-app-server-mcp-status"
-                    class="llm-pref-hint"
-                    style="overflow-wrap: anywhere; min-width: 0"
-                  ></html:span>
-                </html:div>
-                <html:span class="llm-pref-hint">
-                  For Codex, Zotero writes a local bearer-token protected MCP
-                  entry into Codex config and asks app-server to reload MCP
-                  servers. Claude Code receives a scoped MCP server directly for
-                  each turn. User-level Codex skills, plugins, and other MCP
-                  setup remain owned by Codex.
-                </html:span>
+                <html:label style="display: flex; align-items: center; gap: 6px">
+                  <html:input
+                    id="__addonRef__-mcp-group-literature"
+                    type="checkbox"
+                  ></html:input>
+                  Literature search
+                </html:label>
+                <html:label style="display: flex; align-items: center; gap: 6px">
+                  <html:input
+                    id="__addonRef__-mcp-group-agent"
+                    type="checkbox"
+                  ></html:input>
+                  Agent-only tools
+                </html:label>
               </html:div>
+              <html:span class="llm-pref-hint">
+                Core read tools and literature search are listed by default for
+                external clients. Each extra group adds every tool it owns to
+                every request, so enable it only for a client that needs it.
+              </html:span>
+              <html:span
+                id="__addonRef__-mcp-status"
+                class="llm-pref-hint"
+                style="overflow-wrap: anywhere; min-width: 0; margin-top: 4px"
+              ></html:span>
             </html:div>
           </html:div>
         </html:div>

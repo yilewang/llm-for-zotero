@@ -1884,6 +1884,23 @@ const zhCN: Record<string, string> = {
   "Show in library": "在文献库中显示",
   "Open in New Window": "在新窗口中打开",
   "Open in main window": "在主窗口中打开",
+  "A curated local MCP server that exposes Zotero library and PDF reading plus write operations. The built-in Codex and Claude Code turns and any external MCP client reach it through the same endpoint, so an outside agent needs no second server and no Node runtime. The calling client controls approval with its own permission settings; Zotero validates operations, records recovery data, and verifies changes without duplicate prompts.":
+    "一个精选的本地 MCP 服务器，提供 Zotero 文献库与 PDF 的读取以及写入操作。内置的 Codex、Claude Code 回合与任何外部 MCP 客户端共用同一个端点，外部 agent 无需再部署第二个服务或 Node 运行时。审批由调用方客户端按其自身权限设置控制；Zotero 会校验操作、记录可恢复数据并验证修改结果，不会重复弹出权限提示。",
+  "External clients share this endpoint. Pick a client below and copy its configuration.":
+    "外部客户端共用这个端点。在下面选择一种客户端并复制其配置；只能启动命令的客户端使用内置的 stdio 桥接。",
+  "HTTP client (Claude Desktop, Cursor, Cherry Studio)":
+    "HTTP 客户端（Claude Desktop、Cursor、Cherry Studio）",
+    "dsh (streamable HTTP)": "dsh（streamable HTTP）",
+    "Copy config": "复制配置",
+  "Regenerate token": "重新生成 Token",
+  "Write tools": "写入类工具",
+  "Literature search": "文献检索",
+  "Agent-only tools": "仅 Agent 工具",
+  "Core read tools and literature search are listed by default for external clients. Each extra group adds every tool it owns to every request, so enable it only for a client that needs it.":
+    "外部客户端默认列出核心读工具与文献检索。每开启一个额外分组，都会把它包含的所有工具加入每次请求，因此只在客户端确实需要时才开启。",
+  "MCP client configuration copied.": "MCP 客户端配置已复制。",
+  "Bearer token regenerated. Reconnect your MCP clients.":
+    "Bearer Token 已重新生成，请重新连接 MCP 客户端。",
 };
 
 // ── Runtime state ────────────────────────────────────────────────────────────
