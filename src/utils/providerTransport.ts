@@ -13,6 +13,11 @@ import {
 import { version } from "../../package.json";
 import type { ModelProviderAuthMode } from "./modelProviders";
 import { detectProviderPreset } from "./providerPresets";
+import {
+  diagnoseConnectionFailure,
+  isFetchNetworkError,
+  ProviderConnectionError,
+} from "./connectionDiagnosis";
 import type { ProviderProtocol } from "./providerProtocol";
 
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -301,7 +306,31 @@ export function createProviderRequestScope(
  * are applied to the actual destination, after protocol/auth headers are built.
  * Callers cannot opt out by forgetting to identify the provider or its headers.
  */
+/**
+ * Send one provider request. When it fails before any HTTP reply, the error
+ * names the cause (certificate, refused connection, unknown host, ...) instead
+ * of the browser's bare "NetworkError when attempting to fetch resource."
+ */
 export async function sendProviderRequest(params: {
+  url: string;
+  scope: ProviderRequestScope;
+  fetchFn: typeof fetch;
+  init: RequestInit;
+}): Promise<Response> {
+  try {
+    return await sendProviderRequestOnce(params);
+  } catch (error) {
+    if (!isFetchNetworkError(error) || params.init.signal?.aborted) throw error;
+    const failure = await diagnoseConnectionFailure(
+      params.url,
+      params.init.signal,
+    );
+    if (!failure) throw error;
+    throw new ProviderConnectionError(failure, error as Error);
+  }
+}
+
+async function sendProviderRequestOnce(params: {
   url: string;
   scope: ProviderRequestScope;
   fetchFn: typeof fetch;
