@@ -3385,6 +3385,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
               apiBase,
               apiKey,
               modelName,
+              profileOverride: modelEntry.profileOverride,
             });
             // The editor validates nothing about a level's meaning — the
             // model is the judge — so the test also tries every customized

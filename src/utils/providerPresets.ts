@@ -51,8 +51,6 @@ export type ProviderPreset = {
   supportedProtocols: ProviderProtocol[];
   helperText: string;
   matches: (apiBase: string) => boolean;
-  /** When true, prefer /v1/responses over /v1/chat/completions when calling the API. */
-  supportsResponsesEndpoint?: boolean;
   /** File uploads are a separate capability from Responses inference. */
   supportsFileUploads?: boolean;
   /** Whether this provider exposes an OpenAI-compatible /v1/embeddings endpoint. */
@@ -328,7 +326,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["responses_api", "openai_chat_compat"],
     helperText: "Preset uses OpenAI's official Responses endpoint.",
     matches: makeHostAndPathMatcher(["api.openai.com"], OPENAI_PATHS),
-    supportsResponsesEndpoint: true,
     supportsFileUploads: true,
     supportsEmbeddings: true,
     defaultEmbeddingModel: "text-embedding-3-small",
@@ -408,7 +405,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     supportedProtocols: ["responses_api", "openai_chat_compat"],
     helperText: "Preset uses xAI's official Responses endpoint.",
     matches: makeHostAndPathMatcher(["api.x.ai"], GROK_PATHS),
-    supportsResponsesEndpoint: true,
     supportsFileUploads: true,
     supportsEmbeddings: false,
   },
@@ -427,7 +423,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
       ],
       QWEN_PATHS,
     ),
-    supportsResponsesEndpoint: true,
     supportsFileUploads: true,
     supportsEmbeddings: true,
     defaultEmbeddingModel: "text-embedding-v4",
@@ -472,7 +467,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     id: "opencode",
-    supportsResponsesEndpoint: true,
     label: "OpenCode Zen",
     defaultApiBase: "https://opencode.ai/zen/v1",
     defaultProtocol: "openai_chat_compat",
@@ -489,7 +483,6 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     id: "opencode_go",
-    supportsResponsesEndpoint: true,
     label: "OpenCode Go",
     defaultApiBase: "https://opencode.ai/zen/go/v1",
     defaultProtocol: "openai_chat_compat",
@@ -609,14 +602,6 @@ export function detectProviderPreset(apiBase: string): ProviderPresetId {
 
 export function isGrokApiBase(apiBase: string): boolean {
   return getProviderPreset("grok").matches(apiBase);
-}
-
-/** True if the given apiBase is for a known provider that supports the /v1/responses endpoint. */
-export function providerSupportsResponsesEndpoint(apiBase: string): boolean {
-  const id = detectProviderPreset(apiBase);
-  if (id === "customized") return false;
-  const preset = getProviderPreset(id);
-  return Boolean(preset.supportsResponsesEndpoint);
 }
 
 /** Whether Responses requests may upload files to this provider. */

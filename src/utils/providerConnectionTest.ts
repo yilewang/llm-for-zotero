@@ -475,11 +475,20 @@ export async function runProviderConnectionTest(params: {
   apiBase: string;
   apiKey: string;
   modelName: string;
+  /** The model's custom settings; their extra parameters ride along as in chat. */
+  profileOverride?: unknown;
 }): Promise<{ reply: string; capabilityLabel: string; warning?: string }> {
-  const { body, expectsSse } = buildConnectionRequestPayload({
+  const { body: baseBody, expectsSse } = buildConnectionRequestPayload({
     protocol: params.protocol,
     modelName: params.modelName,
   });
+  // A request the provider requires a parameter for (for example a relay's
+  // `prompt_cache_key`) fails without it, so the test sends what chat sends.
+  const extraBody = resolveUserExtraBody(
+    normalizeProfileOverride(params.profileOverride),
+    params.modelName,
+  );
+  const body = extraBody ? mergeBodyPatch(baseBody, extraBody) : baseBody;
   const url = resolveProviderTransportEndpoint({
     protocol: params.protocol,
     apiBase: params.apiBase,
@@ -668,9 +677,10 @@ async function postConnectionProbe(params: {
  * a level's meaning — users provide ids, the plugin encodes them, and the
  * model is the judge — so this is where the judgement is fetched and shown.
  *
- * Attribution stays clean: the extra JSON is probed alone first, and level
- * probes include it only when it passed, so one bad parameter cannot make
- * every level read as broken.
+ * Call this only after `runProviderConnectionTest` passed with the same
+ * override: that request already carried the extra JSON, as every chat
+ * request does, so the extra JSON is reported as accepted without another
+ * request, and each level probe includes it.
  */
 export async function runProviderSettingsChecks(params: {
   requestScope?: ProviderRequestScope;
@@ -692,12 +702,7 @@ export async function runProviderSettingsChecks(params: {
     postConnectionProbe({ ...params, requestScope, patch });
 
   const extraBody = resolveUserExtraBody(override, params.modelName);
-  let extraUsable = false;
-  if (extraBody) {
-    const result = await probe(extraBody);
-    extraUsable = result.ok;
-    checks.push({ kind: "extra", ok: result.ok, error: result.error });
-  }
+  if (extraBody) checks.push({ kind: "extra", ok: true });
 
   const options =
     override.reasoning?.kind === "select" ? override.reasoning.options : [];
@@ -706,7 +711,7 @@ export async function runProviderSettingsChecks(params: {
     if (!declared || !Object.keys(declared).length) continue;
     const body = placeLevelBody(params.protocol, declared);
     const result = await probe(
-      extraBody && extraUsable ? mergeBodyPatch(extraBody, body) : body,
+      extraBody ? mergeBodyPatch(extraBody, body) : body,
     );
     checks.push({
       kind: "level",
