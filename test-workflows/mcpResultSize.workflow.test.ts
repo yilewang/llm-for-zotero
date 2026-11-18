@@ -4,7 +4,9 @@ import {
   getOrCreateZoteroMcpBearerToken,
   MCP_MODEL_VIEW_NOTICE,
   ZOTERO_MCP_ENDPOINT_PATH,
+  ZOTERO_MCP_SCOPE_HEADER,
 } from "../src/agent/mcp/server";
+import { loadPlanDocument } from "../src/agent/documents/store";
 import type {
   WorkflowTestApi,
   WorkflowTestFixture,
@@ -74,12 +76,15 @@ describe("workflow: MCP tool result size", function () {
   async function call(
     name: string,
     args: Record<string, unknown>,
+    scopeToken?: string,
+    expectOk = true,
   ): Promise<{ payload: McpPayload; bytes: number }> {
     const EndpointClass = Zotero.Server.Endpoints[ZOTERO_MCP_ENDPOINT_PATH];
     const [status, , body] = await new EndpointClass().init({
       method: "POST",
       headers: {
         Authorization: `Bearer ${getOrCreateZoteroMcpBearerToken()}`,
+        ...(scopeToken ? { [ZOTERO_MCP_SCOPE_HEADER]: scopeToken } : {}),
       },
       data: {
         jsonrpc: "2.0",
@@ -89,9 +94,11 @@ describe("workflow: MCP tool result size", function () {
       },
     });
     assert.equal(status, 200);
-    const text = JSON.parse(body).result.content[0].text as string;
+    const response = JSON.parse(body);
+    assert.isOk(response.result, body.slice(0, 1000));
+    const text = response.result.content[0].text as string;
     const payload = JSON.parse(text) as McpPayload;
-    assert.isTrue(payload.ok, text.slice(0, 500));
+    assert.equal(payload.ok, expectOk, text.slice(0, 500));
     return { payload, bytes: text.length };
   }
 
@@ -219,6 +226,22 @@ describe("workflow: MCP tool result size", function () {
         (citation) => citation.id,
       ),
     );
+    for (const citation of result.quoteCitations as Array<
+      Record<string, unknown>
+    >) {
+      // The host's match bookkeeping stays out of the model's records.
+      for (const field of [
+        "sourceMatchKind",
+        "sourceMatchSource",
+        "sourceFingerprint",
+        "allowShortQuoteText",
+      ])
+        assert.notProperty(citation, field);
+      if ("sourceMatchText" in citation)
+        assert.notEqual(citation.sourceMatchText, citation.quoteText);
+      assert.isString(citation.quoteText);
+      assert.isString(citation.citationLabel);
+    }
     for (const passage of passages) {
       assert.isString(passage.text);
       for (const id of (passage.quoteCitationIds as string[]) || [])
@@ -228,5 +251,73 @@ describe("workflow: MCP tool result size", function () {
       (payload.documentEvidenceRefs || []).map((ref) => ref.itemKey),
       itemKey(fixtures[0].parentItemId),
     );
+  });
+  it("cites a short evidence ref an MCP read returned in a submitted document", async function () {
+    const paper = Zotero.Items.get(fixtures[0].parentItemId);
+    const runId = `mcp-short-ref:${Date.now()}`;
+    // Registered in the installed plugin's MCP server, whose scopes this
+    // bundle's copy of the module does not share.
+    const scope = api.registerScopedMcpScope({
+      conversationKey: paper.id,
+      libraryID: paper.libraryID,
+      kind: "paper",
+      runId,
+      runtimeAuthority: "claude",
+    });
+    try {
+      const read = await call(
+        "paper_read",
+        { mode: "overview", target: { itemId: paper.id } },
+        scope.token,
+      );
+      const refs = (read.payload.documentEvidenceRefs || []) as Array<{
+        evidenceRef: string;
+        itemKey: string;
+        capabilities: string[];
+      }>;
+      const body = refs.find(
+        (ref) => ref.itemKey === paper.key && ref.capabilities.includes("body"),
+      );
+      assert.isOk(body, JSON.stringify(refs));
+      assert.match(body!.evidenceRef, /^[0-9a-f]{12}:\d+$/, "a short ref");
+      const submit = (evidenceRef: string, expectOk = true) =>
+        call(
+          "submit_document",
+          {
+            title: "Short ref finding",
+            markdown: "# Finding\n\nThe method embeds data [[cite:C1]].",
+            citations: [
+              {
+                citationId: "C1",
+                sources: [
+                  {
+                    libraryID: paper.libraryID,
+                    itemKey: paper.key,
+                    evidenceRefs: [evidenceRef],
+                  },
+                ],
+              },
+            ],
+            quotes: [],
+            assets: [],
+            groundingReviewed: "passed",
+            groundingIssues: [],
+          },
+          scope.token,
+          expectOk,
+        );
+      // A short ref no read of this conversation issued is refused.
+      await submit("000000000000:1", false);
+      const { payload } = await submit(body!.evidenceRef);
+      const document = await loadPlanDocument(payload.result.documentId);
+      assert.isOk(document, "the document is published");
+      // The stored document names the full observation id.
+      assert.match(
+        JSON.stringify(document),
+        new RegExp(`sha256:${body!.evidenceRef.split(":")[0]}[0-9a-f]{52}:`),
+      );
+    } finally {
+      api.clearScopedMcpScope(scope.token);
+    }
   });
 });

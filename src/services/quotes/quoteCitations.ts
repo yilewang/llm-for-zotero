@@ -5705,6 +5705,77 @@ export function extractQuoteCitationsFromToolContent(
   return mergeQuoteCitations(out);
 }
 
+/**
+ * The fields of a quote record a model reads: the id it writes as an anchor,
+ * the quote, whose words they are and where. The source-match bookkeeping
+ * (match kind and source, fingerprint, page hint index and occurrence) is
+ * the host's: the run's collector and the panel read the whole record from
+ * the whole result. The matched source text is shown only where it is not
+ * the quote itself.
+ */
+const MODEL_QUOTE_CITATION_FIELDS = [
+  "id",
+  "quoteText",
+  "displayQuoteText",
+  "citationLabel",
+  "itemId",
+  "contextItemId",
+  "sourceSectionLabel",
+  "pageHintLabel",
+] as const;
+
+export function modelQuoteCitation(
+  citation: QuoteCitation,
+): Record<string, unknown> {
+  const source = citation as unknown as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const field of MODEL_QUOTE_CITATION_FIELDS) {
+    if (source[field] !== undefined) out[field] = source[field];
+  }
+  if (out.displayQuoteText === out.quoteText) delete out.displayQuoteText;
+  if (
+    typeof citation.sourceMatchText === "string" &&
+    citation.sourceMatchText !== citation.quoteText
+  )
+    out.sourceMatchText = citation.sourceMatchText;
+  return out;
+}
+
+/** The model's quote records: each as modelQuoteCitation shows it. */
+export function modelQuoteCitations(
+  citations: readonly QuoteCitation[],
+): Record<string, unknown>[] {
+  return citations.map(modelQuoteCitation);
+}
+
+/** How deep withModelQuoteCitations looks for quote records. */
+const MODEL_QUOTE_CITATIONS_MAX_DEPTH = 8;
+
+/**
+ * A tool result as its model reads it: every `quoteCitations` list in it,
+ * at any depth, with each record as modelQuoteCitation shows it.
+ */
+export function withModelQuoteCitations<T>(value: T): T {
+  const map = (entry: unknown, depth: number): unknown => {
+    if (!entry || typeof entry !== "object") return entry;
+    if (depth > MODEL_QUOTE_CITATIONS_MAX_DEPTH) return entry;
+    if (Array.isArray(entry)) return entry.map((item) => map(item, depth + 1));
+    const out: Record<string, unknown> = {};
+    for (const [key, field] of Object.entries(entry)) {
+      out[key] =
+        key === "quoteCitations" && Array.isArray(field)
+          ? field.map((citation) =>
+              citation && typeof citation === "object"
+                ? modelQuoteCitation(citation as QuoteCitation)
+                : citation,
+            )
+          : map(field, depth + 1);
+    }
+    return out;
+  };
+  return map(value, 0) as T;
+}
+
 export function buildSelectedTextQuoteCitations(
   selectedTexts: readonly string[] | undefined,
   selectedTextSources: readonly SelectedTextSource[] | undefined,

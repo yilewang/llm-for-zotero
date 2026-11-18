@@ -67,6 +67,7 @@ import {
   startNoteBatchUntilQuit,
 } from "./noteBatchRestartReplay";
 import { exerciseAgentStopRules } from "./stopRulesReplay";
+import { registerScopedZoteroMcpScope } from "../../agent/mcp/server";
 import {
   callScopedMcpToolForConversation,
   exercisePaperDecisionsTurn,
@@ -326,6 +327,8 @@ import {
   activeCodexPaperConversationByPaper,
 } from "../../codexAppServer/state";
 
+/** Scope tokens a workflow test registered in the MCP server, by token. */
+const workflowMcpScopes = new Map<string, () => void>();
 let resolveDelayedCodexPermissionCatalog: (() => void) | null = null;
 let resolveDelayedCodexModelCatalog: (() => void) | null = null;
 let codexModelCatalogRequests: string[] = [];
@@ -12226,6 +12229,15 @@ export function installWorkflowTestHarness(targetAddon: {
         await resolveTaskProgressPanel({ panelId }),
         input,
       ),
+    registerScopedMcpScope: (scope) => {
+      const registered = registerScopedZoteroMcpScope(scope);
+      workflowMcpScopes.set(registered.token, registered.clear);
+      return { token: registered.token };
+    },
+    clearScopedMcpScope: (token) => {
+      workflowMcpScopes.get(token)?.();
+      workflowMcpScopes.delete(token);
+    },
     exerciseAgentStopRules: (input) =>
       exerciseAgentStopRules(getPanel(input.panelId), {
         scenario: input.scenario,

@@ -74,6 +74,7 @@ import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 import { extractVerifiedReadSources } from "../context/readEvidence";
 import { buildSizedModelView } from "../execution/modelView";
+import { shortEvidenceRef } from "../context/evidenceRefTokens";
 import type {
   TrustedReadObservation,
   VerifiedReadSource,
@@ -2319,12 +2320,16 @@ function createToolContext(
 export const MCP_MODEL_VIEW_NOTICE =
   "This result is sized to the request; omitted counts what it left out. To see omitted rows, call again with a narrower scope or ask for fewer papers or passages.";
 
-/** A read observation as the result names it: the ref the model cites. */
+/**
+ * A read observation as the result names it. The model cites the short ref,
+ * as the plugin Agent's model does; submit_document expands it to the
+ * observation of the conversation it names.
+ */
 function documentEvidenceRef(
   observation: TrustedReadObservation,
 ): Record<string, unknown> {
   return {
-    evidenceRef: observation.observationId,
+    evidenceRef: shortEvidenceRef(observation.observationId),
     libraryID: observation.libraryID,
     itemKey: observation.itemKey,
     capabilities: observation.capabilities,
