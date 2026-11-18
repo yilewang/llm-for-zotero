@@ -50,6 +50,11 @@ const WEDGED_TIMEOUT_STREAK = 3;
 // A Zotero that prints nothing for this long is stuck outside any test
 // timeout (the longest test timeout is four minutes).
 const SILENT_STALL_MS = 10 * 60 * 1000;
+// The scaffold's esbuild service outlives it and holds its output pipes open,
+// so a scaffold that exits (for example on a setup error, before Zotero
+// starts) would otherwise leave the run waiting for those pipes. After the
+// scaffold exits, its pipes get this long to drain before we close them.
+const EXIT_DRAIN_MS = 10_000;
 
 // Parallel shards each run in their own folder here, so each has its own
 // build, profile and data folder.
@@ -205,6 +210,8 @@ function runScaffold({ cwd, files, port, prefix }) {
   let timeoutStreak = 0;
   let stalled = false;
   let silenceTimer = null;
+  let exitTimer = null;
+  let closed = false;
   const markers = [];
   const say = (text) =>
     process.stdout.write(prefix ? `${prefix} ${text}\n` : `${text}\n`);
@@ -248,6 +255,7 @@ function runScaffold({ cwd, files, port, prefix }) {
   }
 
   const armSilenceTimer = () => {
+    if (closed) return;
     if (silenceTimer) clearTimeout(silenceTimer);
     silenceTimer = setTimeout(() => {
       if (summary || stalled) return;
@@ -287,10 +295,19 @@ function runScaffold({ cwd, files, port, prefix }) {
     // settling. Exiting on the earlier "exit" event can tear down the
     // scaffold's esbuild service pipe while it is still draining, which
     // intermittently prints a post-test Go deadlock despite a successful run.
+    child.on("exit", () => {
+      exitTimer = setTimeout(() => {
+        stopChild(child, "SIGKILL");
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }, EXIT_DRAIN_MS);
+    });
     child.on("close", (code, signal) => {
+      closed = true;
       children.delete(child);
       if (quitTimer) clearTimeout(quitTimer);
       if (silenceTimer) clearTimeout(silenceTimer);
+      if (exitTimer) clearTimeout(exitTimer);
       flush(child.stdout, process.stdout, "\n");
       flush(child.stderr, process.stderr, "\n");
       if (!summary) {
