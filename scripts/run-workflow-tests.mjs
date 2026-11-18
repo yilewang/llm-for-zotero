@@ -41,6 +41,15 @@ const posix = process.platform !== "win32";
 // After the last test reports, Zotero can take more than a minute to quit.
 // The result is already known by then, so we stop waiting after this long.
 const QUIT_GRACE_MS = 15_000;
+// A Zotero whose database or UI is wedged fails every later test by timeout,
+// one test timeout (up to four minutes) at a time. After this many timeouts
+// in a row with no passing test between them, the run stops that Zotero; the
+// file it was running counts as failed, and a fresh Zotero runs the files
+// that had not started.
+const WEDGED_TIMEOUT_STREAK = 3;
+// A Zotero that prints nothing for this long is stuck outside any test
+// timeout (the longest test timeout is four minutes).
+const SILENT_STALL_MS = 10 * 60 * 1000;
 
 // Parallel shards each run in their own folder here, so each has its own
 // build, profile and data folder.
@@ -193,6 +202,9 @@ function runScaffold({ cwd, files, port, prefix }) {
   let sawFailure = false;
   let summary = null;
   let quitTimer = null;
+  let timeoutStreak = 0;
+  let stalled = false;
+  let silenceTimer = null;
   const markers = [];
   const say = (text) =>
     process.stdout.write(prefix ? `${prefix} ${text}\n` : `${text}\n`);
@@ -205,7 +217,21 @@ function runScaffold({ cwd, files, port, prefix }) {
       markers.push(marker);
       return false;
     }
-    if (/^\s*✖/.test(line)) sawFailure = true;
+    if (/^\s*✖/.test(line)) {
+      sawFailure = true;
+      timeoutStreak = /Timeout of \d+ms exceeded/.test(line)
+        ? timeoutStreak + 1
+        : 0;
+      if (timeoutStreak >= WEDGED_TIMEOUT_STREAK && !stalled) {
+        stalled = true;
+        say(
+          `Zotero looks wedged: ${timeoutStreak} tests timed out in a row with none passing. Stopping it; a fresh Zotero runs the files that had not started.`,
+        );
+        stopChild(child, "SIGKILL");
+      }
+    } else if (/^\s*✔/.test(line)) {
+      timeoutStreak = 0;
+    }
     const match = /Test run completed - (\d+) passed(?:, (\d+) failed)?/.exec(
       line,
     );
@@ -221,8 +247,22 @@ function runScaffold({ cwd, files, port, prefix }) {
     return true;
   }
 
+  const armSilenceTimer = () => {
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => {
+      if (summary || stalled) return;
+      stalled = true;
+      say(
+        `Zotero printed nothing for ${SILENT_STALL_MS / 60000} min. Stopping it; a fresh Zotero runs the files that had not started.`,
+      );
+      stopChild(child, "SIGKILL");
+    }, SILENT_STALL_MS);
+  };
+  armSilenceTimer();
+
   const buffers = new Map();
   const flush = (stream, target, rest) => {
+    armSilenceTimer();
     const lines = ((buffers.get(stream) ?? "") + rest).split("\n");
     buffers.set(stream, lines.pop() ?? "");
     for (const line of lines) {
@@ -250,6 +290,7 @@ function runScaffold({ cwd, files, port, prefix }) {
     child.on("close", (code, signal) => {
       children.delete(child);
       if (quitTimer) clearTimeout(quitTimer);
+      if (silenceTimer) clearTimeout(silenceTimer);
       flush(child.stdout, process.stdout, "\n");
       flush(child.stderr, process.stderr, "\n");
       if (!summary) {
