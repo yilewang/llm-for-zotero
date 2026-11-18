@@ -216,3 +216,36 @@ export function setLastAllocatedAntigravityPaperConversationKey(
 ): void {
   setLastAllocatedConversationKey("paper", conversationKey);
 }
+
+/**
+ * How Antigravity asks before it acts: one of agy's four session modes, or
+ * full access, which starts agy with --dangerously-skip-permissions (a
+ * process flag, so full access runs in its own agy process).
+ */
+export const ANTIGRAVITY_PERMISSION_MODES = [
+  "default",
+  "accept-edits",
+  "auto",
+  "plan",
+  "full-access",
+] as const;
+
+export type AntigravityPermissionMode =
+  (typeof ANTIGRAVITY_PERMISSION_MODES)[number];
+
+const PERMISSION_MODE_PREF = "antigravityPermissionMode";
+
+export function getAntigravityPermissionModePref(): AntigravityPermissionMode {
+  const value = String(
+    getZoteroPrefs()?.get?.(prefKey(PERMISSION_MODE_PREF), true) || "",
+  ).trim();
+  return (ANTIGRAVITY_PERMISSION_MODES as readonly string[]).includes(value)
+    ? (value as AntigravityPermissionMode)
+    : "default";
+}
+
+export function setAntigravityPermissionModePref(
+  mode: AntigravityPermissionMode,
+): void {
+  getZoteroPrefs()?.set?.(prefKey(PERMISSION_MODE_PREF), mode, true);
+}

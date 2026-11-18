@@ -1425,6 +1425,13 @@ export type WorkflowTestApi = {
       ReturnType<typeof import("./planHistoryReplay").exercisePlanHistoryReplay>
     >
   >;
+  /** One Antigravity turn through the real panel against a fake agy. */
+  exerciseAntigravityTurn: (input: {
+    panelId: string;
+    scenario: import("./antigravityTurnReplay").AntigravityTurnScenario;
+  }) => Promise<import("./antigravityTurnReplay").AntigravityTurnResult>;
+  /** Stops the fake agy processes the Antigravity turn tests started. */
+  resetAntigravityReplay: () => Promise<void>;
   /** One Claude Code turn through the real panel against a scripted bridge. */
   exerciseClaudeBridgeTurn: (input: {
     panelId: string;

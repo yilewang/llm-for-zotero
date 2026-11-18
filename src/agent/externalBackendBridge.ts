@@ -1055,7 +1055,7 @@ async function streamBridgeLines(
  * request.userText itself stays unchanged, for the MCP scope and skill
  * routing. Never fails the turn.
  */
-async function buildClaudeBridgeUserText(
+export async function buildExternalRuntimeUserText(
   request: AgentRuntimeRequest,
   source?: PastConversationSource,
 ): Promise<string> {
@@ -1103,11 +1103,14 @@ async function buildClaudeBridgeUserText(
   }
 }
 
-export function buildClaudeBridgeUserTextForTests(
+export function buildExternalRuntimeUserTextForTests(
   request: AgentRuntimeRequestInput,
   source?: PastConversationSource,
 ): Promise<string> {
-  return buildClaudeBridgeUserText(resolveAgentRuntimeRequest(request), source);
+  return buildExternalRuntimeUserText(
+    resolveAgentRuntimeRequest(request),
+    source,
+  );
 }
 
 async function runExternalBridgeTurn(
@@ -1155,7 +1158,7 @@ async function runExternalBridgeTurn(
 
   const probeRequested =
     debugModeEnabled && params.request.metadata?.testPermissionProbe === true;
-  const userTextForBridge = await buildClaudeBridgeUserText(
+  const userTextForBridge = await buildExternalRuntimeUserText(
     params.request,
     params.pastConversationSource,
   );
@@ -1434,9 +1437,29 @@ export function resolveClaudeBridgeMcpScopeToken(
   });
 }
 
-function buildClaudeZoteroMcpScope(
+/**
+ * What the Zotero MCP scope says about the runtime that holds it: who is
+ * calling (the server maps it to the conversation system) and what can read
+ * a paper in full for it.
+ */
+export type ExternalRuntimeMcpIdentity = {
+  runtimeAuthority: NonNullable<ZoteroMcpActiveScope["runtimeAuthority"]>;
+  exhaustiveReadBackend: NonNullable<
+    ZoteroMcpActiveScope["exhaustiveReadBackend"]
+  >;
+};
+
+const CLAUDE_MCP_IDENTITY: ExternalRuntimeMcpIdentity = {
+  runtimeAuthority: "claude",
+  // paper_read's full mode reads with the chat's model through the bridge.
+  exhaustiveReadBackend: "claude_bridge",
+};
+
+/** The per-turn Zotero MCP scope for an external runtime's request. */
+export function buildExternalRuntimeZoteroMcpScope(
   request: AgentRuntimeRequest,
   profileSignature: string,
+  identity: ExternalRuntimeMcpIdentity,
 ): ZoteroMcpActiveScope {
   const selectedPaper =
     getActiveTurnPaper(request.turnPaperScope) ||
@@ -1451,7 +1474,7 @@ function buildClaudeZoteroMcpScope(
     kind === "paper" ? selectedPaper?.itemId || activeItemId : undefined;
   const libraryID = resolveFallbackLibraryId(request);
   return {
-    runtimeAuthority: "claude",
+    runtimeAuthority: identity.runtimeAuthority,
     sourceMessageTimestamp: Number(request.metadata?.sourceMessageTimestamp),
     executionContext: request.executionContext,
     clarificationHistory: request.clarificationHistory,
@@ -1481,8 +1504,8 @@ function buildClaudeZoteroMcpScope(
     // paper_read's full mode reads with this model through the bridge.
     model: resolveClaudeBridgeModelForMetadata(request.model),
     reasoning: request.reasoning,
-    exhaustiveReadBackend: "claude_bridge",
-    // The reader model the user picked for Claude Code, by entry ID or name.
+    exhaustiveReadBackend: identity.exhaustiveReadBackend,
+    // The reader model the user picked for this runtime, by entry ID or name.
     readerSelection: request.readerSelection,
     attachedConversationScope: request.attachedConversationScope,
     turnPaperScope: request.turnPaperScope,
@@ -1494,9 +1517,10 @@ export function buildClaudeZoteroMcpScopeForTests(
   request: AgentRuntimeRequestInput,
   profileSignature: string,
 ): ZoteroMcpActiveScope {
-  return buildClaudeZoteroMcpScope(
+  return buildExternalRuntimeZoteroMcpScope(
     resolveAgentRuntimeRequest(request),
     profileSignature,
+    CLAUDE_MCP_IDENTITY,
   );
 }
 
@@ -2628,7 +2652,12 @@ export function createExternalBackendBridgeRuntime(options: {
     createStageTracker: createClaudeTurnStageTracker,
     zoteroMcp: {
       profileSignature: getClaudeProfileSignature,
-      buildScope: buildClaudeZoteroMcpScope,
+      buildScope: (request, profileSignature) =>
+        buildExternalRuntimeZoteroMcpScope(
+          request,
+          profileSignature,
+          CLAUDE_MCP_IDENTITY,
+        ),
       scopeToken: resolveClaudeBridgeMcpScopeToken,
       buildServerConfig: ({ profileSignature, scopeToken, rawPdfMode }) => {
         const config = buildClaudeZoteroMcpServerConfig({

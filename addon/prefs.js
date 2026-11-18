@@ -84,6 +84,7 @@ pref("enableAntigravityMode", false);
 pref("antigravityConversationModeMap", "");
 pref("antigravityGlobalConversationMap", "");
 pref("antigravityLastAllocatedConversationKeyMap", "");
+pref("antigravityPermissionMode", "default");
 pref("claudeCodeConversationModeMap", "");
 pref("claudeCodeGlobalConversationMap", "");
 pref("claudeCodePaperConversationMap", "");

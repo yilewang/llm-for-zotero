@@ -73,6 +73,7 @@ import {
   updateLatestClaudeConversationAssistantMessageWithinWriteLock,
   updateLatestClaudeConversationUserMessageWithinWriteLock,
 } from "../../claudeCode/runtime";
+import { getAntigravityRuntime } from "../../antigravity/runtime";
 import { getCodexProfileSignature } from "../../codexAppServer/constants";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
@@ -8901,13 +8902,23 @@ function buildAgentEngineDeps(
     sendChatFallback: sendQuestion,
     // The turn's own system decides, not the saved one: the other chat
     // surface may have switched backend since (surfaceChoices.ts).
-    getAgentRuntime: () =>
-      getEffectiveConversationSystem() === "claude_code"
-        ? (bindClaudeBridgeConversationSystem(
-            getClaudeBridgeRuntime(getCoreAgentRuntime()),
+    getAgentRuntime: () => {
+      const coreRuntime = getCoreAgentRuntime();
+      switch (getEffectiveConversationSystem()) {
+        case "claude_code":
+          return bindClaudeBridgeConversationSystem(
+            getClaudeBridgeRuntime(coreRuntime),
             "claude_code",
-          ) as unknown as ReturnType<typeof getCoreAgentRuntime>)
-        : getCoreAgentRuntime(),
+          ) as unknown as typeof coreRuntime;
+        case "antigravity":
+          return getAntigravityRuntime(
+            coreRuntime,
+          ) as unknown as typeof coreRuntime;
+        default:
+          // Codex turns run natively and never reach the agent engine.
+          return coreRuntime;
+      }
+    },
     maxSelectedImages: MAX_SELECTED_IMAGES,
   };
 }

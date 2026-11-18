@@ -730,6 +730,50 @@ export function buildClaudeZoteroMcpServerConfig(params: {
 }
 
 /**
+ * The Zotero MCP server for an ACP agent such as Antigravity's `agy`: one
+ * HTTP server in ACP's `mcpServers` shape, carrying the bearer token and the
+ * conversation-stable scope header.
+ */
+export function buildAcpZoteroMcpServerConfig(params: {
+  profileSignature?: string;
+  scopeToken?: string;
+  required?: boolean;
+  rawPdfMode?: boolean;
+}): {
+  serverName: string;
+  mcpServers: Array<{
+    type: "http";
+    name: string;
+    url: string;
+    headers: Array<{ name: string; value: string }>;
+  }>;
+} {
+  const serverName = getZoteroMcpServerName(params.profileSignature);
+  const configValue = buildZoteroMcpConfigValue({
+    scopeToken: params.scopeToken,
+    required: params.required,
+    rawPdfMode: params.rawPdfMode,
+  });
+  const serverUrl =
+    typeof configValue.url === "string" && configValue.url.trim()
+      ? configValue.url.trim()
+      : getZoteroMcpServerUrl();
+  return {
+    serverName,
+    mcpServers: [
+      {
+        type: "http",
+        name: serverName,
+        url: serverUrl,
+        headers: Object.entries(getConfigHeaders(configValue)).map(
+          ([name, value]) => ({ name, value }),
+        ),
+      },
+    ],
+  };
+}
+
+/**
  * The Zotero tools Claude Code runs without asking: the safe reads, in
  * raw-PDF turns only those the raw-PDF surface exposes. Write tools stay on
  * the server and go through the chip's permission mode, as in every turn.

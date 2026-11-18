@@ -53,6 +53,7 @@ import type { AgentRuntime } from "./runtime";
 import type {
   AgentConfirmationResolution,
   AgentEvent,
+  AgentPendingAction,
   AgentRuntimeOutcome,
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
@@ -220,6 +221,14 @@ export type ExternalTurnRunContext<TPrepared, TServers> = {
     requestId: string,
     resolve: (resolution: AgentConfirmationResolution) => void,
   ): void;
+  /**
+   * Shows a review card owned by the host and waits for the answer; a stop,
+   * a Clear, or `signal` aborting answers it as declined.
+   */
+  requestInteraction(
+    action: AgentPendingAction,
+    signal?: AbortSignal,
+  ): Promise<AgentConfirmationResolution>;
   writeAllowed(): boolean;
 };
 
@@ -370,6 +379,46 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
         }
       }
     };
+    /**
+     * Shows a review card and waits for the user's answer. A stop, a
+     * Clear, or `signal` aborting answers it as declined.
+     */
+    const requestInteraction = async (
+      action: AgentPendingAction,
+      signal?: AbortSignal,
+    ): Promise<AgentConfirmationResolution> => {
+      if (!writeAllowed() || params.signal?.aborted || signal?.aborted)
+        return { approved: false };
+      const requestId = `host-review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const pending = new Promise<AgentConfirmationResolution>((resolve) =>
+        coreRuntime.registerPendingConfirmation(requestId, resolve),
+      );
+      const abort = () => coreRuntime.resolveConfirmation(requestId, false);
+      params.signal?.addEventListener("abort", abort, { once: true });
+      signal?.addEventListener("abort", abort, { once: true });
+      try {
+        const event: AgentEvent = {
+          type: "confirmation_required",
+          requestId,
+          action,
+        };
+        await appendPersistedEvent(event);
+        await notifyIfLive(event);
+        const resolution = await pending;
+        const settled: AgentEvent = {
+          type: "confirmation_resolved",
+          requestId,
+          ...resolution,
+        };
+        await appendPersistedEvent(settled);
+        await notifyIfLive(settled);
+        return writeAllowed() ? resolution : { approved: false };
+      } finally {
+        params.signal?.removeEventListener("abort", abort);
+        signal?.removeEventListener("abort", abort);
+        coreRuntime.resolveConfirmation(requestId, false);
+      }
+    };
     const pendingMcpActivity: Promise<void>[] = [];
     let zoteroMcp: ExternalTurnRunContext<TPrepared, TServers>["zoteroMcp"];
     let clearScopedMcpScope: () => void = () => undefined;
@@ -383,37 +432,7 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
         const profileSignature = mcp.profileSignature();
         const mcpScope = mcp.buildScope(params.request, profileSignature);
         mcpScope.publishHostEvent = emitTurnEvent;
-        mcpScope.requestInteraction = async (action) => {
-          if (!writeAllowed() || params.signal?.aborted)
-            return { approved: false };
-          const requestId = `host-review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          const pending = new Promise<AgentConfirmationResolution>((resolve) =>
-            coreRuntime.registerPendingConfirmation(requestId, resolve),
-          );
-          const abort = () => coreRuntime.resolveConfirmation(requestId, false);
-          params.signal?.addEventListener("abort", abort, { once: true });
-          try {
-            const event: AgentEvent = {
-              type: "confirmation_required",
-              requestId,
-              action,
-            };
-            await appendPersistedEvent(event);
-            await notifyIfLive(event);
-            const resolution = await pending;
-            const settled: AgentEvent = {
-              type: "confirmation_resolved",
-              requestId,
-              ...resolution,
-            };
-            await appendPersistedEvent(settled);
-            await notifyIfLive(settled);
-            return writeAllowed() ? resolution : { approved: false };
-          } finally {
-            params.signal?.removeEventListener("abort", abort);
-            coreRuntime.resolveConfirmation(requestId, false);
-          }
-        };
+        mcpScope.requestInteraction = (action) => requestInteraction(action);
         const scopedMcp = registerScopedZoteroMcpScope(mcpScope, {
           token: mcp.scopeToken(params.request, profileSignature),
         });
@@ -487,6 +506,7 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
         emit: emitTurnEvent,
         registerPendingConfirmation: (requestId, resolve) =>
           coreRuntime.registerPendingConfirmation(requestId, resolve),
+        requestInteraction,
         writeAllowed,
       });
       await Promise.all(pendingMcpActivity);

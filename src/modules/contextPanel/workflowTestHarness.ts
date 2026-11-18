@@ -58,6 +58,10 @@ import {
 import { exerciseAgentDeliveryReplay } from "./agentDeliveryReplay";
 import { exerciseClaudeBridgeTurn } from "./externalTurnReplay";
 import {
+  exerciseAntigravityTurn,
+  resetAntigravityReplay,
+} from "./antigravityTurnReplay";
+import {
   exerciseLongJobBatchStop,
   exerciseLongJobNoteResume,
   exerciseLongJobReplay,
@@ -12206,6 +12210,9 @@ export function installWorkflowTestHarness(targetAddon: {
       ),
     exerciseClaudeBridgeTurn: (input) =>
       exerciseClaudeBridgeTurn(getPanel(input.panelId), input.scenario),
+    exerciseAntigravityTurn: (input) =>
+      exerciseAntigravityTurn(getPanel(input.panelId), input.scenario),
+    resetAntigravityReplay: () => resetAntigravityReplay(),
     exerciseLongJobReplay: (input) =>
       exerciseLongJobReplay(getPanel(input.panelId), {
         collection: input.collection,

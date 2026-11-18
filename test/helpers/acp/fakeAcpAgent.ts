@@ -66,6 +66,7 @@ export type FakeAcpStep =
   /** A tool on an MCP server the client passed in `session/new`. */
   | {
       type: "mcpTool";
+      /** The server's name, or "*" for the first server the session has. */
       server: string;
       tool: string;
       args: Record<string, unknown>;
@@ -720,7 +721,12 @@ export class FakeAcpAgent {
   > {
     const toolCallId = `call_${this.nextAgentRequestId++}`;
     const isMcp = step.type === "mcpTool";
-    const name = isMcp ? `mcp_${step.server}_${step.tool}` : step.name;
+    const serverName = isMcp
+      ? step.server === "*"
+        ? (this.sessionMcpServers.get(session.sessionId)?.[0]?.name ?? "")
+        : step.server
+      : "";
+    const name = isMcp ? `mcp_${serverName}_${step.tool}` : step.name;
     const args = step.args ?? {};
     const kind = isMcp ? "other" : step.kind;
     const permissionKind = isMcp ? "mcp" : step.kind;
@@ -730,7 +736,7 @@ export class FakeAcpAgent {
       args,
       rawInput: args,
       kind,
-      title: isMcp ? `${step.server}: ${step.tool}` : (step.title ?? name),
+      title: isMcp ? `${serverName}: ${step.tool}` : (step.title ?? name),
       locations: [],
       content: [],
     };
@@ -791,12 +797,7 @@ export class FakeAcpAgent {
     let result: string;
     try {
       result = isMcp
-        ? await this.callMcpTool(
-            session.sessionId,
-            step.server,
-            step.tool,
-            args,
-          )
+        ? await this.callMcpTool(session.sessionId, serverName, step.tool, args)
         : (step.result ?? "");
     } catch (error) {
       update("failed", {
