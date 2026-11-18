@@ -10,6 +10,10 @@ import type { ConversationCatalogEntry } from "../../core/conversations/reposito
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import type { ConversationSearchIndexMatch } from "../../shared/conversationSearchIndex";
 import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
+import {
+  getRuntimeConversationSystemDescriptor,
+  isConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import type {
   AttachedConversationRef,
   ConversationSystem,
@@ -46,18 +50,15 @@ export type PastConversationEntry = ConversationHistoryEntry & {
 export function getPastConversationSystemLabel(
   system: ConversationSystem,
 ): string {
-  if (system === "codex") return "Codex";
-  if (system === "claude_code") return "Claude Code";
-  return t("Chat");
+  if (system === "upstream") return t("Chat");
+  return getRuntimeConversationSystemDescriptor(system).label;
 }
 
 export function isPastConversationEntry(
   entry: ConversationHistoryEntry | null | undefined,
 ): entry is PastConversationEntry {
   const system = (entry as { system?: unknown } | null | undefined)?.system;
-  return (
-    system === "upstream" || system === "claude_code" || system === "codex"
-  );
+  return isConversationSystem(system);
 }
 
 type EntrySource = {

@@ -11,18 +11,23 @@
  * "model:<name>".
  */
 import type { ConversationSystem } from "./types";
+import {
+  isRuntimeConversationSystem,
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+} from "../core/conversations/conversationSystems";
 
 export type ReaderSelection =
   | { kind: "entry"; entryId: string }
   | { kind: "model"; model: string };
 
 /** The runtimes that keep a reader selection of their own. */
-export type ReaderRuntimeKey = "agent" | "codex" | "claude";
+export type ReaderRuntimeKey = "agent" | "codex" | "claude" | "antigravity";
 
 export const READER_RUNTIME_KEYS: readonly ReaderRuntimeKey[] = [
   "agent",
   "codex",
   "claude",
+  "antigravity",
 ];
 
 export function isReaderRuntimeKey(value: unknown): value is ReaderRuntimeKey {
@@ -36,9 +41,9 @@ export function isReaderRuntimeKey(value: unknown): value is ReaderRuntimeKey {
 export function readerRuntimeKeyForSystem(
   system: ConversationSystem | null | undefined,
 ): ReaderRuntimeKey {
-  if (system === "codex") return "codex";
-  if (system === "claude_code") return "claude";
-  return "agent";
+  return isRuntimeConversationSystem(system)
+    ? RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].readerRuntimeKey
+    : "agent";
 }
 
 const ENTRY_PREFIX = "entry:";

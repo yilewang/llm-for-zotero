@@ -3,6 +3,10 @@ declare const Zotero: any;
 import { getNoteConversation } from "../../services/notes/conversationItem";
 
 import {
+  buildDefaultAntigravityGlobalConversationKey,
+  buildDefaultAntigravityPaperConversationKey,
+} from "../../antigravity/conversationKeys";
+import {
   buildDefaultClaudeGlobalConversationKey,
   buildDefaultClaudePaperConversationKey,
 } from "../../claudeCode/constants";
@@ -26,6 +30,10 @@ import {
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
 import type { ConversationSystem } from "../../shared/types";
 import {
+  assertNeverConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
+import {
   bindProvisionedConversationKey,
   getConversationKey,
 } from "./conversationIdentity";
@@ -44,6 +52,28 @@ import {
 } from "./portalScope";
 
 type ConversationKind = "global" | "paper";
+
+// Each runtime's deterministic default keys for a library chat and a paper chat.
+const RUNTIME_DEFAULT_CONVERSATION_KEY_BUILDERS: Record<
+  RuntimeConversationSystem,
+  {
+    global: (libraryID: number) => number;
+    paper: (paperItemID: number) => number;
+  }
+> = {
+  claude_code: {
+    global: buildDefaultClaudeGlobalConversationKey,
+    paper: buildDefaultClaudePaperConversationKey,
+  },
+  codex: {
+    global: buildDefaultCodexGlobalConversationKey,
+    paper: buildDefaultCodexPaperConversationKey,
+  },
+  antigravity: {
+    global: buildDefaultAntigravityGlobalConversationKey,
+    paper: buildDefaultAntigravityPaperConversationKey,
+  },
+};
 
 // A full item-pane render intentionally starts conversation loading from both
 // the deferred onRender path and onAsyncRender.  Provisioning performs several
@@ -369,13 +399,20 @@ async function provisionConversationEntryUncoalesced(
   if (system === "upstream") {
     return provisionUpstreamConversation(scope);
   }
-  return system === "claude_code"
-    ? provisionClaudeConversation(scope)
-    : provisionCodexConversation(scope);
+  switch (system) {
+    case "claude_code":
+      return provisionClaudeConversation(scope);
+    case "codex":
+      return provisionCodexConversation(scope);
+    case "antigravity":
+      return provisionRuntimeConversationUncoalesced("antigravity", scope);
+    default:
+      return assertNeverConversationSystem(system);
+  }
 }
 
 async function provisionRuntimeConversationUncoalesced(
-  system: "claude_code" | "codex",
+  system: RuntimeConversationSystem,
   scope: {
     conversationKey: number;
     kind: ConversationKind;
@@ -407,10 +444,9 @@ async function provisionRuntimeConversationUncoalesced(
     return rememberProvisionedConversation(scope, ensured) ? ensured : null;
   }
   if (scope.kind === "global") {
-    const expectedKey =
-      system === "claude_code"
-        ? buildDefaultClaudeGlobalConversationKey(scope.libraryID)
-        : buildDefaultCodexGlobalConversationKey(scope.libraryID);
+    const expectedKey = RUNTIME_DEFAULT_CONVERSATION_KEY_BUILDERS[
+      system
+    ].global(scope.libraryID);
     const rememberedKey = isRememberedScopeKey(system, scope);
     if (scope.conversationKey !== expectedKey && !rememberedKey) return null;
     if (!existing && expectedKey !== scope.conversationKey) {
@@ -465,10 +501,9 @@ async function provisionRuntimeConversationUncoalesced(
       : null;
   }
   if (!scope.paperItemID) return null;
-  const expectedPaperKey =
-    system === "claude_code"
-      ? buildDefaultClaudePaperConversationKey(scope.paperItemID)
-      : buildDefaultCodexPaperConversationKey(scope.paperItemID);
+  const expectedPaperKey = RUNTIME_DEFAULT_CONVERSATION_KEY_BUILDERS[
+    system
+  ].paper(scope.paperItemID);
   const rememberedKey = isRememberedScopeKey(system, scope);
   if (scope.conversationKey !== expectedPaperKey && !rememberedKey) return null;
   if (!existing && expectedPaperKey !== scope.conversationKey) {
@@ -590,11 +625,11 @@ export async function provisionDefaultPaperConversation(params: {
   if (!libraryID || !paperItemID) return null;
   await initConversationKeyLedgerStore();
   const conversationKey =
-    params.system === "claude_code"
-      ? buildDefaultClaudePaperConversationKey(paperItemID)
-      : params.system === "codex"
-        ? buildDefaultCodexPaperConversationKey(paperItemID)
-        : paperItemID;
+    params.system === "upstream"
+      ? paperItemID
+      : RUNTIME_DEFAULT_CONVERSATION_KEY_BUILDERS[params.system].paper(
+          paperItemID,
+        );
   // Paper restoration and host loading must share the complete lookup/create
   // decision, including the identity allocated for a retired default key.
   return provisionConversationEntry(params.system, {

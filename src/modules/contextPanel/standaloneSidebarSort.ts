@@ -2,6 +2,10 @@
  * Order of the window sidebar's "Conversations" list, picked from the sort
  * menu on its heading, and the short date a row may show at its end.
  */
+import {
+  getRuntimeConversationSystemDescriptor,
+  type ConversationSystem,
+} from "../../core/conversations/conversationSystems";
 
 export type StandaloneSidebarSortOrder = "recent" | "created" | "title";
 
@@ -104,17 +108,19 @@ export function formatStandaloneSidebarShortDate(
  * "Group by agent": the list split into one section per runtime, in an
  * order the user sets by dragging the section labels.
  */
-export type StandaloneSidebarGroupKey = "upstream" | "codex" | "claude_code";
+export type StandaloneSidebarGroupKey = ConversationSystem;
 
+// Antigravity goes last. A section is drawn only when it has rows, and the
+// lists hold Antigravity rows only while its mode is on, so the extra key
+// changes nothing for a profile that never turns it on.
 export const DEFAULT_STANDALONE_SIDEBAR_GROUP_ORDER: readonly StandaloneSidebarGroupKey[] =
-  ["upstream", "codex", "claude_code"];
+  ["upstream", "codex", "claude_code", "antigravity"];
 
 export function getStandaloneSidebarGroupLabel(
   key: StandaloneSidebarGroupKey,
 ): string {
-  if (key === "codex") return "Codex";
-  if (key === "claude_code") return "Claude";
-  return "Agent";
+  if (key === "upstream") return "Agent";
+  return getRuntimeConversationSystemDescriptor(key).shortLabel;
 }
 
 /** The saved order; unknown names are dropped and missing ones go last. */

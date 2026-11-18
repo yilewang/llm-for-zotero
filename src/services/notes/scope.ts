@@ -3,6 +3,10 @@ declare const Zotero: any;
 import { getNoteConversation } from "./conversationItem";
 
 import type { ActiveNoteSession, ConversationSystem } from "../../shared/types";
+import {
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 
 export type NoteEditingScope = ActiveNoteSession;
 
@@ -136,12 +140,15 @@ export function resolvePreferredNoteFocusSystem(params: {
   preferredSystem?: ConversationSystem | null;
   claudeAvailable: boolean;
   codexAvailable: boolean;
+  antigravityAvailable?: boolean;
 }): ConversationSystem {
   const preferred = params.preferredSystem || "upstream";
-  if (preferred === "claude_code" && !params.claudeAvailable) {
-    return "upstream";
-  }
-  if (preferred === "codex" && !params.codexAvailable) {
+  const available: Record<RuntimeConversationSystem, boolean> = {
+    claude_code: params.claudeAvailable,
+    codex: params.codexAvailable,
+    antigravity: Boolean(params.antigravityAvailable),
+  };
+  if (isRuntimeConversationSystem(preferred) && !available[preferred]) {
     return "upstream";
   }
   return preferred;
@@ -151,11 +158,17 @@ export function resolveNoteFocusSystemSwitch(params: {
   nextSystem: ConversationSystem;
   claudeAvailable?: boolean;
   codexAvailable: boolean;
+  antigravityAvailable?: boolean;
 }): ConversationSystem | null {
-  if (params.nextSystem === "claude_code" && !params.claudeAvailable) {
-    return null;
-  }
-  if (params.nextSystem === "codex" && !params.codexAvailable) {
+  const available: Record<RuntimeConversationSystem, boolean> = {
+    claude_code: Boolean(params.claudeAvailable),
+    codex: params.codexAvailable,
+    antigravity: Boolean(params.antigravityAvailable),
+  };
+  if (
+    isRuntimeConversationSystem(params.nextSystem) &&
+    !available[params.nextSystem]
+  ) {
     return null;
   }
   return params.nextSystem;

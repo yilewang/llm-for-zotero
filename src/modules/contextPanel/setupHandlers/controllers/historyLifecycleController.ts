@@ -3,6 +3,11 @@ import { createElement } from "../../../../utils/domHelpers";
 import { t } from "../../../../utils/i18n";
 import { createHistoryActivityIndicator } from "../../historyActivity";
 import type { ConversationSystem } from "../../../../shared/types";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem as isRuntimeSystem,
+  type RuntimeConversationSystem,
+} from "../../../../core/conversations/conversationSystems";
 import { isEphemeralConversationKey } from "../../../../shared/conversationKeySpace";
 import { isConversationKeyForKind } from "../../../../shared/conversationKeySpace";
 import {
@@ -77,12 +82,20 @@ import { touchClaudeConversation } from "../../../../claudeCode/runtime";
 import {
   getConversationSystemPref,
   setConversationSystemPref,
-  setLastUsedClaudeGlobalConversationKey,
-} from "../../../../claudeCode/prefs";
+} from "../../../../shared/conversationSystemPrefs";
+import { setLastUsedClaudeGlobalConversationKey } from "../../../../claudeCode/prefs";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
 } from "../../../../claudeCode/portal";
+import {
+  loadAllAntigravityConversationHistory,
+  toAntigravityConversationHistoryEntry,
+} from "../../../../antigravity/historyLoader";
+import {
+  createAntigravityGlobalPortalItem,
+  createAntigravityPaperPortalItem,
+} from "../../../../antigravity/portal";
 import {
   createCodexGlobalPortalItem,
   createCodexPaperPortalItem,
@@ -210,6 +223,22 @@ export function shouldFallbackToLoadedConversationHistorySearch(
 }
 
 type StatusLevel = "ready" | "warning" | "error";
+
+function loadAllRuntimeConversationHistory(
+  system: RuntimeConversationSystem,
+  params: { libraryID: number; limit: number | null },
+) {
+  switch (system) {
+    case "claude_code":
+      return loadAllClaudeConversationHistory(params);
+    case "codex":
+      return loadAllCodexConversationHistory(params);
+    case "antigravity":
+      return loadAllAntigravityConversationHistory(params);
+    default:
+      return assertNeverConversationSystem(system);
+  }
+}
 
 const pendingDeletionSubscriptionsByBody = new WeakMap<Element, () => void>();
 const catalogChangeSubscriptionsByBody = new WeakMap<Element, () => void>();
@@ -889,17 +918,11 @@ export function createHistoryLifecycleController(
       system: ConversationSystem,
     ): Promise<ConversationHistoryEntry[]> => {
       const entries: ConversationHistoryEntry[] = [];
-      if (system === "claude_code" || system === "codex") {
-        const summaries =
-          system === "claude_code"
-            ? await loadAllClaudeConversationHistory({
-                libraryID: normalizedLibraryID,
-                limit: searchLimit,
-              })
-            : await loadAllCodexConversationHistory({
-                libraryID: normalizedLibraryID,
-                limit: searchLimit,
-              });
+      if (isRuntimeSystem(system)) {
+        const summaries = await loadAllRuntimeConversationHistory(system, {
+          libraryID: normalizedLibraryID,
+          limit: searchLimit,
+        });
         for (const summary of summaries) {
           const entry = createHistorySearchEntry({
             system,
@@ -1809,21 +1832,30 @@ export function createHistoryLifecycleController(
       : 0;
     const sessionVersion = Number(row.sessionVersion);
     let shape: { title: string; isDraft: boolean };
-    if (row.system === "codex") {
-      shape = toCodexConversationHistoryEntry(row);
-    } else if (row.system === "claude_code") {
-      shape = toClaudeConversationHistoryEntry(row);
-    } else {
-      // An upstream paper chat without a session version cannot be opened.
-      if (
-        kind === "paper" &&
-        (!Number.isFinite(sessionVersion) || sessionVersion <= 0)
-      ) {
-        return null;
-      }
-      shape = toUpstreamHistoryRowShape(row);
+    switch (row.system) {
+      case "codex":
+        shape = toCodexConversationHistoryEntry(row);
+        break;
+      case "claude_code":
+        shape = toClaudeConversationHistoryEntry(row);
+        break;
+      case "antigravity":
+        shape = toAntigravityConversationHistoryEntry(row);
+        break;
+      case "upstream":
+        // An upstream paper chat without a session version cannot be opened.
+        if (
+          kind === "paper" &&
+          (!Number.isFinite(sessionVersion) || sessionVersion <= 0)
+        ) {
+          return null;
+        }
+        shape = toUpstreamHistoryRowShape(row);
+        break;
+      default:
+        return assertNeverConversationSystem(row.system);
     }
-    const isRuntime = row.system === "codex" || row.system === "claude_code";
+    const isRuntime = isRuntimeSystem(row.system);
     return {
       system: row.system,
       kind,
@@ -2160,12 +2192,37 @@ export function createHistoryLifecycleController(
         setStatus(status, t("Could not load this conversation"), "error");
       return false;
     }
-    const nextItem =
-      system === "claude_code"
-        ? createClaudeGlobalPortalItem(libraryID, normalizedConversationKey)
-        : system === "codex"
-          ? createCodexGlobalPortalItem(libraryID, normalizedConversationKey)
-          : createGlobalPortalItem(libraryID, normalizedConversationKey);
+    let nextItem: ReturnType<
+      | typeof createClaudeGlobalPortalItem
+      | typeof createCodexGlobalPortalItem
+      | typeof createAntigravityGlobalPortalItem
+      | typeof createGlobalPortalItem
+    >;
+    switch (system) {
+      case "claude_code":
+        nextItem = createClaudeGlobalPortalItem(
+          libraryID,
+          normalizedConversationKey,
+        );
+        break;
+      case "codex":
+        nextItem = createCodexGlobalPortalItem(
+          libraryID,
+          normalizedConversationKey,
+        );
+        break;
+      case "antigravity":
+        nextItem = createAntigravityGlobalPortalItem(
+          libraryID,
+          normalizedConversationKey,
+        );
+        break;
+      case "upstream":
+        nextItem = createGlobalPortalItem(libraryID, normalizedConversationKey);
+        break;
+      default:
+        return assertNeverConversationSystem(system);
+    }
     if (
       !canCommitPanelConversation(
         body,
@@ -2341,60 +2398,87 @@ export function createHistoryLifecycleController(
     // legacy key-only compatibility tombstone; it never cancels a pending
     // deletion intent.
     forgetRecentlyDeletedConversation(resolvedConversationKey);
-    if (system === "claude_code") {
-      const nextItem = createClaudePaperPortalItem(
-        paperItem,
-        resolvedConversationKey,
-      ) as any;
-      if (
-        !canCommitPanelConversation(
-          body,
-          nextItem,
-          "switch-paper-conversation-commit",
-          hostLease,
-        ) ||
-        !setCurrentItem(nextItem)
-      ) {
-        return false;
+    switch (system) {
+      case "claude_code": {
+        const nextItem = createClaudePaperPortalItem(
+          paperItem,
+          resolvedConversationKey,
+        ) as any;
+        if (
+          !canCommitPanelConversation(
+            body,
+            nextItem,
+            "switch-paper-conversation-commit",
+            hostLease,
+          ) ||
+          !setCurrentItem(nextItem)
+        ) {
+          return false;
+        }
+        break;
       }
-    } else if (system === "codex") {
-      const nextItem = createCodexPaperPortalItem(
-        paperItem,
-        resolvedConversationKey,
-      ) as any;
-      if (
-        !canCommitPanelConversation(
-          body,
-          nextItem,
-          "switch-paper-conversation-commit",
-          hostLease,
-        ) ||
-        !setCurrentItem(nextItem)
-      ) {
-        return false;
+      case "codex": {
+        const nextItem = createCodexPaperPortalItem(
+          paperItem,
+          resolvedConversationKey,
+        ) as any;
+        if (
+          !canCommitPanelConversation(
+            body,
+            nextItem,
+            "switch-paper-conversation-commit",
+            hostLease,
+          ) ||
+          !setCurrentItem(nextItem)
+        ) {
+          return false;
+        }
+        break;
       }
-    } else {
-      const nextItem =
-        resolvedConversationKey === paperItemID && !paperItem.isNote?.()
-          ? paperItem
-          : createPaperPortalItem(
-              paperItem,
-              resolvedConversationKey,
-              targetSummary.sessionVersion || 1,
-            );
-      if (
-        !canCommitPanelConversation(
-          body,
-          nextItem,
-          "switch-paper-conversation-commit",
-          hostLease,
-        ) ||
-        !setCurrentItem(nextItem as any)
-      ) {
-        return false;
+      case "antigravity": {
+        const nextItem = createAntigravityPaperPortalItem(
+          paperItem,
+          resolvedConversationKey,
+        ) as any;
+        if (
+          !canCommitPanelConversation(
+            body,
+            nextItem,
+            "switch-paper-conversation-commit",
+            hostLease,
+          ) ||
+          !setCurrentItem(nextItem)
+        ) {
+          return false;
+        }
+        break;
       }
+      case "upstream": {
+        const nextItem =
+          resolvedConversationKey === paperItemID && !paperItem.isNote?.()
+            ? paperItem
+            : createPaperPortalItem(
+                paperItem,
+                resolvedConversationKey,
+                targetSummary.sessionVersion || 1,
+              );
+        if (
+          !canCommitPanelConversation(
+            body,
+            nextItem,
+            "switch-paper-conversation-commit",
+            hostLease,
+          ) ||
+          !setCurrentItem(nextItem as any)
+        ) {
+          return false;
+        }
+        break;
+      }
+      default:
+        return assertNeverConversationSystem(system);
     }
-    if (system === "claude_code" || system === "codex") {
+    if (isRuntimeSystem(system)) {
       remember(
         {
           system,
@@ -3558,13 +3642,8 @@ export function createHistoryLifecycleController(
           kind: "global",
           surface: selectionSurface(),
         });
-      if (system === "claude_code") {
-        return (
-          currentGlobalConversationKeyForSystem("claude_code") || activeKey()
-        );
-      }
-      if (system === "codex") {
-        return currentGlobalConversationKeyForSystem("codex") || activeKey();
+      if (isRuntimeSystem(system)) {
+        return currentGlobalConversationKeyForSystem(system) || activeKey();
       }
       return item &&
         isGlobalMode() &&

@@ -106,7 +106,7 @@ describe("workflow: Codex model catalog refresh", function () {
           fixture.parentItemId,
         );
         if (standalone.conversationSystem !== "codex")
-          await api.clickStandaloneSystemToggle("codex");
+          await api.toggleStandaloneRuntime("codex");
         const windows = (Services as any).wm.getEnumerator(null);
         let doc: Document | undefined;
         while (windows.hasMoreElements()) {

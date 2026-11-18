@@ -53,6 +53,7 @@ const RUNTIME_PROVIDER_LABEL: Record<ReaderRuntimeKey, string> = {
   agent: "",
   codex: "Codex",
   claude: "Claude Code",
+  antigravity: "Antigravity",
 };
 
 /**

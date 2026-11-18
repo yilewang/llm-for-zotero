@@ -163,8 +163,7 @@ describe("workflow: reading a full Codex panel during native streaming", functio
     const panel = await api.renderPanelForItem(fixture.parentItemId);
     panelId = panel.panelId;
     assert.equal(
-      (await api.clickPanelSystemToggle(panel.panelId, "codex"))
-        .conversationSystem,
+      (await api.togglePanelRuntime(panel.panelId, "codex")).conversationSystem,
       "codex",
     );
     const doc = Zotero.getMainWindow().document;

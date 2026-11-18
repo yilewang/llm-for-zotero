@@ -50,6 +50,17 @@ import type { AgentSkill } from "../../agent/skills/skillLoader";
 import type { RuntimeModelEntry } from "../../utils/modelProviders";
 import type { ConversationSystem } from "../../shared/types";
 import {
+  isConversationSystem,
+  isRuntimeConversationSystem as isRuntimeSystem,
+  mapRuntimeConversationSystems,
+  RUNTIME_CONVERSATION_SYSTEMS,
+  usesExternalTurnHost,
+} from "../../core/conversations/conversationSystems";
+import {
+  isRuntimeConversationSystemEnabled,
+  isRuntimeListed,
+} from "../../shared/conversationSystemPrefs";
+import {
   getModelEntryById,
   getModelProviderGroups,
 } from "../../utils/modelProviders";
@@ -444,13 +455,7 @@ import {
 } from "./portalScope";
 import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
-import {
-  RUNTIME_CONVERSATION_SYSTEMS,
-  resolveRuntimeSystemToggleTarget,
-  syncRuntimeSystemControls,
-  type RuntimeConversationSystem,
-  type RuntimeSystemControls,
-} from "./runtimeSystemControls";
+import type { RuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import {
   resolveSidebarChatModeToggleState,
   type SidebarChatModeTab,
@@ -590,10 +595,7 @@ import { resolveUnifiedHistorySystems } from "./unifiedHistorySource";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
 import { attachHeaderMoreMenuController } from "./setupHandlers/controllers/headerMoreMenuController";
-import {
-  updateHeaderFit,
-  updateHeaderSpacing,
-} from "./setupHandlers/controllers/headerSpacing";
+import { updateHeaderFit } from "./setupHandlers/controllers/headerSpacing";
 import { attachComposeCaptureController } from "./setupHandlers/controllers/composeCaptureController";
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
@@ -657,6 +659,9 @@ import {
   resolveCodexAppServerReasoningSelection,
   type CodexAppServerModelCatalogEntry,
 } from "../../codexAppServer/modelCatalog";
+import { loadAntigravityPickerModelCatalog } from "../../antigravity/runtime";
+import type { AntigravityModelCatalog } from "../../antigravity/modelCatalog";
+import { DEFAULT_TEMPERATURE } from "../../utils/llmDefaults";
 import {
   activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
@@ -668,6 +673,8 @@ import {
 } from "../../claudeCode/runtimeRetention";
 import { isClaudePaperPortalItem } from "../../claudeCode/portal";
 import { touchClaudeConversationTitle } from "../../claudeCode/store";
+import { antigravityConversationStore } from "../../antigravity/store";
+import { openPluginPreferencesTab } from "../../utils/preferencesStartTab";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -683,6 +690,21 @@ import {
   createCodexDirectModelReasoningController,
   type CodexDirectModelReasoningController,
 } from "./setupHandlers/controllers/codexDirectModelReasoningController";
+
+/** Where each runtime's conversation title is stamped on its first send. */
+const RUNTIME_CONVERSATION_TITLE_TOUCHERS: Record<
+  RuntimeConversationSystem,
+  (conversationKey: number, title: string, generation?: number) => Promise<void>
+> = {
+  claude_code: touchClaudeConversationTitle,
+  codex: touchCodexConversationTitle,
+  antigravity: (conversationKey, title, generation) =>
+    antigravityConversationStore.touchConversationTitle(
+      conversationKey,
+      title,
+      generation,
+    ),
+};
 
 type ActionMenuTrigger = "/" | "$";
 type ActiveActionToken = PaperSearchSlashToken & {
@@ -764,14 +786,13 @@ export function setupHandlers(
     return;
   }
   disposeSetupHandlers(body);
-  const preferredConversationSystem =
-    existingPanelRoot?.dataset?.conversationSystem === "claude_code"
-      ? "claude_code"
-      : existingPanelRoot?.dataset?.conversationSystem === "codex"
-        ? "codex"
-        : existingPanelRoot?.dataset?.conversationSystem === "upstream"
-          ? "upstream"
-          : resolveConversationSystemForItem(initialItem);
+  const existingConversationSystem =
+    existingPanelRoot?.dataset?.conversationSystem;
+  const preferredConversationSystem = isConversationSystem(
+    existingConversationSystem,
+  )
+    ? existingConversationSystem
+    : resolveConversationSystemForItem(initialItem);
   const preferredConversationMode =
     existingPanelRoot?.dataset?.conversationKind === "global"
       ? "global"
@@ -879,9 +900,6 @@ export function setupHandlers(
     historyUndoText,
     historyUndoBtn,
     topToast,
-    runtimeSystemControls,
-    codexSystemToggleBtn,
-    claudeSystemToggleBtn,
     selectTextBtn,
     screenshotBtn,
     uploadBtn,
@@ -1114,15 +1132,15 @@ export function setupHandlers(
   };
   const isGlobalMode = () => resolveDisplayConversationKind(item) === "global";
   const isPaperMode = () => resolveDisplayConversationKind(item) === "paper";
-  const initialConversationSystem: ConversationSystem =
-    panelRoot.dataset.conversationSystem === "claude_code"
-      ? "claude_code"
-      : panelRoot.dataset.conversationSystem === "codex"
-        ? "codex"
-        : resolvePreferredConversationSystem({
-            item,
-            surface: selectionSurface(),
-          });
+  const mountedConversationSystem = panelRoot.dataset.conversationSystem;
+  const initialConversationSystem: ConversationSystem = isRuntimeSystem(
+    mountedConversationSystem,
+  )
+    ? mountedConversationSystem
+    : resolvePreferredConversationSystem({
+        item,
+        surface: selectionSurface(),
+      });
   let currentConversationSystem: ConversationSystem =
     resolvePreferredConversationSystem({
       item,
@@ -1134,8 +1152,15 @@ export function setupHandlers(
   const isClaudeConversationSystem = () =>
     getConversationSystem() === "claude_code";
   const isCodexConversationSystem = () => getConversationSystem() === "codex";
+  const isAntigravityConversationSystem = () =>
+    getConversationSystem() === "antigravity";
   const isRuntimeConversationSystem = () =>
-    isClaudeConversationSystem() || isCodexConversationSystem();
+    isRuntimeSystem(getConversationSystem());
+  /** The panel's runtime, or null for the plugin's own systems. */
+  const getRuntimeConversationSystem = (): RuntimeConversationSystem | null => {
+    const system = getConversationSystem();
+    return isRuntimeSystem(system) ? system : null;
+  };
   const shouldRenderDynamicSlashMenuForCurrentConversation = () =>
     shouldRenderDynamicSlashMenu({
       itemPresent: Boolean(item),
@@ -1154,10 +1179,8 @@ export function setupHandlers(
   syncQueuedFollowUpRegistration();
   // A side chat is never saved, so it cannot use a runtime that keeps
   // provider-side state (Claude Code, Codex): their switches stay hidden.
-  const isClaudeModeAvailable = () =>
-    !isSidePanel && getClaudeCodeModeEnabled();
-  const isCodexModeAvailable = () =>
-    !isSidePanel && isCodexAppServerModeEnabled();
+  const isRuntimeModeAvailable = (system: RuntimeConversationSystem) =>
+    !isSidePanel && isRuntimeConversationSystemEnabled(system);
   let claudeModelCatalogStatus: "idle" | "loading" | "ready" | "error" = "idle";
   let claudeModelCatalogError = "";
   let claudeModelCatalogModels: ClaudeModelCatalogEntry[] = [];
@@ -1174,6 +1197,12 @@ export function setupHandlers(
   let codexModelCatalogInFlight: Promise<void> | null = null;
   let codexModelCatalogPath = "";
   let codexModelCatalogRequestId = 0;
+  let antigravityModelCatalogStatus: "idle" | "loading" | "ready" | "error" =
+    "idle";
+  let antigravityModelCatalogError = "";
+  let antigravityModelCatalog: AntigravityModelCatalog | null = null;
+  let antigravityModelCatalogInFlight: Promise<void> | null = null;
+  let antigravityModelCatalogRequestId = 0;
   const resolveClaudeModelCatalogContext = ():
     | ClaudeModelCatalogRequestContext
     | undefined => {
@@ -1334,7 +1363,7 @@ export function setupHandlers(
     }
     return reconciledMode;
   };
-  const refreshOpenCodexModelMenu = () => {
+  const refreshOpenRuntimeModelMenus = () => {
     updateModelButton();
     updateReasoningButton();
     if (reasoningMenu && reasoningBtn && isFloatingMenuOpen(reasoningMenu)) {
@@ -1369,7 +1398,7 @@ export function setupHandlers(
     codexModelCatalogStatus = "loading";
     codexModelCatalogError = "";
     codexModelCatalogPath = codexPath;
-    refreshOpenCodexModelMenu();
+    refreshOpenRuntimeModelMenus();
     codexModelCatalogInFlight = loadCodexAppServerModelCatalog({ codexPath })
       .then((catalog) => {
         if (!isCurrentRequest()) return;
@@ -1388,7 +1417,7 @@ export function setupHandlers(
       .finally(() => {
         if (requestId !== codexModelCatalogRequestId) return;
         codexModelCatalogInFlight = null;
-        if (!setupHandlersCleaned) refreshOpenCodexModelMenu();
+        if (!setupHandlersCleaned) refreshOpenRuntimeModelMenus();
       });
     return codexModelCatalogInFlight;
   };
@@ -1407,6 +1436,152 @@ export function setupHandlers(
       entries.find((entry) => entry.model.toLowerCase() === selectedModel) ||
       entries[0]!
     );
+  };
+  /** The Default entry: agy's own model, stored as "". */
+  const ANTIGRAVITY_DEFAULT_ENTRY_ID = "antigravity_runtime::";
+  const createAntigravityRuntimeModelEntry = (params: {
+    entryId: string;
+    model: string;
+    displayModelLabel: string;
+    providerOrder: number;
+  }): RuntimeModelEntry => ({
+    entryId: params.entryId,
+    groupId: "antigravity_runtime",
+    model: params.model,
+    apiBase: "",
+    apiKey: "",
+    authMode: "api_key",
+    providerProtocol: "openai_chat_compat",
+    providerLabel: "Antigravity",
+    providerOrder: params.providerOrder,
+    displayModelLabel: params.displayModelLabel,
+    advanced: {
+      temperature: DEFAULT_TEMPERATURE,
+      outputTokenLimit: { mode: "auto" },
+    },
+  });
+  /**
+   * Default first, then the catalog's models. A saved model the catalog
+   * lacks (or a catalog not loaded yet) still shows, as Codex's does.
+   */
+  const getAntigravityRuntimeModelEntries = (): RuntimeModelEntry[] => {
+    const selectedModel = panelChoices.getAntigravityRuntimeModel();
+    const models = antigravityModelCatalog?.models || [];
+    const entries = [
+      createAntigravityRuntimeModelEntry({
+        entryId: ANTIGRAVITY_DEFAULT_ENTRY_ID,
+        model: antigravityModelCatalog?.defaultModel || "",
+        displayModelLabel: t("Default"),
+        providerOrder: -1,
+      }),
+    ];
+    if (selectedModel && !models.some((model) => model.id === selectedModel)) {
+      entries.push(
+        createAntigravityRuntimeModelEntry({
+          entryId: `antigravity_runtime::${selectedModel}`,
+          model: selectedModel,
+          displayModelLabel: selectedModel,
+          providerOrder: 0,
+        }),
+      );
+    }
+    for (const [index, model] of models.entries()) {
+      entries.push(
+        createAntigravityRuntimeModelEntry({
+          entryId: `antigravity_runtime::${model.id}`,
+          model: model.id,
+          displayModelLabel: model.name || model.id,
+          providerOrder: index + 1,
+        }),
+      );
+    }
+    return entries;
+  };
+  const getSelectedAntigravityRuntimeEntry = (): RuntimeModelEntry => {
+    const selectedModel = panelChoices.getAntigravityRuntimeModel();
+    const entries = getAntigravityRuntimeModelEntries();
+    return (
+      (selectedModel &&
+        entries.find(
+          (entry) => entry.entryId === `antigravity_runtime::${selectedModel}`,
+        )) ||
+      entries[0]!
+    );
+  };
+  /** Default, then the levels of the model agy will run. */
+  const getAntigravityThoughtLevelChoices = (): CodexReasoningChoice[] => {
+    const modelId =
+      panelChoices.getAntigravityRuntimeModel() ||
+      antigravityModelCatalog?.defaultModel ||
+      "";
+    const model = antigravityModelCatalog?.models.find(
+      (entry) => entry.id === modelId,
+    );
+    return [
+      { value: "", label: t("Default") },
+      ...(model?.thoughtLevels || []).map((level) => ({
+        value: level.value,
+        label: level.name,
+      })),
+    ];
+  };
+  /**
+   * Drops a stored level the selected model does not have. The last catalog
+   * still decides while a refresh is in flight.
+   */
+  const reconcileSelectedAntigravityThoughtLevel = () => {
+    const level = panelChoices.getAntigravityThoughtLevel();
+    if (!antigravityModelCatalog || !level) return level;
+    if (
+      getAntigravityThoughtLevelChoices().some(
+        (choice) => choice.value === level,
+      )
+    ) {
+      return level;
+    }
+    panelChoices.setAntigravityThoughtLevel("");
+    return "";
+  };
+  /**
+   * The catalog agy reported, read lazily. A load reads the catalog the
+   * runtime remembers from its turns, or starts agy once when it has none;
+   * a refresh (each menu open) re-reads it and never starts agy again.
+   */
+  const ensureAntigravityModelCatalogLoaded = (
+    refresh = false,
+  ): Promise<void> => {
+    if (!isAntigravityConversationSystem()) return Promise.resolve();
+    if (!refresh && antigravityModelCatalogStatus === "ready") {
+      return Promise.resolve();
+    }
+    if (antigravityModelCatalogInFlight) return antigravityModelCatalogInFlight;
+    const requestId = ++antigravityModelCatalogRequestId;
+    const isCurrentRequest = () =>
+      !setupHandlersCleaned && requestId === antigravityModelCatalogRequestId;
+    antigravityModelCatalogStatus = "loading";
+    antigravityModelCatalogError = "";
+    refreshOpenRuntimeModelMenus();
+    antigravityModelCatalogInFlight = loadAntigravityPickerModelCatalog()
+      .then((catalog) => {
+        if (!isCurrentRequest()) return;
+        antigravityModelCatalog = catalog;
+        antigravityModelCatalogStatus = "ready";
+        antigravityModelCatalogError = "";
+        reconcileSelectedAntigravityThoughtLevel();
+      })
+      .catch((error: unknown) => {
+        if (!isCurrentRequest()) return;
+        antigravityModelCatalogStatus = "error";
+        antigravityModelCatalogError =
+          error instanceof Error ? error.message : String(error);
+        appLogger.warn("Antigravity: failed to load model catalog", error);
+      })
+      .finally(() => {
+        if (requestId !== antigravityModelCatalogRequestId) return;
+        antigravityModelCatalogInFlight = null;
+        if (!setupHandlersCleaned) refreshOpenRuntimeModelMenus();
+      });
+    return antigravityModelCatalogInFlight;
   };
   const getCurrentLibraryID = (): number => {
     const fromItem =
@@ -1432,6 +1607,8 @@ export function setupHandlers(
     // Plain chat lists the scope only; Agent mode records reads.
     syncTaskProgressPanel(body);
   };
+  /** True while this panel switches runtime; the badge is disabled meanwhile. */
+  let runtimeSystemSwitchInFlight = false;
   const closeRuntimeMenu = () => {
     if (!runtimeMenu) return;
     setFloatingMenuOpen(runtimeMenu, FOOTER_PERMISSION_MENU_OPEN_CLASS, false);
@@ -1448,11 +1625,13 @@ export function setupHandlers(
     return resolveRuntimeBadgeState({
       system: getConversationSystem(),
       agentEnabled: getAgentModeEnabled(),
-      codexEnabled: isCodexModeAvailable(),
-      claudeEnabled: isClaudeModeAvailable(),
+      runtimeEnabled: mapRuntimeConversationSystems(isRuntimeModeAvailable),
       isWebChat: webChatActive,
       isSideChat: isSidePanel,
       isTornWindow: isTornSurface(selectionSurface()),
+      allRuntimesAdded: RUNTIME_CONVERSATION_SYSTEMS.every((system) =>
+        isRuntimeListed(system),
+      ),
     });
   };
   const updateRuntimeModeButtonState = () => {
@@ -1470,13 +1649,22 @@ export function setupHandlers(
       ".llm-agent-toggle-label",
     ) as HTMLSpanElement | null;
     if (label) label.textContent = state.label;
+    const icon = runtimeModeBtn.querySelector(
+      ".llm-runtime-icon",
+    ) as HTMLSpanElement | null;
+    if (icon) icon.dataset.system = getConversationSystem();
     runtimeModeBtn.dataset.mode = mode;
     runtimeModeBtn.dataset.system = getConversationSystem();
+    // The runtimes the menu offers, and whether a switch is under way.
+    runtimeModeBtn.dataset.runtimeSystems = state.items
+      .map((entry) => entry.system)
+      .join(",");
+    runtimeModeBtn.dataset.switching = String(runtimeSystemSwitchInFlight);
     runtimeModeBtn.classList.toggle(
       "llm-runtime-mode-static",
       !state.clickable,
     );
-    runtimeModeBtn.disabled = !state.clickable;
+    runtimeModeBtn.disabled = !state.clickable || runtimeSystemSwitchInFlight;
     if (state.clickable) {
       runtimeModeBtn.removeAttribute("aria-disabled");
       runtimeModeBtn.setAttribute("aria-haspopup", "menu");
@@ -1505,33 +1693,10 @@ export function setupHandlers(
     selectedRuntimeModeCache.set(getConversationKey(item), mode);
     updateRuntimeModeButton();
   };
-  const panelRuntimeSystemControls: RuntimeSystemControls = {
-    group: runtimeSystemControls,
-    buttons: {
-      codex: codexSystemToggleBtn,
-      claude_code: claudeSystemToggleBtn,
-    },
-  };
-  let runtimeSystemSwitchInFlight = false;
-  const runtimeDivider = body.querySelector(
-    "#llm-header-runtime-controls .llm-header-runtime-divider",
-  ) as HTMLElement | null;
-  const updateRuntimeSystemToggles = () => {
-    const state = syncRuntimeSystemControls(panelRuntimeSystemControls, {
-      activeSystem: getConversationSystem(),
-      codexEnabled: isCodexModeAvailable(),
-      claudeEnabled: isClaudeModeAvailable(),
-      busy: runtimeSystemSwitchInFlight,
-    });
-    // The divider before the runtime systems goes when they do. Their
-    // wrapper stays: in the Stacked layout it also holds the mode chip.
-    if (runtimeDivider) {
-      runtimeDivider.style.display = state.groupVisible ? "" : "none";
-    }
-  };
+  const updateRuntimeSwitchControls = () => updateRuntimeModeButton();
   let claudeWarmupInFlight: Promise<void> | null = null;
   const warmClaudeModeCaches = () => {
-    if (!isClaudeModeAvailable()) return;
+    if (!isRuntimeModeAvailable("claude_code")) return;
     if (claudeWarmupInFlight) return;
     claudeWarmupInFlight = initAgentSubsystem()
       .then((coreRuntime) => {
@@ -1655,8 +1820,9 @@ export function setupHandlers(
       if (options?.target) return false;
       const resolvedNextSystem = resolveNoteFocusSystemSwitch({
         nextSystem,
-        codexAvailable: isCodexModeAvailable(),
-        claudeAvailable: isClaudeModeAvailable(),
+        codexAvailable: isRuntimeModeAvailable("codex"),
+        claudeAvailable: isRuntimeModeAvailable("claude_code"),
+        antigravityAvailable: isRuntimeModeAvailable("antigravity"),
       });
       if (!resolvedNextSystem) return false;
       if (resolvedNextSystem === getConversationSystem()) return true;
@@ -1688,7 +1854,7 @@ export function setupHandlers(
         warmClaudeModeCaches();
       }
       updateRuntimeModeButton();
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       if (options?.forceFresh === true) {
         await createAndSwitchPaperConversation(true);
         return true;
@@ -1717,7 +1883,7 @@ export function setupHandlers(
     // by `syncConversationIdentity` instead, together with the new key, once
     // the panel has committed the conversation of the system being entered.
     syncQueuedFollowUpRegistration();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     if (nextSystem === "claude_code") {
       warmClaudeModeCaches();
     }
@@ -1728,7 +1894,7 @@ export function setupHandlers(
         panelChoices.setConversationSystem(previousSystem);
         currentConversationSystem = previousSystem;
         syncQueuedFollowUpRegistration();
-        updateRuntimeSystemToggles();
+        updateRuntimeSwitchControls();
         updateRuntimeModeButton();
       };
       if (target.kind === "global") {
@@ -1796,7 +1962,7 @@ export function setupHandlers(
       resetComposePreviewUI();
       updateModelButton();
       updateReasoningButton();
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       void refreshGlobalHistoryHeader();
       return false;
     }
@@ -1806,35 +1972,27 @@ export function setupHandlers(
         return true;
       }
       const surface = selectionSurface();
-      const nextConversationKey =
-        nextSystem === "claude_code"
-          ? recall({
-              system: "claude_code",
+      const nextConversationKey = isRuntimeSystem(nextSystem)
+        ? recall({ system: nextSystem, libraryID, kind: "global", surface })
+        : (() => {
+            // The library lock is the sidebar's; the window has none.
+            const lockedKey =
+              surface !== "embedded"
+                ? null
+                : getLockedGlobalConversationKey(libraryID);
+            if (lockedKey !== null) return lockedKey;
+            // Upstream reads the active map only here, not the pref.
+            const activeKey = recallActive({
+              system: "upstream",
               libraryID,
               kind: "global",
               surface,
-            })
-          : nextSystem === "codex"
-            ? recall({ system: "codex", libraryID, kind: "global", surface })
-            : (() => {
-                // The library lock is the sidebar's; the window has none.
-                const lockedKey =
-                  surface !== "embedded"
-                    ? null
-                    : getLockedGlobalConversationKey(libraryID);
-                if (lockedKey !== null) return lockedKey;
-                // Upstream reads the active map only here, not the pref.
-                const activeKey = recallActive({
-                  system: "upstream",
-                  libraryID,
-                  kind: "global",
-                  surface,
-                });
-                if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
-                return activeKey === GLOBAL_CONVERSATION_KEY_BASE
-                  ? buildDefaultUpstreamGlobalConversationKey(libraryID)
-                  : Math.floor(activeKey);
-              })();
+            });
+            if (!isUpstreamGlobalConversationKey(activeKey)) return 0;
+            return activeKey === GLOBAL_CONVERSATION_KEY_BASE
+              ? buildDefaultUpstreamGlobalConversationKey(libraryID)
+              : Math.floor(activeKey);
+          })();
       if (nextConversationKey > 0) {
         await switchGlobalConversation(nextConversationKey);
       } else {
@@ -1909,7 +2067,7 @@ export function setupHandlers(
     resetComposePreviewUI();
     updateModelButton();
     updateReasoningButton();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     void refreshGlobalHistoryHeader();
     return true;
   };
@@ -2098,13 +2256,15 @@ export function setupHandlers(
       // A side chat's ephemeral conversation is never remembered.
       !isEphemeralConversationKey(Number(conversationKey))
     ) {
-      // Each runtime writes a different set here: Claude Code only the mode;
-      // Codex and upstream also the library chat (map and pref) and the
-      // paper chat (map only). All of it goes to this panel's own surface:
-      // the standalone window's writes stay in its own slots.
+      // Each runtime writes a different set here: a runtime on the external
+      // turn host (Claude Code, Antigravity) only the mode; Codex and
+      // upstream also the library chat (map and pref) and the paper chat
+      // (map only). All of it goes to this panel's own surface: the
+      // standalone window's writes stay in its own slots.
       const surface = selectionSurface();
-      if (isClaudeConversationSystem()) {
-        rememberMode("claude_code", libraryID, mode, { surface });
+      const runtimeSystem = getRuntimeConversationSystem();
+      if (runtimeSystem && usesExternalTurnHost(runtimeSystem)) {
+        rememberMode(runtimeSystem, libraryID, mode, { surface });
       } else if (isCodexConversationSystem()) {
         rememberMode("codex", libraryID, mode, { surface });
         if (mode === "global") {
@@ -2180,7 +2340,7 @@ export function setupHandlers(
           : t("Ask about this paper... Type / for actions, @ to add papers");
     }
     updateRuntimeModeButton();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     if (
       item &&
       !noteSession &&
@@ -2309,7 +2469,7 @@ export function setupHandlers(
           return;
         }
       }
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
     };
     const onCodexModePrefChange = () => {
       if (isPanelUnavailable()) {
@@ -2323,7 +2483,7 @@ export function setupHandlers(
           return;
         }
       }
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       updateRuntimeModeButton();
     };
     try {
@@ -2717,8 +2877,6 @@ export function setupHandlers(
           ) === "stacked"
         ) {
           updateHeaderFit(headerRow);
-        } else {
-          updateHeaderSpacing(headerRow);
         }
         if (panelWidth !== lastUserContextAlignmentPanelWidth) {
           syncUserContextAlignmentWidths(body);
@@ -3437,8 +3595,7 @@ export function setupHandlers(
         selectedProfile?.apiBase,
         inputMode,
       ),
-      isClaudeCode: isClaudeConversationSystem(),
-      isCodex: isCodexConversationSystem(),
+      runtimeSystem: getRuntimeConversationSystem(),
     });
   };
 
@@ -5621,8 +5778,7 @@ export function setupHandlers(
     getHistorySystems: () =>
       resolveUnifiedHistorySystems({
         activeSystem: getConversationSystem(),
-        codexEnabled: isCodexModeAvailable(),
-        claudeEnabled: isClaudeModeAvailable(),
+        runtimeEnabled: mapRuntimeConversationSystems(isRuntimeModeAvailable),
         singleSystem: isSidePanel || isNoteSession(),
       }),
     isRuntimeSystemSwitchInFlight: () => runtimeSystemSwitchInFlight,
@@ -5696,39 +5852,34 @@ export function setupHandlers(
     syncConversationIdentity();
   };
 
-  /**
-   * Switches this panel's runtime to `targetSystem`. The header buttons resolve
-   * their toggle rule first (`resolveRuntimeSystemToggleTarget`); the runtime
-   * badge menu passes the picked system straight through.
-   */
+  /** Switches this panel's runtime to `targetSystem` (the runtime menu). */
   const switchRuntimeSystemFromControl = async (
     targetSystem: ConversationSystem,
   ) => {
     if (
       runtimeSystemSwitchInFlight ||
       !item ||
-      (targetSystem === "codex" && !isCodexModeAvailable()) ||
-      (targetSystem === "claude_code" && !isClaudeModeAvailable())
+      (isRuntimeSystem(targetSystem) && !isRuntimeModeAvailable(targetSystem))
     ) {
       return;
     }
     recoverDriftedPanelScopeForRuntimeToggle();
     runtimeSystemSwitchInFlight = true;
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     try {
       await switchConversationSystem(targetSystem, { forceFresh: true });
     } catch (err) {
       appLogger.warn("LLM: Failed to switch conversation runtime", err);
     } finally {
       runtimeSystemSwitchInFlight = false;
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
     }
   };
   /**
    * Opens a history row of another runtime: switches this panel to `system`
    * and opens the row's conversation directly. Runs inside the same in-flight
-   * guard as the badge and the header buttons, so they show busy and a second
-   * row click is refused until this one ends.
+   * guard as the runtime menu, so the badge shows busy and a second row click
+   * is refused until this one ends.
    */
   const openHistoryEntryInSystem = async (
     system: ConversationSystem,
@@ -5737,14 +5888,13 @@ export function setupHandlers(
     if (
       runtimeSystemSwitchInFlight ||
       !item ||
-      (system === "codex" && !isCodexModeAvailable()) ||
-      (system === "claude_code" && !isClaudeModeAvailable())
+      (isRuntimeSystem(system) && !isRuntimeModeAvailable(system))
     ) {
       return false;
     }
     recoverDriftedPanelScopeForRuntimeToggle();
     runtimeSystemSwitchInFlight = true;
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     try {
       return await switchConversationSystem(system, { target });
     } catch (err) {
@@ -5752,31 +5902,21 @@ export function setupHandlers(
       return false;
     } finally {
       runtimeSystemSwitchInFlight = false;
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       updateRuntimeModeButton();
     }
   };
-  for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
-    const button = panelRuntimeSystemControls.buttons[system];
-    if (!button) continue;
-    button.addEventListener("click", (event: Event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      void switchRuntimeSystemFromControl(
-        resolveRuntimeSystemToggleTarget(getConversationSystem(), system),
-      );
-    });
-  }
-
   const getModelChoices = () => {
     const choices = isClaudeConversationSystem()
       ? getClaudeRuntimeModelEntries()
       : isCodexConversationSystem()
         ? getCodexRuntimeModelEntries()
-        : getAvailableModelEntries().filter(
-            // Neither a side chat nor a torn-off window runs on WebChat.
-            (entry) => offersWebChatModels() || entry.authMode !== "webchat",
-          );
+        : isAntigravityConversationSystem()
+          ? getAntigravityRuntimeModelEntries()
+          : getAvailableModelEntries().filter(
+              // Neither a side chat nor a torn-off window runs on WebChat.
+              (entry) => offersWebChatModels() || entry.authMode !== "webchat",
+            );
     const groupedChoices: Array<{
       providerLabel: string;
       entries: RuntimeModelEntry[];
@@ -5806,9 +5946,11 @@ export function setupHandlers(
       ? getSelectedClaudeRuntimeEntry()
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
-        : item
-          ? panelChoices.getSelectedModelEntry()
-          : null;
+        : isAntigravityConversationSystem()
+          ? getSelectedAntigravityRuntimeEntry()
+          : item
+            ? panelChoices.getSelectedModelEntry()
+            : null;
     const currentModel =
       selectedEntry?.model ||
       choices[0]?.model ||
@@ -6045,6 +6187,33 @@ export function setupHandlers(
     });
   };
 
+  const appendAntigravityModelCatalogStatus = (menu: HTMLDivElement) => {
+    if (!isAntigravityConversationSystem()) return;
+    const modelCount = antigravityModelCatalog?.models.length || 0;
+    appendModelCatalogStatus({
+      menu,
+      status: antigravityModelCatalogStatus,
+      modelCount,
+      loadingMessage: modelCount
+        ? t("Refreshing Antigravity models…")
+        : t("Loading Antigravity models…"),
+      errorMessage: modelCount
+        ? t(
+            "Could not refresh Antigravity models. Showing the last known list.",
+          )
+        : t("Could not load Antigravity models. Showing the default only."),
+      errorTitle: antigravityModelCatalogError,
+      emptyMessage: t("Antigravity did not return any available models."),
+      retryLabel: t("Retry loading Antigravity models"),
+      onRetry: (event) => {
+        if (!isPrimaryPointerEvent(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void ensureAntigravityModelCatalogLoaded(true);
+      },
+    });
+  };
+
   const appendClaudeModelCatalogStatus = (menu: HTMLDivElement) => {
     if (!isClaudeConversationSystem()) return;
     const statusHandled = appendModelCatalogStatus({
@@ -6167,6 +6336,7 @@ export function setupHandlers(
     readerMenu.appendCardTitle(list, t("Main Agent"));
     appendClaudeModelCatalogStatus(list);
     appendCodexModelCatalogStatus(list);
+    appendAntigravityModelCatalogStatus(list);
     codexDirectController?.appendCatalogStatus({
       menu: list,
       renderStatus: appendModelCatalogStatus,
@@ -6233,6 +6403,21 @@ export function setupHandlers(
             updateReasoningButton();
             return;
           }
+          if (isAntigravityConversationSystem()) {
+            panelChoices.setAntigravityRuntimeModel(
+              entry.entryId === ANTIGRAVITY_DEFAULT_ENTRY_ID ? "" : entry.model,
+            );
+            reconcileSelectedAntigravityThoughtLevel();
+            setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
+            setFloatingMenuOpen(
+              reasoningMenu,
+              REASONING_MENU_OPEN_CLASS,
+              false,
+            );
+            updateModelButton();
+            updateReasoningButton();
+            return;
+          }
           const wasWebChat = isWebChatMode();
           setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
@@ -6282,8 +6467,7 @@ export function setupHandlers(
               entry.apiBase,
               entry.advanced?.inputMode,
             ),
-            isClaudeCode: isClaudeConversationSystem(),
-            isCodex: isCodexConversationSystem(),
+            runtimeSystem: getRuntimeConversationSystem(),
           });
           if (shouldDowngrade) {
             const papers = getManualPaperContextsForItem(
@@ -6643,6 +6827,23 @@ export function setupHandlers(
             : (selectedMode as ReasoningLevelSelection),
       };
     }
+    if (isAntigravityConversationSystem()) {
+      const selectedLevel = panelChoices.getAntigravityThoughtLevel();
+      const options: ReasoningOption[] = getAntigravityThoughtLevelChoices()
+        .filter((choice) => choice.value !== "")
+        .map((choice) => ({
+          level: choice.value as LLMReasoningLevel,
+          enabled: true,
+          label: choice.label,
+        }));
+      return {
+        provider: "unsupported" as const,
+        currentModel,
+        options,
+        enabledLevels: options.map((option) => option.level),
+        selectedLevel: (selectedLevel || "none") as ReasoningLevelSelection,
+      };
+    }
     const directSelection =
       codexDirectController?.resolveReasoningSelection() || {
         mode: "auto",
@@ -6966,20 +7167,29 @@ export function setupHandlers(
               )?.label || "Auto"
             );
           })()
-        : directSelection.choices.length
-          ? directSelection.choices.find(
-              (choice) =>
-                choice.value.toLowerCase() ===
-                directSelection.mode.toLowerCase(),
-            )?.label || "Auto"
-          : available
-            ? getReasoningLevelDisplayLabel(
-                selectedLevel as LLMReasoningLevel,
-                provider,
-                currentModel,
-                options,
-              )
-            : "Not supported";
+        : isAntigravityConversationSystem()
+          ? (() => {
+              const level = panelChoices.getAntigravityThoughtLevel();
+              return (
+                getAntigravityThoughtLevelChoices().find(
+                  (choice) => choice.value === level,
+                )?.label || t("Default")
+              );
+            })()
+          : directSelection.choices.length
+            ? directSelection.choices.find(
+                (choice) =>
+                  choice.value.toLowerCase() ===
+                  directSelection.mode.toLowerCase(),
+              )?.label || "Auto"
+            : available
+              ? getReasoningLevelDisplayLabel(
+                  selectedLevel as LLMReasoningLevel,
+                  provider,
+                  currentModel,
+                  options,
+                )
+              : "Not supported";
     const active = Boolean(available && activeThinking);
     const reasoningLabel = resolvedReasoningLabel;
     const reasoningHint =
@@ -7160,6 +7370,19 @@ export function setupHandlers(
         currentValue: currentMode,
         onSelect: (value) => {
           panelChoices.setCodexReasoningMode(value);
+          setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+          updateReasoningButton();
+        },
+      });
+      return;
+    }
+    if (isAntigravityConversationSystem()) {
+      appendReasoningChoiceButtons({
+        menu: reasoningMenu,
+        choices: getAntigravityThoughtLevelChoices(),
+        currentValue: panelChoices.getAntigravityThoughtLevel(),
+        onSelect: (value) => {
+          panelChoices.setAntigravityThoughtLevel(value);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
         },
@@ -7709,7 +7932,7 @@ export function setupHandlers(
     }
 
     updateRuntimeModeButton();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
 
     // Notify standalone window (or other listeners) of webchat mode change
     hooks?.onWebChatModeChanged?.(isWebChat);
@@ -7782,7 +8005,7 @@ export function setupHandlers(
     if (headerTop) ro.observe(headerTop);
     for (const element of Array.from(
       headerTop?.querySelectorAll(
-        ".llm-header-nav-row, .llm-header-runtime-controls, .llm-runtime-system-controls, .llm-header-actions",
+        ".llm-header-nav-row, .llm-header-runtime-controls, .llm-header-actions",
       ) || [],
     ))
       ro.observe(element as Element);
@@ -7794,7 +8017,9 @@ export function setupHandlers(
       ? getSelectedClaudeRuntimeEntry()
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
-        : panelChoices.getSelectedModelEntry();
+        : isAntigravityConversationSystem()
+          ? getSelectedAntigravityRuntimeEntry()
+          : panelChoices.getSelectedModelEntry();
     if (!selected) return null;
     return {
       ...selected,
@@ -7814,6 +8039,9 @@ export function setupHandlers(
     if (isCodexConversationSystem()) {
       return getSelectedCodexRuntimeEntry().advanced;
     }
+    if (isAntigravityConversationSystem()) {
+      return getSelectedAntigravityRuntimeEntry().advanced;
+    }
     return getAdvancedModelParamsForEntry(entryId);
   };
 
@@ -7830,6 +8058,12 @@ export function setupHandlers(
           ? reconcileSelectedCodexReasoningMode()
           : panelChoices.getCodexReasoningMode();
       return buildCodexAppServerReasoningConfig(mode);
+    }
+    // The turn carries this surface's level; the runtime applies it to the
+    // agy session. No level means agy's own.
+    if (isAntigravityConversationSystem()) {
+      const level = reconcileSelectedAntigravityThoughtLevel();
+      return level ? { provider: "customized", level } : undefined;
     }
     const directEntry = codexDirectController?.getSelectedEntry();
     if (directEntry) {
@@ -7987,7 +8221,7 @@ export function setupHandlers(
     shouldRenderSkillSlashMenu:
       shouldRenderSkillSlashMenuForCurrentConversation,
     isWebChatMode,
-    isClaudeConversationSystem,
+    getRuntimeConversationSystem,
     getCurrentRuntimeMode,
     setCurrentRuntimeMode,
     getCurrentLibraryID,
@@ -8336,8 +8570,7 @@ export function setupHandlers(
           apiBase,
           inputMode,
         ),
-        isClaudeCode: isClaudeConversationSystem(),
-        isCodex: isCodexConversationSystem(),
+        runtimeSystem: getRuntimeConversationSystem(),
       }),
     uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
     resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
@@ -8350,11 +8583,12 @@ export function setupHandlers(
     isGlobalMode,
     isClaudeConversationSystem,
     isCodexConversationSystem,
+    getRuntimeConversationSystem,
     normalizeConversationTitleSeed,
     getConversationKey,
     getConversationWriteGeneration,
-    touchClaudeConversationTitle,
-    touchCodexConversationTitle,
+    touchRuntimeConversationTitle: (system, key, title, generation) =>
+      RUNTIME_CONVERSATION_TITLE_TOUCHERS[system](key, title, generation),
     touchGlobalConversationTitle,
     touchPaperConversationTitle,
     getSelectedProfile,
@@ -8590,8 +8824,7 @@ export function setupHandlers(
                 apiBase,
                 inputMode,
               ),
-              isClaudeCode: isClaudeConversationSystem(),
-              isCodex: isCodexConversationSystem(),
+              runtimeSystem: getRuntimeConversationSystem(),
             }),
           resolvePdfPaperAttachments:
             pdfPaperResolver.resolvePdfPaperAttachments,
@@ -8831,7 +9064,14 @@ export function setupHandlers(
       row.setAttribute("role", "menuitemradio");
       row.setAttribute("aria-checked", String(selected));
       row.classList.toggle("llm-permission-option-selected", selected);
-      row.textContent = entry.label;
+      row.classList.add("llm-runtime-menu-row");
+      const icon = runtimeMenu.ownerDocument.createElement("span");
+      icon.className = "llm-runtime-icon";
+      icon.dataset.system = entry.system;
+      icon.setAttribute("aria-hidden", "true");
+      const text = runtimeMenu.ownerDocument.createElement("span");
+      text.textContent = entry.label;
+      row.append(icon, text);
       row.addEventListener("click", (event: Event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -8839,6 +9079,28 @@ export function setupHandlers(
         runtimeModeBtn?.focus();
       });
       runtimeMenu.appendChild(row);
+    }
+    if (state.showAddRuntime) {
+      const separator = runtimeMenu.ownerDocument.createElement("div");
+      separator.className = "llm-runtime-menu-separator";
+      separator.setAttribute("role", "separator");
+      const add = runtimeMenu.ownerDocument.createElement("button");
+      add.type = "button";
+      add.className =
+        "llm-permission-option llm-runtime-menu-row llm-runtime-menu-add";
+      add.setAttribute("role", "menuitem");
+      add.dataset.runtimeAction = state.settingsRowKind;
+      add.textContent =
+        state.settingsRowKind === "configure"
+          ? t("Configure runtimes…")
+          : t("+ Add runtime…");
+      add.addEventListener("click", (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeRuntimeMenu();
+        openPluginPreferencesTab(PREFERENCES_PANE_ID, "agent");
+      });
+      runtimeMenu.append(separator, add);
     }
   };
   const stopRuntimeMenuPointerEvent = (event: Event) => event.stopPropagation();
@@ -9192,6 +9454,10 @@ export function setupHandlers(
       // changes, so a user-initiated open must revalidate. Non-blocking — the
       // menu opens on the cached list and live-updates when the fetch lands.
       void ensureClaudeModelCatalogLoaded(true);
+    } else if (isAntigravityConversationSystem()) {
+      // Re-reads the catalog the runtime remembers from its latest session;
+      // agy starts only when it has none yet.
+      void ensureAntigravityModelCatalogLoaded(true);
     } else if (codexDirectController?.hasConfiguredProvider()) {
       codexDirectController.ensureCatalog();
     }
@@ -9220,6 +9486,8 @@ export function setupHandlers(
     menus.closeMany(MENUS_CLOSED_BY_REASONING_MENU);
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
+    } else if (isAntigravityConversationSystem()) {
+      void ensureAntigravityModelCatalogLoaded();
     } else if (codexDirectController?.getSelectedEntry()) {
       codexDirectController.ensureCatalog();
     }

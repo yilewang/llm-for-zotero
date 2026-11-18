@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
@@ -41,6 +43,20 @@ const posix = process.platform !== "win32";
 // After the last test reports, Zotero can take more than a minute to quit.
 // The result is already known by then, so we stop waiting after this long.
 const QUIT_GRACE_MS = 15_000;
+// A Zotero whose database or UI is wedged fails every later test by timeout,
+// one test timeout (up to four minutes) at a time. After this many timeouts
+// in a row with no passing test between them, the run stops that Zotero; the
+// file it was running counts as failed, and a fresh Zotero runs the files
+// that had not started.
+const WEDGED_TIMEOUT_STREAK = 3;
+// A Zotero that prints nothing for this long is stuck outside any test
+// timeout (the longest test timeout is four minutes).
+const SILENT_STALL_MS = 10 * 60 * 1000;
+// The scaffold's esbuild service outlives it and holds its output pipes open,
+// so a scaffold that exits (for example on a setup error, before Zotero
+// starts) would otherwise leave the run waiting for those pipes. After the
+// scaffold exits, its pipes get this long to drain before we close them.
+const EXIT_DRAIN_MS = 10_000;
 
 // Parallel shards each run in their own folder here, so each has its own
 // build, profile and data folder.
@@ -132,6 +148,29 @@ function prepareShardCheckout(dir) {
   }
 }
 
+/**
+ * Zotero installs its bundled citation styles and translators once, a while
+ * after a profile's first start, and records that in its database. A first
+ * start that was stopped before the install finished left a data folder with
+ * a database but no styles folder, and later runs never completed the
+ * install: every citation in that folder then waited until its test timed
+ * out (seen in a shard on 2026-11-17). Such a folder is disposable test
+ * state, so it is removed and Zotero starts it afresh.
+ */
+function resetInterruptedTestData(cwd, say = console.log) {
+  const testDir = resolve(cwd, ".scaffold/test");
+  const data = join(testDir, "data");
+  if (
+    existsSync(join(data, "zotero.sqlite")) &&
+    !existsSync(join(data, "styles"))
+  ) {
+    say(
+      `The test data in ${testDir} has no citation styles (an interrupted first start); starting it afresh.`,
+    );
+    rmSync(testDir, { recursive: true, force: true });
+  }
+}
+
 // The scaffold colors its output; read the words, not the color codes.
 // eslint-disable-next-line no-control-regex
 const ANSI = /\u001b\[[0-9;]*m/g;
@@ -193,6 +232,11 @@ function runScaffold({ cwd, files, port, prefix }) {
   let sawFailure = false;
   let summary = null;
   let quitTimer = null;
+  let timeoutStreak = 0;
+  let stalled = false;
+  let silenceTimer = null;
+  let exitTimer = null;
+  let closed = false;
   const markers = [];
   const say = (text) =>
     process.stdout.write(prefix ? `${prefix} ${text}\n` : `${text}\n`);
@@ -205,7 +249,21 @@ function runScaffold({ cwd, files, port, prefix }) {
       markers.push(marker);
       return false;
     }
-    if (/^\s*✖/.test(line)) sawFailure = true;
+    if (/^\s*✖/.test(line)) {
+      sawFailure = true;
+      timeoutStreak = /Timeout of \d+ms exceeded/.test(line)
+        ? timeoutStreak + 1
+        : 0;
+      if (timeoutStreak >= WEDGED_TIMEOUT_STREAK && !stalled) {
+        stalled = true;
+        say(
+          `Zotero looks wedged: ${timeoutStreak} tests timed out in a row with none passing. Stopping it; a fresh Zotero runs the files that had not started.`,
+        );
+        stopChild(child, "SIGKILL");
+      }
+    } else if (/^\s*✔/.test(line)) {
+      timeoutStreak = 0;
+    }
     const match = /Test run completed - (\d+) passed(?:, (\d+) failed)?/.exec(
       line,
     );
@@ -221,8 +279,23 @@ function runScaffold({ cwd, files, port, prefix }) {
     return true;
   }
 
+  const armSilenceTimer = () => {
+    if (closed) return;
+    if (silenceTimer) clearTimeout(silenceTimer);
+    silenceTimer = setTimeout(() => {
+      if (summary || stalled) return;
+      stalled = true;
+      say(
+        `Zotero printed nothing for ${SILENT_STALL_MS / 60000} min. Stopping it; a fresh Zotero runs the files that had not started.`,
+      );
+      stopChild(child, "SIGKILL");
+    }, SILENT_STALL_MS);
+  };
+  armSilenceTimer();
+
   const buffers = new Map();
   const flush = (stream, target, rest) => {
+    armSilenceTimer();
     const lines = ((buffers.get(stream) ?? "") + rest).split("\n");
     buffers.set(stream, lines.pop() ?? "");
     for (const line of lines) {
@@ -247,9 +320,19 @@ function runScaffold({ cwd, files, port, prefix }) {
     // settling. Exiting on the earlier "exit" event can tear down the
     // scaffold's esbuild service pipe while it is still draining, which
     // intermittently prints a post-test Go deadlock despite a successful run.
+    child.on("exit", () => {
+      exitTimer = setTimeout(() => {
+        stopChild(child, "SIGKILL");
+        child.stdout.destroy();
+        child.stderr.destroy();
+      }, EXIT_DRAIN_MS);
+    });
     child.on("close", (code, signal) => {
+      closed = true;
       children.delete(child);
       if (quitTimer) clearTimeout(quitTimer);
+      if (silenceTimer) clearTimeout(silenceTimer);
+      if (exitTimer) clearTimeout(exitTimer);
       flush(child.stdout, process.stdout, "\n");
       flush(child.stderr, process.stderr, "\n");
       if (!summary) {
@@ -422,6 +505,7 @@ async function main() {
       console.log(
         `Running ${files.length} workflow test file(s):\n  ${files.join("\n  ")}`,
       );
+    resetInterruptedTestData(process.cwd());
     const { ok, results } = await runGroup({
       cwd: process.cwd(),
       files,
@@ -440,6 +524,7 @@ async function main() {
     const label = `[${i + 1}/${count}]`;
     const cwd = resolve(SHARD_ROOT, String(i + 1));
     prepareShardCheckout(cwd);
+    resetInterruptedTestData(cwd, (text) => console.log(`${label} ${text}`));
     console.log(`${label} ${files.length} file(s): ${files.join(", ")}`);
     let port = await freePort();
     while (ports.has(port)) port = await freePort();

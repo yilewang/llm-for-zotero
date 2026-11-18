@@ -92,7 +92,7 @@ describe("workflow: runtime badge", function () {
       const initial = await api.getDiagnostics(panel.panelId);
       assert.equal(initial.runtimeBadge?.label, "Agent");
       assert.isTrue(initial.runtimeBadge?.clickable);
-      assert.deepEqual(activeHeaderSystems(initial.runtimeSystemToggles), []);
+      assert.deepEqual(activeHeaderSystems(initial.runtimeMenuEntries), []);
 
       const menu = await api.openPanelRuntimeMenu(panel.panelId);
       assert.deepEqual(
@@ -108,7 +108,7 @@ describe("workflow: runtime badge", function () {
       assert.equal(codex.conversationSystem, "codex");
       assert.equal(codex.runtimeBadge?.label, "Codex");
       assert.isFalse(codex.runtimeBadge?.menuOpen, "the pick closes the menu");
-      assert.deepEqual(activeHeaderSystems(codex.runtimeSystemToggles), [
+      assert.deepEqual(activeHeaderSystems(codex.runtimeMenuEntries), [
         "codex",
       ]);
 
@@ -116,7 +116,7 @@ describe("workflow: runtime badge", function () {
       assert.equal(agent.conversationSystem, "upstream");
       assert.equal(agent.runtimeBadge?.label, "Agent");
       assert.equal(agent.runtimeMode, "agent");
-      assert.deepEqual(activeHeaderSystems(agent.runtimeSystemToggles), []);
+      assert.deepEqual(activeHeaderSystems(agent.runtimeMenuEntries), []);
     });
   });
 
@@ -125,10 +125,10 @@ describe("workflow: runtime badge", function () {
       const paper = await createPaper("Runtime Badge Header Sync");
       const panel = await api.renderPanelForItem(paper.parentItemId);
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.runtimeBadge?.label, "Codex");
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.runtimeBadge?.label, "Agent");
     });
   });
@@ -164,15 +164,48 @@ describe("workflow: runtime badge", function () {
     });
   });
 
-  it("shows a static Agent label when only Agent is on", async function () {
+  it("offers Add runtime when only Agent is on", async function () {
     await withPrefs(AGENT_ONLY_PREFS, async () => {
-      const paper = await createPaper("Runtime Badge Static");
+      const paper = await createPaper("Runtime Badge Agent Only");
       const panel = await api.renderPanelForItem(paper.parentItemId);
       const diagnostics = await api.getDiagnostics(panel.panelId);
       assert.isTrue(diagnostics.runtimeBadge?.visible);
       assert.equal(diagnostics.runtimeBadge?.label, "Agent");
-      assert.isFalse(diagnostics.runtimeBadge?.clickable);
+      // The menu always ends with Add runtime, so the badge opens it even
+      // with Agent as the only runtime.
+      assert.isTrue(diagnostics.runtimeBadge?.clickable);
+      const menu = await api.openPanelRuntimeMenu(panel.panelId);
+      assert.deepEqual(
+        menu.menuItems.map((item) => item.label),
+        ["Agent"],
+      );
+      const body = Zotero.getMainWindow().document.querySelector(
+        `[data-workflow-panel-id="${panel.panelId}"]`,
+      );
+      assert.isOk(
+        body?.querySelector("#llm-runtime-menu [data-runtime-action='add']"),
+        "the menu ends with Add runtime",
+      );
     });
+  });
+
+  it("ends the menu with Configure runtimes once every runtime is added", async function () {
+    await withPrefs(
+      { ...ALL_RUNTIME_PREFS, enableAntigravityMode: true },
+      async () => {
+        const paper = await createPaper("Runtime Badge All Added");
+        const panel = await api.renderPanelForItem(paper.parentItemId);
+        await api.openPanelRuntimeMenu(panel.panelId);
+        const body = Zotero.getMainWindow().document.querySelector(
+          `[data-workflow-panel-id="${panel.panelId}"]`,
+        );
+        const last = body?.querySelector(
+          "#llm-runtime-menu [data-runtime-action]",
+        ) as HTMLElement | null;
+        assert.equal(last?.dataset.runtimeAction, "configure");
+        assert.equal(last?.textContent, "Configure runtimes…");
+      },
+    );
   });
 
   it("names the built-in runtime Chat when the Agent feature is off but Codex is on", async function () {
@@ -216,7 +249,7 @@ describe("workflow: runtime badge", function () {
         const codex = await api.pickStandaloneRuntime("codex");
         assert.equal(codex.conversationSystem, "codex");
         assert.equal(codex.runtimeBadge?.label, "Codex");
-        assert.deepEqual(activeHeaderSystems(codex.runtimeSystemToggles), [
+        assert.deepEqual(activeHeaderSystems(codex.runtimeMenuEntries), [
           "codex",
         ]);
         const sidebarAfterCodex = await api.getDiagnostics(sidebar.panelId);
@@ -234,7 +267,7 @@ describe("workflow: runtime badge", function () {
         const agent = await api.pickStandaloneRuntime("upstream");
         assert.equal(agent.conversationSystem, "upstream");
         assert.equal(agent.runtimeBadge?.label, "Agent");
-        assert.deepEqual(activeHeaderSystems(agent.runtimeSystemToggles), []);
+        assert.deepEqual(activeHeaderSystems(agent.runtimeMenuEntries), []);
         const sidebarAfterAgent = await api.getDiagnostics(sidebar.panelId);
         assert.equal(sidebarAfterAgent.conversationSystem, "upstream");
       } finally {

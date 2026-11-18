@@ -2,7 +2,7 @@ import { resolveLiveAgentCredentials } from "../test-live/agent/liveAgentCredent
 import {
   getConversationSystemPref,
   setConversationSystemPref,
-} from "../src/claudeCode/prefs";
+} from "../src/shared/conversationSystemPrefs";
 import {
   getLastUsedModelEntryId,
   setLastUsedModelEntryId,

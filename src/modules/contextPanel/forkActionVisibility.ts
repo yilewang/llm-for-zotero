@@ -1,5 +1,6 @@
 import { evaluateConversationForkEligibility } from "../../core/conversations/forkEligibility";
 import type { ConversationSystem } from "../../shared/types";
+import { isConversationSystem } from "../../core/conversations/conversationSystems";
 import { resolveConversationStorageSystemForItem } from "./conversationProvisioning";
 import {
   resolveActiveNoteSession,
@@ -10,9 +11,7 @@ import type { Message } from "./types";
 function normalizeConversationSystem(
   value: unknown,
 ): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function getPanelConversationSystem(

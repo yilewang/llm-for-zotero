@@ -56,6 +56,11 @@ import {
   exerciseChatModeStreamingTurn,
 } from "./chatMemoryReplay";
 import { exerciseAgentDeliveryReplay } from "./agentDeliveryReplay";
+import { exerciseClaudeBridgeTurn } from "./externalTurnReplay";
+import {
+  exerciseAntigravityTurn,
+  resetAntigravityReplay,
+} from "./antigravityTurnReplay";
 import {
   exerciseLongJobBatchStop,
   exerciseLongJobNoteResume,
@@ -121,9 +126,8 @@ import type {
   WorkflowTestReaderPopupRoutingDiagnostics,
   WorkflowTestReaderPopupStandaloneRoutingDiagnostics,
   WorkflowTestReaderSelectionTrackingDiagnostics,
-  WorkflowTestRuntimeGeometry,
   WorkflowTestRuntimeBadge,
-  WorkflowTestRuntimeSystemToggle,
+  WorkflowTestRuntimeMenuEntry,
   WorkflowTestStandaloneComposerDiagnostics,
   WorkflowTestStandaloneDiagnostics,
   WorkflowTestChatWindowEntry,
@@ -278,6 +282,11 @@ import {
   appendClaudeMessage,
   loadClaudeConversation,
 } from "../../claudeCode/store";
+import { antigravityConversationStore } from "../../antigravity/store";
+import {
+  setAntigravityModelCatalogForTests,
+  type AntigravityModelCatalog,
+} from "../../antigravity/modelCatalog";
 import { notifyPastChatAttached } from "../../services/pastConversations/attachSink";
 import {
   ensureMarkedReaderSelectionTrackingListener,
@@ -290,7 +299,12 @@ import {
   setModelProviderGroups,
   getModelEntryById,
 } from "../../utils/modelProviders";
-import type { RuntimeConversationSystem } from "./runtimeSystemControls";
+import type { RuntimeConversationSystem } from "../../core/conversations/conversationSystems";
+import { RUNTIME_SYSTEM_DISPLAY_ORDER } from "./runtimeBadge";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import { collectReaderSelectionDocuments } from "../../services/pdf/readerSelection";
 import { getReaderContextPanelForTab } from "./readerPopupPanelRouting";
 import { closeReaderSelectionPromptOverlay } from "./selectionPrompt/readerSelectionPromptOverlay";
@@ -428,6 +442,17 @@ function configureCodexModelCatalogs(
     if (response?.error) throw new Error(response.error);
     return { models: response?.models || [] };
   });
+}
+
+/**
+ * Sets the Antigravity catalog the pickers read, so a test never starts agy;
+ * null forgets it.
+ */
+function configureAntigravityModelCatalog(
+  catalog: AntigravityModelCatalog | null,
+): void {
+  assertWorkflowTestEnabled();
+  setAntigravityModelCatalogForTests(catalog);
 }
 
 function configurePermissionCatalogs(input?: {
@@ -692,15 +717,47 @@ async function appendWorkflowStoredMessage(
   conversationKey: number,
   message: Parameters<typeof appendMessage>[1],
 ): Promise<void> {
-  if (system === "codex") {
-    await appendCodexMessage(conversationKey, message);
-    return;
+  switch (system) {
+    case "codex":
+      await appendCodexMessage(conversationKey, message);
+      return;
+    case "claude_code":
+      await appendClaudeMessage(conversationKey, message);
+      return;
+    case "antigravity":
+      await antigravityConversationStore.appendMessage(
+        conversationKey,
+        message,
+      );
+      return;
+    case "upstream":
+      await appendMessage(conversationKey, message);
+      return;
+    default:
+      assertNeverConversationSystem(system);
   }
-  if (system === "claude_code") {
-    await appendClaudeMessage(conversationKey, message);
-    return;
+}
+
+async function loadWorkflowStoredConversation(
+  system: ConversationSystem,
+  conversationKey: number,
+  limit: number,
+): Promise<Awaited<ReturnType<typeof loadConversation>>> {
+  switch (system) {
+    case "codex":
+      return await loadCodexConversation(conversationKey, limit);
+    case "claude_code":
+      return await loadClaudeConversation(conversationKey, limit);
+    case "antigravity":
+      return await antigravityConversationStore.loadConversation(
+        conversationKey,
+        limit,
+      );
+    case "upstream":
+      return await loadConversation(conversationKey, limit);
+    default:
+      return assertNeverConversationSystem(system);
   }
-  await appendMessage(conversationKey, message);
 }
 
 function readRuntimeBadge(
@@ -788,34 +845,29 @@ async function clickRuntimeMenuOptionIn(
   dispatchRuntimeMenuClick(option);
 }
 
-function readRuntimeSystemToggles(
+/**
+ * Each runtime's entry in the composer's runtime menu, read from the badge:
+ * offered (`visible`), current (`active`), and refused while a switch is
+ * under way (`disabled`).
+ */
+function readRuntimeMenuEntries(
   root: ParentNode | null | undefined,
-  groupSelector: string,
-): WorkflowTestRuntimeSystemToggle[] {
-  const group = root?.querySelector(groupSelector) as HTMLElement | null;
-  if (!group) return [];
-  const groupVisible = group.style.display !== "none";
-  return (
-    Array.from(
-      group.querySelectorAll(
-        ".llm-runtime-system-toggle[data-conversation-system]",
-      ),
-    ) as HTMLButtonElement[]
-  )
-    .map((button) => {
-      const system = button.dataset.conversationSystem;
-      if (system !== "codex" && system !== "claude_code") return null;
-      return {
-        system,
-        visible: groupVisible && button.style.display !== "none",
-        active: button.dataset.active === "true",
-        disabled: button.disabled,
-        ariaPressed: button.getAttribute("aria-pressed") === "true",
-      };
-    })
-    .filter(
-      (state): state is WorkflowTestRuntimeSystemToggle => state !== null,
-    );
+): WorkflowTestRuntimeMenuEntry[] {
+  const badge = root?.querySelector(
+    "#llm-runtime-mode-toggle",
+  ) as HTMLButtonElement | null;
+  if (!badge) return [];
+  const offered = new Set(
+    (badge.dataset.runtimeSystems || "").split(",").filter(Boolean),
+  );
+  const shown = badge.style.display !== "none";
+  const switching = badge.dataset.switching === "true";
+  return RUNTIME_SYSTEM_DISPLAY_ORDER.map((system) => ({
+    system,
+    visible: shown && offered.has(system),
+    active: badge.dataset.system === system,
+    disabled: shown && offered.has(system) && switching,
+  }));
 }
 
 type GeometryRect = Pick<
@@ -856,35 +908,6 @@ function rectWithinContainer(
     rect.top >= container.top - tolerance &&
     rect.bottom <= container.bottom + tolerance
   );
-}
-
-function getVisibleRuntimeControlsRect(group: HTMLElement): GeometryRect {
-  const buttonRects = getVisibleRuntimeButtonRects(group);
-  if (!buttonRects.length) return group.getBoundingClientRect();
-  const left = Math.min(...buttonRects.map((rect) => rect.left));
-  const right = Math.max(...buttonRects.map((rect) => rect.right));
-  const top = Math.min(...buttonRects.map((rect) => rect.top));
-  const bottom = Math.max(...buttonRects.map((rect) => rect.bottom));
-  return {
-    left,
-    right,
-    top,
-    bottom,
-    width: right - left,
-    height: bottom - top,
-  };
-}
-
-function getVisibleRuntimeButtonRects(group: HTMLElement): DOMRect[] {
-  return (
-    Array.from(
-      group.querySelectorAll(
-        ".llm-runtime-system-toggle[data-conversation-system]",
-      ),
-    ) as HTMLElement[]
-  )
-    .map((button) => button.getBoundingClientRect())
-    .filter((rect) => rect.width > 0 && rect.height > 0);
 }
 
 type PanelRecord = {
@@ -1086,7 +1109,14 @@ const WORKFLOW_CONVERSATION_PERSISTENCE_TABLES = {
     catalogs: ["llm_for_zotero_codex_conversations"],
     messages: "llm_for_zotero_codex_messages",
   },
-} as const;
+  antigravity: {
+    catalogs: ["llm_for_zotero_antigravity_conversations"],
+    messages: "llm_for_zotero_antigravity_messages",
+  },
+} as const satisfies Record<
+  ConversationSystem,
+  { catalogs: readonly string[]; messages: string }
+>;
 
 async function countWorkflowRows(
   tableName: string,
@@ -1106,13 +1136,10 @@ async function setWorkflowProviderSession(
   providerSessionId: string,
 ): Promise<void> {
   assertWorkflowTestEnabled();
-  if (system !== "codex" && system !== "claude_code") {
+  if (!isRuntimeConversationSystem(system)) {
     throw new Error(`Provider sessions are not supported for ${system}`);
   }
-  const table =
-    system === "codex"
-      ? "llm_for_zotero_codex_conversations"
-      : "llm_for_zotero_claude_conversations";
+  const table = WORKFLOW_CONVERSATION_PERSISTENCE_TABLES[system].catalogs[0];
   const normalizedSessionID = String(providerSessionId || "").trim();
   if (!normalizedSessionID) throw new Error("Provider session ID is required");
   await Zotero.DB.queryAsync(
@@ -2361,7 +2388,7 @@ async function seedPanelStoredUserMessage(
       .conversationSystem || "upstream";
   try {
     await appendWorkflowStoredMessage(
-      conversationSystem === "codex" || conversationSystem === "claude_code"
+      isRuntimeConversationSystem(conversationSystem)
         ? conversationSystem
         : "upstream",
       conversationKey,
@@ -2397,61 +2424,44 @@ async function selectNoteEditorText(
   applySelectedTextPreview(panel.body, synced.conversationKey);
 }
 
-async function clickPanelSystemToggle(
+/**
+ * Picks `system` in the panel's runtime menu, or the built-in runtime when
+ * the panel already runs `system`, and waits until the switch has settled.
+ */
+async function togglePanelRuntime(
   panelId: string,
   system: RuntimeConversationSystem,
 ): Promise<WorkflowTestDiagnostics> {
   assertWorkflowTestEnabled();
-  const panel = getPanel(panelId);
-  const button = panel.body.querySelector(
-    `.llm-panel-runtime-system-toggle[data-conversation-system='${system}']`,
-  ) as HTMLButtonElement | null;
-  if (!button) {
-    throw new Error(`Panel ${system} system toggle was not rendered`);
-  }
   const before = await getDiagnostics(panelId);
-  const expectedSystem =
-    before.conversationSystem === system ? "upstream" : system;
-  button.click();
-  const deadline = Date.now() + 15000;
-  let diagnostics = await getDiagnostics(panelId);
-  while (Date.now() < deadline) {
-    if (
-      diagnostics.conversationSystem === expectedSystem &&
-      diagnostics.runtimeSystemToggles
-        .filter((toggle) => toggle.visible)
-        .every((toggle) => !toggle.disabled)
-    )
-      return diagnostics;
-    await Zotero.Promise.delay(25);
-    diagnostics = await getDiagnostics(panelId);
-  }
-  throw new Error(
-    `Timed out waiting for panel runtime ${expectedSystem} to finish switching: ${JSON.stringify(diagnostics)}`,
+  return pickPanelRuntime(
+    panelId,
+    before.conversationSystem === system ? "upstream" : system,
   );
 }
 
-async function clickPanelSystemTogglesRapidly(
+/**
+ * Picks each system in the panel's runtime menu without waiting between
+ * picks; a pick made while a switch is under way is refused.
+ */
+async function pickPanelRuntimesRapidly(
   panelId: string,
-  systems: RuntimeConversationSystem[],
+  systems: ConversationSystem[],
 ): Promise<WorkflowTestDiagnostics> {
   assertWorkflowTestEnabled();
   const panel = getPanel(panelId);
-  const eventCtor = panel.body.ownerDocument.defaultView?.MouseEvent;
   for (const system of systems) {
-    const button = panel.body.querySelector(
-      `.llm-panel-runtime-system-toggle[data-conversation-system='${system}']`,
+    const badge = panel.body.querySelector(
+      "#llm-runtime-mode-toggle",
     ) as HTMLButtonElement | null;
-    if (!button) {
-      throw new Error(`Panel ${system} system toggle was not rendered`);
+    if (!badge || badge.disabled) continue;
+    if (readRuntimeBadge(panel.body)?.menuOpen !== true) {
+      dispatchRuntimeMenuClick(badge);
     }
-    if (eventCtor) {
-      button.dispatchEvent(
-        new eventCtor("click", { bubbles: true, cancelable: true }),
-      );
-    } else {
-      button.click();
-    }
+    const option = panel.body.querySelector(
+      `#llm-runtime-menu [data-runtime-system='${system}']`,
+    ) as HTMLElement | null;
+    if (option) dispatchRuntimeMenuClick(option);
   }
   await Zotero.Promise.delay(500);
   return getDiagnostics(panelId);
@@ -2476,9 +2486,7 @@ async function pickPanelRuntime(
   while (Date.now() < deadline) {
     if (
       diagnostics.conversationSystem === system &&
-      diagnostics.runtimeSystemToggles
-        .filter((toggle) => toggle.visible)
-        .every((toggle) => !toggle.disabled)
+      diagnostics.runtimeMenuEntries.every((entry) => !entry.disabled)
     ) {
       return diagnostics;
     }
@@ -2488,106 +2496,6 @@ async function pickPanelRuntime(
   throw new Error(
     `Timed out waiting for panel runtime ${system} after a badge pick: ${JSON.stringify(diagnostics)}`,
   );
-}
-
-async function measurePanelRuntimeGeometry(
-  panelId: string,
-  input: { width: number; fontScale: number },
-): Promise<WorkflowTestRuntimeGeometry> {
-  assertWorkflowTestEnabled();
-  const panel = getPanel(panelId);
-  const panelRoot = panel.body.querySelector("#llm-main") as HTMLElement | null;
-  const header = panel.body.querySelector(
-    ".llm-header-top",
-  ) as HTMLElement | null;
-  const runtimeControls = panel.body.querySelector(
-    ".llm-panel-runtime-system-controls",
-  ) as HTMLElement | null;
-  const modeRow = panel.body.querySelector(
-    ".llm-header-toggle-row",
-  ) as HTMLElement | null;
-  const modeTabs = panel.body.querySelector(
-    ".llm-header-mode-tabs",
-  ) as HTMLElement | null;
-  const historyToggle = panel.body.querySelector(
-    "#llm-history-toggle",
-  ) as HTMLElement | null;
-  const headerActions = panel.body.querySelector(
-    ".llm-header-actions",
-  ) as HTMLElement | null;
-  const clearButton = panel.body.querySelector(
-    ".llm-clear-btn",
-  ) as HTMLButtonElement | null;
-  if (
-    !panelRoot ||
-    !header ||
-    !runtimeControls ||
-    !modeRow ||
-    !modeTabs ||
-    !historyToggle ||
-    !headerActions ||
-    !clearButton
-  ) {
-    throw new Error("Panel runtime geometry targets were not rendered");
-  }
-
-  const previousWidth = panel.body.style.width;
-  const previousScale = panelRoot.style.getPropertyValue("--llm-font-scale");
-  panel.body.style.width = `${input.width}px`;
-  panelRoot.style.setProperty("--llm-font-scale", String(input.fontScale));
-  await Zotero.Promise.delay(50);
-  try {
-    const containerRect = header.getBoundingClientRect();
-    const runtimeRect = getVisibleRuntimeControlsRect(runtimeControls);
-    const runtimeButtonWidths = getVisibleRuntimeButtonRects(
-      runtimeControls,
-    ).map((rect) => rect.width);
-    const modeTabsRect = modeTabs.getBoundingClientRect();
-    const modeRowRect = modeRow.getBoundingClientRect();
-    const actionsRect = headerActions.getBoundingClientRect();
-    const clearButtonRect = clearButton.getBoundingClientRect();
-    const clearButtonStyle =
-      clearButton.ownerDocument.defaultView?.getComputedStyle(clearButton);
-    return {
-      containerWidth: containerRect.width,
-      fontScale: input.fontScale,
-      runtimeWidth: runtimeRect.width,
-      runtimeButtonWidths,
-      // Row 2 leads with new chat and history, then the runtime systems.
-      runtimeIntersectsLeadingContent: rectsIntersect(
-        runtimeRect,
-        historyToggle.getBoundingClientRect(),
-      ),
-      runtimeIntersectsTrailingContent: rectsIntersect(
-        runtimeRect,
-        actionsRect,
-      ),
-      runtimeTrailingOverlapPx: Math.max(
-        0,
-        runtimeRect.right - actionsRect.left,
-      ),
-      runtimeWithinContainer: rectWithinContainer(runtimeRect, containerRect),
-      trailingContentWithinContainer: rectWithinContainer(
-        actionsRect,
-        containerRect,
-      ),
-      deleteButtonIconOnly:
-        clearButtonRect.width <= 28.5 &&
-        Number.parseFloat(clearButtonStyle?.fontSize || "") === 0,
-      centeredContentOffset: Math.abs(
-        modeTabsRect.left +
-          modeTabsRect.width / 2 -
-          (modeRowRect.left + modeRowRect.width / 2),
-      ),
-    };
-  } finally {
-    panel.body.style.width = previousWidth;
-    if (previousScale) {
-      panelRoot.style.setProperty("--llm-font-scale", previousScale);
-    } else {
-      panelRoot.style.removeProperty("--llm-font-scale");
-    }
-  }
 }
 
 async function measurePanelFooterLayout(
@@ -3982,10 +3890,7 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
     paperTabText: paperTab?.textContent?.trim() || undefined,
     openTabText: openTab?.textContent?.trim() || undefined,
     statusText: statusEl?.textContent?.trim() || undefined,
-    runtimeSystemToggles: readRuntimeSystemToggles(
-      doc,
-      ".llm-standalone-runtime-system-controls",
-    ),
+    runtimeMenuEntries: readRuntimeMenuEntries(contentArea),
     runtimeBadge: readRuntimeBadge(contentArea),
     lastSend,
     lastFinalRequest,
@@ -4133,23 +4038,15 @@ async function toggleStandaloneSidebar(): Promise<WorkflowTestStandaloneDiagnost
   return readStandaloneDiagnostics();
 }
 
-async function clickStandaloneSystemToggle(
+/** The standalone window's version of togglePanelRuntime. */
+async function toggleStandaloneRuntime(
   system: RuntimeConversationSystem,
 ): Promise<WorkflowTestStandaloneDiagnostics> {
   assertWorkflowTestEnabled();
-  const doc = await waitForStandaloneReady();
+  await waitForStandaloneReady();
   const currentSystem = (readStandaloneDiagnostics().conversationSystem ||
     "upstream") as ConversationSystem;
-  const expectedSystem: ConversationSystem =
-    currentSystem === system ? "upstream" : system;
-  const button = doc.querySelector(
-    `.llm-standalone-runtime-system-toggle[data-conversation-system='${system}']`,
-  ) as HTMLButtonElement | null;
-  if (!button) {
-    throw new Error(`Standalone ${system} system toggle was not rendered`);
-  }
-  button.click();
-  return waitForStandaloneConversationSystem(expectedSystem);
+  return pickStandaloneRuntime(currentSystem === system ? "upstream" : system);
 }
 
 async function waitForStandaloneConversationSystem(
@@ -4192,86 +4089,32 @@ async function pickStandaloneRuntime(
   return waitForStandaloneConversationSystem(system);
 }
 
-async function clickStandaloneSystemTogglesRapidly(
-  systems: RuntimeConversationSystem[],
+/** The standalone window's version of pickPanelRuntimesRapidly. */
+async function pickStandaloneRuntimesRapidly(
+  systems: ConversationSystem[],
 ): Promise<WorkflowTestStandaloneDiagnostics> {
   assertWorkflowTestEnabled();
   const doc = await waitForStandaloneReady();
-  let expectedSystem = (readStandaloneDiagnostics().conversationSystem ||
-    "upstream") as ConversationSystem;
+  const content = doc.querySelector(".llm-standalone-content");
+  if (!content) throw new Error("Standalone content area was not rendered");
+  let lastPicked: ConversationSystem | null = null;
   for (const system of systems) {
-    const button = doc.querySelector(
-      `.llm-standalone-runtime-system-toggle[data-conversation-system='${system}']`,
+    const badge = content.querySelector(
+      "#llm-runtime-mode-toggle",
     ) as HTMLButtonElement | null;
-    if (!button) {
-      throw new Error(`Standalone ${system} system toggle was not rendered`);
+    if (!badge || badge.disabled) continue;
+    if (readRuntimeBadge(content)?.menuOpen !== true) {
+      dispatchRuntimeMenuClick(badge);
     }
-    button.click();
-    expectedSystem = expectedSystem === system ? "upstream" : system;
+    const option = content.querySelector(
+      `#llm-runtime-menu [data-runtime-system='${system}']`,
+    ) as HTMLElement | null;
+    if (!option) continue;
+    dispatchRuntimeMenuClick(option);
+    lastPicked = system;
   }
-  return waitForStandaloneConversationSystem(expectedSystem);
-}
-
-async function measureStandaloneRuntimeGeometry(input: {
-  width: number;
-  fontScale: number;
-}): Promise<WorkflowTestRuntimeGeometry> {
-  assertWorkflowTestEnabled();
-  const doc = await waitForStandaloneReady();
-  const root = doc.getElementById(
-    "llmforzotero-standalone-chat-root",
-  ) as HTMLElement | null;
-  const tabRow = doc.querySelector(
-    ".llm-standalone-tab-row",
-  ) as HTMLElement | null;
-  const runtimeControls = doc.querySelector(
-    ".llm-standalone-runtime-system-controls",
-  ) as HTMLElement | null;
-  const tabGroup = doc.querySelector(
-    ".llm-standalone-tab-row .llm-standalone-tab-group",
-  ) as HTMLElement | null;
-  if (!root || !tabRow || !runtimeControls || !tabGroup) {
-    throw new Error("Standalone runtime geometry targets were not rendered");
-  }
-
-  const previousWidth = tabRow.style.width;
-  const previousBoxSizing = tabRow.style.boxSizing;
-  const previousScale = root.style.getPropertyValue("--llm-font-scale");
-  tabRow.style.width = `${input.width}px`;
-  tabRow.style.boxSizing = "border-box";
-  root.style.setProperty("--llm-font-scale", String(input.fontScale));
-  await Zotero.Promise.delay(50);
-  try {
-    const containerRect = tabRow.getBoundingClientRect();
-    const runtimeRect = getVisibleRuntimeControlsRect(runtimeControls);
-    const runtimeButtonWidths = getVisibleRuntimeButtonRects(
-      runtimeControls,
-    ).map((rect) => rect.width);
-    const tabsRect = tabGroup.getBoundingClientRect();
-    const containerCenter = containerRect.left + containerRect.width / 2;
-    const tabsCenter = tabsRect.left + tabsRect.width / 2;
-    return {
-      containerWidth: containerRect.width,
-      fontScale: input.fontScale,
-      runtimeWidth: runtimeRect.width,
-      runtimeButtonWidths,
-      runtimeIntersectsLeadingContent: rectsIntersect(runtimeRect, tabsRect),
-      runtimeIntersectsTrailingContent: false,
-      runtimeTrailingOverlapPx: 0,
-      runtimeWithinContainer: rectWithinContainer(runtimeRect, containerRect),
-      trailingContentWithinContainer: true,
-      deleteButtonIconOnly: false,
-      centeredContentOffset: Math.abs(tabsCenter - containerCenter),
-    };
-  } finally {
-    tabRow.style.width = previousWidth;
-    tabRow.style.boxSizing = previousBoxSizing;
-    if (previousScale) {
-      root.style.setProperty("--llm-font-scale", previousScale);
-    } else {
-      root.style.removeProperty("--llm-font-scale");
-    }
-  }
+  if (!lastPicked) return readStandaloneDiagnostics();
+  return waitForStandaloneConversationSystem(lastPicked);
 }
 
 async function inspectStandaloneComposer(): Promise<WorkflowTestStandaloneComposerDiagnostics> {
@@ -4388,7 +4231,7 @@ async function seedStandaloneUserMessage(
       .conversationSystem || "upstream";
   try {
     await appendWorkflowStoredMessage(
-      conversationSystem === "codex" || conversationSystem === "claude_code"
+      isRuntimeConversationSystem(conversationSystem)
         ? conversationSystem
         : "upstream",
       conversationKey,
@@ -4521,10 +4364,9 @@ async function seedStandaloneConversation(
   const conversationSystem =
     (contentArea.querySelector("#llm-main") as HTMLElement | null)?.dataset
       .conversationSystem || "upstream";
-  const storedSystem =
-    conversationSystem === "codex" || conversationSystem === "claude_code"
-      ? conversationSystem
-      : "upstream";
+  const storedSystem = isRuntimeConversationSystem(conversationSystem)
+    ? conversationSystem
+    : "upstream";
   for (const message of messages) {
     // Persist only the plain turn shape; volatile streaming/trace fields are
     // session-only presentation state and stay in chatHistory.
@@ -5843,10 +5685,11 @@ async function attachPastChatAsAgentInPanel(
   const datasetSystem = (
     panel.body.querySelector("#llm-main") as HTMLElement | null
   )?.dataset.conversationSystem;
-  const conversationSystem: ConversationSystem =
-    datasetSystem === "codex" || datasetSystem === "claude_code"
-      ? datasetSystem
-      : "upstream";
+  const conversationSystem: ConversationSystem = isRuntimeConversationSystem(
+    datasetSystem,
+  )
+    ? datasetSystem
+    : "upstream";
   const latestUser = [...(chatHistory.get(conversationKey) || [])]
     .reverse()
     .find((message) => message.role === "user");
@@ -5864,12 +5707,11 @@ async function attachPastChatAsAgentInPanel(
     },
   });
   await Zotero.Promise.delay(100);
-  const stored =
-    conversationSystem === "codex"
-      ? await loadCodexConversation(conversationKey, 200)
-      : conversationSystem === "claude_code"
-        ? await loadClaudeConversation(conversationKey, 200)
-        : await loadConversation(conversationKey, 200);
+  const stored = await loadWorkflowStoredConversation(
+    conversationSystem,
+    conversationKey,
+    200,
+  );
   const storedUser = [...stored]
     .reverse()
     .find((message) => message.role === "user");
@@ -5987,10 +5829,7 @@ async function getDiagnostics(
     historyToggleVisible: historyToggleBtn
       ? historyToggleBtn.style.display !== "none"
       : false,
-    runtimeSystemToggles: readRuntimeSystemToggles(
-      body,
-      ".llm-panel-runtime-system-controls",
-    ),
+    runtimeMenuEntries: readRuntimeMenuEntries(body),
     runtimeBadge: readRuntimeBadge(body),
     webChatMode: panelRoot?.dataset.webchatMode === "true",
     modelButtonDisabled: (
@@ -10561,7 +10400,7 @@ async function clickPanelHistoryRow(
     panelId,
     (state) =>
       state.conversationKey === conversationKey &&
-      !(state.runtimeSystemToggles || []).some(
+      !(state.runtimeMenuEntries || []).some(
         (toggle) => toggle.visible && toggle.disabled,
       ),
   );
@@ -10596,7 +10435,7 @@ async function clickPanelHistoryRowWithForcedOpenFailure(
     while (Date.now() < deadline) {
       diagnostics = await getDiagnostics(panelId);
       if (
-        !(diagnostics.runtimeSystemToggles || []).some(
+        !(diagnostics.runtimeMenuEntries || []).some(
           (toggle) => toggle.visible && toggle.disabled,
         )
       )
@@ -10644,7 +10483,7 @@ async function clickPanelHistoryRowsRapidly(
     let diagnostics = await getDiagnostics(panelId);
     while (Date.now() < deadline) {
       const key = Number(diagnostics.conversationKey || 0);
-      const busy = (diagnostics.runtimeSystemToggles || []).some(
+      const busy = (diagnostics.runtimeMenuEntries || []).some(
         (toggle) => toggle.visible && toggle.disabled,
       );
       if (key !== previousKey || busy) {
@@ -11200,10 +11039,9 @@ async function seedPanelStoredTurn(
   const conversationSystem =
     (panel.body.querySelector("#llm-main") as HTMLElement | null)?.dataset
       .conversationSystem || "upstream";
-  const system =
-    conversationSystem === "codex" || conversationSystem === "claude_code"
-      ? conversationSystem
-      : "upstream";
+  const system = isRuntimeConversationSystem(conversationSystem)
+    ? conversationSystem
+    : "upstream";
   await appendWorkflowStoredMessage(system, conversationKey, userMessage);
   await appendWorkflowStoredMessage(system, conversationKey, assistantMessage);
   const existing = chatHistory.get(conversationKey) || [];
@@ -11642,6 +11480,30 @@ export function installWorkflowTestHarness(targetAddon: {
 }): void {
   if (__env__ !== "test" && __env__ !== "development") return;
   targetAddon.api.workflowTest = {
+    antigravityStorage: {
+      async init() {
+        const { initAntigravityStore } =
+          await import("../../antigravity/storage");
+        await initAntigravityStore();
+      },
+      async createGlobalConversation(libraryID) {
+        const summary =
+          await antigravityConversationStore.createGlobalConversation(
+            libraryID,
+          );
+        return summary ? Number(summary.conversationKey) : null;
+      },
+      async listGlobalConversationKeys(libraryID) {
+        const listed =
+          await antigravityConversationStore.listGlobalConversations(
+            libraryID,
+            null,
+          );
+        return listed.map((entry) => Number(entry.conversationKey));
+      },
+      deleteConversation: (conversationKey) =>
+        antigravityConversationStore.deleteConversation(conversationKey),
+    },
     planRetrievalQuery: resolveRetrievalQueryPlan,
     async libraryRetrieveBench(input) {
       const { LibraryRetrieveService } =
@@ -12206,6 +12068,11 @@ export function installWorkflowTestHarness(targetAddon: {
         getPanel(input.panelId),
         input.failFinalRefresh,
       ),
+    exerciseClaudeBridgeTurn: (input) =>
+      exerciseClaudeBridgeTurn(getPanel(input.panelId), input.scenario),
+    exerciseAntigravityTurn: (input) =>
+      exerciseAntigravityTurn(getPanel(input.panelId), input.scenario),
+    resetAntigravityReplay: () => resetAntigravityReplay(),
     exerciseLongJobReplay: (input) =>
       exerciseLongJobReplay(getPanel(input.panelId), {
         collection: input.collection,
@@ -12289,11 +12156,10 @@ export function installWorkflowTestHarness(targetAddon: {
     seedPanelStoredUserMessage,
     pickPastConversationInPanel,
     attachPastChatAsAgentInPanel,
-    clickPanelSystemToggle,
-    clickPanelSystemTogglesRapidly,
+    togglePanelRuntime,
+    pickPanelRuntimesRapidly,
     openPanelRuntimeMenu,
     pickPanelRuntime,
-    measurePanelRuntimeGeometry,
     measurePanelFooterLayout,
     selectNoteEditorText,
     ask,
@@ -12408,9 +12274,8 @@ export function installWorkflowTestHarness(targetAddon: {
     hoverStandaloneSidebarToggle,
     openStandaloneRuntimeMenu,
     pickStandaloneRuntime,
-    clickStandaloneSystemToggle,
-    clickStandaloneSystemTogglesRapidly,
-    measureStandaloneRuntimeGeometry,
+    toggleStandaloneRuntime,
+    pickStandaloneRuntimesRapidly,
     inspectStandaloneComposer,
     askStandalone,
     withPendingStandaloneSend,
@@ -12541,6 +12406,13 @@ export function installWorkflowTestHarness(targetAddon: {
       modelCatalogRequestHeaders.map((headers) => ({ ...headers })),
     getCodexDirectCatalogRequests: () => [...codexDirectCatalogRequests],
     configureCodexModelCatalogs,
+    configureAntigravityModelCatalog,
+    loadAntigravityModelCatalogForTests: async () => {
+      assertWorkflowTestEnabled();
+      const { loadAntigravityPickerModelCatalog } =
+        await import("../../antigravity/runtime");
+      return loadAntigravityPickerModelCatalog(true);
+    },
     getCodexModelCatalogRequests: () => [...codexModelCatalogRequests],
     resolveDelayedCodexModelCatalog: async () => {
       assertWorkflowTestEnabled();

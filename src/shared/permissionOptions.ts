@@ -1,7 +1,20 @@
 import type { OriginalAgentPermissionMode } from "./originalAgentPermissionMode";
 import type { ClaudePermissionMode } from "./claudePermissionMode";
+import {
+  ANTIGRAVITY_PERMISSION_MODES,
+  isAntigravityPermissionMode,
+  type AntigravityPermissionMode,
+} from "./antigravityPermissionMode";
+import {
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+  runtimeConversationSystemForPermissionProvider,
+} from "../core/conversations/conversationSystems";
 
-export type PermissionProvider = "original" | "claude" | "codex";
+export type PermissionProvider =
+  | "original"
+  | "claude"
+  | "codex"
+  | "antigravity";
 
 export type PermissionOption = {
   selectionKey: string;
@@ -88,6 +101,57 @@ const CLAUDE_PRESENTATION: Record<
   },
 };
 
+const ANTIGRAVITY_PRESENTATION: Record<
+  AntigravityPermissionMode,
+  Omit<PermissionOption, "provider" | "selectionKey" | "available">
+> = {
+  default: {
+    fullLabel: "Default",
+    compactLabel: "default",
+    description:
+      "Antigravity asks before edits, commands, and Zotero writes. Zotero reads run without asking.",
+  },
+  "accept-edits": {
+    fullLabel: "Accept edits",
+    compactLabel: "edits",
+    description:
+      "Antigravity edits files without asking and asks before commands, deletions, and Zotero writes.",
+  },
+  auto: {
+    fullLabel: "Auto",
+    compactLabel: "auto",
+    description:
+      "Antigravity runs most tools without asking and asks only before deleting.",
+  },
+  plan: {
+    fullLabel: "Plan",
+    compactLabel: "plan",
+    description: "Antigravity plans and asks before it changes anything.",
+  },
+  "full-access": {
+    fullLabel: "Full access",
+    compactLabel: "full",
+    description:
+      "Antigravity runs every tool without asking, in its own agy process started with --dangerously-skip-permissions.",
+  },
+};
+
+export function getAntigravityPermissionOptions(): PermissionOption[] {
+  return ANTIGRAVITY_PERMISSION_MODES.map((mode) => ({
+    provider: "antigravity",
+    selectionKey: `antigravity:${mode}`,
+    ...ANTIGRAVITY_PRESENTATION[mode],
+    available: true,
+  }));
+}
+
+export function getAntigravityPermissionModeFromSelectionKey(
+  selectionKey: string,
+): AntigravityPermissionMode | null {
+  const mode = selectionKey.replace(/^antigravity:/, "");
+  return isAntigravityPermissionMode(mode) ? mode : null;
+}
+
 export function getOriginalPermissionOptions(): PermissionOption[] {
   return ["safe", "auto", "yolo"].map(
     (id) => ORIGINAL_OPTIONS[id as OriginalAgentPermissionMode],
@@ -135,12 +199,12 @@ export function getClaudePermissionModeFromSelectionKey(
 export function buildPermissionAccessibleLabel(
   option: PermissionOption,
 ): string {
-  const provider =
-    option.provider === "claude"
-      ? "Claude Code"
-      : option.provider === "codex"
-        ? "Codex"
-        : "Original Agent";
+  const runtime = runtimeConversationSystemForPermissionProvider(
+    option.provider,
+  );
+  const provider = runtime
+    ? RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[runtime].label
+    : "Original Agent";
   const description = option.description.trim();
   return `${provider} permission mode: ${option.fullLabel}${description ? ` — ${description}` : ""}`;
 }

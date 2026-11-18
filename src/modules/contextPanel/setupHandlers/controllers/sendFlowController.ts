@@ -1,4 +1,8 @@
 import { appLogger } from "../../../../core/logging";
+import {
+  usesExternalTurnHost,
+  type RuntimeConversationSystem,
+} from "../../../../core/conversations/conversationSystems";
 import { MAX_SELECTED_IMAGES } from "../../constants";
 import type {
   LocalDocumentResource,
@@ -186,15 +190,14 @@ type SendFlowControllerDeps = {
   isGlobalMode: () => boolean;
   isClaudeConversationSystem: () => boolean;
   isCodexConversationSystem: () => boolean;
+  /** The panel's runtime, or null for the plugin's own systems. */
+  getRuntimeConversationSystem: () => RuntimeConversationSystem | null;
   normalizeConversationTitleSeed: (raw: unknown) => string;
   getConversationKey: (item: Zotero.Item) => number;
   getConversationWriteGeneration?: (conversationKey: number) => number;
-  touchClaudeConversationTitle: (
-    conversationKey: number,
-    title: string,
-    generation?: number,
-  ) => Promise<void>;
-  touchCodexConversationTitle: (
+  /** Stamps a runtime conversation's title in that runtime's store. */
+  touchRuntimeConversationTitle: (
+    system: RuntimeConversationSystem,
     conversationKey: number,
     title: string,
     generation?: number,
@@ -333,6 +336,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       isGlobalMode: deps.isGlobalMode(),
       isClaudeConversationSystem: deps.isClaudeConversationSystem(),
       isCodexConversationSystem: deps.isCodexConversationSystem(),
+      runtimeSystem: deps.getRuntimeConversationSystem(),
       selectedProfile: panelSelectedProfile,
       currentModelName: deps.getCurrentModelName(),
       selectedReasoning: deps.getSelectedReasoning(),
@@ -395,7 +399,7 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       const selectedTagContexts = deps.getSelectedTagContexts(item.id);
       const attachedConversations = deps.getAttachedConversations(item.id);
       const usesPluginAgentMode =
-        (panel.isAgentMode || panel.isClaudeConversationSystem) &&
+        (panel.isAgentMode || usesExternalTurnHost(panel.runtimeSystem)) &&
         !panel.isCodexConversationSystem;
       // Plugin Agent mode uses text/MinerU pipeline by default, but if the user
       // explicitly forced PDF mode on a paper, honour that choice.
@@ -675,13 +679,18 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
         const titleGeneration = deps.getConversationWriteGeneration?.(
           deps.getConversationKey(item),
         );
-        const touchTitle = panel.isClaudeConversationSystem
-          ? deps.touchClaudeConversationTitle
-          : panel.isCodexConversationSystem
-            ? deps.touchCodexConversationTitle
-            : panel.isGlobalMode
-              ? deps.touchGlobalConversationTitle
-              : deps.touchPaperConversationTitle;
+        const runtimeSystem = panel.runtimeSystem;
+        const touchTitle = runtimeSystem
+          ? (key: number, title: string, generation?: number) =>
+              deps.touchRuntimeConversationTitle(
+                runtimeSystem,
+                key,
+                title,
+                generation,
+              )
+          : panel.isGlobalMode
+            ? deps.touchGlobalConversationTitle
+            : deps.touchPaperConversationTitle;
         void touchTitle(
           deps.getConversationKey(item),
           titleSeed,

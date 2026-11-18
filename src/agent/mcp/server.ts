@@ -1,4 +1,5 @@
 import { resolveAgentToolPresentationLabel } from "../toolPresentation";
+import type { RuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import { noteHtmlToModelText } from "../../services/notes/noteRendering";
 import { NOTE_EMBED_PLACEHOLDER_GUIDANCE } from "../../utils/noteEmbeds";
 import { createJournalId } from "../store/changeJournal";
@@ -360,13 +361,26 @@ const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set([
  */
 export const ZOTERO_MCP_TOOL_TIMEOUT_SEC = 1_800;
 
+/**
+ * The external runtime a scope belongs to, and the conversation system its
+ * tool calls run under.
+ */
+const CONVERSATION_SYSTEM_BY_RUNTIME_AUTHORITY = {
+  claude: "claude_code",
+  codex: "codex",
+  antigravity: "antigravity",
+} as const satisfies Record<string, RuntimeConversationSystem>;
+
+export type ZoteroMcpRuntimeAuthority =
+  keyof typeof CONVERSATION_SYSTEM_BY_RUNTIME_AUTHORITY;
+
 type ZoteroMcpScopeMetadata = {
   publishHostEvent?: (event: import("../types").AgentEvent) => Promise<void>;
   requestInteraction?: (
     action: import("../types").AgentPendingAction,
   ) => Promise<import("../types").AgentConfirmationResolution>;
   clarificationHistory?: AgentRuntimeRequest["clarificationHistory"];
-  runtimeAuthority?: "claude" | "codex";
+  runtimeAuthority?: ZoteroMcpRuntimeAuthority;
   /** Host lifecycle signal; never supplied by MCP tool arguments. */
   signal?: AbortSignal;
   /** Durable provider run that owns direct document artifacts. */
@@ -964,7 +978,11 @@ function normalizeActiveScope(
   );
   const metadata: ZoteroMcpScopeMetadata = {
     runtimeAuthority:
-      scope.runtimeAuthority === "claude" || scope.runtimeAuthority === "codex"
+      scope.runtimeAuthority &&
+      Object.prototype.hasOwnProperty.call(
+        CONVERSATION_SYSTEM_BY_RUNTIME_AUTHORITY,
+        scope.runtimeAuthority,
+      )
         ? scope.runtimeAuthority
         : undefined,
     runId: normalizeText(scope.runId, 256),
@@ -1622,11 +1640,37 @@ function hasRawPdfScope(scope: ZoteroMcpActiveScope | null): boolean {
   return getMcpScopePapers(scope, ["raw_pdf"]).length > 0;
 }
 
+/**
+ * The Zotero tools an Antigravity turn sees. agy (1.5.10) lets the model
+ * call only the MCP tools whose definitions fit a budget of about 42 KB per
+ * session, shared by every MCP server and filled smallest first; it offers
+ * no way to call the rest. The full catalog is about 117 KB, so paper_read,
+ * library_search and the other core tools never fit. This set (about 41 KB
+ * as agy stores it) keeps reading, outside-paper search, and note writing.
+ */
+export const ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "paper_read",
+  "library_retrieve",
+  "library_search",
+  "library_read",
+  "read_attachment",
+  "literature_search",
+  "literature_read",
+  "note_write",
+  "undo",
+  "library_cite",
+]);
+
 function isMcpToolVisibleInScope(
   tool: ToolSpec,
   scope: ZoteroMcpActiveScope | null,
 ): boolean {
   if (!isMcpExposedTool(tool)) return false;
+  if (
+    scope?.runtimeAuthority === "antigravity" &&
+    !ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES.has(tool.name)
+  )
+    return false;
   if (tool.name === "request_user_input")
     return Boolean(scope?.requestInteraction);
   // Of the control tools only submit_document serves an external turn:
@@ -1653,17 +1697,53 @@ function describeMcpHostAccess(toolName: string): string | undefined {
   return undefined;
 }
 
+/**
+ * paper_read's full mode needs a tool-free reader: the chat's own runtime
+ * (Codex, Claude Code) or a reader model the user picked. A scope with
+ * neither (an Antigravity chat without a picked reader) cannot run it.
+ */
+function isFullPaperReadUnavailable(
+  scope: ZoteroMcpActiveScope | null,
+): boolean {
+  return (
+    scope?.exhaustiveReadBackend === "unavailable" && !scope.readerSelection
+  );
+}
+
+const PAPER_READ_NO_FULL_MODE_NOTE =
+  "In this chat mode:'full' is unavailable (no reader model is set): read the paper in parts with mode:'targeted' (sections, or a query), after mode:'outline' when you need its section addresses.";
+
+/** paper_read's schema without the full mode, for such a scope. */
+function withoutFullPaperReadMode(schema: object): object {
+  const record = schema as Record<string, unknown>;
+  const properties = normalizeRecord(record.properties);
+  const mode = normalizeRecord(properties.mode);
+  if (!Array.isArray(mode.enum)) return schema;
+  return {
+    ...record,
+    properties: {
+      ...properties,
+      mode: { ...mode, enum: mode.enum.filter((value) => value !== "full") },
+    },
+  };
+}
+
 function handleToolsList(
   toolRegistry: AgentToolRegistry,
   scope: ZoteroMcpActiveScope | null,
 ): McpToolsListResult {
+  const noFullRead = isFullPaperReadUnavailable(scope);
   const tools: McpToolDefinition[] = toolRegistry
     .listTools()
     .filter((tool) => isMcpToolVisibleInScope(tool, scope))
     .map(({ name, description, inputSchema, executionClass }) => {
       const mutability =
         executionClass === "external_effect" ? "write" : "read";
-      const schema = decorateMcpToolSchema(inputSchema, name);
+      const decorated = decorateMcpToolSchema(inputSchema, name);
+      const schema =
+        name === "paper_read" && noFullRead
+          ? withoutFullPaperReadMode(decorated)
+          : decorated;
       return {
         name,
         title: formatToolTitle(name),
@@ -1680,6 +1760,9 @@ function handleToolsList(
                 )
               : []),
             describeMcpHostAccess(name),
+            name === "paper_read" && noFullRead
+              ? PAPER_READ_NO_FULL_MODE_NOTE
+              : undefined,
             // Codex code-mode discovery renders deeply nested input types as
             // `unknown`. Keep the complete contract discoverable there too;
             // otherwise the agent has to guess evidence and scope shapes.
@@ -2296,12 +2379,9 @@ function createToolContext(
       standalone: !scope?.runtimeAuthority,
     },
     isToolVisible: (spec) => isMcpToolVisibleInScope(spec, scope),
-    conversationSystem:
-      scope?.runtimeAuthority === "claude"
-        ? "claude_code"
-        : scope?.runtimeAuthority === "codex"
-          ? "codex"
-          : undefined,
+    conversationSystem: scope?.runtimeAuthority
+      ? CONVERSATION_SYSTEM_BY_RUNTIME_AUTHORITY[scope.runtimeAuthority]
+      : undefined,
     signal: scope?.signal,
     runId,
     item,

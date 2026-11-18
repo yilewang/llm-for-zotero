@@ -58,6 +58,7 @@ const LAYERS = [
       "src/agent/",
       // Conversation backends the agent layer drives and imports back.
       "src/claudeCode/",
+      "src/antigravity/",
       "src/codexAppServer/",
       "src/webchat/",
     ],
@@ -176,8 +177,9 @@ const SEALED_EXPORTS = [
     importers: [
       // The Original Agent loop, through its one terminateRun path.
       "src/agent/runtime.ts",
-      // Codex and Claude Code bridge runs finish their own runs.
-      "src/agent/externalBackendBridge.ts",
+      // External runtimes (Claude Code, Antigravity) finish their runs
+      // through the shared turn host.
+      "src/agent/externalRuntimeTurnHost.ts",
     ],
   },
 ];
@@ -214,6 +216,9 @@ validateSealedExports(SEALED_EXPORTS);
  */
 const MIGRATION_OBLIGATIONS = [
   // Conversation backends reach into panel state instead of being called by it.
+  "runtime:src/antigravity/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
+  "runtime:src/core/conversations/repository.ts -> src/antigravity/store.ts",
+  "runtime:src/services/notes/noteTarget.ts -> src/antigravity/portal.ts",
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/conversationIdentity.ts",
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/portalScope.ts",
   "runtime:src/claudeCode/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",

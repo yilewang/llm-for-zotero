@@ -56,6 +56,16 @@ export const REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES = [
 export const REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES = [
   "library_search",
 ] as const;
+/** Antigravity sees its own tool set (ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES). */
+export const REQUIRED_ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES = [
+  "library_search",
+  "library_read",
+  "library_retrieve",
+  "paper_read",
+] as const;
+export const REQUIRED_ANTIGRAVITY_RAW_PDF_MCP_TOOL_NAMES = [
+  "library_search",
+] as const;
 
 export type CodexNativeMcpSetupStatus = {
   enabled: boolean;
@@ -270,11 +280,17 @@ export function buildCodexZoteroMcpPreflightCacheKey(params: {
   serverUrl: string;
   configValue: Record<string, unknown>;
   rawPdfMode?: boolean;
+  /**
+   * The scope's runtime: the server lists a different tool set to some
+   * runtimes (Antigravity), so their readiness is cached apart.
+   */
+  runtimeAuthority?: string;
 }): string {
   return JSON.stringify({
     serverName: params.serverName,
     serverUrl: params.serverUrl,
     rawPdfMode: Boolean(params.rawPdfMode),
+    runtimeAuthority: params.runtimeAuthority || "",
     config: buildPreflightConfigSignature(params.configValue),
   });
 }
@@ -374,6 +390,8 @@ export async function preflightCodexZoteroMcpServer(
     scopeToken?: string;
     required?: boolean;
     rawPdfMode?: boolean;
+    /** The runtime the scope token names; see the cache key. */
+    runtimeAuthority?: string;
   } = {},
 ): Promise<CodexNativeMcpSetupStatus> {
   const serverName = params.serverName || ZOTERO_MCP_SERVER_NAME;
@@ -396,6 +414,7 @@ export async function preflightCodexZoteroMcpServer(
     serverUrl,
     configValue: cacheConfigValue,
     rawPdfMode: params.rawPdfMode,
+    runtimeAuthority: params.runtimeAuthority,
   });
   const now = Date.now();
   const cached = preflightCache.get(cacheKey);
@@ -726,6 +745,50 @@ export function buildClaudeZoteroMcpServerConfig(params: {
       serverName,
       params.rawPdfMode,
     ),
+  };
+}
+
+/**
+ * The Zotero MCP server for an ACP agent such as Antigravity's `agy`: one
+ * HTTP server in ACP's `mcpServers` shape, carrying the bearer token and the
+ * conversation-stable scope header.
+ */
+export function buildAcpZoteroMcpServerConfig(params: {
+  profileSignature?: string;
+  scopeToken?: string;
+  required?: boolean;
+  rawPdfMode?: boolean;
+}): {
+  serverName: string;
+  mcpServers: Array<{
+    type: "http";
+    name: string;
+    url: string;
+    headers: Array<{ name: string; value: string }>;
+  }>;
+} {
+  const serverName = getZoteroMcpServerName(params.profileSignature);
+  const configValue = buildZoteroMcpConfigValue({
+    scopeToken: params.scopeToken,
+    required: params.required,
+    rawPdfMode: params.rawPdfMode,
+  });
+  const serverUrl =
+    typeof configValue.url === "string" && configValue.url.trim()
+      ? configValue.url.trim()
+      : getZoteroMcpServerUrl();
+  return {
+    serverName,
+    mcpServers: [
+      {
+        type: "http",
+        name: serverName,
+        url: serverUrl,
+        headers: Object.entries(getConfigHeaders(configValue)).map(
+          ([name, value]) => ({ name, value }),
+        ),
+      },
+    ],
   };
 }
 

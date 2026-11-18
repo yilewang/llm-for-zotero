@@ -28,6 +28,7 @@ import { getLocaleID } from "../../utils/locale";
 import { config, PANE_ID } from "./constants";
 import type { Message, PaperContextRef } from "./types";
 import type { ConversationSystem } from "../../shared/types";
+import { isRuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import {
   activeContextPanels,
   unregisterContextPanel,
@@ -563,12 +564,11 @@ export function registerReaderContextPanel() {
             ? Number(resolvedState.item.libraryID || 0)
             : 0) ||
           (item ? Number(item.libraryID || 0) : 0);
-        const lockedKey =
-          expectedSystem === "claude_code" || expectedSystem === "codex"
-            ? null
-            : libraryID > 0
-              ? getLockedGlobalConversationKey(libraryID)
-              : null;
+        const lockedKey = isRuntimeConversationSystem(expectedSystem)
+          ? null
+          : libraryID > 0
+            ? getLockedGlobalConversationKey(libraryID)
+            : null;
         const currentKind = panelRoot?.dataset?.conversationKind;
         const currentItemKey = panelRoot?.dataset?.itemId;
         const currentSystem = panelRoot?.dataset?.conversationSystem || "";

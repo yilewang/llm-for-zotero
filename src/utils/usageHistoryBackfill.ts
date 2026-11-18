@@ -90,6 +90,10 @@ import {
   type UsageEventMode,
   type UsageEventRuntime,
 } from "./usageStore";
+import {
+  isRuntimeConversationSystem,
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+} from "../core/conversations/conversationSystems";
 
 export const USAGE_HISTORY_BACKFILL_MIGRATION_ID = "usage-history-backfill-v1";
 
@@ -492,8 +496,9 @@ export function resolveHistoryRuntime(
   runMode: string | null,
 ): UsageEventRuntime | null {
   const system = classifyConversationKey(conversationKey)?.system;
-  if (system === "claude_code") return "claude-code";
-  if (system === "codex") return "codex";
+  if (isRuntimeConversationSystem(system)) {
+    return RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].usageSource;
+  }
   if (runMode === "agent") return "agent";
   if (runMode === "chat") return "chat";
   // A row written before `run_mode` existed says nothing about its runtime,

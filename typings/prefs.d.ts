@@ -26,6 +26,7 @@ declare namespace _ZoteroTypes {
       "readerChoiceAgent": string;
       "readerChoiceCodex": string;
       "readerChoiceClaude": string;
+      "readerChoiceAntigravity": string;
       "systemPrompt": string;
       "showPopupAddText": boolean;
       "showPopupInlineAsk": boolean;
@@ -83,6 +84,15 @@ declare namespace _ZoteroTypes {
       "codexAppServerLastAllocatedConversationKeyMap": string;
       "codexAppServerLastAllocatedGlobalConversationKey": number;
       "codexAppServerLastAllocatedPaperConversationKey": number;
+      "enableAntigravityMode": boolean;
+      "addedRuntimeSystems": string;
+      "antigravityConversationModeMap": string;
+      "antigravityGlobalConversationMap": string;
+      "antigravityLastAllocatedConversationKeyMap": string;
+      "antigravityPermissionMode": string;
+      "antigravityRuntimeModel": string;
+      "antigravityThoughtLevel": string;
+      "antigravityBinaryPath": string;
       "claudeCodeConversationModeMap": string;
       "claudeCodeGlobalConversationMap": string;
       "claudeCodePaperConversationMap": string;

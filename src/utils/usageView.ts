@@ -740,6 +740,7 @@ export function roundedTopRectPath(
 const RUNTIME_DISPLAY_NAMES: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 
 /**

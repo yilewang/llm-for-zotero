@@ -1,9 +1,5 @@
 import {
-  CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
-  CLAUDE_PAPER_CONVERSATION_KEY_BASE,
-  CODEX_GLOBAL_CONVERSATION_KEY_BASE,
-  CODEX_PAPER_CONVERSATION_KEY_BASE,
-  RUNTIME_CONVERSATION_KEY_END,
+  getRuntimeKindKeyBand,
   UPSTREAM_GLOBAL_CONVERSATION_KEY_BASE,
   UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
   isConversationKeyForKind,
@@ -14,7 +10,11 @@ import {
   getConversationScopeValidationDetails,
   getCurrentProfileSignature,
 } from "./conversationRegistry";
-import type { ConversationSystem } from "./types";
+import {
+  normalizeConversationSystem,
+  type ConversationSystem,
+  type RuntimeConversationSystem,
+} from "../core/conversations/conversationSystems";
 import { CONVERSATION_STORE_TABLES_BY_SYSTEM } from "./conversationStore/storeTables";
 
 const UPSTREAM_TABLES = CONVERSATION_STORE_TABLES_BY_SYSTEM.upstream;
@@ -95,9 +95,7 @@ function normalizeText(value: unknown, maxLength = 2_000_000): string {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return typeof value === "string" ? normalizeConversationSystem(value) : null;
 }
 
 function normalizeKind(value: unknown): "global" | "paper" | null {
@@ -242,7 +240,7 @@ export async function initConversationSearchIndexStore(): Promise<boolean> {
       search_key TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
       legacy_conversation_key INTEGER NOT NULL,
-      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),
+      system TEXT NOT NULL,
       kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
       library_id INTEGER NOT NULL,
       paper_item_id INTEGER,
@@ -372,41 +370,28 @@ const UPSTREAM_PAPER_VALIDITY_SQL = [
   "COALESCE(c.webchat_session, 0) = 0",
 ].join(" AND ");
 
-const CLAUDE_VALIDITY_SQL = [
-  "(",
-  "  (",
-  "    c.kind = 'global'",
-  `    AND c.conversation_key >= ${CLAUDE_GLOBAL_CONVERSATION_KEY_BASE}`,
-  `    AND c.conversation_key < ${CLAUDE_PAPER_CONVERSATION_KEY_BASE}`,
-  "  )",
-  "  OR",
-  "  (",
-  "    c.kind = 'paper'",
-  `    AND c.conversation_key >= ${CLAUDE_PAPER_CONVERSATION_KEY_BASE}`,
-  `    AND c.conversation_key < ${CODEX_GLOBAL_CONVERSATION_KEY_BASE}`,
-  "    AND c.paper_item_id IS NOT NULL",
-  "    AND c.paper_item_id > 0",
-  "  )",
-  ")",
-].join("\n");
-
-const CODEX_VALIDITY_SQL = [
-  "(",
-  "  (",
-  "    c.kind = 'global'",
-  `    AND c.conversation_key >= ${CODEX_GLOBAL_CONVERSATION_KEY_BASE}`,
-  `    AND c.conversation_key < ${CODEX_PAPER_CONVERSATION_KEY_BASE}`,
-  "  )",
-  "  OR",
-  "  (",
-  "    c.kind = 'paper'",
-  `    AND c.conversation_key >= ${CODEX_PAPER_CONVERSATION_KEY_BASE}`,
-  `    AND c.conversation_key < ${RUNTIME_CONVERSATION_KEY_END}`,
-  "    AND c.paper_item_id IS NOT NULL",
-  "    AND c.paper_item_id > 0",
-  "  )",
-  ")",
-].join("\n");
+/** A runtime catalog row is valid when its key sits in its kind's band. */
+function runtimeValiditySql(system: RuntimeConversationSystem): string {
+  const global = getRuntimeKindKeyBand(system, "global");
+  const paper = getRuntimeKindKeyBand(system, "paper");
+  return [
+    "(",
+    "  (",
+    "    c.kind = 'global'",
+    `    AND c.conversation_key >= ${global.start}`,
+    `    AND c.conversation_key < ${global.endExclusive}`,
+    "  )",
+    "  OR",
+    "  (",
+    "    c.kind = 'paper'",
+    `    AND c.conversation_key >= ${paper.start}`,
+    `    AND c.conversation_key < ${paper.endExclusive}`,
+    "    AND c.paper_item_id IS NOT NULL",
+    "    AND c.paper_item_id > 0",
+    "  )",
+    ")",
+  ].join("\n");
+}
 
 function getCoverageCatalogDescriptors(
   system: ConversationSystem,
@@ -423,19 +408,11 @@ function getCoverageCatalogDescriptors(
       },
     ];
   }
-  if (system === "claude_code") {
-    return [
-      {
-        tableName:
-          CONVERSATION_STORE_TABLES_BY_SYSTEM.claude_code.catalogTables.global,
-        validitySql: CLAUDE_VALIDITY_SQL,
-      },
-    ];
-  }
   return [
     {
-      tableName: CONVERSATION_STORE_TABLES_BY_SYSTEM.codex.catalogTables.global,
-      validitySql: CODEX_VALIDITY_SQL,
+      tableName:
+        CONVERSATION_STORE_TABLES_BY_SYSTEM[system].catalogTables.global,
+      validitySql: runtimeValiditySql(system),
     },
   ];
 }
@@ -567,10 +544,7 @@ export async function refreshConversationSearchIndexForSystem(
     });
     return true;
   }
-  const runtimeTables =
-    CONVERSATION_STORE_TABLES_BY_SYSTEM[
-      system === "claude_code" ? "claude_code" : "codex"
-    ];
+  const runtimeTables = CONVERSATION_STORE_TABLES_BY_SYSTEM[system];
   const catalogTable = runtimeTables.catalogTables.global;
   const messageTable = runtimeTables.messageTable;
   await refreshCatalogIntoSearchIndex({
@@ -582,8 +556,7 @@ export async function refreshConversationSearchIndexForSystem(
     activitySql: "COALESCE(MAX(m.timestamp), c.updated_at, c.created_at)",
     groupBySql:
       "c.conversation_id, c.conversation_key, c.library_id, c.kind, c.paper_item_id, c.created_at, c.updated_at, c.title",
-    validitySql:
-      system === "claude_code" ? CLAUDE_VALIDITY_SQL : CODEX_VALIDITY_SQL,
+    validitySql: runtimeValiditySql(system),
   });
   await pruneStaleSearchRows({
     system,
@@ -637,10 +610,7 @@ export async function refreshConversationSearchIndexForConversation(params: {
     });
     return true;
   }
-  const runtimeTables =
-    CONVERSATION_STORE_TABLES_BY_SYSTEM[
-      system === "claude_code" ? "claude_code" : "codex"
-    ];
+  const runtimeTables = CONVERSATION_STORE_TABLES_BY_SYSTEM[system];
   const catalogTable = runtimeTables.catalogTables.global;
   const messageTable = runtimeTables.messageTable;
   await refreshCatalogIntoSearchIndex({
@@ -652,8 +622,7 @@ export async function refreshConversationSearchIndexForConversation(params: {
     activitySql: "COALESCE(MAX(m.timestamp), c.updated_at, c.created_at)",
     groupBySql:
       "c.conversation_id, c.conversation_key, c.library_id, c.kind, c.paper_item_id, c.created_at, c.updated_at, c.title",
-    validitySql:
-      system === "claude_code" ? CLAUDE_VALIDITY_SQL : CODEX_VALIDITY_SQL,
+    validitySql: runtimeValiditySql(system),
     ...filter,
   });
   return true;

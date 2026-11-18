@@ -1,12 +1,13 @@
 import type { ResolvedContextSource, SendQuestionOptions } from "./types";
 import type { ConversationSystem, QuoteCitation } from "../../shared/types";
 import type { WorkflowTestFinalRequestSnapshot } from "./workflowTestHooks";
-import type { RuntimeConversationSystem } from "./runtimeSystemControls";
+import type { RuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import type { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
 import type { RetrievalTimingReport } from "../../services/retrieval/retrievalTiming";
 import type { LibraryTextIndexStatus } from "../../services/libraryTextIndex/scheduler";
 import type { LibraryRetrieveResult } from "../../agent/services/libraryRetrieveService";
 import type { CodexAppServerModelCatalogEntry } from "../../codexAppServer/modelCatalog";
+import type { AntigravityModelCatalog } from "../../antigravity/modelCatalog";
 import type { TornChatIdentity } from "./tornChatWindows";
 
 export type WorkflowTestCodexModelCatalogResponse = {
@@ -697,12 +698,15 @@ export type WorkflowTestEphemeralConversationRowCounts = {
   usageEvents: number;
 };
 
-export type WorkflowTestRuntimeSystemToggle = {
+/** A runtime's entry in the composer's runtime menu. */
+export type WorkflowTestRuntimeMenuEntry = {
   system: RuntimeConversationSystem;
+  /** The menu offers it (the runtime is added and on). */
   visible: boolean;
+  /** The panel runs it. */
   active: boolean;
+  /** Refused because a runtime switch is under way. */
   disabled: boolean;
-  ariaPressed: boolean;
 };
 
 /** The composer's runtime badge and its menu, as a reader sees them. */
@@ -847,20 +851,6 @@ export type WorkflowTestWebChatPdfToggleDiagnostics = {
   } | null;
 };
 
-export type WorkflowTestRuntimeGeometry = {
-  containerWidth: number;
-  fontScale: number;
-  runtimeWidth: number;
-  runtimeButtonWidths: number[];
-  runtimeIntersectsLeadingContent: boolean;
-  runtimeIntersectsTrailingContent: boolean;
-  runtimeTrailingOverlapPx: number;
-  runtimeWithinContainer: boolean;
-  trailingContentWithinContainer: boolean;
-  deleteButtonIconOnly: boolean;
-  centeredContentOffset: number;
-};
-
 export type WorkflowTestFooterLayout = {
   statusHeight: number;
   statusLineHeight: number;
@@ -907,7 +897,7 @@ export type WorkflowTestDiagnostics = {
   sentContextItemLabels: string[];
   historyNewVisible?: boolean;
   historyToggleVisible?: boolean;
-  runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
+  runtimeMenuEntries: WorkflowTestRuntimeMenuEntry[];
   runtimeBadge?: WorkflowTestRuntimeBadge;
   webChatMode?: boolean;
   modelButtonDisabled?: boolean;
@@ -1013,7 +1003,7 @@ export type WorkflowTestStandaloneDiagnostics = {
   paperTabText?: string;
   openTabText?: string;
   statusText?: string;
-  runtimeSystemToggles: WorkflowTestRuntimeSystemToggle[];
+  runtimeMenuEntries: WorkflowTestRuntimeMenuEntry[];
   runtimeBadge?: WorkflowTestRuntimeBadge;
   lastSend: SendQuestionOptions | null;
   lastFinalRequest: WorkflowTestFinalRequestSnapshot | null;
@@ -1218,6 +1208,17 @@ export type LibraryRetrieveBenchResult = {
 };
 
 export type WorkflowTestApi = {
+  /**
+   * The plugin's own Antigravity storage (a test bundle cannot import it: its
+   * dependency graph reaches modules only the plugin build can load).
+   */
+  antigravityStorage: {
+    /** Runs the store's startup step, as plugin startup does. */
+    init(): Promise<void>;
+    createGlobalConversation(libraryID: number): Promise<number | null>;
+    listGlobalConversationKeys(libraryID: number): Promise<number[]>;
+    deleteConversation(conversationKey: number): Promise<void>;
+  };
   planRetrievalQuery: typeof resolveRetrievalQueryPlan;
   libraryRetrieveBench: (input: {
     query: string;
@@ -1414,6 +1415,18 @@ export type WorkflowTestApi = {
       ReturnType<typeof import("./planHistoryReplay").exercisePlanHistoryReplay>
     >
   >;
+  /** One Antigravity turn through the real panel against a fake agy. */
+  exerciseAntigravityTurn: (input: {
+    panelId: string;
+    scenario: import("./antigravityTurnReplay").AntigravityTurnScenario;
+  }) => Promise<import("./antigravityTurnReplay").AntigravityTurnResult>;
+  /** Stops the fake agy processes the Antigravity turn tests started. */
+  resetAntigravityReplay: () => Promise<void>;
+  /** One Claude Code turn through the real panel against a scripted bridge. */
+  exerciseClaudeBridgeTurn: (input: {
+    panelId: string;
+    scenario: import("./externalTurnReplay").ExternalTurnScenario;
+  }) => Promise<import("./externalTurnReplay").ExternalTurnResult>;
   exerciseAgentDeliveryReplay: (input: {
     panelId: string;
     failFinalRefresh?: boolean;
@@ -1797,7 +1810,8 @@ export type WorkflowTestApi = {
     storedRefs: import("../../shared/types").AttachedConversationRef[];
     diagnostics: WorkflowTestDiagnostics;
   }>;
-  clickPanelSystemToggle: (
+  /** Picks `system` in the runtime menu, or Agent if the panel runs it. */
+  togglePanelRuntime: (
     panelId: string,
     system: RuntimeConversationSystem,
   ) => Promise<WorkflowTestDiagnostics>;
@@ -1808,14 +1822,11 @@ export type WorkflowTestApi = {
     panelId: string,
     system: ConversationSystem,
   ) => Promise<WorkflowTestDiagnostics>;
-  clickPanelSystemTogglesRapidly: (
+  /** Picks each system in the runtime menu without waiting between picks. */
+  pickPanelRuntimesRapidly: (
     panelId: string,
-    systems: RuntimeConversationSystem[],
+    systems: ConversationSystem[],
   ) => Promise<WorkflowTestDiagnostics>;
-  measurePanelRuntimeGeometry: (
-    panelId: string,
-    input: { width: number; fontScale: number },
-  ) => Promise<WorkflowTestRuntimeGeometry>;
   measurePanelFooterLayout: (
     panelId: string,
     input: { width: number; statusText: string },
@@ -1866,16 +1877,12 @@ export type WorkflowTestApi = {
   pickStandaloneRuntime: (
     system: ConversationSystem,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
-  clickStandaloneSystemToggle: (
+  toggleStandaloneRuntime: (
     system: RuntimeConversationSystem,
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
-  clickStandaloneSystemTogglesRapidly: (
-    systems: RuntimeConversationSystem[],
+  pickStandaloneRuntimesRapidly: (
+    systems: ConversationSystem[],
   ) => Promise<WorkflowTestStandaloneDiagnostics>;
-  measureStandaloneRuntimeGeometry: (input: {
-    width: number;
-    fontScale: number;
-  }) => Promise<WorkflowTestRuntimeGeometry>;
   inspectStandaloneComposer: () => Promise<WorkflowTestStandaloneComposerDiagnostics>;
   askStandalone: (text: string) => Promise<SendQuestionOptions>;
   withPendingStandaloneSend: (
@@ -2033,6 +2040,15 @@ export type WorkflowTestApi = {
   configureCodexModelCatalogs: (
     responses: WorkflowTestCodexModelCatalogResponse[],
   ) => void;
+  /**
+   * Sets the Antigravity model catalog the pickers read, so a test never
+   * starts agy; null forgets it.
+   */
+  configureAntigravityModelCatalog: (
+    catalog: AntigravityModelCatalog | null,
+  ) => void;
+  /** Loads the installed agy's model catalog (live tests only). */
+  loadAntigravityModelCatalogForTests: () => Promise<AntigravityModelCatalog>;
   getCodexModelCatalogRequests: () => string[];
   resolveDelayedCodexModelCatalog: () => Promise<void>;
   resolveDelayedCodexPermissionCatalog: () => Promise<void>;

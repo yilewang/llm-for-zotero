@@ -239,6 +239,7 @@ import {
   restartClaudeBridge,
   type ClaudeBridgeStatus,
 } from "../claudeCode/bridgeProcess";
+import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
 import {
   getClaudeAutoCompactThresholdPercent,
   getClaudeBridgeExtraArgsPref,
@@ -259,7 +260,6 @@ import {
   getClaudeSettingSourcesByPref,
   isClaudeAutoCompactEnabled,
   isClaudeBlockStreamingEnabled,
-  getConversationSystemPref,
   getLastUsedClaudeGlobalConversationKey,
   getLastUsedClaudePaperConversationKey,
   isClaudeCodeModeEnabled,
@@ -336,7 +336,12 @@ import {
   isWebAccessConfigured,
 } from "../webAccess/prefs";
 import { registerWebAccessPreferences } from "./preferences/webAccessPanel";
+import {
+  registerAntigravityPreferences,
+  type AntigravityPreferences,
+} from "./preferences/antigravityPanel";
 import { registerSavedFilesPreferences } from "./preferences/savedFilesPanel";
+import { registerRuntimeRows } from "./preferences/runtimeRows";
 import { getAgentFilesRoot } from "../utils/agentFilesDirectory";
 import { TavilyClient } from "../webAccess/tavilyClient";
 import {
@@ -4420,6 +4425,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     target.textContent = parts.filter((part) => part.length > 0).join(" · ");
   };
 
+  let antigravityPreferences: AntigravityPreferences | null = null;
   refreshAgentRowSummaries = () => {
     const originalOn = !!enableAgentModeInput?.checked;
     setAgentRowSummary(
@@ -4457,6 +4463,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
         ? [claudeModel, selectedOptionLabel(agentPermissionModeSelect)]
         : [t("Off")],
     );
+    if (antigravityPreferences) {
+      const antigravity = antigravityPreferences.summary();
+      setAgentRowSummary("antigravity", antigravity.on, antigravity.parts);
+    }
     const notesPath = inputValue("obsidian-vault-path");
     setAgentRowSummary(
       "notes",
@@ -4502,6 +4512,24 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     agentPanel.addEventListener("change", onAgentPanelEdit);
     agentPanel.addEventListener("input", onAgentPanelEdit);
   }
+  antigravityPreferences = registerAntigravityPreferences(doc, {
+    confirm: (title, text) => {
+      const prompt = (
+        globalThis as {
+          Services?: {
+            prompt?: {
+              confirm?: (win: Window, title: string, text: string) => boolean;
+            };
+          };
+        }
+      ).Services?.prompt;
+      return prompt?.confirm
+        ? prompt.confirm(_window, title, text)
+        : _window.confirm(text);
+    },
+    onChange: () => refreshAgentRowSummaries(),
+  });
+  registerRuntimeRows(doc);
   refreshAgentRowSummaries();
   // A DeepSeek model profile can turn web search on or off.
   _window.addEventListener(
@@ -4769,10 +4797,10 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       renderCodexMcpStatus(
         codexAppServerMcpEnableInput.checked
           ? t(
-              "Zotero MCP tools enabled for native Codex and Claude Code turns.",
+              "Zotero MCP tools enabled for native Codex, Claude Code, and Antigravity turns.",
             )
           : t(
-              "Zotero MCP tools disabled for native Codex and Claude Code turns.",
+              "Zotero MCP tools disabled for native Codex, Claude Code, and Antigravity turns.",
             ),
       );
     });

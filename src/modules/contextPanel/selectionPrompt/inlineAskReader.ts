@@ -249,6 +249,10 @@ function inlineAskModelNoteText(
     return t(
       "Claude Code runs only in the sidebar. Inline Ask uses an API model from this list.",
     );
+  if (note === "antigravity")
+    return t(
+      "Antigravity runs only in the sidebar. Inline Ask uses an API model from this list.",
+    );
   if (note === "webchat")
     return t(
       "WebChat runs only in the sidebar. Inline Ask uses an API model from this list.",

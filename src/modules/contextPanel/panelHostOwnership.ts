@@ -10,6 +10,7 @@ import {
 import { COMPOSER_BOUND_KEYS } from "./composerKeyBindings";
 import { getConversationKey } from "./conversationIdentity";
 import type { ConversationSystem } from "../../shared/types";
+import { isRuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import {
   parseSelectionSurface,
   type SelectionSurface,
@@ -353,11 +354,9 @@ function resolveMountedScope(body: Element): ConversationScopeIdentity | null {
         : null;
   if (!kind || !conversationKey || !libraryID) return null;
   return {
-    system:
-      root.dataset.conversationSystem === "claude_code" ||
-      root.dataset.conversationSystem === "codex"
-        ? root.dataset.conversationSystem
-        : "upstream",
+    system: isRuntimeConversationSystem(root.dataset.conversationSystem)
+      ? root.dataset.conversationSystem
+      : "upstream",
     conversationKey,
     kind,
     libraryID,
@@ -578,14 +577,11 @@ export function renderPanelOwnershipBlocked(
  * the conversation it is showing and then switches, so the fence must deliver
  * the event instead of destroying it — otherwise the reader has no way out.
  *
- * Both surfaces that render these controls give every button the shared
- * `llm-runtime-system-toggle` class on top of their own
- * (`llm-panel-runtime-system-toggle`, `llm-standalone-runtime-system-toggle`),
- * so the shared class is what this matches. The runtime badge opens a menu
- * (`#llm-runtime-menu`); its options are controls of the same kind.
+ * The runtime badge (`#llm-runtime-mode-toggle`) opens a menu
+ * (`#llm-runtime-menu`); its options are the controls that switch runtime.
  */
 const OWNERSHIP_FENCE_EXEMPT_SELECTOR =
-  "#llm-runtime-mode-toggle, #llm-runtime-menu, .llm-runtime-system-toggle";
+  "#llm-runtime-mode-toggle, #llm-runtime-menu";
 
 function matchesWithin(target: unknown, selector: string): boolean {
   const element = target as {

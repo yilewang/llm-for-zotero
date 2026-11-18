@@ -32,6 +32,7 @@ import { initChatStore } from "./utils/chatStore";
 import { initUsageStore } from "./utils/usageStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
+import { initAntigravityStore } from "./antigravity/storage";
 import { pendingDeletionStore } from "./core/conversations/pendingDeletionStore";
 import {
   configurePendingDeletionSubsystem,
@@ -53,6 +54,12 @@ import { clearQueuedFollowUpState } from "./modules/contextPanel/queuedFollowUps
 import { closeAllAddonDialogs } from "./utils/dialogRegistry";
 import { closeAllTornChatWindows } from "./modules/contextPanel/tornChatWindows";
 import {
+  CONVERSATION_SYSTEMS,
+  RUNTIME_CONVERSATION_SYSTEMS,
+  type ConversationSystem,
+  type RuntimeConversationSystem,
+} from "./core/conversations/conversationSystems";
+import {
   initializePaperRestoreSelections,
   shutdownPaperRestoreSelections,
 } from "./shared/paperConversationRestore";
@@ -62,10 +69,21 @@ import {
 } from "./services/paperConversationRestoreNotifications";
 
 type ConversationStoreReadiness = {
-  chatStoreReady: boolean;
-  claudeStoreReady: boolean;
-  codexStoreReady: boolean;
+  /** Whether each conversation system's store finished initializing. */
+  storeReady: Record<ConversationSystem, boolean>;
   pendingDeletionReady: boolean;
+};
+
+/** How each runtime's conversation store starts, in startup order. */
+const RUNTIME_STORE_STARTUP: Readonly<
+  Record<
+    RuntimeConversationSystem,
+    { label: string; init: () => Promise<void> }
+  >
+> = {
+  claude_code: { label: "Claude Code store", init: initClaudeCodeStore },
+  codex: { label: "Codex App Server store", init: initCodexAppServerStore },
+  antigravity: { label: "Antigravity store", init: initAntigravityStore },
 };
 
 /** Passed by addon/bootstrap.js; isUpgrade is true for an in-place update. */
@@ -155,15 +173,15 @@ async function ensureStartupUserSkillsLoaded(): Promise<void> {
 
 async function initializeConversationStoresForStartup(): Promise<ConversationStoreReadiness> {
   const readiness: ConversationStoreReadiness = {
-    chatStoreReady: false,
-    claudeStoreReady: false,
-    codexStoreReady: false,
+    storeReady: Object.fromEntries(
+      CONVERSATION_SYSTEMS.map((system) => [system, false]),
+    ) as Record<ConversationSystem, boolean>,
     pendingDeletionReady: false,
   };
 
   try {
     await measureStartupPhase("upstream chat store", initChatStore);
-    readiness.chatStoreReady = true;
+    readiness.storeReady.upstream = true;
   } catch (err) {
     appLogger.warn("LLM: Failed to initialize chat store", err);
   }
@@ -176,23 +194,16 @@ async function initializeConversationStoresForStartup(): Promise<ConversationSto
     appLogger.warn("LLM: Failed to initialize usage store", err);
   }
   if (startupLifecycle.isStopped()) return readiness;
-  try {
-    await measureStartupPhase("Claude Code store", initClaudeCodeStore);
-    readiness.claudeStoreReady = true;
-  } catch (err) {
-    appLogger.warn("LLM: Failed to initialize Claude Code store", err);
+  for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+    const { label, init } = RUNTIME_STORE_STARTUP[system];
+    try {
+      await measureStartupPhase(label, init);
+      readiness.storeReady[system] = true;
+    } catch (err) {
+      appLogger.warn(`LLM: Failed to initialize ${label}`, err);
+    }
+    if (startupLifecycle.isStopped()) return readiness;
   }
-  if (startupLifecycle.isStopped()) return readiness;
-  try {
-    await measureStartupPhase(
-      "Codex App Server store",
-      initCodexAppServerStore,
-    );
-    readiness.codexStoreReady = true;
-  } catch (err) {
-    appLogger.warn("LLM: Failed to initialize Codex App Server store", err);
-  }
-  if (startupLifecycle.isStopped()) return readiness;
   try {
     await measureStartupPhase("pending deletion store", async () => {
       configurePendingDeletionSubsystem();
@@ -234,9 +245,7 @@ function allConversationStoresReady(
   readiness: ConversationStoreReadiness,
 ): boolean {
   return (
-    readiness.chatStoreReady &&
-    readiness.claudeStoreReady &&
-    readiness.codexStoreReady &&
+    CONVERSATION_SYSTEMS.every((system) => readiness.storeReady[system]) &&
     readiness.pendingDeletionReady
   );
 }
@@ -889,6 +898,20 @@ async function shutdownPlugin(reason: PluginLifecycleReason): Promise<void> {
     }
   } catch (error) {
     appLogger.debug("LLM: codex app-server shutdown skipped", error);
+  }
+  try {
+    const { destroyAllAgyClients } = await import("./antigravity/agyProcess");
+    const finished = await waitWithTimeout(
+      destroyAllAgyClients(),
+      CODEX_SHUTDOWN_TIMEOUT_MS,
+    );
+    if (!finished) {
+      appLogger.warn(
+        `LLM: agy shutdown did not finish in ${CODEX_SHUTDOWN_TIMEOUT_MS}ms; continuing`,
+      );
+    }
+  } catch (error) {
+    appLogger.debug("LLM: agy shutdown skipped", error);
   }
   try {
     const { shutdownAgentSubsystem } = require("./agent");

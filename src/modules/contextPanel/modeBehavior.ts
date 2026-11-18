@@ -1,4 +1,8 @@
 import type { ChatRuntimeMode, PaperContextRef } from "./types";
+import {
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 
 export type RuntimeModeResolutionInput = {
   isRuntimeConversationSystem?: boolean;
@@ -35,6 +39,17 @@ export function filterManualPaperContextsAgainstAutoLoaded(
   );
 }
 
+/** The mode each external runtime always runs in. */
+const RUNTIME_CONVERSATION_MODE: Record<
+  RuntimeConversationSystem,
+  ChatRuntimeMode
+> = {
+  codex: "chat",
+  claude_code: "agent",
+  // Antigravity runs through the shared agent engine like Claude Code (D4).
+  antigravity: "agent",
+};
+
 /**
  * The built-in runtime is always Agent while the Agent feature is on and
  * WebChat is off. Nothing chosen earlier (a cached per-conversation mode or a
@@ -43,13 +58,11 @@ export function filterManualPaperContextsAgainstAutoLoaded(
 export function resolveRuntimeModeForConversation(
   input: RuntimeModeResolutionInput,
 ): ChatRuntimeMode {
-  if (input.runtimeConversationSystem === "codex") return "chat";
-  if (
-    input.isRuntimeConversationSystem ||
-    input.runtimeConversationSystem === "claude_code"
-  ) {
-    return "agent";
+  const runtimeSystem = input.runtimeConversationSystem;
+  if (isRuntimeConversationSystem(runtimeSystem)) {
+    return RUNTIME_CONVERSATION_MODE[runtimeSystem];
   }
+  if (input.isRuntimeConversationSystem) return "agent";
   if (input.isWebChat) return "chat";
   if (!input.agentModeEnabled) return "chat";
   return "agent";

@@ -1,4 +1,25 @@
 import type { ConversationSystem } from "../../shared/types";
+import {
+  getRuntimeConversationSystemDescriptor,
+  isRuntimeConversationSystem,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
+
+/** Order of the runtimes in the runtime menu (not the registry order). */
+export const RUNTIME_SYSTEM_DISPLAY_ORDER = [
+  "codex",
+  "claude_code",
+  "antigravity",
+] as const satisfies readonly RuntimeConversationSystem[];
+
+// Fails to compile when a runtime is missing from the display order above.
+const RUNTIME_DISPLAY_ORDER_IS_COMPLETE: Exclude<
+  RuntimeConversationSystem,
+  (typeof RUNTIME_SYSTEM_DISPLAY_ORDER)[number]
+> extends never
+  ? true
+  : never = true;
+void RUNTIME_DISPLAY_ORDER_IS_COMPLETE;
 
 /** One entry of the runtime badge menu. */
 export type RuntimeBadgeItem = {
@@ -9,8 +30,8 @@ export type RuntimeBadgeItem = {
 export type RuntimeBadgeStateInput = {
   system: ConversationSystem;
   agentEnabled: boolean;
-  codexEnabled: boolean;
-  claudeEnabled: boolean;
+  /** Which runtimes are on (in Preferences, and available on this surface). */
+  runtimeEnabled: Record<RuntimeConversationSystem, boolean>;
   isWebChat: boolean;
   /** The window's temporary side chat: the built-in runtime only. */
   isSideChat: boolean;
@@ -19,10 +40,12 @@ export type RuntimeBadgeStateInput = {
    * so the badge names it and switches nothing.
    */
   isTornWindow?: boolean;
+  /** Every runtime is added in Settings: nothing is left to add. */
+  allRuntimesAdded?: boolean;
 };
 
 export type RuntimeBadgeState = {
-  /** False hides the badge (WebChat, or no runtime is on). */
+  /** False hides the badge (Agent and every runtime are off). */
   visible: boolean;
   /** Text shown on the badge itself. */
   label: string;
@@ -30,6 +53,16 @@ export type RuntimeBadgeState = {
   clickable: boolean;
   /** Menu entries, in display order; the built-in runtime comes first. */
   items: RuntimeBadgeItem[];
+  /**
+   * The menu ends with "Add runtime…", which opens Settings; a side chat or
+   * torn-off window, which cannot change runtime, has none.
+   */
+  showAddRuntime: boolean;
+  /**
+   * The last row's wording: "add" while a runtime is left to add, then
+   * "configure" (both open Settings on the Agent tab).
+   */
+  settingsRowKind: "add" | "configure";
 };
 
 /** The badge reads "Claude", not "Claude Code". */
@@ -37,41 +70,57 @@ export function getRuntimeBadgeLabel(
   system: ConversationSystem,
   agentEnabled: boolean,
 ): string {
-  if (system === "codex") return "Codex";
-  if (system === "claude_code") return "Claude";
-  return agentEnabled ? "Agent" : "Chat";
+  return isRuntimeConversationSystem(system)
+    ? getRuntimeConversationSystemDescriptor(system).shortLabel
+    : agentEnabled
+      ? "Agent"
+      : "Chat";
 }
 
 export function resolveRuntimeBadgeState(
   input: RuntimeBadgeStateInput,
 ): RuntimeBadgeState {
-  const label = getRuntimeBadgeLabel(input.system, input.agentEnabled);
+  // In WebChat the badge names WebChat and offers the runtimes to leave it
+  // for; going back to an API model stays the model menu's job.
+  const label = input.isWebChat
+    ? "WebChat"
+    : getRuntimeBadgeLabel(input.system, input.agentEnabled);
+  const runtimeEnabled = input.runtimeEnabled;
   const items: RuntimeBadgeItem[] = input.isTornWindow
     ? [{ system: input.system, label }]
-    : [
-        {
-          system: "upstream",
-          label: getRuntimeBadgeLabel("upstream", input.agentEnabled),
-        },
-      ];
+    : input.isWebChat
+      ? []
+      : [
+          {
+            system: "upstream",
+            label: getRuntimeBadgeLabel("upstream", input.agentEnabled),
+          },
+        ];
   if (!input.isSideChat && !input.isTornWindow) {
-    if (input.codexEnabled) items.push({ system: "codex", label: "Codex" });
-    if (input.claudeEnabled) {
-      items.push({ system: "claude_code", label: "Claude" });
+    for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
+      if (runtimeEnabled[system]) {
+        items.push({
+          system,
+          label: getRuntimeBadgeLabel(system, input.agentEnabled),
+        });
+      }
     }
   }
   // A panel already running Codex or Claude keeps its label even if that
   // runtime was just turned off in Preferences, as the static badge did.
   const anyRuntimeOn =
     input.agentEnabled ||
-    input.codexEnabled ||
-    input.claudeEnabled ||
+    RUNTIME_SYSTEM_DISPLAY_ORDER.some((system) => runtimeEnabled[system]) ||
     input.system !== "upstream";
-  const visible = !input.isWebChat && anyRuntimeOn;
+  // The runtime menu is the only way between runtimes, WebChat included.
+  const visible = anyRuntimeOn;
+  const showAddRuntime = !input.isSideChat && !input.isTornWindow;
   return {
     visible,
     label,
-    clickable: visible && items.length >= 2,
+    clickable: visible && (items.length >= 2 || showAddRuntime),
     items,
+    showAddRuntime,
+    settingsRowKind: input.allRuntimesAdded ? "configure" : "add",
   };
 }

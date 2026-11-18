@@ -33,6 +33,24 @@
  * surface writes prefs.
  */
 import type { ConversationSystem } from "../../shared/types";
+import {
+  getLastUsedAntigravityConversationMode,
+  getLastUsedAntigravityGlobalConversationKey,
+  getLastUsedAntigravityPaperConversationKey,
+  removeLastUsedAntigravityConversationMode,
+  removeLastUsedAntigravityGlobalConversationKey,
+  removeLastUsedAntigravityPaperConversationKey,
+  setLastUsedAntigravityConversationMode,
+  setLastUsedAntigravityGlobalConversationKey,
+  setLastUsedAntigravityPaperConversationKey,
+} from "../../antigravity/prefs";
+import {
+  activeAntigravityConversationModeByLibrary,
+  activeAntigravityGlobalConversationByLibrary,
+  activeAntigravityPaperConversationByPaper,
+  buildAntigravityLibraryStateKey,
+  buildAntigravityPaperStateKey,
+} from "../../antigravity/state";
 import { invalidatePaperRestoreTargetCache } from "../../shared/paperConversationRestore";
 import {
   getLastUsedClaudeConversationMode,
@@ -186,9 +204,9 @@ function slot<K, V>(map: Map<K, V>, key: K): Slot<V> {
   };
 }
 
-// Upstream library maps key by the raw numeric library ID; Claude and Codex key
-// by "<profile>:<library>". Paper maps key by "lib:paper" (upstream) or
-// "<profile>:lib:paper" (Claude/Codex). The existing builders own those keys.
+// Upstream library maps key by the raw numeric library ID; Claude, Codex, and
+// Antigravity key by "<profile>:<library>". Paper maps key by "lib:paper"
+// (upstream) or "<profile>:lib:paper" (the runtimes). The existing builders own those keys.
 const ADAPTERS: Record<ConversationSystem, SelectionAdapter> = {
   upstream: {
     system: "upstream",
@@ -269,6 +287,35 @@ const ADAPTERS: Record<ConversationSystem, SelectionAdapter> = {
     getPaper: getLastUsedCodexPaperConversationKey,
     setPaper: setLastUsedCodexPaperConversationKey,
     removePaper: removeLastUsedCodexPaperConversationKey,
+  },
+  antigravity: {
+    system: "antigravity",
+    libraryStateKey: buildAntigravityLibraryStateKey,
+    paperStateKey: buildAntigravityPaperStateKey,
+    modeSlot: (libraryID) =>
+      slot(
+        activeAntigravityConversationModeByLibrary,
+        buildAntigravityLibraryStateKey(libraryID),
+      ),
+    globalSlot: (libraryID) =>
+      slot(
+        activeAntigravityGlobalConversationByLibrary,
+        buildAntigravityLibraryStateKey(libraryID),
+      ),
+    paperSlot: (libraryID, paperItemID) =>
+      slot(
+        activeAntigravityPaperConversationByPaper,
+        buildAntigravityPaperStateKey(libraryID, paperItemID),
+      ),
+    getMode: getLastUsedAntigravityConversationMode,
+    setMode: setLastUsedAntigravityConversationMode,
+    removeMode: removeLastUsedAntigravityConversationMode,
+    getGlobal: getLastUsedAntigravityGlobalConversationKey,
+    setGlobal: setLastUsedAntigravityGlobalConversationKey,
+    removeGlobal: removeLastUsedAntigravityGlobalConversationKey,
+    getPaper: getLastUsedAntigravityPaperConversationKey,
+    setPaper: setLastUsedAntigravityPaperConversationKey,
+    removePaper: removeLastUsedAntigravityPaperConversationKey,
   },
 };
 

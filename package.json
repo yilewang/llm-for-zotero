@@ -26,6 +26,7 @@
     "build": "zotero-plugin build",
     "check:architecture": "node scripts/check-architecture-boundaries.cjs",
     "check:cycles": "node scripts/check-import-cycles.cjs",
+    "check:acp-conformance": "tsx scripts/acp-conformance.ts",
     "validate:model-registry": "node scripts/validate-model-capability-registry.mjs",
     "lint:check": "prettier --check . && eslint .",
     "lint:fix": "prettier --write . && eslint . --fix",

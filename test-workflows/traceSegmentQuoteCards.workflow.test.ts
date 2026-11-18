@@ -93,10 +93,7 @@ describe("workflow: quote cards in trace segments", function () {
     assert.notEqual(first.id, second.id);
 
     const panel = await api.renderPanelForItem(fixture.parentItemId);
-    const diagnostics = await api.clickPanelSystemToggle(
-      panel.panelId,
-      "codex",
-    );
+    const diagnostics = await api.togglePanelRuntime(panel.panelId, "codex");
     assert.equal(diagnostics.conversationSystem, "codex");
     const body = Zotero.getMainWindow().document.querySelector<HTMLElement>(
       `[data-workflow-panel-id="${panel.panelId}"]`,

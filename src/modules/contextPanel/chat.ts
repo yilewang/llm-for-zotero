@@ -49,6 +49,12 @@ import {
 } from "../../codexAppServer/store";
 import { updateClaudeAssistantMessageQuoteLocations } from "../../claudeCode/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
+import { antigravityConversationStore } from "../../antigravity/store";
+import {
+  appendAntigravityConversationMessageWithinWriteLock,
+  updateLatestAntigravityConversationAssistantMessageWithinWriteLock,
+  updateLatestAntigravityConversationUserMessageWithinWriteLock,
+} from "../../antigravity/conversationWrites";
 import {
   enqueueConversationCleanupJob,
   performConversationCleanupJobAttempt,
@@ -67,9 +73,14 @@ import {
   updateLatestClaudeConversationAssistantMessageWithinWriteLock,
   updateLatestClaudeConversationUserMessageWithinWriteLock,
 } from "../../claudeCode/runtime";
+import { getAntigravityRuntime } from "../../antigravity/runtime";
 import { getCodexProfileSignature } from "../../codexAppServer/constants";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
 import { resolveConversationStorageSystem } from "../../shared/conversationStorageRouting";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
 import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
   isCodexAppServerModeEnabled,
@@ -2275,20 +2286,40 @@ async function updateStoredLatestUserMessageByConversationUnlocked(
     conversationSystem,
   });
   if (!storageSystem) return;
-  const written =
-    storageSystem === "claude_code"
-      ? await updateLatestClaudeConversationUserMessageWithinWriteLock(
+  let written: boolean;
+  switch (storageSystem) {
+    case "claude_code":
+      written = await updateLatestClaudeConversationUserMessageWithinWriteLock(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    case "codex":
+      written = await updateLatestCodexUserMessage(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    case "antigravity":
+      written =
+        await updateLatestAntigravityConversationUserMessageWithinWriteLock(
           conversationKey,
           message,
           options,
-        )
-      : storageSystem === "codex"
-        ? await updateLatestCodexUserMessage(conversationKey, message, options)
-        : await updateStoredLatestUserMessage(
-            conversationKey,
-            message,
-            options,
-          );
+        );
+      break;
+    case "upstream":
+      written = await updateStoredLatestUserMessage(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    default:
+      return assertNeverConversationSystem(storageSystem);
+  }
   if (!written && options?.expectedTimestamp !== undefined) {
     // The row is gone (for example, the turn was deleted), so nothing was
     // written. Not an error for the caller, but worth a trace.
@@ -2433,24 +2464,41 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
           : latestContextSnapshot?.contextWindow,
     };
   };
-  const written =
-    storageSystem === "claude_code"
-      ? await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
+  let written: boolean;
+  switch (storageSystem) {
+    case "claude_code":
+      written =
+        await updateLatestClaudeConversationAssistantMessageWithinWriteLock(
           conversationKey,
           withContextUsage(),
           options,
-        )
-      : storageSystem === "codex"
-        ? await updateLatestCodexAssistantMessage(
-            conversationKey,
-            withContextUsage(),
-            options,
-          )
-        : await updateStoredLatestAssistantMessage(
-            conversationKey,
-            message,
-            options,
-          );
+        );
+      break;
+    case "codex":
+      written = await updateLatestCodexAssistantMessage(
+        conversationKey,
+        withContextUsage(),
+        options,
+      );
+      break;
+    case "antigravity":
+      written =
+        await updateLatestAntigravityConversationAssistantMessageWithinWriteLock(
+          conversationKey,
+          withContextUsage(),
+          options,
+        );
+      break;
+    case "upstream":
+      written = await updateStoredLatestAssistantMessage(
+        conversationKey,
+        message,
+        options,
+      );
+      break;
+    default:
+      return assertNeverConversationSystem(storageSystem);
+  }
   if (!written && options?.expectedTimestamp !== undefined) {
     // The row is gone (for example, the turn was deleted), so nothing was
     // written, and there is no answer to publish a plan document for.
@@ -2542,23 +2590,34 @@ export async function updateStoredAssistantQuoteLocations(
       timestamp: request.timestamp,
       messageId: request.messageId,
     };
-    return storageSystem === "claude_code"
-      ? updateClaudeAssistantMessageQuoteLocations(
+    switch (storageSystem) {
+      case "claude_code":
+        return updateClaudeAssistantMessageQuoteLocations(
           conversationKey,
           target,
           request.writes,
-        )
-      : storageSystem === "codex"
-        ? updateCodexAssistantMessageQuoteLocations(
-            conversationKey,
-            target,
-            request.writes,
-          )
-        : updateStoredAssistantMessageQuoteLocations(
-            conversationKey,
-            target,
-            request.writes,
-          );
+        );
+      case "codex":
+        return updateCodexAssistantMessageQuoteLocations(
+          conversationKey,
+          target,
+          request.writes,
+        );
+      case "antigravity":
+        return antigravityConversationStore.updateAssistantMessageQuoteLocations(
+          conversationKey,
+          target,
+          request.writes,
+        );
+      case "upstream":
+        return updateStoredAssistantMessageQuoteLocations(
+          conversationKey,
+          target,
+          request.writes,
+        );
+      default:
+        return assertNeverConversationSystem(storageSystem);
+    }
   });
 }
 
@@ -2621,18 +2680,34 @@ async function persistConversationMessage(
         conversationSystem,
       });
       if (!storageSystem) return;
-      if (storageSystem === "claude_code") {
-        await appendClaudeConversationMessageWithinWriteLock(
-          conversationKey,
-          message,
-          undefined,
-        );
-      } else if (storageSystem === "codex") {
-        await appendCodexMessage(conversationKey, message, undefined);
-        await pruneCodexConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
-      } else {
-        await appendStoredMessage(conversationKey, message, undefined);
-        await pruneConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+      switch (storageSystem) {
+        case "claude_code":
+          await appendClaudeConversationMessageWithinWriteLock(
+            conversationKey,
+            message,
+            undefined,
+          );
+          break;
+        case "codex":
+          await appendCodexMessage(conversationKey, message, undefined);
+          await pruneCodexConversation(
+            conversationKey,
+            PERSISTED_HISTORY_LIMIT,
+          );
+          break;
+        case "antigravity":
+          await appendAntigravityConversationMessageWithinWriteLock(
+            conversationKey,
+            message,
+            undefined,
+          );
+          break;
+        case "upstream":
+          await appendStoredMessage(conversationKey, message, undefined);
+          await pruneConversation(conversationKey, PERSISTED_HISTORY_LIMIT);
+          break;
+        default:
+          assertNeverConversationSystem(storageSystem);
       }
       if (message.role === "assistant") {
         await publishPersistedPlanDocumentIfPresent({
@@ -3699,10 +3774,30 @@ type QueuedInputDrainScope = {
   webChatActive?: boolean;
 };
 
+/** A turn's run mode: fixed per runtime; upstream keeps the chosen one. */
+function resolveConversationSystemRuntimeMode(
+  system: ConversationSystem,
+  upstreamRuntimeMode: ChatRuntimeMode,
+): ChatRuntimeMode {
+  switch (system) {
+    case "claude_code":
+      return "agent";
+    case "codex":
+      return "chat";
+    // Antigravity runs through the shared agent engine like Claude Code (D4).
+    case "antigravity":
+      return "agent";
+    case "upstream":
+      return upstreamRuntimeMode;
+    default:
+      return assertNeverConversationSystem(system);
+  }
+}
+
 function normalizeQueuedInputConversationSystem(
   value: ConversationSystem | string | null | undefined,
 ): ConversationSystem {
-  return value === "claude_code" || value === "codex" ? value : "upstream";
+  return isRuntimeConversationSystem(value) ? value : "upstream";
 }
 
 function transferPanelRequest(
@@ -7478,76 +7573,98 @@ async function detachProviderForEdit(
 ): Promise<boolean> {
   if (!catalog) return false;
   const providerSessionId = String(catalog.providerSessionId || "").trim();
-  if (catalog.system === "codex") {
-    if (!providerSessionId) return true;
-    const job = await enqueueConversationCleanupJob({
-      operation: "codex_archive",
-      system: "codex",
-      conversationKey,
-      instanceID: catalog.instanceID,
-      conversationKind: catalog.kind,
-      libraryID: catalog.libraryID,
-      paperItemID: catalog.paperItemID,
-      providerSessionId,
-    });
-    if (!job) return false;
-    const attempt = await performConversationCleanupJobAttempt(
-      job,
-      async () => {
-        try {
-          await archiveCodexAppServerThread({ threadId: providerSessionId });
-        } catch (error) {
-          if (!/not found|unknown thread|does not exist/i.test(String(error))) {
-            throw error;
+  switch (catalog.system) {
+    case "codex": {
+      if (!providerSessionId) return true;
+      const job = await enqueueConversationCleanupJob({
+        operation: "codex_archive",
+        system: "codex",
+        conversationKey,
+        instanceID: catalog.instanceID,
+        conversationKind: catalog.kind,
+        libraryID: catalog.libraryID,
+        paperItemID: catalog.paperItemID,
+        providerSessionId,
+      });
+      if (!job) return false;
+      const attempt = await performConversationCleanupJobAttempt(
+        job,
+        async () => {
+          try {
+            await archiveCodexAppServerThread({ threadId: providerSessionId });
+          } catch (error) {
+            if (
+              !/not found|unknown thread|does not exist/i.test(String(error))
+            ) {
+              throw error;
+            }
           }
-        }
-      },
-    );
-    if (!attempt.ok) return false;
-    await clearCodexConversationSessionMetadata(
-      conversationKey,
-      providerSessionId,
-      catalog.instanceID,
-    );
-    return true;
-  }
-  if (catalog.system === "claude_code") {
-    const scope = buildClaudeScope({
-      libraryID: catalog.libraryID,
-      kind: catalog.kind,
-      paperItemID: catalog.paperItemID,
-    });
-    if (!catalog.instanceID || (!providerSessionId && !scope.scopeId)) {
-      return !providerSessionId;
-    }
-    const job = await enqueueConversationCleanupJob({
-      operation: "claude_invalidate",
-      system: "claude_code",
-      conversationKey,
-      instanceID: catalog.instanceID,
-      conversationKind: catalog.kind,
-      libraryID: catalog.libraryID,
-      paperItemID: catalog.paperItemID,
-      providerScope: scope,
-      providerSessionId,
-    });
-    if (!job) return false;
-    const attempt = await performConversationCleanupJobAttempt(job, async () =>
-      invalidateClaudeConversationSessionWithinWriteLock(
-        await initAgentSubsystem(),
-        {
-          conversationKey,
-          scope,
-          metadata: {
-            ...(providerSessionId ? { providerSessionId } : {}),
-            instanceID: catalog.instanceID,
-          },
         },
-      ),
-    );
-    if (!attempt.ok) return false;
+      );
+      if (!attempt.ok) return false;
+      await clearCodexConversationSessionMetadata(
+        conversationKey,
+        providerSessionId,
+        catalog.instanceID,
+      );
+      return true;
+    }
+    case "claude_code": {
+      const scope = buildClaudeScope({
+        libraryID: catalog.libraryID,
+        kind: catalog.kind,
+        paperItemID: catalog.paperItemID,
+      });
+      if (!catalog.instanceID || (!providerSessionId && !scope.scopeId)) {
+        return !providerSessionId;
+      }
+      const job = await enqueueConversationCleanupJob({
+        operation: "claude_invalidate",
+        system: "claude_code",
+        conversationKey,
+        instanceID: catalog.instanceID,
+        conversationKind: catalog.kind,
+        libraryID: catalog.libraryID,
+        paperItemID: catalog.paperItemID,
+        providerScope: scope,
+        providerSessionId,
+      });
+      if (!job) return false;
+      const attempt = await performConversationCleanupJobAttempt(
+        job,
+        async () =>
+          invalidateClaudeConversationSessionWithinWriteLock(
+            await initAgentSubsystem(),
+            {
+              conversationKey,
+              scope,
+              metadata: {
+                ...(providerSessionId ? { providerSessionId } : {}),
+                instanceID: catalog.instanceID,
+              },
+            },
+          ),
+      );
+      if (!attempt.ok) return false;
+      return true;
+    }
+    case "antigravity": {
+      // ACP cannot delete a session or its turns, so there is no provider
+      // job; detaching the catalog from the session makes the next turn
+      // start a fresh session that never saw the truncated turns.
+      if (!providerSessionId) return true;
+      await antigravityConversationStore.clearConversationSessionMetadata(
+        conversationKey,
+        providerSessionId,
+        catalog.instanceID,
+      );
+      return true;
+    }
+    case "upstream":
+      return true;
+    default:
+      return assertNeverConversationSystem(catalog.system);
   }
-  return true;
 }
 
 /**
@@ -8785,13 +8902,23 @@ function buildAgentEngineDeps(
     sendChatFallback: sendQuestion,
     // The turn's own system decides, not the saved one: the other chat
     // surface may have switched backend since (surfaceChoices.ts).
-    getAgentRuntime: () =>
-      getEffectiveConversationSystem() === "claude_code"
-        ? (bindClaudeBridgeConversationSystem(
-            getClaudeBridgeRuntime(getCoreAgentRuntime()),
+    getAgentRuntime: () => {
+      const coreRuntime = getCoreAgentRuntime();
+      switch (getEffectiveConversationSystem()) {
+        case "claude_code":
+          return bindClaudeBridgeConversationSystem(
+            getClaudeBridgeRuntime(coreRuntime),
             "claude_code",
-          ) as unknown as ReturnType<typeof getCoreAgentRuntime>)
-        : getCoreAgentRuntime(),
+          ) as unknown as typeof coreRuntime;
+        case "antigravity":
+          return getAntigravityRuntime(
+            coreRuntime,
+          ) as unknown as typeof coreRuntime;
+        default:
+          // Codex turns run natively and never reach the agent engine.
+          return coreRuntime;
+      }
+    },
     maxSelectedImages: MAX_SELECTED_IMAGES,
   };
 }
@@ -9111,12 +9238,10 @@ export async function sendQuestion(
       item,
       conversationSystem: effectiveConversationSystem,
     }) || effectiveConversationSystem;
-  const effectiveRuntimeMode: ChatRuntimeMode =
-    effectiveConversationSystem === "claude_code"
-      ? "agent"
-      : effectiveConversationSystem === "codex"
-        ? "chat"
-        : runtimeMode;
+  const effectiveRuntimeMode = resolveConversationSystemRuntimeMode(
+    effectiveConversationSystem,
+    runtimeMode,
+  );
   if (effectiveRuntimeMode === "agent" && !skipAgentDispatch) {
     try {
       await sendAgentQuestion({

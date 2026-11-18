@@ -13,6 +13,10 @@ import {
 } from "./conversationSchemaMigrations";
 import type { ConversationSystem } from "./types";
 import { CONVERSATION_STORE_TABLES_BY_SYSTEM } from "./conversationStore/storeTables";
+import {
+  CONVERSATION_SYSTEMS,
+  isConversationSystem,
+} from "../core/conversations/conversationSystems";
 
 /** Only upstream paper conversations live in a catalog of their own. */
 const UPSTREAM_PAPER_CATALOG_TABLE =
@@ -26,9 +30,8 @@ export type PaperRestoreScope = {
 };
 
 export type PaperRestoreRuntimeReadiness = {
-  chatStoreReady: boolean;
-  claudeStoreReady: boolean;
-  codexStoreReady: boolean;
+  /** Whether each conversation system's store finished initializing. */
+  storeReady: Readonly<Record<ConversationSystem, boolean>>;
 };
 
 type RestoreEntry = {
@@ -56,7 +59,8 @@ const REGISTRY_TABLE = "llm_for_zotero_conversation_registry";
 const RUNTIME_CONFIG: Record<
   ConversationSystem,
   {
-    preference: string;
+    /** The pref the selections moved out of; null for a runtime that never had one. */
+    preference: string | null;
     migrationID: string;
     description: string;
   }
@@ -75,6 +79,11 @@ const RUNTIME_CONFIG: Record<
     preference: "codexAppServerPaperConversationMap",
     migrationID: "paper-restore-selection-v1:codex",
     description: "Move Codex paper restore selections from preferences",
+  },
+  antigravity: {
+    preference: null,
+    migrationID: "paper-restore-selection-v1:antigravity",
+    description: "Antigravity paper restore selections start in the registry",
   },
 };
 
@@ -143,20 +152,25 @@ function getDb(): {
   return Zotero?.DB || null;
 }
 
-function preferenceKey(system: ConversationSystem): string {
-  return `${config.prefsPrefix}.${RUNTIME_CONFIG[system].preference}`;
+function preferenceKey(system: ConversationSystem): string | null {
+  const preference = RUNTIME_CONFIG[system].preference;
+  return preference ? `${config.prefsPrefix}.${preference}` : null;
 }
 
 function readLegacyPreference(system: ConversationSystem): string {
-  const value = Zotero?.Prefs?.get?.(preferenceKey(system), true);
+  const key = preferenceKey(system);
+  if (!key) return "";
+  const value = Zotero?.Prefs?.get?.(key, true);
   return typeof value === "string" ? value.trim() : "";
 }
 
 function clearLegacyPreference(system: ConversationSystem): void {
+  const key = preferenceKey(system);
+  if (!key) return;
   if (typeof Zotero?.Prefs?.clear !== "function") {
     throw new Error("Zotero.Prefs.clear is unavailable");
   }
-  Zotero.Prefs.clear(preferenceKey(system), true);
+  Zotero.Prefs.clear(key, true);
 }
 
 async function requireExactlyOneChangedRow(
@@ -329,9 +343,7 @@ function normalizeEligibleRows(rows: unknown): EligibleRegistryRow[] {
     const paperItemID = normalizePositiveInt(row.paperItemID);
     const profileSignature = normalizeText(row.profileSignature);
     if (
-      (system !== "upstream" &&
-        system !== "claude_code" &&
-        system !== "codex") ||
+      !isConversationSystem(system) ||
       !conversationKey ||
       !libraryID ||
       !paperItemID ||
@@ -555,10 +567,9 @@ export async function initializePaperRestoreSelections(
   readiness: PaperRestoreRuntimeReadiness,
 ): Promise<void> {
   acceptingWrites = true;
-  const readySystems: ConversationSystem[] = [];
-  if (readiness.chatStoreReady) readySystems.push("upstream");
-  if (readiness.claudeStoreReady) readySystems.push("claude_code");
-  if (readiness.codexStoreReady) readySystems.push("codex");
+  const readySystems: ConversationSystem[] = CONVERSATION_SYSTEMS.filter(
+    (system) => readiness.storeReady[system],
+  );
   for (const [key] of stagedStartupCandidates) {
     const system = key.split(":")[1] as ConversationSystem | undefined;
     if (system && !readySystems.includes(system)) {
@@ -646,6 +657,12 @@ async function persistScopeSelection(
     throw new Error("Zotero DB is unavailable");
   }
   let selected: RestoreEntry | null = null;
+  let ineligible = false;
+  // An ineligible conversation is an expected refusal, not a failure: the
+  // transaction ends without writing and the refusal is raised after it.
+  // Throwing inside would roll back every statement that ran on the shared
+  // connection meanwhile, including Zotero's own temporary tables (the item
+  // list builds its search results in one, and loses them).
   await db.executeTransaction(async () => {
     if (conversationKey) {
       const upstreamJoin =
@@ -690,8 +707,10 @@ async function persistScopeSelection(
         ),
       );
       const row = rows[0];
-      if (!row)
-        throw new Error("Conversation is not an eligible paper restore target");
+      if (!row) {
+        ineligible = true;
+        return;
+      }
       selected = {
         conversationKey: row.conversationKey,
         instanceID: row.instanceID,
@@ -737,6 +756,9 @@ async function persistScopeSelection(
       await requireExactlyOneChangedRow(db.queryAsync!.bind(db));
     }
   });
+  if (ineligible) {
+    throw new Error("Conversation is not an eligible paper restore target");
+  }
   return selected;
 }
 

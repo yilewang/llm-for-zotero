@@ -5,6 +5,7 @@ import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
 import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
 import { getConversationCatalogTable } from "./conversationStore/storeTables";
+import { isConversationSystem } from "../core/conversations/conversationSystems";
 
 export type RegistryConversationKind = "global" | "paper";
 
@@ -81,7 +82,8 @@ export type PaperContextOwnershipEvidence = {
 export const AMBIGUOUS_PAPER_CONTEXT_INVALID_REASON =
   "ambiguous paper context evidence";
 
-const CONVERSATION_REGISTRY_TABLE = "llm_for_zotero_conversation_registry";
+export const CONVERSATION_REGISTRY_TABLE =
+  "llm_for_zotero_conversation_registry";
 const CONVERSATION_REGISTRY_SCOPE_INDEX =
   "llm_for_zotero_conversation_registry_scope_idx";
 const CONVERSATION_REGISTRY_LEGACY_KEY_INDEX =
@@ -121,9 +123,7 @@ function normalizeText(value: unknown, maxLength = 256): string {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): RegistryConversationKind | null {
@@ -345,7 +345,7 @@ async function createConversationRegistryTable(): Promise<void> {
       instance_id TEXT,
       conversation_id TEXT PRIMARY KEY,
       legacy_conversation_key INTEGER NOT NULL,
-      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),
+      system TEXT NOT NULL,
       kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
       profile_signature TEXT NOT NULL,
       library_id INTEGER NOT NULL,

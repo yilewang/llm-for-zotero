@@ -158,12 +158,6 @@ import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import { resolveFreshConversationDraft } from "./freshConversationDraft";
 import { decidePanelIdentityAdoption } from "./standaloneConversationSwitch";
 import { collapseDuplicateReusableConversationDrafts } from "./standaloneConversationResolution";
-import {
-  createRuntimeSystemControls,
-  RUNTIME_CONVERSATION_SYSTEMS,
-  resolveRuntimeSystemToggleTarget,
-  syncRuntimeSystemControls,
-} from "./runtimeSystemControls";
 import { buildDefaultClaudeGlobalConversationKey } from "../../claudeCode/constants";
 import {
   resolveRememberedClaudeConversationKey,
@@ -181,8 +175,16 @@ import { initAgentSubsystem } from "../../agent";
 import {
   getConversationSystemPref,
   getStoredConversationSystemPref,
-  getLastUsedClaudeGlobalConversationKey,
-} from "../../claudeCode/prefs";
+  isConversationSystemEnabled,
+  isRuntimeConversationSystemEnabled,
+} from "../../shared/conversationSystemPrefs";
+import {
+  assertNeverConversationSystem,
+  isRuntimeConversationSystem as isRuntimeSystem,
+  mapRuntimeConversationSystems,
+  type RuntimeConversationSystem,
+} from "../../core/conversations/conversationSystems";
+import { getLastUsedClaudeGlobalConversationKey } from "../../claudeCode/prefs";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 import { showConversationRenameDialog } from "./conversationRenameDialog";
 import {
@@ -200,6 +202,12 @@ import {
   createClaudePaperPortalItem,
 } from "../../claudeCode/portal";
 import { loadAllClaudeConversationHistory } from "../../claudeCode/historyLoader";
+import { loadAllAntigravityConversationHistory } from "../../antigravity/historyLoader";
+import {
+  createAntigravityGlobalPortalItem,
+  createAntigravityPaperPortalItem,
+} from "../../antigravity/portal";
+import { isAntigravityModeEnabled } from "../../antigravity/prefs";
 import { buildDefaultCodexGlobalConversationKey } from "../../codexAppServer/constants";
 import {
   createCodexGlobalPortalItem,
@@ -296,6 +304,61 @@ const TORN_WINDOW_MIN_WIDTH_PX = 360;
 // Where the pointer holds the tear-off drag image, from its top-left corner.
 const TEAR_OFF_DRAG_IMAGE_GRAB_PX = 14;
 const TORN_WINDOW_MIN_HEIGHT_PX = 480;
+
+/** The open-chat item that mounts `conversationKey` in `system`'s store. */
+function createGlobalPortalItemForSystem(
+  system: ConversationSystem,
+  libraryID: number,
+  conversationKey: number,
+): Zotero.Item {
+  switch (system) {
+    case "claude_code":
+      return createClaudeGlobalPortalItem(libraryID, conversationKey);
+    case "codex":
+      return createCodexGlobalPortalItem(libraryID, conversationKey);
+    case "antigravity":
+      return createAntigravityGlobalPortalItem(libraryID, conversationKey);
+    case "upstream":
+      return createGlobalPortalItem(libraryID, conversationKey);
+    default:
+      return assertNeverConversationSystem(system);
+  }
+}
+
+/**
+ * The paper-chat item that mounts `conversationKey` in `system`'s store.
+ * Only upstream paper chats carry a session version.
+ */
+function createPaperPortalItemForSystem(
+  system: ConversationSystem,
+  paperItem: Zotero.Item,
+  conversationKey: number,
+  upstreamSessionVersion: number,
+): Zotero.Item {
+  switch (system) {
+    case "claude_code":
+      return createClaudePaperPortalItem(paperItem, conversationKey);
+    case "codex":
+      return createCodexPaperPortalItem(paperItem, conversationKey);
+    case "antigravity":
+      return createAntigravityPaperPortalItem(paperItem, conversationKey);
+    case "upstream":
+      return createPaperPortalItem(
+        paperItem,
+        conversationKey,
+        upstreamSessionVersion,
+      );
+    default:
+      return assertNeverConversationSystem(system);
+  }
+}
+
+/** Each runtime's loader for its chats across the library. */
+const RUNTIME_CONVERSATION_HISTORY_LOADERS = {
+  claude_code: loadAllClaudeConversationHistory,
+  codex: loadAllCodexConversationHistory,
+  antigravity: loadAllAntigravityConversationHistory,
+} satisfies Record<RuntimeConversationSystem, unknown>;
 
 function buildTornWindowFeatures(placement?: {
   screenX: number;
@@ -764,12 +827,9 @@ export function openStandaloneChat(options?: {
           item: sourceItemForResolution,
           preferredSystem: preferredConversationSystem,
         })
-      : preferredConversationSystem === "codex" && isCodexAppServerModeEnabled()
-        ? "codex"
-        : preferredConversationSystem === "claude_code" &&
-            getClaudeCodeModeEnabled()
-          ? "claude_code"
-          : "upstream");
+      : isConversationSystemEnabled(preferredConversationSystem)
+        ? preferredConversationSystem
+        : "upstream");
   const resolvedSourceState = resolveInitialPanelItemState(
     sourceItemForResolution,
     {
@@ -794,7 +854,7 @@ export function openStandaloneChat(options?: {
     currentConversationSystem === "claude_code";
   const isCodexConversationSystem = () => currentConversationSystem === "codex";
   const isRuntimeConversationSystem = () =>
-    isClaudeConversationSystem() || isCodexConversationSystem();
+    isRuntimeSystem(currentConversationSystem);
   const initialLibraryID =
     Number(
       resolvedSourceState.item?.libraryID ||
@@ -862,18 +922,19 @@ export function openStandaloneChat(options?: {
             ? buildDefaultUpstreamGlobalConversationKey(libraryID)
             : rememberedUpstreamGlobalKey) ??
           buildDefaultUpstreamGlobalConversationKey(libraryID));
-  const globalPortalItem = isClaudeConversationSystem()
-    ? createClaudeGlobalPortalItem(libraryID, conversationKey)
-    : isCodexConversationSystem()
-      ? createCodexGlobalPortalItem(libraryID, conversationKey)
-      : createGlobalPortalItem(libraryID, conversationKey);
+  const globalPortalItem = createGlobalPortalItemForSystem(
+    currentConversationSystem,
+    libraryID,
+    conversationKey,
+  );
   const initialPaperItem =
     initialMode === "paper"
       ? resolvedSourceState.item || initialBasePaperItem
       : null;
   const initialNoteSession = resolveActiveNoteSession(resolvedSourceState.item);
+  // A note session comes from a mounted note item, so the item is set.
   const initialMountedItem = initialNoteSession
-    ? resolvedSourceState.item
+    ? (resolvedSourceState.item as Zotero.Item)
     : initialPaperItem || globalPortalItem;
 
   // Set flag BEFORE openDialog — keeps isStandaloneWindowActive() true
@@ -987,13 +1048,11 @@ export function openConversationInLeader(
       initialItem = paper;
     } else {
       const libraryID = Math.floor(Number(identity.libraryID || 0)) || 1;
-      initialItem = (
-        identity.system === "claude_code"
-          ? createClaudeGlobalPortalItem(libraryID, identity.conversationKey)
-          : identity.system === "codex"
-            ? createCodexGlobalPortalItem(libraryID, identity.conversationKey)
-            : createGlobalPortalItem(libraryID, identity.conversationKey)
-      ) as Zotero.Item;
+      initialItem = createGlobalPortalItemForSystem(
+        identity.system,
+        libraryID,
+        identity.conversationKey,
+      );
     }
     const pending = { identity, settle: resolve };
     pendingLeaderConversation = pending;
@@ -1041,10 +1100,7 @@ export function openTornChatWindow(
     return holder;
   }
   const system = identity.system;
-  if (
-    (system === "codex" && !isCodexAppServerModeEnabled()) ||
-    (system === "claude_code" && !getClaudeCodeModeEnabled())
-  ) {
+  if (!isConversationSystemEnabled(system)) {
     return null;
   }
   let paperItem: Zotero.Item | null = null;
@@ -1064,19 +1120,9 @@ export function openTornChatWindow(
           1,
       ),
     ) || 1;
-  const mountedItem = (
-    paperItem
-      ? system === "claude_code"
-        ? createClaudePaperPortalItem(paperItem, conversationKey)
-        : system === "codex"
-          ? createCodexPaperPortalItem(paperItem, conversationKey)
-          : createPaperPortalItem(paperItem, conversationKey, 1)
-      : system === "claude_code"
-        ? createClaudeGlobalPortalItem(libraryID, conversationKey)
-        : system === "codex"
-          ? createCodexGlobalPortalItem(libraryID, conversationKey)
-          : createGlobalPortalItem(libraryID, conversationKey)
-  ) as Zotero.Item;
+  const mountedItem = paperItem
+    ? createPaperPortalItemForSystem(system, paperItem, conversationKey, 1)
+    : createGlobalPortalItemForSystem(system, libraryID, conversationKey);
 
   // The window starts from the standalone window's choices and keeps its
   // own from here on; its selection slots start on the chat it shows.
@@ -1187,7 +1233,7 @@ function openChatWindowInstance(
     currentConversationSystem === "claude_code";
   const isCodexConversationSystem = () => currentConversationSystem === "codex";
   const isRuntimeConversationSystem = () =>
-    isClaudeConversationSystem() || isCodexConversationSystem();
+    isRuntimeSystem(currentConversationSystem);
 
   const newWin = mainWin.openDialog(
     `chrome://${config.addonRef}/content/standaloneChat.xhtml`,
@@ -1523,18 +1569,6 @@ function openChatWindowInstance(
       tabGroup.className = "llm-standalone-tab-group";
       tabGroup.append(paperTab, openTab);
 
-      const standaloneRuntimeSystemControls = createRuntimeSystemControls(doc, {
-        groupClassName: "llm-standalone-runtime-system-controls",
-        buttonClassName: "llm-standalone-runtime-system-toggle",
-      });
-      const updateStandaloneSystemToggles = () => {
-        syncRuntimeSystemControls(standaloneRuntimeSystemControls, {
-          activeSystem: currentConversationSystem,
-          codexEnabled: isCodexAppServerModeEnabled(),
-          claudeEnabled: getClaudeCodeModeEnabled(),
-        });
-      };
-
       // The leading slot is the tab row's single grid cell on the left. It
       // holds the runtime controls; the window buttons and sidebar toggle
       // join them whenever the sidebar is collapsed. A follower's top row
@@ -1544,9 +1578,6 @@ function openChatWindowInstance(
         "div",
       ) as HTMLDivElement;
       tabRowLeading.className = "llm-standalone-tab-row-leading";
-      if (linkedToReader) {
-        tabRowLeading.append(standaloneRuntimeSystemControls.group);
-      }
 
       // The trailing slot holds the side panel toggle (right edge).
       const tabRowTrailing = doc.createElementNS(
@@ -2592,7 +2623,6 @@ function openChatWindowInstance(
       const updateStandaloneWebChatUI = (isWebChat: boolean) => {
         if (cancelled) return;
         isInWebChatMode = isWebChat;
-        updateStandaloneSystemToggles();
 
         // Tab labels
         if (isWebChat) {
@@ -3008,37 +3038,19 @@ function openChatWindowInstance(
       }): Zotero.Item | null => {
         const system = params.system || currentConversationSystem;
         if (params.mode === "open") {
-          return system === "claude_code"
-            ? (createClaudeGlobalPortalItem(
-                getCurrentLibraryScopeID(),
-                params.conversationKey,
-              ) as Zotero.Item)
-            : system === "codex"
-              ? (createCodexGlobalPortalItem(
-                  getCurrentLibraryScopeID(),
-                  params.conversationKey,
-                ) as Zotero.Item)
-              : createGlobalPortalItem(
-                  getCurrentLibraryScopeID(),
-                  params.conversationKey,
-                );
+          return createGlobalPortalItemForSystem(
+            system,
+            getCurrentLibraryScopeID(),
+            params.conversationKey,
+          );
         }
         if (!params.paperItem) return null;
-        return system === "claude_code"
-          ? (createClaudePaperPortalItem(
-              params.paperItem,
-              params.conversationKey,
-            ) as Zotero.Item)
-          : system === "codex"
-            ? (createCodexPaperPortalItem(
-                params.paperItem,
-                params.conversationKey,
-              ) as Zotero.Item)
-            : createPaperPortalItem(
-                params.paperItem,
-                params.conversationKey,
-                params.sessionVersion || 1,
-              );
+        return createPaperPortalItemForSystem(
+          system,
+          params.paperItem,
+          params.conversationKey,
+          params.sessionVersion || 1,
+        );
       };
 
       const scheduleStandaloneSidebarRender = () => {
@@ -3444,8 +3456,9 @@ function openChatWindowInstance(
       const getStandaloneHistorySystems = (): ConversationSystem[] =>
         resolveUnifiedHistorySystems({
           activeSystem: currentConversationSystem,
-          codexEnabled: isCodexAppServerModeEnabled(),
-          claudeEnabled: getClaudeCodeModeEnabled(),
+          runtimeEnabled: mapRuntimeConversationSystems(
+            isRuntimeConversationSystemEnabled,
+          ),
           singleSystem: Boolean(resolveActiveNoteSession(activeItem)),
         });
 
@@ -4047,11 +4060,10 @@ function openChatWindowInstance(
         const loadSystemEntries = async (
           system: ConversationSystem,
         ): Promise<SidebarConv[]> => {
-          if (system === "claude_code" || system === "codex") {
-            const summaries =
-              system === "claude_code"
-                ? await loadAllClaudeConversationHistory({ libraryID, limit })
-                : await loadAllCodexConversationHistory({ libraryID, limit });
+          if (isRuntimeSystem(system)) {
+            const summaries = await RUNTIME_CONVERSATION_HISTORY_LOADERS[
+              system
+            ]({ libraryID, limit });
             return summaries.map((entry) => ({
               conversationKey: entry.conversationKey,
               conversationID: entry.conversationID,
@@ -5914,6 +5926,7 @@ function openChatWindowInstance(
             nextSystem,
             codexAvailable: isCodexAppServerModeEnabled(),
             claudeAvailable: getClaudeCodeModeEnabled(),
+            antigravityAvailable: isAntigravityModeEnabled(),
           });
           if (!resolvedNextSystem) return;
           if (resolvedNextSystem === currentConversationSystem) return;
@@ -5965,7 +5978,6 @@ function openChatWindowInstance(
           activeConversationKey = getConversationKey(activeNoteItem);
           mountChatPanel(activeNoteItem);
           scheduleStandaloneSidebarRender();
-          updateStandaloneSystemToggles();
           return;
         }
         const currentSystem = currentConversationSystem;
@@ -5973,17 +5985,15 @@ function openChatWindowInstance(
         const forceFresh = options?.forceFresh === true;
         surfaceChoices.conversationSystem.set(nextSystem, windowSurface);
         currentConversationSystem = nextSystem;
-        updateStandaloneSystemToggles();
         if (standaloneMode === "open") {
           const libraryID = getCurrentLibraryScopeID();
           const mountOpenConversation = (conversationKey: number) => {
             if (switchSeq !== systemSwitchSeq) return;
-            const nextItem =
-              nextSystem === "claude_code"
-                ? createClaudeGlobalPortalItem(libraryID, conversationKey)
-                : nextSystem === "codex"
-                  ? createCodexGlobalPortalItem(libraryID, conversationKey)
-                  : createGlobalPortalItem(libraryID, conversationKey);
+            const nextItem = createGlobalPortalItemForSystem(
+              nextSystem,
+              libraryID,
+              conversationKey,
+            );
             activeConversationKey = conversationKey;
             rememberStandaloneGlobalConversation(
               nextSystem,
@@ -5993,7 +6003,6 @@ function openChatWindowInstance(
             );
             mountChatPanel(nextItem as Zotero.Item);
             scheduleStandaloneSidebarRender();
-            updateStandaloneSystemToggles();
           };
 
           if (forceFresh) {
@@ -6043,18 +6052,17 @@ function openChatWindowInstance(
           if (!newKey) return;
           await touchStandaloneEmptyDraftActivity(newKey, "paper");
           if (switchSeq !== systemSwitchSeq) return;
-          const freshItem =
-            nextSystem === "claude_code"
-              ? createClaudePaperPortalItem(paperItem, newKey)
-              : nextSystem === "codex"
-                ? createCodexPaperPortalItem(paperItem, newKey)
-                : createPaperPortalItem(paperItem, newKey, sessionVersion || 1);
+          const freshItem = createPaperPortalItemForSystem(
+            nextSystem,
+            paperItem,
+            newKey,
+            sessionVersion || 1,
+          );
           activeConversationKey = newKey;
           currentPaperItem = paperItem;
           mountChatPanel(freshItem as Zotero.Item, currentRawContextItem);
           scheduleStandaloneSidebarRender();
           void renderShortcuts(contentArea, freshItem as Zotero.Item, "paper");
-          updateStandaloneSystemToggles();
           return;
         }
         if (switchSeq !== systemSwitchSeq) return;
@@ -6068,7 +6076,6 @@ function openChatWindowInstance(
             resolveShortcutMode(nextItem),
           );
         }
-        updateStandaloneSystemToggles();
       };
 
       /**
@@ -6080,10 +6087,7 @@ function openChatWindowInstance(
       adoptStandaloneRuntime = async (
         system: ConversationSystem,
       ): Promise<boolean> => {
-        if (
-          (system === "codex" && !isCodexAppServerModeEnabled()) ||
-          (system === "claude_code" && !getClaudeCodeModeEnabled())
-        ) {
+        if (!isConversationSystemEnabled(system)) {
           return false;
         }
         const switchSeq = ++systemSwitchSeq;
@@ -6097,30 +6101,9 @@ function openChatWindowInstance(
           surfaceChoices.conversationSystem.set(system, windowSurface);
           currentConversationSystem = system;
         }
-        updateStandaloneSystemToggles();
         return true;
       };
 
-      for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
-        standaloneRuntimeSystemControls.buttons[system].addEventListener(
-          "click",
-          (event) => {
-            event.preventDefault();
-            // A rebuilt standalone shell must never let duplicate listeners
-            // turn one physical click into two runtime toggles.
-            event.stopImmediatePropagation();
-            if (cancelled || newWin.closed) return;
-            void switchConversationSystem(
-              resolveRuntimeSystemToggleTarget(
-                currentConversationSystem,
-                system,
-              ),
-              { forceFresh: true },
-            );
-          },
-        );
-      }
-      updateStandaloneSystemToggles();
       {
         const claudeModePrefKey = `${config.prefsPrefix}.enableClaudeCodeMode`;
         const codexModePrefKey = `${config.prefsPrefix}.enableCodexAppServerMode`;
@@ -6177,7 +6160,6 @@ function openChatWindowInstance(
               return;
             }
           }
-          updateStandaloneSystemToggles();
         };
         const onCodexModePrefChange = () => {
           if (cancelled || newWin.closed) {
@@ -6191,7 +6173,6 @@ function openChatWindowInstance(
               return;
             }
           }
-          updateStandaloneSystemToggles();
         };
         try {
           claudeObserverId = (Zotero as any).Prefs.registerObserver(

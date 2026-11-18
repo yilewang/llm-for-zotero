@@ -1,9 +1,17 @@
 import type { ConversationSystem } from "../../shared/types";
+import {
+  assertNeverConversationSystem,
+  getRuntimeConversationSystemDescriptor,
+  type RuntimeConversationSystem,
+  type RuntimeConversationSystemDescriptor,
+} from "../../core/conversations/conversationSystems";
 import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPermissionMode";
 import type { ClaudePermissionMode } from "../../shared/claudePermissionMode";
 import { t } from "../../utils/i18n";
 import {
   buildPermissionAccessibleLabel,
+  getAntigravityPermissionModeFromSelectionKey,
+  getAntigravityPermissionOptions,
   getClaudePermissionModeFromSelectionKey,
   getOriginalPermissionModeFromSelectionKey,
   getOriginalPermissionOptions,
@@ -36,12 +44,17 @@ import {
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import {
+  getAntigravityPermissionModePref,
+  setAntigravityPermissionModePref,
+} from "../../antigravity/prefs";
+import type { AntigravityPermissionMode } from "../../shared/antigravityPermissionMode";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 
 export const FOOTER_PERMISSION_MENU_OPEN_CLASS = "llm-permission-menu-open";
 
 type VisiblePermissionSurface = {
-  kind: "original" | "claude" | "codex";
+  kind: "original" | "claude" | "codex" | "antigravity";
   selectedKey: string;
   options: PermissionOption[];
 };
@@ -56,7 +69,7 @@ export type PermissionSurface =
     }
   | {
       kind: "error";
-      provider: "claude" | "codex";
+      provider: RuntimeConversationSystemDescriptor["permissionProvider"];
       message: string;
     };
 
@@ -80,30 +93,46 @@ export function resolvePermissionSurface(params: {
   runtimeMode: RuntimeMode;
   originalSelectedId: OriginalAgentPermissionMode;
   claudeSelectedId: ClaudePermissionMode;
+  antigravitySelectedId: AntigravityPermissionMode;
   claudeOptions?: PermissionOption[];
   codexCatalog?: CodexPermissionOptionCatalog;
 }): PermissionSurface {
-  if (params.conversationSystem === "claude_code") {
-    return params.claudeOptions
-      ? {
-          kind: "claude",
-          selectedKey: `claude:${params.claudeSelectedId}`,
-          options: params.claudeOptions,
-        }
-      : {
-          kind: "loading",
-          provider: "claude",
-          message: "Loading permissions…",
-        };
-  }
-  if (params.conversationSystem === "codex") {
-    return params.codexCatalog
-      ? {
-          kind: "codex",
-          selectedKey: params.codexCatalog.selectedKey,
-          options: params.codexCatalog.options,
-        }
-      : { kind: "loading", provider: "codex", message: "Loading permissions…" };
+  switch (params.conversationSystem) {
+    case "claude_code":
+      return params.claudeOptions
+        ? {
+            kind: "claude",
+            selectedKey: `claude:${params.claudeSelectedId}`,
+            options: params.claudeOptions,
+          }
+        : {
+            kind: "loading",
+            provider: "claude",
+            message: "Loading permissions…",
+          };
+    case "codex":
+      return params.codexCatalog
+        ? {
+            kind: "codex",
+            selectedKey: params.codexCatalog.selectedKey,
+            options: params.codexCatalog.options,
+          }
+        : {
+            kind: "loading",
+            provider: "codex",
+            message: "Loading permissions…",
+          };
+    // agy's modes are fixed (D6), so there is no catalog to load.
+    case "antigravity":
+      return {
+        kind: "antigravity",
+        selectedKey: `antigravity:${params.antigravitySelectedId}`,
+        options: getAntigravityPermissionOptions(),
+      };
+    case "upstream":
+      break;
+    default:
+      return assertNeverConversationSystem(params.conversationSystem);
   }
   if (params.runtimeMode !== "agent") return { kind: "hidden" };
   return {
@@ -123,7 +152,9 @@ export function attachFooterPermissionControl(params: {
   onWarning?: (message: string) => void;
   loadClaudeOptions?: () => Promise<PermissionOption[]>;
   loadCodexCatalog?: () => Promise<CodexPermissionOptionCatalog>;
-  confirmFullAccess?: () => boolean | Promise<boolean>;
+  confirmFullAccess?: (
+    runtime: "codex" | "antigravity",
+  ) => boolean | Promise<boolean>;
 }) {
   const { control, button, menu } = params;
   let generation = 0;
@@ -132,7 +163,7 @@ export function attachFooterPermissionControl(params: {
   let surface: PermissionSurface = { kind: "hidden" };
   let codexCatalog: CodexPermissionOptionCatalog | null = null;
   let inFlightCatalog: {
-    provider: "claude_code" | "codex";
+    provider: RuntimeConversationSystem;
     key: string;
     promise: Promise<PermissionOption[] | CodexPermissionOptionCatalog>;
   } | null = null;
@@ -144,16 +175,28 @@ export function attachFooterPermissionControl(params: {
     button.setAttribute("aria-expanded", "false");
   };
 
-  const confirmFullAccess = async (): Promise<boolean> => {
+  const FULL_ACCESS_DIALOG = {
+    codex: {
+      title: "Enable Codex full access?",
+      message:
+        "Codex will have unrestricted access to the internet and any file available to Codex.",
+    },
+    antigravity: {
+      title: "Enable Antigravity full access?",
+      message:
+        "Antigravity will run every tool without asking, including commands and file changes, with the access your computer account has.",
+    },
+  } as const;
+  const confirmFullAccess = async (
+    runtime: "codex" | "antigravity",
+  ): Promise<boolean> => {
     if (params.confirmFullAccess)
-      return Boolean(await params.confirmFullAccess());
+      return Boolean(await params.confirmFullAccess(runtime));
     close();
     button?.focus();
     return await showStandaloneConfirmationDialog(params.body.ownerDocument, {
-      title: t("Enable Codex full access?"),
-      message: t(
-        "Codex will have unrestricted access to the internet and any file available to Codex.",
-      ),
+      title: t(FULL_ACCESS_DIALOG[runtime].title),
+      message: t(FULL_ACCESS_DIALOG[runtime].message),
       confirmLabel: t("Enable full access"),
       cancelLabel: t("Cancel"),
       destructive: true,
@@ -176,11 +219,32 @@ export function attachFooterPermissionControl(params: {
       if (mode) setClaudePermissionModePref(mode);
       return;
     }
+    if (next.kind === "antigravity") {
+      const mode = getAntigravityPermissionModeFromSelectionKey(
+        option.selectionKey,
+      );
+      if (!mode) return;
+      if (
+        mode === "full-access" &&
+        getAntigravityPermissionModePref() !== "full-access"
+      ) {
+        if (!(await confirmFullAccess("antigravity"))) return;
+        if (
+          disposed ||
+          surface !== next ||
+          params.getConversationSystem() !== "antigravity"
+        ) {
+          return;
+        }
+      }
+      setAntigravityPermissionModePref(mode);
+      return;
+    }
     const activeCatalog = codexCatalog;
     const choice = activeCatalog?.choices.get(option.selectionKey);
     if (!activeCatalog || !choice) return;
     if (choice.kind === "preset" && choice.preset === "full") {
-      if (!(await confirmFullAccess())) return;
+      if (!(await confirmFullAccess("codex"))) return;
       if (
         disposed ||
         surface !== next ||
@@ -287,6 +351,29 @@ export function attachFooterPermissionControl(params: {
         codexPath: getConfiguredCodexAppServerBinaryPath(),
         cwd: resolveCodexNativeRuntimeCwd(),
       }));
+  // Null when the runtime has no permission catalog to load.
+  const catalogLoaders: Record<
+    RuntimeConversationSystem,
+    (() => Promise<PermissionOption[] | CodexPermissionOptionCatalog>) | null
+  > = {
+    claude_code: loadClaude,
+    codex: loadCodex,
+    // agy's modes are fixed: nothing to load.
+    antigravity: null,
+  };
+  const resolveCatalogKey = (provider: RuntimeConversationSystem): string => {
+    switch (provider) {
+      case "claude_code":
+        return `${getClaudeBridgeUrl()}\u0000${getClaudeSettingSourcesByPref().join(",")}`;
+      case "codex":
+        return `${getConfiguredCodexAppServerBinaryPath()}\u0000${resolveCodexNativeRuntimeCwd()}`;
+      // Never keyed: Antigravity has no catalog loader.
+      case "antigravity":
+        return "";
+      default:
+        return assertNeverConversationSystem(provider);
+    }
+  };
 
   const sync = async () => {
     if (disposed) return;
@@ -303,24 +390,23 @@ export function attachFooterPermissionControl(params: {
       runtimeMode: params.getRuntimeMode(),
       originalSelectedId: getOriginalAgentPermissionMode(),
       claudeSelectedId: getClaudePermissionModePref(),
+      antigravitySelectedId: getAntigravityPermissionModePref(),
     };
     if (provider === "upstream") {
       render(resolvePermissionSurface(common));
       return;
     }
     render(resolvePermissionSurface(common));
-    const catalogKey =
-      provider === "claude_code"
-        ? `${getClaudeBridgeUrl()}\u0000${getClaudeSettingSourcesByPref().join(",")}`
-        : `${getConfiguredCodexAppServerBinaryPath()}\u0000${resolveCodexNativeRuntimeCwd()}`;
+    const loadCatalog = catalogLoaders[provider];
+    if (!loadCatalog) return;
+    const catalogKey = resolveCatalogKey(provider);
     let requestedPromise =
       inFlightCatalog?.provider === provider &&
       inFlightCatalog.key === catalogKey
         ? inFlightCatalog.promise
         : null;
     if (!requestedPromise) {
-      requestedPromise =
-        provider === "claude_code" ? loadClaude() : loadCodex();
+      requestedPromise = loadCatalog();
       inFlightCatalog = {
         provider,
         key: catalogKey,
@@ -337,27 +423,36 @@ export function attachFooterPermissionControl(params: {
         return;
       }
       if (inFlightCatalog?.promise === requestedPromise) inFlightCatalog = null;
-      if (provider === "claude_code") {
-        const options = result as PermissionOption[];
-        const reconciliation = reconcileClaudePermissionMode({
-          selectedId: getClaudePermissionModePref(),
-          options,
-        });
-        if (reconciliation.selectedId !== getClaudePermissionModePref()) {
-          setClaudePermissionModePref(reconciliation.selectedId);
-          if (reconciliation.warning)
-            params.onWarning?.(reconciliation.warning);
+      switch (provider) {
+        case "claude_code": {
+          const options = result as PermissionOption[];
+          const reconciliation = reconcileClaudePermissionMode({
+            selectedId: getClaudePermissionModePref(),
+            options,
+          });
+          if (reconciliation.selectedId !== getClaudePermissionModePref()) {
+            setClaudePermissionModePref(reconciliation.selectedId);
+            if (reconciliation.warning)
+              params.onWarning?.(reconciliation.warning);
+          }
+          render(
+            resolvePermissionSurface({
+              ...common,
+              claudeSelectedId: reconciliation.selectedId,
+              claudeOptions: options,
+            }),
+          );
+          break;
         }
-        render(
-          resolvePermissionSurface({
-            ...common,
-            claudeSelectedId: reconciliation.selectedId,
-            claudeOptions: options,
-          }),
-        );
-      } else {
-        codexCatalog = result as CodexPermissionOptionCatalog;
-        render(resolvePermissionSurface({ ...common, codexCatalog }));
+        case "codex":
+          codexCatalog = result as CodexPermissionOptionCatalog;
+          render(resolvePermissionSurface({ ...common, codexCatalog }));
+          break;
+        // Not reached: Antigravity has no catalog loader.
+        case "antigravity":
+          break;
+        default:
+          assertNeverConversationSystem(provider);
       }
     } catch (error) {
       if (inFlightCatalog?.promise === requestedPromise) inFlightCatalog = null;
@@ -370,7 +465,8 @@ export function attachFooterPermissionControl(params: {
       }
       render({
         kind: "error",
-        provider: provider === "claude_code" ? "claude" : "codex",
+        provider:
+          getRuntimeConversationSystemDescriptor(provider).permissionProvider,
         message: error instanceof Error ? error.message : String(error),
       });
     }

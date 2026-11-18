@@ -5,6 +5,7 @@ import {
   classifyConversationKey,
 } from "./conversationKeySpace";
 import { CONVERSATION_MESSAGE_TABLES } from "./conversationStore/storeTables";
+import { isConversationSystem } from "../core/conversations/conversationSystems";
 
 export type ConversationKeyLedgerKind = "global" | "paper";
 
@@ -126,9 +127,7 @@ function normalizeText(value: unknown, maxLength = 256): string {
 }
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
-  return value === "upstream" || value === "claude_code" || value === "codex"
-    ? value
-    : null;
+  return isConversationSystem(value) ? value : null;
 }
 
 function normalizeKind(value: unknown): ConversationKeyLedgerKind | null {
@@ -214,7 +213,7 @@ async function initializeConversationKeyLedgerStore(
       conversation_key INTEGER PRIMARY KEY,
       instance_id TEXT NOT NULL UNIQUE,
       conversation_id TEXT NOT NULL,
-      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),
+      system TEXT NOT NULL,
       kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
       profile_signature TEXT NOT NULL,
       library_id INTEGER NOT NULL,

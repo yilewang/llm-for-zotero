@@ -28,8 +28,6 @@ const LAYOUT_PREF = `${PREF_PREFIX}.sidebarLayout`;
 const HEADER_BUTTONS = [
   "#llm-history-new",
   "#llm-history-toggle",
-  "#llm-codex-system-toggle",
-  "#llm-claude-system-toggle",
   "#llm-popout",
   "#llm-settings",
   "#llm-export",
@@ -391,13 +389,10 @@ describe("workflow: sidebar chat mode toggle", function () {
         assert.isAtLeast(tab.getBoundingClientRect().width, 63.5);
       }
 
-      // New chat, history, divider, Codex, Claude; then the panel actions.
+      // New chat and history; then the panel actions.
       const order = [
         "#llm-history-new",
         "#llm-history-toggle",
-        ".llm-header-runtime-divider",
-        "#llm-codex-system-toggle",
-        "#llm-claude-system-toggle",
         "#llm-popout",
         "#llm-settings",
         "#llm-export",
@@ -419,21 +414,7 @@ describe("workflow: sidebar chat mode toggle", function () {
           `${order[index].selector} follows ${order[index - 1].selector}`,
         );
       }
-      assert.isAtLeast(
-        order[2].rect.left,
-        order[1].rect.right,
-        "the divider clears the history button",
-      );
-      assert.isAtLeast(
-        order[3].rect.left,
-        order[2].rect.right,
-        "the runtime systems clear the divider",
-      );
-      const divider = order[2].rect;
-      assert.closeTo(divider.width, 1, 0.5, "the divider is a thin rule");
-      assert.closeTo(divider.height, 16, 0.5);
       for (const { selector, rect } of order) {
-        if (selector === ".llm-header-runtime-divider") continue;
         assert.closeTo(
           rect.top + rect.height / 2,
           order[0].rect.top + order[0].rect.height / 2,
@@ -473,13 +454,6 @@ describe("workflow: sidebar chat mode toggle", function () {
       const chipRect = capsule.getBoundingClientRect();
       assert.isAbove(chipRect.width, 0, "Stacked shows the chip");
       assert.closeTo(chipRect.height, 22, 0.5);
-      // The divider is the capsule's separator here: a thin rule between
-      // the chip and the runtime toggles.
-      const separator = section
-        .querySelector(".llm-header-runtime-divider")!
-        .getBoundingClientRect();
-      assert.closeTo(separator.width, 1, 0.5, "the capsule has a separator");
-      assert.closeTo(separator.height, 12, 0.5);
       const capsuleRect = section
         .querySelector(".llm-header-runtime-controls")!
         .getBoundingClientRect();
@@ -488,8 +462,6 @@ describe("workflow: sidebar chat mode toggle", function () {
         "#llm-history-new",
         "#llm-history-toggle",
         "#llm-mode-capsule",
-        "#llm-codex-system-toggle",
-        "#llm-claude-system-toggle",
         // The tight stage folds Open in window into More too.
         ...(navRow.dataset.fit === "tight" ? [] : ["#llm-popout"]),
         // Narrow panes fold these three into More.
@@ -517,10 +489,9 @@ describe("workflow: sidebar chat mode toggle", function () {
           `${order[index].selector} shares the row's line`,
         );
       }
-      // The chip sits inside the capsule: 2px of padding, then 2px gaps and
-      // the 1px separator with 2px either side. The capsule sits exactly
-      // 10px (8px below full) after history.
-      const [, history, chip, codex] = order.map((entry) => entry.rect);
+      // The chip sits inside the capsule after 2px of padding. The capsule
+      // sits exactly 10px (8px below full) after history.
+      const [, history, chip] = order.map((entry) => entry.rect);
       const leastGap = navRow.dataset.fit === "full" ? 10 : 8;
       assert.closeTo(
         capsuleRect.left - history.right,
@@ -529,7 +500,6 @@ describe("workflow: sidebar chat mode toggle", function () {
         "history to capsule",
       );
       assert.closeTo(chip.left - capsuleRect.left, 2, 0.6, "capsule padding");
-      assert.closeTo(codex.left - chip.right, 9, 0.6, "chip to Codex");
       for (const selector of HEADER_BUTTONS) {
         const rect = section.querySelector(selector)!.getBoundingClientRect();
         assert.isFalse(

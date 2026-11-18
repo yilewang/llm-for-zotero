@@ -1,5 +1,4 @@
 import { assert } from "chai";
-import { updateHeaderSpacing } from "../src/modules/contextPanel/setupHandlers/controllers/headerSpacing";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 
 describe("workflow: standalone responsive chrome", function () {
@@ -42,13 +41,6 @@ describe("workflow: standalone responsive chrome", function () {
     panel.appendChild(header);
     (doc.body || doc.documentElement).appendChild(panel);
     try {
-      const runtime = panel.querySelector(
-        ".llm-runtime-system-controls",
-      ) as HTMLElement;
-      runtime.dataset.visibleCount = "2";
-      runtime.style.display = "inline-flex";
-      for (const child of Array.from(runtime.children) as HTMLElement[])
-        child.style.display = "inline-flex";
       const paperTabLabel = panel.querySelector(
         "#llm-paper-chat-tab .llm-header-mode-tab-label",
       ) as HTMLElement;
@@ -81,14 +73,6 @@ describe("workflow: standalone responsive chrome", function () {
             await new Promise<void>((resolve) =>
               win.requestAnimationFrame(() => resolve()),
             );
-            updateHeaderSpacing(navRow);
-            if (width >= 380) {
-              assert.equal(
-                navRow.style.getPropertyValue("--llm-runtime-compression"),
-                "0",
-                "Ample room must restore the original runtime spacing",
-              );
-            }
             const bounds = header.getBoundingClientRect();
             const buttons = (
               Array.from(
@@ -131,24 +115,11 @@ describe("workflow: standalone responsive chrome", function () {
                 `History buttons keep their hit area: ${context}`,
               );
             }
-            const runtimeGlyphs = (
-              Array.from(
-                runtime.querySelectorAll(".llm-runtime-system-toggle-icon"),
-              ) as Element[]
-            ).map((icon) => icon.getBoundingClientRect());
-            assert.lengthOf(runtimeGlyphs, 2);
-            for (const glyph of runtimeGlyphs) {
-              assert.closeTo(glyph.width, 16, 0.5);
-              assert.closeTo(glyph.height, 16, 0.5);
-            }
-            assert.isAtLeast(
-              runtimeGlyphs[1].left - runtimeGlyphs[0].right,
-              1.5,
-              `Runtime glyphs need visible separation: ${context}`,
-            );
+            // The header's eight controls; runtimes are picked in the
+            // composer's runtime menu, not here.
             assert.lengthOf(
               buttons,
-              10,
+              8,
               `All header controls visible: ${context}`,
             );
             const toggleRowRect = toggleRow.getBoundingClientRect();
@@ -190,15 +161,6 @@ describe("workflow: standalone responsive chrome", function () {
               toggleRowRect.left + toggleRowRect.width / 2,
               1,
               `The mode toggle is centered: ${context}`,
-            );
-            // The runtime systems follow the history button in the actions row.
-            const historyRect = header
-              .querySelector("#llm-history-toggle")!
-              .getBoundingClientRect();
-            assert.isAtLeast(
-              runtimeGlyphs[0].left,
-              historyRect.right,
-              `Runtime systems follow history: ${context}`,
             );
             for (const [index, rect] of buttons.entries()) {
               assert.isAtLeast(rect.left, bounds.left - 0.5, context);
@@ -253,19 +215,11 @@ describe("workflow: standalone responsive chrome", function () {
     assert.isAbove(hover.sidebarPanelWidthPx ?? 0, 100);
   });
 
-  it("keeps both runtime icons clear of the tabs and compacts title actions in sync", async function () {
+  it("keeps the tab row clear of the tabs and compacts title actions in sync", async function () {
     const doc = win.document;
     const root = doc.querySelector(
       "#llmforzotero-standalone-chat-root",
     ) as HTMLElement;
-    const runtime = doc.querySelector(
-      ".llm-standalone-runtime-system-controls",
-    ) as HTMLElement;
-    // Exercise both optional runtimes without starting a provider session.
-    runtime.dataset.visibleCount = "2";
-    runtime.style.display = "inline-flex";
-    for (const child of Array.from(runtime.children) as HTMLElement[])
-      child.style.display = "inline-flex";
     const rect = (selector: string) =>
       doc.querySelector(selector)!.getBoundingClientRect();
     const actionWidth = () => rect(".llm-standalone-icon-export").width;

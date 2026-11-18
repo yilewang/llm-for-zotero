@@ -1087,17 +1087,17 @@ const zhCN: Record<string, string> = {
     "可选。留空会自动检测。也可以输入绝对路径，例如 /usr/local/bin/codex 或 ~/.local/bin/codex。",
   "Test connection": "测试连接",
   "Zotero MCP tools": "Zotero MCP 工具",
-  "Lets native Codex and Claude Code use a curated local MCP server for Zotero library/PDF reading and guarded Zotero operations. Write and destructive tools still use Zotero confirmation or tool-specific safety checks.":
-    "允许原生 Codex 和 Claude Code 使用精选的本地 MCP 服务读取 Zotero 文献库/PDF，并执行受保护的 Zotero 操作。写入和破坏性工具仍会使用 Zotero 确认或工具专属安全检查。",
-  "Enable Zotero MCP tools for native Codex and Claude Code turns":
-    "为原生 Codex 和 Claude Code 回合启用 Zotero MCP 工具",
+  "Lets native Codex, Claude Code, and Antigravity use a curated local MCP server for Zotero library/PDF reading and guarded Zotero operations. Write and destructive tools still use Zotero confirmation or tool-specific safety checks.":
+    "允许原生 Codex、Claude Code 和 Antigravity 使用精选的本地 MCP 服务读取 Zotero 文献库/PDF，并执行受保护的 Zotero 操作。写入和破坏性工具仍会使用 Zotero 确认或工具专属安全检查。",
+  "Enable Zotero MCP tools for native Codex, Claude Code, and Antigravity turns":
+    "为原生 Codex、Claude Code 和 Antigravity 回合启用 Zotero MCP 工具",
   "Install/update Zotero MCP config": "安装/更新 Zotero MCP 配置",
-  "For Codex, Zotero writes a local bearer-token protected MCP entry into Codex config and asks app-server to reload MCP servers. Claude Code receives a scoped MCP server directly for each turn. User-level Codex skills, plugins, and other MCP setup remain owned by Codex.":
-    "对于 Codex，Zotero 会把受本地 bearer token 保护的 MCP 条目写入 Codex 配置，并请求 app-server 重新加载 MCP 服务。Claude Code 会在每个回合直接收到带作用域的 MCP 服务。用户级 Codex skills、插件和其他 MCP 设置仍由 Codex 管理。",
-  "Zotero MCP tools enabled for native Codex and Claude Code turns.":
-    "已为原生 Codex 和 Claude Code 回合启用 Zotero MCP 工具。",
-  "Zotero MCP tools disabled for native Codex and Claude Code turns.":
-    "已禁用原生 Codex 和 Claude Code 回合中的 Zotero MCP 工具。",
+  "For Codex, Zotero writes a local bearer-token protected MCP entry into Codex config and asks app-server to reload MCP servers. Claude Code and Antigravity receive a scoped MCP server directly for each turn. User-level Codex skills, plugins, and other MCP setup remain owned by Codex.":
+    "对于 Codex，Zotero 会把受本地 bearer token 保护的 MCP 条目写入 Codex 配置，并请求 app-server 重新加载 MCP 服务。Claude Code 和 Antigravity 会在每个回合直接收到带作用域的 MCP 服务。用户级 Codex skills、插件和其他 MCP 设置仍由 Codex 管理。",
+  "Zotero MCP tools enabled for native Codex, Claude Code, and Antigravity turns.":
+    "已为原生 Codex、Claude Code 和 Antigravity 回合启用 Zotero MCP 工具。",
+  "Zotero MCP tools disabled for native Codex, Claude Code, and Antigravity turns.":
+    "已禁用原生 Codex、Claude Code 和 Antigravity 回合中的 Zotero MCP 工具。",
   "Configuring Zotero MCP tools…": "正在配置 Zotero MCP 工具…",
   "Zotero MCP connected with %n tools.": "Zotero MCP 已连接 %n 个工具。",
   "Zotero MCP connection verified through Codex.":
@@ -1219,8 +1219,18 @@ const zhCN: Record<string, string> = {
   "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
 
   // ── Agent tab: collapsible runtime rows ────────────────────────────
-  "Three runtimes can answer in the chat panel. Turn on the ones you want; the runtime you pick in the chat header answers a given turn.":
-    "聊天面板中可以有三种运行时来回答。开启你需要的运行时；实际回答的是你在聊天标题栏中选择的那一个。",
+  "The built-in Agent is always here. Add other runtimes with + Add runtime; the runtime you pick in the chat's runtime menu answers a given turn.":
+    "内置 Agent 始终可用。可通过“+ 添加运行时”加入其他运行时；实际回答的是你在聊天的运行时菜单中选择的那一个。",
+  "+ Add runtime": "+ 添加运行时",
+  Remove: "移除",
+  "+ Add runtime…": "+ 添加运行时…",
+  "Configure runtimes…": "配置运行时…",
+  "Runs the Codex CLI. Needs codex installed and signed in.":
+    "运行 Codex CLI。需要已安装并登录 codex。",
+  "Runs Claude Code through its bridge. Needs claude installed and signed in.":
+    "通过桥接运行 Claude Code。需要已安装并登录 claude。",
+  "Runs the Antigravity CLI. Needs agy installed and signed in.":
+    "运行 Antigravity CLI。需要已安装并登录 agy。",
   Runtimes: "运行时",
   "Original Agent": "原生 Agent",
   "Built in · Beta": "内置 · 测试版",
@@ -1777,6 +1787,8 @@ const zhCN: Record<string, string> = {
     "Claude Code 只在侧边栏中运行。划词提问使用此列表中的 API 模型。",
   "WebChat runs only in the sidebar. Inline Ask uses an API model from this list.":
     "WebChat 只在侧边栏中运行。划词提问使用此列表中的 API 模型。",
+  "Antigravity runs only in the sidebar. Inline Ask uses an API model from this list.":
+    "Antigravity 只在侧边栏中运行。划词提问使用此列表中的 API 模型。",
   "Quote selected text": "引用选中文字",
   "Quote in side chat": "在侧边对话中引用",
   "Quote selected text in a side chat": "在侧边对话中引用选中文字",
