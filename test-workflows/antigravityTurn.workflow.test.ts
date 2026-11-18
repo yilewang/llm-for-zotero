@@ -49,6 +49,19 @@ describe("workflow: Antigravity turns", function () {
       ],
     },
     {
+      match: /outline of this paper/,
+      title: "Paper outline",
+      steps: [
+        {
+          type: "mcpTool",
+          server: "*",
+          tool: "paper_read",
+          args: { mode: "outline" },
+        },
+        { type: "text", text: "Read the paper." },
+      ],
+    },
+    {
       match: /read the attached notes/,
       title: "Attached notes",
       steps: [
@@ -254,6 +267,41 @@ describe("workflow: Antigravity turns", function () {
       "tool_call",
       "agy's own row for a Zotero tool is left to the MCP activity row",
     );
+  });
+
+  it("offers agy only the core Zotero tools, so paper_read fits agy's tool budget", async function () {
+    const result = await run({
+      question: "Give me an outline of this paper.",
+      mcp: true,
+      createChild: (launch) =>
+        createFakeAcpChild({
+          scenarios: SCENARIOS,
+          store,
+          skipPermissions: launch.skipPermissions,
+          fetch: zoteroHttpFetch,
+        }),
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.equal(result.confirmations, 0);
+    const callable = store.get(
+      String(result.storedSessionId),
+    )?.callableMcpTools;
+    // The fake gives the model only what fits agy's budget, as agy does;
+    // the whole core set has to fit, paper_read included.
+    assert.sameMembers(callable || [], [
+      "paper_read",
+      "library_retrieve",
+      "library_search",
+      "library_read",
+      "read_attachment",
+      "literature_search",
+      "literature_read",
+      "note_write",
+      "undo",
+      "library_cite",
+    ]);
+    assert.equal(result.deliveredText, "Read the paper.");
+    assert.include(result.deliveredEvents, "codex_tool_activity");
   });
 
   it("applies the turn's model and thinking level to agy's session", async function () {

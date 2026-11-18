@@ -474,6 +474,7 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
           scopeToken: scopedMcp.token,
           required: true,
           rawPdfMode,
+          runtimeAuthority: mcpScope.runtimeAuthority,
         });
         assertRequiredCodexZoteroMcpToolsReady(
           mcpStatus,

@@ -108,6 +108,11 @@ export type FakeAcpStoredSession = {
   modeId: string;
   model: string;
   thoughtLevel: string;
+  /**
+   * The MCP tools the model could call on the last MCP use: those that fit
+   * agy's tool budget (eagerMcpToolNames).
+   */
+  callableMcpTools?: string[];
   /** `_meta.antigravity.systemPrompt.append` from session/new. */
   systemPrompt?: string;
   /** Updates replayed by `session/load`, in order. */
@@ -906,6 +911,23 @@ export class FakeAcpAgent {
       clientInfo: { name: "fake-acp-agent", version: "0" },
     });
     await post(undefined, "notifications/initialized", {});
+    const listed = (await post(3, "tools/list", {})) as {
+      tools?: Array<{
+        name: string;
+        description?: string;
+        inputSchema?: unknown;
+      }>;
+    };
+    const callable = eagerMcpToolNames(listed?.tools ?? []);
+    const session = this.options.store.get(sessionId);
+    if (session) {
+      session.callableMcpTools = callable;
+      this.options.store.put(session);
+    }
+    // agy never offers the model a tool outside its budget.
+    if (!callable.includes(tool)) {
+      throw new Error(`MCP tool not callable in agy: ${tool}`);
+    }
     const result = (await post(2, "tools/call", {
       name: tool,
       arguments: args,
@@ -919,6 +941,42 @@ export class FakeAcpAgent {
     if (result?.isError) throw new Error(text || "MCP tool failed");
     return text;
   }
+}
+
+/**
+ * agy 1.5.10 lets the model call only the MCP tools whose definitions fit
+ * about 42 KB per session, filled smallest first, measured as agy stores a
+ * tool: `{name, description, parameters}` as JSON (probed 2026-11-18: 20
+ * tools of 3,000 bytes gave 14 callable, 20 of 400 bytes gave 20, and a
+ * second server got none once the first had filled the budget).
+ */
+export const AGY_EAGER_MCP_TOOL_BUDGET_BYTES = 42_000;
+
+export function eagerMcpToolNames(
+  tools: ReadonlyArray<{
+    name: string;
+    description?: string;
+    inputSchema?: unknown;
+  }>,
+): string[] {
+  const sized = tools
+    .map((tool) => ({
+      name: tool.name,
+      bytes: JSON.stringify({
+        name: tool.name,
+        description: tool.description ?? "",
+        parameters: tool.inputSchema ?? {},
+      }).length,
+    }))
+    .sort((a, b) => a.bytes - b.bytes);
+  const callable: string[] = [];
+  let used = 0;
+  for (const tool of sized) {
+    if (used + tool.bytes > AGY_EAGER_MCP_TOOL_BUDGET_BYTES) break;
+    used += tool.bytes;
+    callable.push(tool.name);
+  }
+  return callable;
 }
 
 function toJsonRpcError(error: unknown): JsonRpcError {

@@ -61,8 +61,8 @@ import { ZOTERO_MCP_SAFE_READ_TOOL_NAMES } from "../agent/mcp/server";
 import { getZoteroAgentRuntimeRootDir } from "../agent/skills/nativeSkillPaths";
 import {
   buildAcpZoteroMcpServerConfig,
-  REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES,
-  REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES,
+  REQUIRED_ANTIGRAVITY_RAW_PDF_MCP_TOOL_NAMES,
+  REQUIRED_ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES,
 } from "../codexAppServer/mcpSetup";
 import { withConversationWriteLock } from "../shared/conversationWriteFence";
 import { JsonRpcResponseError } from "../utils/stdioJsonRpcConnection";
@@ -612,8 +612,8 @@ export function createAntigravityTransport(
       },
       requiredToolNames: (rawPdfMode) =>
         rawPdfMode
-          ? REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES
-          : REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES,
+          ? REQUIRED_ANTIGRAVITY_RAW_PDF_MCP_TOOL_NAMES
+          : REQUIRED_ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES,
     },
     run: async (ctx): Promise<ExternalTurnOutcome> => {
       const { request, prepared } = ctx;
