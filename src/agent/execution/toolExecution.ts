@@ -25,10 +25,7 @@ import {
   buildPaperLedgerUpdateEvent,
   recordTaskPaperDecisions,
 } from "../context/taskPaperLedgerRecorder";
-import {
-  readObservationSourceKey,
-  readObservationSourceKeys,
-} from "../context/readObservation";
+import { buildSizedModelView } from "./modelView";
 import { shortEvidenceRef } from "../context/evidenceRefTokens";
 import {
   taskPaperReadDepths,
@@ -544,48 +541,25 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
     toolResult: AgentToolResult;
     documentEvidenceRefs?: unknown[];
   }): Promise<Record<string, unknown> | undefined> => {
-    const view = params.toolDefinition.buildModelView?.(
-      params.input as never,
-      params.toolResult.content as never,
-      deps.context,
-    );
+    const view = buildSizedModelView({
+      toolDefinition: params.toolDefinition,
+      toolName: params.toolResult.name,
+      input: params.input,
+      result: params.toolResult.content,
+      context: deps.context,
+      documentEvidenceRefs: params.documentEvidenceRefs as
+        | Array<Record<string, unknown>>
+        | undefined,
+    });
     if (!view) return undefined;
-    const refs = (params.documentEvidenceRefs || []) as Array<
-      Record<string, unknown>
-    >;
-    const shown = refs.length
-      ? readObservationSourceKeys({
-          toolName: params.toolResult.name,
-          input: params.input,
-          result: view.content,
-        })
-      : new Set<string>();
-    const keptRefs = refs.filter((ref) =>
-      shown.has(readObservationSourceKey(ref)),
-    );
-    const omittedRefs = refs.filter(
-      (ref) => !shown.has(readObservationSourceKey(ref)),
-    );
-    const stored = view.stored ?? params.toolResult.content;
     const handle = await persistResultHandle({
       call: params.call,
       input: params.input,
-      content:
-        refs.length && stored && typeof stored === "object"
-          ? { ...stored, documentEvidenceRefs: [...keptRefs, ...omittedRefs] }
-          : stored,
+      content: view.stored,
     });
     if (!handle) return undefined;
-    const omitted = {
-      ...((view.content.omitted as Record<string, number> | undefined) || {}),
-      ...(omittedRefs.length
-        ? { documentEvidenceRefs: omittedRefs.length }
-        : {}),
-    };
     return {
       ...view.content,
-      ...(keptRefs.length ? { documentEvidenceRefs: keptRefs } : {}),
-      ...(Object.keys(omitted).length ? { omitted } : {}),
       toolResultHandle: handle,
       toolResultHandleNotice: MODEL_VIEW_HANDLE_NOTICE,
     };

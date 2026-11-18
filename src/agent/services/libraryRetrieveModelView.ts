@@ -1,6 +1,7 @@
 import type { QuoteCitation } from "../../shared/types";
 import { DEEP_SYNTHESIS_MAX_PAPERS } from "../../shared/libraryChatReadStrategy";
 import { estimateTextTokens } from "../../utils/modelInputCap";
+import { modelQuoteCitations } from "../../services/quotes/quoteCitations";
 import type {
   LibraryRetrieveInput,
   LibraryRetrievePaperMatch,
@@ -26,7 +27,8 @@ import type {
  * so a paper loses its last passage only once every paper is down to one;
  * then ledger rows without a passage leave.
  *
- * Rows keep the fields an answer uses; the chunk text, scores and match
+ * Rows keep the fields an answer uses, and quote records their model fields
+ * (modelQuoteCitation); the chunk text, scores and match
  * diagnostics, the candidate shortlist, the query plan and the text
  * renderings of the ledger stay in the stored result, whose row arrays list
  * the rows shown first. `omitted` counts the rows left out, and the papers
@@ -225,7 +227,9 @@ export function buildLibraryRetrieveModelView(params: {
       warnings: result.warnings,
       paperMatches: papers.map(paperRow),
       snippets: passages.map(passageRow),
-      ...(quoteCitations.length ? { quoteCitations } : {}),
+      ...(quoteCitations.length
+        ? { quoteCitations: modelQuoteCitations(quoteCitations) }
+        : {}),
       ...(Object.keys(omitted).length ? { omitted } : {}),
     };
   };

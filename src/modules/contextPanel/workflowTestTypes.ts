@@ -1463,6 +1463,16 @@ export type WorkflowTestApi = {
   }) => ReturnType<
     typeof import("./paperDecisionsReplay").callScopedMcpToolForConversation
   >;
+  /**
+   * Registers a scope token in the plugin's MCP server, as a connected
+   * runtime's turn does, so several tools/call requests that send it in the
+   * scope header share one turn's read observations. The token lasts until
+   * clearScopedMcpScope.
+   */
+  registerScopedMcpScope: (
+    scope: import("../../agent/mcp/server").ZoteroMcpActiveScope,
+  ) => { token: string };
+  clearScopedMcpScope: (token: string) => void;
   exerciseAgentStopRules: (input: {
     panelId: string;
     scenario: import("./stopRulesReplay").StopRuleScenario;
