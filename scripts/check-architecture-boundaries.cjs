@@ -177,8 +177,9 @@ const SEALED_EXPORTS = [
     importers: [
       // The Original Agent loop, through its one terminateRun path.
       "src/agent/runtime.ts",
-      // Codex and Claude Code bridge runs finish their own runs.
-      "src/agent/externalBackendBridge.ts",
+      // External runtimes (Claude Code, Antigravity) finish their runs
+      // through the shared turn host.
+      "src/agent/externalRuntimeTurnHost.ts",
     ],
   },
 ];
