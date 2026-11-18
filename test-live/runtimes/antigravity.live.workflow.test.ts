@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import type { WorkflowTestApi } from "../../src/modules/contextPanel/workflowTestTypes";
+import { env } from "./runtimeLiveShared";
 import type {
   AntigravityTurnResult,
   AntigravityTurnScenario,
@@ -14,11 +15,23 @@ declare const PathUtils: any;
  * panel, agent engine, turn host, transport, and ACP client.
  *
  * Spends a little Antigravity quota and adds a few sessions to the local
- * agy history. Run with:
+ * agy history, so it runs only when asked for by name:
  *   LLM_FOR_ZOTERO_TEST_ENTRIES=test-live/runtimes \
- *     node scripts/run-workflow-tests.mjs \
- *     test-live/runtimes/antigravity.live.workflow.test.ts
+ *   LLM_FOR_ZOTERO_LIVE_RUNTIME_TESTS=antigravity \
+ *     node scripts/run-workflow-tests.mjs --agent-live
  */
+const enabled = env("LLM_FOR_ZOTERO_LIVE_RUNTIME_TESTS")
+  .split(",")
+  .includes("antigravity");
+/**
+ * L3 needs a Zotero that answers on its HTTP port, because agy calls the
+ * Zotero MCP server over HTTP. The scaffold's test Zotero opens the port but
+ * never answers (2026-11-18: even /connector/ping times out), and agy waits
+ * on an unanswered MCP call without a timeout, so L3 runs only when
+ * LLM_FOR_ZOTERO_LIVE_ZOTERO_HTTP=1 says the Zotero under test serves HTTP.
+ */
+const zoteroServesHttp = env("LLM_FOR_ZOTERO_LIVE_ZOTERO_HTTP") === "1";
+
 describe("live: Antigravity on the installed agy", function () {
   this.timeout(300_000);
 
@@ -32,12 +45,8 @@ describe("live: Antigravity on the installed agy", function () {
   let panelId = "";
 
   before(async function () {
+    if (!enabled) this.skip();
     api = (Zotero as any).LLMForZotero.api.workflowTest as WorkflowTestApi;
-    // agy reaches the Zotero MCP server over HTTP; the test Zotero may not
-    // have started its server.
-    if (!Zotero.Server?.port && typeof Zotero.Server?.init === "function") {
-      Zotero.Server.init();
-    }
   });
 
   beforeEach(async function () {
@@ -101,6 +110,7 @@ describe("live: Antigravity on the installed agy", function () {
   });
 
   it("L3 reads the Zotero library through the Zotero MCP server over HTTP", async function () {
+    if (!zoteroServesHttp) this.skip();
     const result = await run({
       question:
         "Use the Zotero library_search tool to search my Zotero library for 'lantern harbors'. Reply with the exact title of the item you find.",
