@@ -217,10 +217,7 @@ describe("workflow: sidebar pointer reentry", function () {
     });
     const panel = await api.renderPanelForItem(fixture.parentItemId);
     panelId = panel.panelId;
-    const diagnostics = await api.clickPanelSystemToggle(
-      panel.panelId,
-      "codex",
-    );
+    const diagnostics = await api.togglePanelRuntime(panel.panelId, "codex");
     assert.equal(diagnostics.conversationSystem, "codex");
     const doc = Zotero.getMainWindow().document;
     win = doc.defaultView!;
@@ -418,7 +415,7 @@ describe("workflow: sidebar pointer reentry", function () {
       previous.set(name, Zotero.Prefs.get(prefix + name, true));
       Zotero.Prefs.set(prefix + name, value, true);
     }
-    const upstream = await api.clickPanelSystemToggle(panelId, "codex");
+    const upstream = await api.togglePanelRuntime(panelId, "codex");
     assert.equal(upstream.conversationSystem, "upstream");
     await api.seedPanelStoredTurn(
       panelId,

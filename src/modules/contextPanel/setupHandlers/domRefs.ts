@@ -41,10 +41,6 @@ export type PanelDomRefs = {
   historyUndoText: HTMLSpanElement | null;
   historyUndoBtn: HTMLButtonElement | null;
   topToast: HTMLDivElement | null;
-  runtimeSystemControls: HTMLDivElement | null;
-  codexSystemToggleBtn: HTMLButtonElement | null;
-  claudeSystemToggleBtn: HTMLButtonElement | null;
-  antigravitySystemToggleBtn: HTMLButtonElement | null;
   selectTextBtn: HTMLButtonElement | null;
   screenshotBtn: HTMLButtonElement | null;
   uploadBtn: HTMLButtonElement | null;
@@ -204,18 +200,6 @@ export function getPanelDomRefs(body: Element): PanelDomRefs {
       "#llm-history-undo-btn",
     ) as HTMLButtonElement | null,
     topToast: body.querySelector("#llm-top-toast") as HTMLDivElement | null,
-    runtimeSystemControls: body.querySelector(
-      "#llm-runtime-system-controls",
-    ) as HTMLDivElement | null,
-    codexSystemToggleBtn: body.querySelector(
-      "#llm-codex-system-toggle",
-    ) as HTMLButtonElement | null,
-    claudeSystemToggleBtn: body.querySelector(
-      "#llm-claude-system-toggle",
-    ) as HTMLButtonElement | null,
-    antigravitySystemToggleBtn: body.querySelector(
-      "#llm-antigravity-system-toggle",
-    ) as HTMLButtonElement | null,
     selectTextBtn: body.querySelector(
       "#llm-select-text",
     ) as HTMLButtonElement | null,

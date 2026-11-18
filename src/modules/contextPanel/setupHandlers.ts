@@ -448,13 +448,7 @@ import {
 } from "./portalScope";
 import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
-import {
-  RUNTIME_SYSTEM_DISPLAY_ORDER,
-  resolveRuntimeSystemToggleTarget,
-  syncRuntimeSystemControls,
-  type RuntimeConversationSystem,
-  type RuntimeSystemControls,
-} from "./runtimeSystemControls";
+import type { RuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import {
   resolveSidebarChatModeToggleState,
   type SidebarChatModeTab,
@@ -594,10 +588,7 @@ import { resolveUnifiedHistorySystems } from "./unifiedHistorySource";
 import { attachComposePreviewInteractionController } from "./setupHandlers/controllers/composePreviewInteractionController";
 import { attachFontScaleShortcutController } from "./setupHandlers/controllers/fontScaleShortcutController";
 import { attachHeaderMoreMenuController } from "./setupHandlers/controllers/headerMoreMenuController";
-import {
-  updateHeaderFit,
-  updateHeaderSpacing,
-} from "./setupHandlers/controllers/headerSpacing";
+import { updateHeaderFit } from "./setupHandlers/controllers/headerSpacing";
 import { attachComposeCaptureController } from "./setupHandlers/controllers/composeCaptureController";
 import { attachFloatingMenuInteractionController } from "./setupHandlers/controllers/floatingMenuInteractionController";
 import { createPaperPickerController } from "./setupHandlers/controllers/paperPickerController";
@@ -676,6 +667,7 @@ import {
 import { isClaudePaperPortalItem } from "../../claudeCode/portal";
 import { touchClaudeConversationTitle } from "../../claudeCode/store";
 import { antigravityConversationStore } from "../../antigravity/store";
+import { openPluginPreferencesTab } from "../../utils/preferencesStartTab";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -901,10 +893,6 @@ export function setupHandlers(
     historyUndoText,
     historyUndoBtn,
     topToast,
-    runtimeSystemControls,
-    codexSystemToggleBtn,
-    claudeSystemToggleBtn,
-    antigravitySystemToggleBtn,
     selectTextBtn,
     screenshotBtn,
     uploadBtn,
@@ -1612,6 +1600,8 @@ export function setupHandlers(
     // Plain chat lists the scope only; Agent mode records reads.
     syncTaskProgressPanel(body);
   };
+  /** True while this panel switches runtime; the badge is disabled meanwhile. */
+  let runtimeSystemSwitchInFlight = false;
   const closeRuntimeMenu = () => {
     if (!runtimeMenu) return;
     setFloatingMenuOpen(runtimeMenu, FOOTER_PERMISSION_MENU_OPEN_CLASS, false);
@@ -1649,13 +1639,22 @@ export function setupHandlers(
       ".llm-agent-toggle-label",
     ) as HTMLSpanElement | null;
     if (label) label.textContent = state.label;
+    const icon = runtimeModeBtn.querySelector(
+      ".llm-runtime-icon",
+    ) as HTMLSpanElement | null;
+    if (icon) icon.dataset.system = getConversationSystem();
     runtimeModeBtn.dataset.mode = mode;
     runtimeModeBtn.dataset.system = getConversationSystem();
+    // The runtimes the menu offers, and whether a switch is under way.
+    runtimeModeBtn.dataset.runtimeSystems = state.items
+      .map((entry) => entry.system)
+      .join(",");
+    runtimeModeBtn.dataset.switching = String(runtimeSystemSwitchInFlight);
     runtimeModeBtn.classList.toggle(
       "llm-runtime-mode-static",
       !state.clickable,
     );
-    runtimeModeBtn.disabled = !state.clickable;
+    runtimeModeBtn.disabled = !state.clickable || runtimeSystemSwitchInFlight;
     if (state.clickable) {
       runtimeModeBtn.removeAttribute("aria-disabled");
       runtimeModeBtn.setAttribute("aria-haspopup", "menu");
@@ -1684,30 +1683,7 @@ export function setupHandlers(
     selectedRuntimeModeCache.set(getConversationKey(item), mode);
     updateRuntimeModeButton();
   };
-  const panelRuntimeSystemControls: RuntimeSystemControls = {
-    group: runtimeSystemControls,
-    buttons: {
-      codex: codexSystemToggleBtn,
-      claude_code: claudeSystemToggleBtn,
-      antigravity: antigravitySystemToggleBtn,
-    },
-  };
-  let runtimeSystemSwitchInFlight = false;
-  const runtimeDivider = body.querySelector(
-    "#llm-header-runtime-controls .llm-header-runtime-divider",
-  ) as HTMLElement | null;
-  const updateRuntimeSystemToggles = () => {
-    const state = syncRuntimeSystemControls(panelRuntimeSystemControls, {
-      activeSystem: getConversationSystem(),
-      runtimeEnabled: mapRuntimeConversationSystems(isRuntimeModeAvailable),
-      busy: runtimeSystemSwitchInFlight,
-    });
-    // The divider before the runtime systems goes when they do. Their
-    // wrapper stays: in the Stacked layout it also holds the mode chip.
-    if (runtimeDivider) {
-      runtimeDivider.style.display = state.groupVisible ? "" : "none";
-    }
-  };
+  const updateRuntimeSwitchControls = () => updateRuntimeModeButton();
   let claudeWarmupInFlight: Promise<void> | null = null;
   const warmClaudeModeCaches = () => {
     if (!isRuntimeModeAvailable("claude_code")) return;
@@ -1868,7 +1844,7 @@ export function setupHandlers(
         warmClaudeModeCaches();
       }
       updateRuntimeModeButton();
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       if (options?.forceFresh === true) {
         await createAndSwitchPaperConversation(true);
         return true;
@@ -1897,7 +1873,7 @@ export function setupHandlers(
     // by `syncConversationIdentity` instead, together with the new key, once
     // the panel has committed the conversation of the system being entered.
     syncQueuedFollowUpRegistration();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     if (nextSystem === "claude_code") {
       warmClaudeModeCaches();
     }
@@ -1908,7 +1884,7 @@ export function setupHandlers(
         panelChoices.setConversationSystem(previousSystem);
         currentConversationSystem = previousSystem;
         syncQueuedFollowUpRegistration();
-        updateRuntimeSystemToggles();
+        updateRuntimeSwitchControls();
         updateRuntimeModeButton();
       };
       if (target.kind === "global") {
@@ -1976,7 +1952,7 @@ export function setupHandlers(
       resetComposePreviewUI();
       updateModelButton();
       updateReasoningButton();
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       void refreshGlobalHistoryHeader();
       return false;
     }
@@ -2081,7 +2057,7 @@ export function setupHandlers(
     resetComposePreviewUI();
     updateModelButton();
     updateReasoningButton();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     void refreshGlobalHistoryHeader();
     return true;
   };
@@ -2354,7 +2330,7 @@ export function setupHandlers(
           : t("Ask about this paper... Type / for actions, @ to add papers");
     }
     updateRuntimeModeButton();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     if (
       item &&
       !noteSession &&
@@ -2483,7 +2459,7 @@ export function setupHandlers(
           return;
         }
       }
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
     };
     const onCodexModePrefChange = () => {
       if (isPanelUnavailable()) {
@@ -2497,7 +2473,7 @@ export function setupHandlers(
           return;
         }
       }
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       updateRuntimeModeButton();
     };
     try {
@@ -2891,8 +2867,6 @@ export function setupHandlers(
           ) === "stacked"
         ) {
           updateHeaderFit(headerRow);
-        } else {
-          updateHeaderSpacing(headerRow);
         }
         if (panelWidth !== lastUserContextAlignmentPanelWidth) {
           syncUserContextAlignmentWidths(body);
@@ -5842,11 +5816,7 @@ export function setupHandlers(
     syncConversationIdentity();
   };
 
-  /**
-   * Switches this panel's runtime to `targetSystem`. The header buttons resolve
-   * their toggle rule first (`resolveRuntimeSystemToggleTarget`); the runtime
-   * badge menu passes the picked system straight through.
-   */
+  /** Switches this panel's runtime to `targetSystem` (the runtime menu). */
   const switchRuntimeSystemFromControl = async (
     targetSystem: ConversationSystem,
   ) => {
@@ -5859,21 +5829,21 @@ export function setupHandlers(
     }
     recoverDriftedPanelScopeForRuntimeToggle();
     runtimeSystemSwitchInFlight = true;
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     try {
       await switchConversationSystem(targetSystem, { forceFresh: true });
     } catch (err) {
       appLogger.warn("LLM: Failed to switch conversation runtime", err);
     } finally {
       runtimeSystemSwitchInFlight = false;
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
     }
   };
   /**
    * Opens a history row of another runtime: switches this panel to `system`
    * and opens the row's conversation directly. Runs inside the same in-flight
-   * guard as the badge and the header buttons, so they show busy and a second
-   * row click is refused until this one ends.
+   * guard as the runtime menu, so the badge shows busy and a second row click
+   * is refused until this one ends.
    */
   const openHistoryEntryInSystem = async (
     system: ConversationSystem,
@@ -5888,7 +5858,7 @@ export function setupHandlers(
     }
     recoverDriftedPanelScopeForRuntimeToggle();
     runtimeSystemSwitchInFlight = true;
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
     try {
       return await switchConversationSystem(system, { target });
     } catch (err) {
@@ -5896,22 +5866,10 @@ export function setupHandlers(
       return false;
     } finally {
       runtimeSystemSwitchInFlight = false;
-      updateRuntimeSystemToggles();
+      updateRuntimeSwitchControls();
       updateRuntimeModeButton();
     }
   };
-  for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
-    const button = panelRuntimeSystemControls.buttons[system];
-    if (!button) continue;
-    button.addEventListener("click", (event: Event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      void switchRuntimeSystemFromControl(
-        resolveRuntimeSystemToggleTarget(getConversationSystem(), system),
-      );
-    });
-  }
-
   const getModelChoices = () => {
     const choices = isClaudeConversationSystem()
       ? getClaudeRuntimeModelEntries()
@@ -7938,7 +7896,7 @@ export function setupHandlers(
     }
 
     updateRuntimeModeButton();
-    updateRuntimeSystemToggles();
+    updateRuntimeSwitchControls();
 
     // Notify standalone window (or other listeners) of webchat mode change
     hooks?.onWebChatModeChanged?.(isWebChat);
@@ -8011,7 +7969,7 @@ export function setupHandlers(
     if (headerTop) ro.observe(headerTop);
     for (const element of Array.from(
       headerTop?.querySelectorAll(
-        ".llm-header-nav-row, .llm-header-runtime-controls, .llm-runtime-system-controls, .llm-header-actions",
+        ".llm-header-nav-row, .llm-header-runtime-controls, .llm-header-actions",
       ) || [],
     ))
       ro.observe(element as Element);
@@ -9070,7 +9028,14 @@ export function setupHandlers(
       row.setAttribute("role", "menuitemradio");
       row.setAttribute("aria-checked", String(selected));
       row.classList.toggle("llm-permission-option-selected", selected);
-      row.textContent = entry.label;
+      row.classList.add("llm-runtime-menu-row");
+      const icon = runtimeMenu.ownerDocument.createElement("span");
+      icon.className = "llm-runtime-icon";
+      icon.dataset.system = entry.system;
+      icon.setAttribute("aria-hidden", "true");
+      const text = runtimeMenu.ownerDocument.createElement("span");
+      text.textContent = entry.label;
+      row.append(icon, text);
       row.addEventListener("click", (event: Event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -9078,6 +9043,25 @@ export function setupHandlers(
         runtimeModeBtn?.focus();
       });
       runtimeMenu.appendChild(row);
+    }
+    if (state.showAddRuntime) {
+      const separator = runtimeMenu.ownerDocument.createElement("div");
+      separator.className = "llm-runtime-menu-separator";
+      separator.setAttribute("role", "separator");
+      const add = runtimeMenu.ownerDocument.createElement("button");
+      add.type = "button";
+      add.className =
+        "llm-permission-option llm-runtime-menu-row llm-runtime-menu-add";
+      add.dataset.runtimeAction = "add";
+      add.setAttribute("role", "menuitem");
+      add.textContent = t("+ Add runtime…");
+      add.addEventListener("click", (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        closeRuntimeMenu();
+        openPluginPreferencesTab(PREFERENCES_PANE_ID, "agent");
+      });
+      runtimeMenu.append(separator, add);
     }
   };
   const stopRuntimeMenuPointerEvent = (event: Event) => event.stopPropagation();

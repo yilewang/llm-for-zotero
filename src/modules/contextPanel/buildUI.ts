@@ -23,7 +23,6 @@ import {
   resolvePreferredConversationSystem,
 } from "./portalScope";
 import { getConversationKey } from "./conversationIdentity";
-import { createRuntimeSystemControls } from "./runtimeSystemControls";
 import {
   resolveSidebarChatModeToggleState,
   type SidebarChatModeTab,
@@ -208,9 +207,9 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     isNoteSession: Boolean(activeNoteSession),
     isWebChat: false,
   });
-  // Runtime systems follow the history button, after a thin divider
-  // (Independent) or the mode chip in its place (Stacked). Both are built;
-  // CSS picks one from the root layout attribute.
+  // In the Stacked layout the mode chip follows the history button; CSS shows
+  // it from the root layout attribute. Runtimes are picked from the composer's
+  // runtime menu, not the header.
   const headerRuntimeControls = createElement(
     doc,
     "div",
@@ -219,12 +218,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       id: "llm-header-runtime-controls",
     },
   );
-  const runtimeDivider = createElement(
-    doc,
-    "span",
-    "llm-header-runtime-divider",
-  );
-  runtimeDivider.setAttribute("aria-hidden", "true");
   const modeSwitch = createSidebarModeSwitch(
     doc,
     {
@@ -239,21 +232,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     },
   );
 
-  const runtimeSystemControls = createRuntimeSystemControls(doc, {
-    groupId: "llm-runtime-system-controls",
-    groupClassName: "llm-panel-runtime-system-controls",
-    buttonClassName: "llm-panel-runtime-system-toggle",
-    buttonIds: {
-      codex: "llm-codex-system-toggle",
-      claude_code: "llm-claude-system-toggle",
-      antigravity: "llm-antigravity-system-toggle",
-    },
-  });
-  headerRuntimeControls.append(
-    runtimeDivider,
-    modeSwitch,
-    runtimeSystemControls.group,
-  );
+  headerRuntimeControls.append(modeSwitch);
 
   // Paper chat | Library chat, sharing the standalone window's segmented tabs.
   const chatModeTabs = createElement(
@@ -816,7 +795,10 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
       textContent: t("Agent"),
     },
   );
-  runtimeModeBtn.append(runtimeModeLabel);
+  const runtimeModeIcon = createElement(doc, "span", "llm-runtime-icon", {});
+  runtimeModeIcon.dataset.system = "upstream";
+  runtimeModeIcon.setAttribute("aria-hidden", "true");
+  runtimeModeBtn.append(runtimeModeIcon, runtimeModeLabel);
   contextPreviews.appendChild(runtimeModeBtn);
   const selectedContextList = createElement(
     doc,

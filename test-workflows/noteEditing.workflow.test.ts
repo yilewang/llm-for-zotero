@@ -40,10 +40,10 @@ function getWorkflowTestApi(): WorkflowTestApi {
 }
 
 function assertDualRuntimeControls(
-  diagnostics: Pick<WorkflowTestDiagnostics, "runtimeSystemToggles">,
+  diagnostics: Pick<WorkflowTestDiagnostics, "runtimeMenuEntries">,
   activeSystem?: "codex" | "claude_code",
 ): void {
-  const visible = diagnostics.runtimeSystemToggles.filter(
+  const visible = diagnostics.runtimeMenuEntries.filter(
     (toggle) => toggle.visible,
   );
   assert.deepEqual(
@@ -451,10 +451,7 @@ describe("workflow: note editing mode", function () {
         );
         assertDualRuntimeControls(initial);
 
-        const switched = await api.clickPanelSystemToggle(
-          panel.panelId,
-          "codex",
-        );
+        const switched = await api.togglePanelRuntime(panel.panelId, "codex");
         assert.equal(switched.conversationSystem, "codex");
         assert.equal(
           switched.panelConversationKey,
@@ -466,7 +463,7 @@ describe("workflow: note editing mode", function () {
         const codexMarker = "nonblank note-focused Codex chat";
         await api.seedPanelStoredUserMessage(panel.panelId, codexMarker);
 
-        const claude = await api.clickPanelSystemToggle(
+        const claude = await api.togglePanelRuntime(
           panel.panelId,
           "claude_code",
         );
@@ -474,7 +471,7 @@ describe("workflow: note editing mode", function () {
         assert.equal(claude.panelConversationKey, claude.conversationKey);
         assertDualRuntimeControls(claude, "claude_code");
 
-        const upstream = await api.clickPanelSystemToggle(
+        const upstream = await api.togglePanelRuntime(
           panel.panelId,
           "claude_code",
         );
@@ -482,10 +479,7 @@ describe("workflow: note editing mode", function () {
         assert.equal(upstream.panelConversationKey, upstream.conversationKey);
         assertDualRuntimeControls(upstream);
 
-        const freshCodex = await api.clickPanelSystemToggle(
-          panel.panelId,
-          "codex",
-        );
+        const freshCodex = await api.togglePanelRuntime(panel.panelId, "codex");
         assert.equal(freshCodex.conversationSystem, "codex");
         assert.notEqual(freshCodex.conversationKey, firstCodexKey);
         assert.notInclude(freshCodex.messageText || "", codexMarker);
@@ -535,7 +529,7 @@ describe("workflow: note editing mode", function () {
         assert.equal(initial.paperTabText, "Note chat");
         assertDualRuntimeControls(initial);
 
-        const codex = await api.clickStandaloneSystemToggle("codex");
+        const codex = await api.toggleStandaloneRuntime("codex");
         assert.equal(codex.conversationSystem, "codex");
         assert.equal(codex.paperTabText, "Note chat");
         assert.isTrue(
@@ -548,7 +542,7 @@ describe("workflow: note editing mode", function () {
         );
         assertDualRuntimeControls(codex, "codex");
 
-        const claude = await api.clickStandaloneSystemToggle("claude_code");
+        const claude = await api.toggleStandaloneRuntime("claude_code");
         assert.equal(claude.conversationSystem, "claude_code");
         assert.equal(claude.paperTabText, "Note chat");
         assert.isTrue(

@@ -1049,7 +1049,6 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
       ".llm-standalone-conv-group-new",
       ".llm-standalone-pinned-region",
       ".llm-standalone-icon-pin",
-      ".llm-standalone-runtime-system-controls",
     ]) {
       assert.lengthOf(
         shownIn(torn, selector),
@@ -1057,11 +1056,13 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
         `the follower shows no ${selector}`,
       );
     }
-    assert.isAbove(
-      shownIn(standalone, ".llm-standalone-runtime-system-controls button")
-        .length,
-      0,
-      "the leader shows its runtime controls",
+    assert.isFalse(
+      (
+        bodyOf(standalone)?.querySelector(
+          "#llm-runtime-mode-toggle",
+        ) as HTMLButtonElement | null
+      )?.disabled ?? true,
+      "the leader's runtime badge switches runtime",
     );
     // The composer's runtime badge names the runtime but switches nothing.
     const badge = bodyOf(torn)?.querySelector(

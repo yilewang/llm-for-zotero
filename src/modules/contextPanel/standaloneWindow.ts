@@ -158,12 +158,6 @@ import { resolveStandalonePaperTabLabel } from "./standaloneTabLabel";
 import { resolveFreshConversationDraft } from "./freshConversationDraft";
 import { decidePanelIdentityAdoption } from "./standaloneConversationSwitch";
 import { collapseDuplicateReusableConversationDrafts } from "./standaloneConversationResolution";
-import {
-  createRuntimeSystemControls,
-  RUNTIME_SYSTEM_DISPLAY_ORDER,
-  resolveRuntimeSystemToggleTarget,
-  syncRuntimeSystemControls,
-} from "./runtimeSystemControls";
 import { buildDefaultClaudeGlobalConversationKey } from "../../claudeCode/constants";
 import {
   resolveRememberedClaudeConversationKey,
@@ -1575,19 +1569,6 @@ function openChatWindowInstance(
       tabGroup.className = "llm-standalone-tab-group";
       tabGroup.append(paperTab, openTab);
 
-      const standaloneRuntimeSystemControls = createRuntimeSystemControls(doc, {
-        groupClassName: "llm-standalone-runtime-system-controls",
-        buttonClassName: "llm-standalone-runtime-system-toggle",
-      });
-      const updateStandaloneSystemToggles = () => {
-        syncRuntimeSystemControls(standaloneRuntimeSystemControls, {
-          activeSystem: currentConversationSystem,
-          runtimeEnabled: mapRuntimeConversationSystems(
-            isRuntimeConversationSystemEnabled,
-          ),
-        });
-      };
-
       // The leading slot is the tab row's single grid cell on the left. It
       // holds the runtime controls; the window buttons and sidebar toggle
       // join them whenever the sidebar is collapsed. A follower's top row
@@ -1597,9 +1578,6 @@ function openChatWindowInstance(
         "div",
       ) as HTMLDivElement;
       tabRowLeading.className = "llm-standalone-tab-row-leading";
-      if (linkedToReader) {
-        tabRowLeading.append(standaloneRuntimeSystemControls.group);
-      }
 
       // The trailing slot holds the side panel toggle (right edge).
       const tabRowTrailing = doc.createElementNS(
@@ -2645,7 +2623,6 @@ function openChatWindowInstance(
       const updateStandaloneWebChatUI = (isWebChat: boolean) => {
         if (cancelled) return;
         isInWebChatMode = isWebChat;
-        updateStandaloneSystemToggles();
 
         // Tab labels
         if (isWebChat) {
@@ -6001,7 +5978,6 @@ function openChatWindowInstance(
           activeConversationKey = getConversationKey(activeNoteItem);
           mountChatPanel(activeNoteItem);
           scheduleStandaloneSidebarRender();
-          updateStandaloneSystemToggles();
           return;
         }
         const currentSystem = currentConversationSystem;
@@ -6009,7 +5985,6 @@ function openChatWindowInstance(
         const forceFresh = options?.forceFresh === true;
         surfaceChoices.conversationSystem.set(nextSystem, windowSurface);
         currentConversationSystem = nextSystem;
-        updateStandaloneSystemToggles();
         if (standaloneMode === "open") {
           const libraryID = getCurrentLibraryScopeID();
           const mountOpenConversation = (conversationKey: number) => {
@@ -6028,7 +6003,6 @@ function openChatWindowInstance(
             );
             mountChatPanel(nextItem as Zotero.Item);
             scheduleStandaloneSidebarRender();
-            updateStandaloneSystemToggles();
           };
 
           if (forceFresh) {
@@ -6089,7 +6063,6 @@ function openChatWindowInstance(
           mountChatPanel(freshItem as Zotero.Item, currentRawContextItem);
           scheduleStandaloneSidebarRender();
           void renderShortcuts(contentArea, freshItem as Zotero.Item, "paper");
-          updateStandaloneSystemToggles();
           return;
         }
         if (switchSeq !== systemSwitchSeq) return;
@@ -6103,7 +6076,6 @@ function openChatWindowInstance(
             resolveShortcutMode(nextItem),
           );
         }
-        updateStandaloneSystemToggles();
       };
 
       /**
@@ -6129,31 +6101,9 @@ function openChatWindowInstance(
           surfaceChoices.conversationSystem.set(system, windowSurface);
           currentConversationSystem = system;
         }
-        updateStandaloneSystemToggles();
         return true;
       };
 
-      for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
-        // A runtime without a toggle (Antigravity, for now) has no button.
-        standaloneRuntimeSystemControls.buttons[system]?.addEventListener(
-          "click",
-          (event) => {
-            event.preventDefault();
-            // A rebuilt standalone shell must never let duplicate listeners
-            // turn one physical click into two runtime toggles.
-            event.stopImmediatePropagation();
-            if (cancelled || newWin.closed) return;
-            void switchConversationSystem(
-              resolveRuntimeSystemToggleTarget(
-                currentConversationSystem,
-                system,
-              ),
-              { forceFresh: true },
-            );
-          },
-        );
-      }
-      updateStandaloneSystemToggles();
       {
         const claudeModePrefKey = `${config.prefsPrefix}.enableClaudeCodeMode`;
         const codexModePrefKey = `${config.prefsPrefix}.enableCodexAppServerMode`;
@@ -6210,7 +6160,6 @@ function openChatWindowInstance(
               return;
             }
           }
-          updateStandaloneSystemToggles();
         };
         const onCodexModePrefChange = () => {
           if (cancelled || newWin.closed) {
@@ -6224,7 +6173,6 @@ function openChatWindowInstance(
               return;
             }
           }
-          updateStandaloneSystemToggles();
         };
         try {
           claudeObserverId = (Zotero as any).Prefs.registerObserver(

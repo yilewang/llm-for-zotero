@@ -41,10 +41,7 @@ describe("workflow: latest message button in a Codex panel", function () {
       pages: ["Disposable paper for a local Codex conversation."],
     });
     const panel = await api.renderPanelForItem(fixture.parentItemId);
-    const diagnostics = await api.clickPanelSystemToggle(
-      panel.panelId,
-      "codex",
-    );
+    const diagnostics = await api.togglePanelRuntime(panel.panelId, "codex");
     assert.equal(diagnostics.conversationSystem, "codex");
     const doc = Zotero.getMainWindow().document;
     win = doc.defaultView!;

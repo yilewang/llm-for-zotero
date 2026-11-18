@@ -124,7 +124,7 @@ describe("workflow: provider-aware permission modes", function () {
         assert.isTrue(openPanelMenu.expanded, JSON.stringify(openPanelMenu));
         assert.isTrue(openPanelMenu.menuVisible, JSON.stringify(openPanelMenu));
 
-        await api.clickPanelSystemToggle(panel.panelId, "claude_code");
+        await api.togglePanelRuntime(panel.panelId, "claude_code");
         assertRows(api.getPanelPermissionSurface(panel.panelId), [
           "claude:plan",
           "claude:dontAsk",
@@ -160,9 +160,9 @@ describe("workflow: provider-aware permission modes", function () {
           ":workspace",
         );
 
-        await api.clickPanelSystemToggle(panel.panelId, "codex");
-        await api.clickPanelSystemToggle(panel.panelId, "claude_code");
-        await api.clickPanelSystemToggle(panel.panelId, "codex");
+        await api.togglePanelRuntime(panel.panelId, "codex");
+        await api.togglePanelRuntime(panel.panelId, "claude_code");
+        await api.togglePanelRuntime(panel.panelId, "codex");
         const currentCodex = api.getPanelPermissionSurface(panel.panelId);
         assertRows(currentCodex, [
           "codex:preset:ask",
@@ -249,7 +249,7 @@ describe("workflow: provider-aware permission modes", function () {
           openStandaloneMenu.menuVisible,
           JSON.stringify(openStandaloneMenu),
         );
-        await api.clickStandaloneSystemToggle("claude_code");
+        await api.toggleStandaloneRuntime("claude_code");
         assertRows(api.getStandalonePermissionSurface(), [
           "claude:plan",
           "claude:dontAsk",
@@ -267,7 +267,7 @@ describe("workflow: provider-aware permission modes", function () {
           readCodexPermissionState().approvalOverride.reviewer,
           "auto_review",
         );
-        await api.clickStandaloneSystemToggle("codex");
+        await api.toggleStandaloneRuntime("codex");
         assertRows(api.getStandalonePermissionSurface(), [
           "codex:preset:ask",
           "codex:preset:approve",

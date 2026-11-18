@@ -62,13 +62,13 @@ function message(value: unknown): string {
 }
 
 function activeHeaderSystems(diagnostics: {
-  runtimeSystemToggles?: Array<{
+  runtimeMenuEntries?: Array<{
     system: string;
     visible: boolean;
     active: boolean;
   }>;
 }): string[] {
-  return (diagnostics.runtimeSystemToggles || [])
+  return (diagnostics.runtimeMenuEntries || [])
     .filter((toggle) => toggle.visible && toggle.active)
     .map((toggle) => toggle.system);
 }

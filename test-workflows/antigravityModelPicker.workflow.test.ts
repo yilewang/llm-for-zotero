@@ -99,7 +99,7 @@ describe("workflow: Antigravity model picker", function () {
 
   it("lists agy's models and thinking levels and stores the picks", async function () {
     const panel = await api.renderPanelForItem(fixture!.parentItemId);
-    const diagnostics = await api.clickPanelSystemToggle(
+    const diagnostics = await api.togglePanelRuntime(
       panel.panelId,
       "antigravity",
     );

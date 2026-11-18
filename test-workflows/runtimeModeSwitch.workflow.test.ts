@@ -26,9 +26,11 @@ import { isConversationKeyForKind } from "../src/shared/conversationKeySpace";
 
 const PREF_PREFIX = "extensions.zotero.llmforzotero";
 
-/** The control the reader presses to enter and leave Codex. */
-const CODEX_TOGGLE_SELECTOR =
-  ".llm-panel-runtime-system-toggle[data-conversation-system='codex']";
+/** The control the reader presses to open the runtime menu. */
+const RUNTIME_BADGE_SELECTOR = "#llm-runtime-mode-toggle";
+
+const runtimeMenuOption = (system: string) =>
+  `#llm-runtime-menu [data-runtime-system='${system}']`;
 
 const AGENT_AND_CODEX_PREFS = {
   enableAgentMode: true,
@@ -537,10 +539,10 @@ describe("workflow: runtime mode switch", function () {
       const agent = await api.getDiagnostics(panel.panelId);
       assert.equal(agent.runtimeMode, "agent");
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
       assert.equal(
         back.runtimeMode,
@@ -551,15 +553,9 @@ describe("workflow: runtime mode switch", function () {
       await assertMainThreadResponsive("empty Codex conversation");
       await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
 
-      const secondCodex = await api.clickPanelSystemToggle(
-        panel.panelId,
-        "codex",
-      );
+      const secondCodex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(secondCodex.conversationSystem, "codex");
-      const secondBack = await api.clickPanelSystemToggle(
-        panel.panelId,
-        "codex",
-      );
+      const secondBack = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(secondBack.conversationSystem, "upstream");
       await assertMainThreadResponsive("second empty switch");
     });
@@ -573,7 +569,7 @@ describe("workflow: runtime mode switch", function () {
       const agent = await api.getDiagnostics(panel.panelId);
       assert.equal(agent.runtimeMode, "agent");
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
 
       const runId = `mode-switch-${Date.now()}`;
@@ -589,22 +585,16 @@ describe("workflow: runtime mode switch", function () {
       );
       await Zotero.Promise.delay(200);
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
       assert.equal(back.runtimeMode, "agent");
 
       await assertMainThreadResponsive("Codex conversation with a turn");
       await assertComposerAcceptsInput(panel.panelId, api, "after the switch");
 
-      const secondCodex = await api.clickPanelSystemToggle(
-        panel.panelId,
-        "codex",
-      );
+      const secondCodex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(secondCodex.conversationSystem, "codex");
-      const secondBack = await api.clickPanelSystemToggle(
-        panel.panelId,
-        "codex",
-      );
+      const secondBack = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(secondBack.conversationSystem, "upstream");
       await assertMainThreadResponsive("second switch after a turn");
     });
@@ -615,11 +605,11 @@ describe("workflow: runtime mode switch", function () {
       const paper = await createPaper("Mode Switch Toggle");
       const panel = await api.renderPanelForItem(paper.parentItemId);
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
       assert.equal(codex.runtimeBadge?.label, "Codex");
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
 
       const secondCodex = await api.pickPanelRuntime(panel.panelId, "codex");
@@ -656,7 +646,7 @@ describe("workflow: runtime mode switch", function () {
       );
       await Zotero.Promise.delay(200);
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
 
       const unfinishedRunId = `unfinished-${Date.now()}`;
@@ -673,7 +663,7 @@ describe("workflow: runtime mode switch", function () {
       );
       await Zotero.Promise.delay(200);
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
       assert.equal(back.runtimeMode, "agent");
 
@@ -700,7 +690,7 @@ describe("workflow: runtime mode switch", function () {
         "the panel delivers keystrokes before the switch",
       );
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
       await assertMainThreadResponsive("library conversation in Codex");
       // The panel settles into the state the reader sees before the fence is
@@ -717,8 +707,12 @@ describe("workflow: runtime mode switch", function () {
       // mode, with a probe on the same element so a swallowed event is told
       // apart from a handler that ran and did nothing.
       assert.isTrue(
-        clickReachesPanelTarget(panel.panelId, CODEX_TOGGLE_SELECTOR),
-        "the click that returns to Agent mode must reach the Codex toggle",
+        clickReachesPanelTarget(panel.panelId, RUNTIME_BADGE_SELECTOR),
+        "the click that opens the runtime menu must reach the badge",
+      );
+      assert.isTrue(
+        clickReachesPanelTarget(panel.panelId, runtimeMenuOption("upstream")),
+        "the click that returns to Agent mode must reach its menu option",
       );
       const back = await waitForConversationSystem(panel.panelId, "upstream");
       assert.equal(
@@ -738,7 +732,7 @@ describe("workflow: runtime mode switch", function () {
       const upstreamKey = global.conversationKey || 0;
       await assertPanelStillUsable(panel.panelId, "library chat before Codex");
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
       assert.notEqual(
         codex.conversationKey,
@@ -754,7 +748,7 @@ describe("workflow: runtime mode switch", function () {
         "empty library chat in Codex",
       );
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
       assert.equal(
         back.conversationKey,
@@ -766,7 +760,7 @@ describe("workflow: runtime mode switch", function () {
         "empty library chat back in Agent",
       );
 
-      const again = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const again = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(again.conversationSystem, "codex");
       assert.equal(
         again.conversationKey,
@@ -797,7 +791,7 @@ describe("workflow: runtime mode switch", function () {
       );
       await Zotero.Promise.delay(200);
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
       assert.isTrue(
         isConversationKeyForKind("codex", "global", codex.conversationKey || 0),
@@ -821,7 +815,7 @@ describe("workflow: runtime mode switch", function () {
       );
       await Zotero.Promise.delay(200);
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
       assert.equal(back.conversationKind, "global");
       // Returning from a runtime opens a fresh draft rather than resuming a
@@ -855,7 +849,7 @@ describe("workflow: runtime mode switch", function () {
         assert.equal(library.conversationKind, "global");
         assert.equal(library.conversationSystem, "upstream");
 
-        const codex = await api.clickStandaloneSystemToggle("codex");
+        const codex = await api.toggleStandaloneRuntime("codex");
         assert.equal(codex.conversationSystem, "codex");
         assert.isTrue(
           isConversationKeyForKind(
@@ -868,7 +862,7 @@ describe("workflow: runtime mode switch", function () {
         await assertMainThreadResponsive("standalone library chat in Codex");
 
         // The toggle still answering is the proof the window did not go deaf.
-        const back = await api.clickStandaloneSystemToggle("codex");
+        const back = await api.toggleStandaloneRuntime("codex");
         assert.equal(back.conversationSystem, "upstream");
         assert.equal(back.conversationKind, "global");
         assert.isTrue(
@@ -927,8 +921,12 @@ describe("workflow: runtime mode switch", function () {
 
       // The reader's way out.
       assert.isTrue(
-        clickReachesPanelTarget(panel.panelId, CODEX_TOGGLE_SELECTOR),
-        "the click that ends the blocked state must reach the toggle",
+        clickReachesPanelTarget(panel.panelId, RUNTIME_BADGE_SELECTOR),
+        "the click that opens the runtime menu must reach the badge",
+      );
+      assert.isTrue(
+        clickReachesPanelTarget(panel.panelId, runtimeMenuOption("codex")),
+        "the click that ends the blocked state must reach the Codex option",
       );
       const recovered = await waitForConversationSystem(panel.panelId, "codex");
       assert.isTrue(
@@ -941,7 +939,7 @@ describe("workflow: runtime mode switch", function () {
       );
       await assertPanelStillUsable(panel.panelId, "after drift recovery");
 
-      const back = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const back = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(back.conversationSystem, "upstream");
       await assertPanelStillUsable(
         panel.panelId,

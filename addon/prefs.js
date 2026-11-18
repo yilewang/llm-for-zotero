@@ -81,6 +81,7 @@ pref("codexAppServerLastAllocatedConversationKeyMap", "");
 pref("codexAppServerLastAllocatedGlobalConversationKey", 0);
 pref("codexAppServerLastAllocatedPaperConversationKey", 0);
 pref("enableAntigravityMode", false);
+pref("addedRuntimeSystems", "");
 pref("antigravityConversationModeMap", "");
 pref("antigravityGlobalConversationMap", "");
 pref("antigravityLastAllocatedConversationKeyMap", "");

@@ -88,7 +88,7 @@ function assertDualRuntimeControls(
   diagnostics: WorkflowTestStandaloneDiagnostics,
   activeSystem?: "codex" | "claude_code",
 ): void {
-  const visible = diagnostics.runtimeSystemToggles.filter(
+  const visible = diagnostics.runtimeMenuEntries.filter(
     (toggle) => toggle.visible,
   );
   const active = visible.filter((toggle) => toggle.active);
@@ -103,7 +103,6 @@ function assertDualRuntimeControls(
     diagnosticsMessage(diagnostics),
   );
   for (const toggle of visible) {
-    assert.equal(toggle.active, toggle.ariaPressed);
     assert.isFalse(toggle.disabled);
   }
 }
@@ -638,17 +637,7 @@ describe("workflow: standalone document chat", function () {
         assert.equal(initial.conversationSystem, "upstream");
         assert.equal(initial.conversationKind, "global");
         assertDualRuntimeControls(initial);
-        const geometry = await api.measureStandaloneRuntimeGeometry({
-          width: 500,
-          fontScale: 1.8,
-        });
-        assert.closeTo(geometry.containerWidth, 500, 1);
-        assert.isAtLeast(geometry.runtimeWidth, 50, JSON.stringify(geometry));
-        assert.isFalse(geometry.runtimeIntersectsLeadingContent);
-        assert.isTrue(geometry.runtimeWithinContainer);
-        assert.closeTo(geometry.centeredContentOffset, 0, 1);
-
-        const rapid = await api.clickStandaloneSystemTogglesRapidly([
+        const rapid = await api.pickStandaloneRuntimesRapidly([
           "codex",
           "claude_code",
         ]);
@@ -658,11 +647,10 @@ describe("workflow: standalone document chat", function () {
           "the standalone generation guard must let the final click win",
         );
         assertDualRuntimeControls(rapid, "claude_code");
-        const resetUpstream =
-          await api.clickStandaloneSystemToggle("claude_code");
+        const resetUpstream = await api.toggleStandaloneRuntime("claude_code");
         assert.equal(resetUpstream.conversationSystem, "upstream");
 
-        const codex = await api.clickStandaloneSystemToggle("codex");
+        const codex = await api.toggleStandaloneRuntime("codex");
         assert.equal(codex.conversationSystem, "codex");
         assert.isTrue(
           isConversationKeyForKind(
@@ -677,7 +665,7 @@ describe("workflow: standalone document chat", function () {
         const codexMarker = "nonblank standalone Codex library chat";
         await api.seedStandaloneUserMessage(codexMarker);
 
-        const claude = await api.clickStandaloneSystemToggle("claude_code");
+        const claude = await api.toggleStandaloneRuntime("claude_code");
         assert.equal(claude.conversationSystem, "claude_code");
         assert.isTrue(
           isConversationKeyForKind(
@@ -689,7 +677,7 @@ describe("workflow: standalone document chat", function () {
         );
         assertDualRuntimeControls(claude, "claude_code");
 
-        const upstream = await api.clickStandaloneSystemToggle("claude_code");
+        const upstream = await api.toggleStandaloneRuntime("claude_code");
         assert.equal(upstream.conversationSystem, "upstream");
         assert.isTrue(
           isConversationKeyForKind(
@@ -701,7 +689,7 @@ describe("workflow: standalone document chat", function () {
         );
         assertDualRuntimeControls(upstream);
 
-        const freshCodex = await api.clickStandaloneSystemToggle("codex");
+        const freshCodex = await api.toggleStandaloneRuntime("codex");
         assert.equal(freshCodex.conversationSystem, "codex");
         assert.notEqual(
           freshCodex.conversationKey,
@@ -720,7 +708,7 @@ describe("workflow: standalone document chat", function () {
         const inactiveClaudeDisabled = await api.getStandaloneDiagnostics();
         assert.equal(inactiveClaudeDisabled.conversationSystem, "codex");
         assert.deepEqual(
-          inactiveClaudeDisabled.runtimeSystemToggles
+          inactiveClaudeDisabled.runtimeMenuEntries
             .filter((toggle) => toggle.visible)
             .map((toggle) => toggle.system),
           ["codex"],
@@ -737,7 +725,7 @@ describe("workflow: standalone document chat", function () {
         const activeCodexDisabled = await api.getStandaloneDiagnostics();
         assert.equal(activeCodexDisabled.conversationSystem, "upstream");
         assert.deepEqual(
-          activeCodexDisabled.runtimeSystemToggles
+          activeCodexDisabled.runtimeMenuEntries
             .filter((toggle) => toggle.visible)
             .map((toggle) => toggle.system),
           ["claude_code"],

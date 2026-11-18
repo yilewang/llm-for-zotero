@@ -1219,8 +1219,17 @@ const zhCN: Record<string, string> = {
   "Failed to update CLAUDE.md": "更新 CLAUDE.md 失败",
 
   // ── Agent tab: collapsible runtime rows ────────────────────────────
-  "Three runtimes can answer in the chat panel. Turn on the ones you want; the runtime you pick in the chat header answers a given turn.":
-    "聊天面板中可以有三种运行时来回答。开启你需要的运行时；实际回答的是你在聊天标题栏中选择的那一个。",
+  "The built-in Agent is always here. Add other runtimes with + Add runtime; the runtime you pick in the chat's runtime menu answers a given turn.":
+    "内置 Agent 始终可用。可通过“+ 添加运行时”加入其他运行时；实际回答的是你在聊天的运行时菜单中选择的那一个。",
+  "+ Add runtime": "+ 添加运行时",
+  Remove: "移除",
+  "+ Add runtime…": "+ 添加运行时…",
+  "Runs the Codex CLI. Needs codex installed and signed in.":
+    "运行 Codex CLI。需要已安装并登录 codex。",
+  "Runs Claude Code through its bridge. Needs claude installed and signed in.":
+    "通过桥接运行 Claude Code。需要已安装并登录 claude。",
+  "Runs the Antigravity CLI. Needs agy installed and signed in.":
+    "运行 Antigravity CLI。需要已安装并登录 agy。",
   Runtimes: "运行时",
   "Original Agent": "原生 Agent",
   "Built in · Beta": "内置 · 测试版",

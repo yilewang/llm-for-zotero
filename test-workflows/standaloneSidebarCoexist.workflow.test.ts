@@ -2290,8 +2290,6 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
   });
 
   it("T8: the window keeps its own backend while the sidebar switches back to the API", async function () {
-    const CODEX_TOGGLE =
-      ".llm-panel-runtime-system-toggle[data-conversation-system='codex']";
     const savedSystem = () =>
       Zotero.Prefs.get(PREF_PREFIX + "conversationSystem", true);
     Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", true, true);
@@ -2307,7 +2305,7 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
 
       await api.openStandaloneForItem(paper.parentItemId);
       await api.clickStandaloneTab("open");
-      const codex = await api.clickStandaloneSystemToggle("codex");
+      const codex = await api.toggleStandaloneRuntime("codex");
       assert.equal(codex.conversationSystem, "codex", JSON.stringify(codex));
       await until(
         () => windowState().conversationSystem === "codex",
@@ -2333,23 +2331,33 @@ describe("workflow: standalone window coexists with the sidebar chat", function 
       );
 
       // The sidebar enters Codex and comes back to the API.
-      const sidebarToggle = () =>
-        sidebarBody()!.querySelector(CODEX_TOGGLE) as HTMLElement | null;
-      assert.isOk(sidebarToggle(), "the sidebar shows the Codex toggle");
-      // A toggle is disabled while its switch runs; a click then is dropped.
-      const sidebarToggleIdle = () => {
-        const toggle = sidebarToggle() as HTMLButtonElement | null;
-        return Boolean(toggle && !toggle.disabled);
+      // The reader opens the runtime menu and picks a runtime.
+      const sidebarBadge = () =>
+        sidebarBody()!.querySelector(
+          "#llm-runtime-mode-toggle",
+        ) as HTMLButtonElement | null;
+      const pickInSidebar = (system: string) => {
+        sidebarBadge()!.click();
+        const option = sidebarBody()!.querySelector(
+          `#llm-runtime-menu [data-runtime-system='${system}']`,
+        ) as HTMLElement | null;
+        assert.isOk(option, `the sidebar's runtime menu offers ${system}`);
+        option!.click();
       };
-      sidebarToggle()!.click();
+      // The badge is disabled while its switch runs; a click then is dropped.
+      const sidebarBadgeIdle = () => {
+        const badge = sidebarBadge();
+        return Boolean(badge && !badge.disabled);
+      };
+      pickInSidebar("codex");
       await until(
         () =>
           sidebarState().conversationSystem === "codex" &&
           sidebarState().conversationKey > 0 &&
-          sidebarToggleIdle(),
+          sidebarBadgeIdle(),
         () => `the sidebar enters Codex: ${JSON.stringify(sidebarState())}`,
       );
-      sidebarToggle()!.click();
+      pickInSidebar("upstream");
       await until(
         () =>
           sidebarState().conversationSystem === "upstream" &&

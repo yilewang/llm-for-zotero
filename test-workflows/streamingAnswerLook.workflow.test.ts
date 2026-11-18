@@ -303,8 +303,7 @@ describe("workflow: streaming answer look", function () {
     const panel = await api.renderPanelForItem(fixture!.parentItemId);
     api.configurePermissionCatalogs();
     assert.equal(
-      (await api.clickPanelSystemToggle(panel.panelId, "codex"))
-        .conversationSystem,
+      (await api.togglePanelRuntime(panel.panelId, "codex")).conversationSystem,
       "codex",
     );
     const restore = showOnScreen(panel.panelId);
@@ -341,8 +340,7 @@ describe("workflow: streaming answer look", function () {
     const panel = await api.renderPanelForItem(fixture!.parentItemId);
     api.configurePermissionCatalogs();
     assert.equal(
-      (await api.clickPanelSystemToggle(panel.panelId, "codex"))
-        .conversationSystem,
+      (await api.togglePanelRuntime(panel.panelId, "codex")).conversationSystem,
       "codex",
     );
     const restore = showOnScreen(panel.panelId);

@@ -127,7 +127,7 @@ describe("workflow: webchat mode switching", function () {
         "the model menu must stay usable inside webchat",
       );
       assert.isTrue(
-        entered.runtimeSystemToggles.some(
+        entered.runtimeMenuEntries.some(
           (toggle) => toggle.system === "codex" && toggle.visible,
         ),
         "the Codex toggle must stay visible inside webchat",
@@ -272,7 +272,7 @@ describe("workflow: webchat mode switching", function () {
       assert.isTrue(entered.webChatMode);
       const webChatSessionKey = entered.conversationKey;
 
-      const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const codex = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(codex.conversationSystem, "codex");
       assert.isFalse(codex.webChatMode);
       assert.equal(
@@ -281,7 +281,7 @@ describe("workflow: webchat mode switching", function () {
         "switching runtimes must restore an API entry so upstream cannot re-enter webchat",
       );
 
-      const upstream = await api.clickPanelSystemToggle(panel.panelId, "codex");
+      const upstream = await api.togglePanelRuntime(panel.panelId, "codex");
       assert.equal(upstream.conversationSystem, "upstream");
       assert.isFalse(
         upstream.webChatMode,

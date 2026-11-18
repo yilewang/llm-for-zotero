@@ -173,7 +173,7 @@ describe("workflow: panel lifecycle", function () {
         const panel = await api.renderPanelForItem(fixture.parentItemId);
         const initial = await api.getDiagnostics(panel.panelId);
         assert.isFalse(
-          initial.runtimeSystemToggles.some(
+          initial.runtimeMenuEntries.some(
             (toggle) => toggle.system === "codex" && toggle.visible,
           ),
         );
@@ -194,7 +194,7 @@ describe("workflow: panel lifecycle", function () {
         await Zotero.Promise.delay(250);
         const afterPreferenceChange = await api.getDiagnostics(panel.panelId);
         assert.isTrue(
-          afterPreferenceChange.runtimeSystemToggles.some(
+          afterPreferenceChange.runtimeMenuEntries.some(
             (toggle) => toggle.system === "codex" && toggle.visible,
           ),
         );

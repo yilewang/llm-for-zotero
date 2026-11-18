@@ -695,16 +695,6 @@
   flex: 0 0 auto;
 }
 
-/* A thin rule between the history button and the runtime systems. */
-.llm-header-runtime-divider {
-  box-sizing: border-box;
-  flex: 0 0 auto;
-  width: 1px;
-  height: 16px;
-  margin-inline: 2px;
-  border-inline-start: var(--material-panedivider);
-}
-
 /* The sidebar toggle reuses the standalone segmented tabs. It has no flyout
  * to rise above, so header menus keep painting over it. */
 .llm-header-toggle-row .llm-header-mode-tabs {
@@ -1016,176 +1006,6 @@
   from {
     opacity: 0;
   }
-}
-
-/* --llm-runtime-visible-count is the number of runtime buttons shown
-   (runtimeSystemControls.ts); the group is exactly that many buttons wide. */
-.llm-runtime-system-controls {
-  --llm-runtime-count: var(--llm-runtime-visible-count, 1);
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: 0 0 auto;
-  width: calc(
-    var(--llm-runtime-count) * 24px + (var(--llm-runtime-count) - 1) * 2px
-  );
-  min-width: calc(
-    var(--llm-runtime-count) * 24px + (var(--llm-runtime-count) - 1) * 2px
-  );
-}
-
-.llm-runtime-system-toggle {
-  appearance: none;
-  -moz-appearance: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  min-width: 24px;
-  border: none;
-  background: transparent;
-  color: var(--fill-primary);
-  border-radius: 6px;
-  cursor: pointer;
-  padding: 0;
-  margin: 0 !important;
-  box-sizing: border-box;
-  flex: 0 0 24px;
-}
-
-.llm-runtime-system-toggle--claude-code[data-active="true"] {
-  color: #d77757;
-}
-
-.llm-runtime-system-toggle:hover:not(:disabled) {
-  background: var(--fill-quinary);
-}
-
-.llm-runtime-system-toggle:focus-visible {
-  outline: 1px solid var(--color-accent);
-  outline-offset: 1px;
-}
-
-.llm-runtime-system-toggle:disabled {
-  cursor: progress;
-  opacity: 0.55;
-}
-
-.llm-runtime-system-toggle-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 16px;
-  height: 16px;
-  line-height: 1;
-}
-
-.llm-runtime-system-toggle-icon--claude-code {
-  background-color: currentColor;
-  mask-image: url("icons/claude-code.svg");
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-  -webkit-mask-image: url("icons/claude-code.svg");
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
-  opacity: 0.62;
-}
-
-.llm-runtime-system-toggle--claude-code[data-active="true"]
-  .llm-runtime-system-toggle-icon--claude-code {
-  opacity: 1;
-}
-
-.llm-runtime-system-toggle-icon--antigravity {
-  display: inline-block;
-  position: relative;
-}
-
-.llm-runtime-system-toggle-icon--antigravity::before,
-.llm-runtime-system-toggle-icon--antigravity::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: contain;
-  transition: opacity 0.15s;
-}
-
-.llm-runtime-system-toggle-icon--antigravity::before {
-  background-color: var(--fill-primary, #0d0d0d);
-  mask-image: url("icons/antigravity.svg");
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-  -webkit-mask-image: url("icons/antigravity.svg");
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
-  opacity: 0.62;
-}
-
-.llm-runtime-system-toggle-icon--antigravity::after {
-  background-image: url("icons/antigravity-color.svg");
-  opacity: 0;
-}
-
-.llm-runtime-system-toggle--antigravity[data-active="true"]
-  .llm-runtime-system-toggle-icon--antigravity::before {
-  opacity: 0;
-}
-
-.llm-runtime-system-toggle--antigravity[data-active="true"]
-  .llm-runtime-system-toggle-icon--antigravity::after {
-  opacity: 1;
-}
-
-.llm-runtime-system-toggle-icon--codex {
-  display: inline-block;
-  position: relative;
-}
-
-.llm-runtime-system-toggle-icon--codex::before,
-.llm-runtime-system-toggle-icon--codex::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: contain;
-  transition: opacity 0.15s;
-}
-
-.llm-runtime-system-toggle-icon--codex::before {
-  background-color: var(--fill-primary, #0d0d0d);
-  mask-image: url("icons/codex-app-server.svg");
-  mask-repeat: no-repeat;
-  mask-position: center;
-  mask-size: contain;
-  -webkit-mask-image: url("icons/codex-app-server.svg");
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
-  opacity: 0.62;
-}
-
-.llm-runtime-system-toggle-icon--codex::after {
-  background-image: url("icons/codex-logo.svg");
-  opacity: 0;
-}
-
-.llm-runtime-system-toggle--codex[data-active="true"]
-  .llm-runtime-system-toggle-icon--codex::before {
-  opacity: 0;
-}
-
-.llm-runtime-system-toggle--codex[data-active="true"]
-  .llm-runtime-system-toggle-icon--codex::after {
-  opacity: 1;
 }
 
 /* ---- Webchat connection dot ---- */
@@ -1574,33 +1394,6 @@
   background: var(--stroke-secondary);
 }
 
-/* Runtime spacing stays unchanged until the header actually runs out of room. */
-.llm-header-runtime-controls {
-  gap: calc(4px * (1 - var(--llm-runtime-compression, 0)));
-}
-
-.llm-header .llm-runtime-system-controls {
-  --llm-runtime-gap: calc(2px * (1 - var(--llm-runtime-compression, 0)));
-  --llm-runtime-button-width: calc(
-    24px - 6px * var(--llm-runtime-compression, 0)
-  );
-  width: calc(
-    var(--llm-runtime-count) * var(--llm-runtime-button-width) +
-      (var(--llm-runtime-count) - 1) * var(--llm-runtime-gap)
-  );
-  min-width: calc(
-    var(--llm-runtime-count) * var(--llm-runtime-button-width) +
-      (var(--llm-runtime-count) - 1) * var(--llm-runtime-gap)
-  );
-  gap: var(--llm-runtime-gap);
-}
-
-.llm-header .llm-runtime-system-toggle {
-  width: var(--llm-runtime-button-width);
-  min-width: var(--llm-runtime-button-width);
-  flex-basis: var(--llm-runtime-button-width);
-}
-
 @container (max-width: 380px) {
   .llm-header-actions {
     gap: 0;
@@ -1704,40 +1497,6 @@
   margin-inline: 0;
   border-radius: 13px;
   background: var(--fill-quinary);
-}
-
-/* The runtime toggles are 22px circles inside the capsule. */
-:root[data-llm-sidebar-layout="stacked"]
-  .llm-header
-  .llm-runtime-system-controls {
-  --llm-runtime-button-width: 22px;
-  --llm-runtime-gap: 2px;
-  order: 2;
-}
-
-:root[data-llm-sidebar-layout="stacked"]
-  .llm-header
-  .llm-runtime-system-toggle {
-  height: 22px;
-  border-radius: 11px;
-}
-
-/* The capsule is filled with quinary, so its toggles hover one step darker. */
-:root[data-llm-sidebar-layout="stacked"]
-  .llm-header
-  .llm-runtime-system-toggle:hover:not(:disabled) {
-  background: var(--fill-quarternary);
-}
-
-/* The Independent divider is the capsule's separator here; setupHandlers
- * hides it while no runtime toggle shows. */
-:root[data-llm-sidebar-layout="stacked"]
-  .llm-header-nav-row
-  .llm-header-runtime-divider {
-  display: block;
-  order: 1;
-  height: 12px;
-  margin-inline: 2px;
 }
 
 :root[data-llm-sidebar-layout="stacked"] .llm-header-nav-row .llm-mode-switch {
@@ -5391,12 +5150,6 @@
 .llm-standalone-tab-row .llm-standalone-nav-toggle {
   width: calc(24px + 2 * var(--llm-standalone-chrome-gap));
   min-width: calc(24px + 2 * var(--llm-standalone-chrome-gap));
-}
-
-.llm-standalone-tab-row .llm-runtime-system-controls {
-  width: auto;
-  min-width: 0;
-  gap: calc(var(--llm-standalone-chrome-gap) / 2);
 }
 
 .llm-standalone-content-title-actions .llm-standalone-icon-task-progress,
@@ -13380,6 +13133,60 @@ label.llm-search-results-item:hover {
   font-weight: 700;
 }
 
+/* A runtime's icon, in the badge and in its menu rows (data-system). */
+.llm-runtime-icon {
+  flex: none;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.llm-runtime-icon[data-system="upstream"] {
+  background-image: url("icons/icon-sidebar-16.svg");
+}
+
+/* The chip names the built-in runtime ("Agent" or "Chat") without an icon;
+ * its menu row keeps the icon. */
+#llm-runtime-mode-toggle .llm-runtime-icon[data-system="upstream"] {
+  display: none;
+}
+
+.llm-runtime-icon[data-system="codex"] {
+  background-color: currentColor;
+  mask: url("icons/codex-app-server.svg") center / contain no-repeat;
+  -webkit-mask: url("icons/codex-app-server.svg") center / contain no-repeat;
+}
+
+.llm-runtime-icon[data-system="claude_code"] {
+  background-color: #d97757;
+  mask: url("icons/claude-code.svg") center / contain no-repeat;
+  -webkit-mask: url("icons/claude-code.svg") center / contain no-repeat;
+}
+
+.llm-runtime-icon[data-system="antigravity"] {
+  background-image: url("icons/antigravity-color.svg");
+}
+
+/* Beats .llm-permission-option's grid: icon and name on one line. */
+.llm-permission-option.llm-runtime-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.llm-runtime-menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--stroke-secondary, rgba(120, 120, 120, 0.35));
+}
+
+.llm-runtime-menu-add {
+  color: var(--fill-secondary, #666);
+}
+
 #llm-runtime-mode-toggle[data-system="claude_code"] {
   color: #d77757;
 }
@@ -19173,8 +18980,7 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
 }
 
 :root[customtitlebar] .llm-standalone-nav-toggle,
-:root[customtitlebar] .llm-standalone-tab-group,
-:root[customtitlebar] .llm-standalone-runtime-system-controls {
+:root[customtitlebar] .llm-standalone-tab-group {
   -moz-window-dragging: no-drag;
 }
 

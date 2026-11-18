@@ -15,7 +15,7 @@ describe("workflow: Codex runtime context window", function () {
     });
     try {
       const panel = await api.renderPanelForItem(fixture.parentItemId);
-      await api.clickPanelSystemToggle(panel.panelId, "codex");
+      await api.togglePanelRuntime(panel.panelId, "codex");
       await api.seedPanelStoredTurn(
         panel.panelId,
         "Test question",

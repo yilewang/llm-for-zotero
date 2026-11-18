@@ -72,25 +72,58 @@
     var(--llm-pref-surface); overflow: hidden; } .llm-pref-panel
     .llm-pref-row-head { display: grid; background: var(--llm-pref-head);
     grid-template-columns: 18px minmax(0, 1fr) auto auto 12px; gap: 10px;
-    align-items: center; min-height: 42px; padding: 0 12px 1px; }
+    align-items: center; min-height: 42px; padding: 5px 12px 6px; }
     .llm-pref-panel .llm-pref-row-icon { width: 18px; height: 18px; flex: none;
     background-repeat: no-repeat; background-position: center; background-size:
     contain; } .llm-pref-panel .llm-pref-row-icon--original { background-image:
-    url("chrome://__addonRef__/content/icons/icon.svg"); background-size: 130%;
-    } .llm-pref-panel .llm-pref-row-icon--codex { background-image:
-    url("chrome://__addonRef__/content/icons/codex-logo.svg"); } .llm-pref-panel
-    .llm-pref-row-icon--claude { background-color: #d97757; mask-image:
-    url("chrome://__addonRef__/content/icons/claude-code.svg"); mask-repeat:
-    no-repeat; mask-position: center; mask-size: contain; -webkit-mask-image:
+    url("chrome://__addonRef__/content/icons/icon-sidebar-16.svg");
+    background-size: contain; } .llm-pref-panel .llm-pref-row-icon--codex {
+    background-color: FieldText; mask-image:
+    url("chrome://__addonRef__/content/icons/codex-app-server.svg");
+    mask-repeat: no-repeat; mask-position: center; mask-size: contain; }
+    .llm-pref-panel .llm-pref-row-icon--claude { background-color: #d97757;
+    mask-image: url("chrome://__addonRef__/content/icons/claude-code.svg");
+    mask-repeat: no-repeat; mask-position: center; mask-size: contain;
+    -webkit-mask-image:
     url("chrome://__addonRef__/content/icons/claude-code.svg");
     -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
     -webkit-mask-size: contain; } .llm-pref-panel
     .llm-pref-row-icon--antigravity { background-image:
     url("chrome://__addonRef__/content/icons/antigravity-color.svg"); }
-    .llm-pref-panel .llm-pref-row-icon--notes { background-color: FieldText;
-    mask-image: url("chrome://__addonRef__/content/icons/folder-open.svg");
-    mask-repeat: no-repeat; mask-position: center; mask-size: contain;
-    -webkit-mask-image:
+    .llm-pref-panel .llm-pref-row-head--removable { grid-template-columns: 18px
+    minmax(0, 1fr) auto auto auto 12px; } .llm-pref-panel .llm-pref-row-remove {
+    appearance: none; -moz-appearance: none; border: none; background:
+    transparent; color: var(--fill-secondary, #888); font-size: 11px; padding:
+    2px 6px; border-radius: 6px; cursor: pointer; } .llm-pref-panel
+    .llm-pref-row-remove:hover { color: #d70022; background: var(--fill-quinary,
+    rgba(0, 0, 0, 0.06)); } .llm-pref-panel .llm-pref-add-runtime { position:
+    relative; } .llm-pref-panel .llm-pref-add-runtime-btn { appearance: none;
+    -moz-appearance: none; width: 100%; min-height: 40px; padding: 0 12px;
+    border: 1px dashed var(--llm-pref-stroke); border-radius: 10px; background:
+    transparent; color: inherit; font-weight: 600; text-align: start; cursor:
+    pointer; } .llm-pref-panel .llm-pref-add-runtime-btn:hover { background:
+    var(--llm-pref-surface); } .llm-pref-panel .llm-pref-add-runtime-menu {
+    position: absolute; inset-inline: 0; top: calc(100% + 4px); z-index: 10;
+    display: flex; flex-direction: column; gap: 2px; padding: 4px; border: 1px
+    solid var(--llm-pref-stroke); border-radius: 10px; background: Field;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); } .llm-pref-panel
+    .llm-pref-add-runtime-menu[hidden] { display: none; } .llm-pref-panel
+    .llm-pref-add-runtime-item { max-height: none; flex: none; height: auto;
+    min-height: 0; line-height: 1.3; white-space: normal; appearance: none;
+    -moz-appearance: none; display: grid; grid-template-columns: 18px minmax(0,
+    1fr); column-gap: 10px; row-gap: 2px; align-items: center; padding: 8px
+    10px; border: none; border-radius: 8px; background: transparent; color:
+    inherit; text-align: start; cursor: pointer; } .llm-pref-panel
+    .llm-pref-add-runtime-item:hover { background: var(--llm-pref-surface); }
+    .llm-pref-panel .llm-pref-add-runtime-item .llm-pref-row-icon { width: 18px;
+    height: 18px; } .llm-pref-panel .llm-pref-add-runtime-name { font-weight:
+    600; } .llm-pref-panel .llm-pref-add-runtime-note { grid-column: 2;
+    font-size: 11px; color: var(--fill-secondary, #888); } .llm-pref-panel
+    .llm-pref-row[hidden], .llm-pref-panel .llm-pref-add-runtime[hidden] {
+    display: none; } .llm-pref-panel .llm-pref-row-icon--notes {
+    background-color: FieldText; mask-image:
+    url("chrome://__addonRef__/content/icons/folder-open.svg"); mask-repeat:
+    no-repeat; mask-position: center; mask-size: contain; -webkit-mask-image:
     url("chrome://__addonRef__/content/icons/folder-open.svg");
     -webkit-mask-repeat: no-repeat; -webkit-mask-position: center;
     -webkit-mask-size: contain; } .llm-pref-panel .llm-pref-row-toggle {
@@ -1188,8 +1221,9 @@
         style="display: none; flex-direction: column"
       >
         <html:p class="llm-pref-intro">
-          Three runtimes can answer in the chat panel. Turn on the ones you
-          want; the runtime you pick in the chat header answers a given turn.
+          The built-in Agent is always here. Add other runtimes with + Add
+          runtime; the runtime you pick in the chat's runtime menu answers a
+          given turn.
         </html:p>
 
         <html:div class="llm-pref-group">

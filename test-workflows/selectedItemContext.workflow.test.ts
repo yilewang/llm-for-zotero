@@ -45,7 +45,7 @@ function assertDualRuntimeControls(
   diagnostics: WorkflowTestDiagnostics,
   activeSystem?: "codex" | "claude_code",
 ): void {
-  const visible = diagnostics.runtimeSystemToggles.filter(
+  const visible = diagnostics.runtimeMenuEntries.filter(
     (toggle) => toggle.visible,
   );
   const active = visible.filter((toggle) => toggle.active);
@@ -58,7 +58,6 @@ function assertDualRuntimeControls(
     activeSystem ? [activeSystem] : [],
   );
   for (const toggle of visible) {
-    assert.equal(toggle.active, toggle.ariaPressed);
     assert.isFalse(toggle.disabled);
   }
 }
@@ -202,91 +201,7 @@ describe("workflow: selected item context send", function () {
         const initial = await api.getDiagnostics(panel.panelId);
         assert.equal(initial.conversationSystem, "upstream");
         assertDualRuntimeControls(initial);
-        // 380px is the narrow end of the range the sidebar is actually used at,
-        // and inside the folded header stages, so the icon-only assertions
-        // below stay meaningful. The Stacked header is a capsule: the mode chip
-        // and two 22px runtime circles (22 + 2 + 22 = 46px for the toggles),
-        // between 28px (24px when compact) history and action boxes. The chip
-        // uses a fixed 12px label here, so the capsule is one width at every
-        // plugin font scale (--llm-font-scale 1.8 included) and the row
-        // picks the same stage.
-        // The header row picks its stage on the next frame (or after a 100ms
-        // fallback), later than the 50ms the measurement waits. Apply the
-        // width and scale first and wait for the stage to hold still, so the
-        // measurement reads the settled header.
-        const panelBody = Zotero.getMainWindow().document.querySelector(
-          `[data-workflow-panel-id="${panel.panelId}"]`,
-        ) as HTMLElement;
-        const navRow = panelBody.querySelector(
-          ".llm-header-nav-row",
-        ) as HTMLElement;
-        const panelRoot = panelBody.querySelector("#llm-main") as HTMLElement;
-        panelBody.style.width = "380px";
-        panelRoot.style.setProperty("--llm-font-scale", "1.8");
-        let lastFit = "";
-        let steady = 0;
-        const settleDeadline = Date.now() + 8000;
-        while (steady < 4 && Date.now() < settleDeadline) {
-          await Zotero.Promise.delay(50);
-          const fit = navRow.dataset.fit || "";
-          steady = fit && fit === lastFit ? steady + 1 : 0;
-          lastFit = fit;
-        }
-        assert.isAtLeast(steady, 4, "the header row settles on a stage");
-        const geometry = await api.measurePanelRuntimeGeometry(panel.panelId, {
-          width: 380,
-          fontScale: 1.8,
-        });
-        // The measurement restores the values it finds, which are ours.
-        panelBody.style.width = "";
-        panelRoot.style.removeProperty("--llm-font-scale");
-        assert.closeTo(geometry.containerWidth, 376, 4);
-        assert.isAtLeast(geometry.runtimeWidth, 46, JSON.stringify(geometry));
-        assert.isAtLeast(
-          geometry.runtimeButtonWidths.length,
-          2,
-          JSON.stringify(geometry),
-        );
-        for (const buttonWidth of geometry.runtimeButtonWidths) {
-          assert.closeTo(buttonWidth, 22, 0.5, JSON.stringify(geometry));
-        }
-        assert.isFalse(
-          geometry.runtimeIntersectsLeadingContent,
-          JSON.stringify(geometry),
-        );
-        assert.isFalse(
-          geometry.runtimeIntersectsTrailingContent,
-          JSON.stringify(geometry),
-        );
-        assert.isTrue(
-          geometry.runtimeWithinContainer,
-          JSON.stringify(geometry),
-        );
-        assert.isTrue(
-          geometry.trailingContentWithinContainer,
-          JSON.stringify(geometry),
-        );
-        assert.isTrue(
-          geometry.deleteButtonIconOnly,
-          "the narrow header must render the delete action as the trash icon",
-        );
-        const wideGeometry = await api.measurePanelRuntimeGeometry(
-          panel.panelId,
-          {
-            width: 700,
-            fontScale: 1,
-          },
-        );
-        assert.isFalse(
-          wideGeometry.runtimeIntersectsTrailingContent,
-          JSON.stringify(wideGeometry),
-        );
-        assert.isTrue(
-          wideGeometry.deleteButtonIconOnly,
-          "the wide header must keep the delete action icon-only",
-        );
-
-        const rapid = await api.clickPanelSystemTogglesRapidly(panel.panelId, [
+        const rapid = await api.pickPanelRuntimesRapidly(panel.panelId, [
           "codex",
           "claude_code",
         ]);
@@ -296,13 +211,13 @@ describe("workflow: selected item context send", function () {
           "the sidebar busy guard must ignore a re-entrant second switch",
         );
         assertDualRuntimeControls(rapid, "codex");
-        const resetUpstream = await api.clickPanelSystemToggle(
+        const resetUpstream = await api.togglePanelRuntime(
           panel.panelId,
           "codex",
         );
         assert.equal(resetUpstream.conversationSystem, "upstream");
 
-        const codex = await api.clickPanelSystemToggle(panel.panelId, "codex");
+        const codex = await api.togglePanelRuntime(panel.panelId, "codex");
         assert.equal(codex.conversationSystem, "codex");
         assert.isTrue(
           isConversationKeyForKind(
@@ -316,7 +231,7 @@ describe("workflow: selected item context send", function () {
         const codexMarker = "nonblank remembered Codex workflow chat";
         await api.seedPanelStoredUserMessage(panel.panelId, codexMarker);
 
-        const claude = await api.clickPanelSystemToggle(
+        const claude = await api.togglePanelRuntime(
           panel.panelId,
           "claude_code",
         );
@@ -330,7 +245,7 @@ describe("workflow: selected item context send", function () {
         );
         assertDualRuntimeControls(claude, "claude_code");
 
-        const upstream = await api.clickPanelSystemToggle(
+        const upstream = await api.togglePanelRuntime(
           panel.panelId,
           "claude_code",
         );
@@ -344,10 +259,7 @@ describe("workflow: selected item context send", function () {
         );
         assertDualRuntimeControls(upstream);
 
-        const freshCodex = await api.clickPanelSystemToggle(
-          panel.panelId,
-          "codex",
-        );
+        const freshCodex = await api.togglePanelRuntime(panel.panelId, "codex");
         assert.equal(freshCodex.conversationSystem, "codex");
         assert.notEqual(freshCodex.conversationKey, codexKey);
         assert.notInclude(freshCodex.messageText || "", codexMarker);
@@ -358,7 +270,7 @@ describe("workflow: selected item context send", function () {
         const inactiveClaudeDisabled = await api.getDiagnostics(panel.panelId);
         assert.equal(inactiveClaudeDisabled.conversationSystem, "codex");
         assert.deepEqual(
-          inactiveClaudeDisabled.runtimeSystemToggles
+          inactiveClaudeDisabled.runtimeMenuEntries
             .filter((toggle) => toggle.visible)
             .map((toggle) => toggle.system),
           ["codex"],
@@ -374,7 +286,7 @@ describe("workflow: selected item context send", function () {
         const activeCodexDisabled = await api.getDiagnostics(panel.panelId);
         assert.equal(activeCodexDisabled.conversationSystem, "upstream");
         assert.deepEqual(
-          activeCodexDisabled.runtimeSystemToggles
+          activeCodexDisabled.runtimeMenuEntries
             .filter((toggle) => toggle.visible)
             .map((toggle) => toggle.system),
           ["claude_code"],

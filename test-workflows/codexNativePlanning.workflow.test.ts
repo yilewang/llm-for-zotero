@@ -20,7 +20,7 @@ describe("workflow: native Codex proposal review", function () {
     try {
       await api.reset();
       const panel = await api.renderPanelForItem(fixture.parentItemId);
-      await api.clickPanelSystemToggle(panel.panelId, "codex");
+      await api.togglePanelRuntime(panel.panelId, "codex");
       const doc = Zotero.getMainWindow().document;
       const win = doc.defaultView as any;
       const root = doc.querySelector<HTMLElement>(

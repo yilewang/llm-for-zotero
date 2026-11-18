@@ -341,6 +341,7 @@ import {
   type AntigravityPreferences,
 } from "./preferences/antigravityPanel";
 import { registerSavedFilesPreferences } from "./preferences/savedFilesPanel";
+import { registerRuntimeRows } from "./preferences/runtimeRows";
 import { getAgentFilesRoot } from "../utils/agentFilesDirectory";
 import { TavilyClient } from "../webAccess/tavilyClient";
 import {
@@ -4528,6 +4529,7 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
     },
     onChange: () => refreshAgentRowSummaries(),
   });
+  registerRuntimeRows(doc);
   refreshAgentRowSummaries();
   // A DeepSeek model profile can turn web search on or off.
   _window.addEventListener(
