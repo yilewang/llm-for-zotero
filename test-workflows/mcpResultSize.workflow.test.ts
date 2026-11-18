@@ -2,11 +2,12 @@ import "./hostSurfaceBootstrap";
 import { assert } from "chai";
 import {
   getOrCreateZoteroMcpBearerToken,
-  MCP_MODEL_VIEW_NOTICE,
   ZOTERO_MCP_ENDPOINT_PATH,
   ZOTERO_MCP_SCOPE_HEADER,
 } from "../src/agent/mcp/server";
 import { loadPlanDocument } from "../src/agent/documents/store";
+import { normalizeExecutionOutput } from "../src/agent/tools/execution/results";
+import { resolvedAgentRequest } from "../test/helpers/resolvedAgentRequest";
 import type {
   WorkflowTestApi,
   WorkflowTestFixture,
@@ -62,11 +63,12 @@ type McpPayload = {
 };
 
 /**
- * An MCP client's model reads the same sized view of a library_retrieve
- * result as the plugin Agent's model, not the whole stored result, and a
- * targeted paper_read shows its passages once. The views keep the citation
- * ids and evidence refs of every row they show. Real items with multi-page
- * PDFs, called through the installed plugin's MCP endpoint.
+ * What an MCP client's model reads. A library_retrieve result is sent whole:
+ * the client has no tool-result handle to page rows a sized view would leave
+ * out. A targeted paper_read shows its passages once. Every row keeps its
+ * citation ids and evidence refs, and a short evidence ref is citable. Real
+ * items with multi-page PDFs, called through the installed plugin's MCP
+ * endpoint.
  */
 describe("workflow: MCP tool result size", function () {
   this.timeout(600000);
@@ -157,55 +159,53 @@ describe("workflow: MCP tool result size", function () {
     await api.reset();
   });
 
-  it("sends library_retrieve's sized view with the refs and quotes of the rows it shows", async function () {
-    const ours = new Set(
-      fixtures.map((fixture) => String(fixture.parentItemId)),
+  it("sends library_retrieve whole, with the refs and quotes of every row", async function () {
+    const tool = (Zotero as any).LLMForZotero.api.agent.getToolDefinition(
+      "library_retrieve",
     );
     for (const intent of ["enumerate", "summarize"]) {
-      const { payload, bytes } = await call("library_retrieve", {
+      const args = {
         query: "manifold learning dimensionality reduction",
         queryVariants: ["manifold learning", "dimensionality reduction"],
         intent,
-      });
+      };
+      const { payload } = await call("library_retrieve", args);
       const result = payload.result;
-      // The view's fields, not the stored result's.
-      for (const field of [
-        "candidates",
-        "synthesisDigest",
-        "evidenceLedgerText",
-        "queryPlan",
-        "coverageReceipt",
-      ])
-        assert.notProperty(result, field, `${intent}: ${field}`);
-      for (const snippet of result.snippets as Array<Record<string, unknown>>) {
-        assert.notProperty(snippet, "surroundingText", intent);
-        assert.notProperty(snippet, "score", intent);
-        assert.isString(snippet.snippet, intent);
-      }
-      assert.isAbove(result.omitted?.snippets || 0, 0, `${intent}: omitted`);
-      assert.equal(result.modelViewNotice, MCP_MODEL_VIEW_NOTICE, intent);
+      // The same call run directly: the client reads every row it returns.
+      const validated = tool.validate(args);
+      assert.isTrue(validated.ok, JSON.stringify(validated));
+      const whole = normalizeExecutionOutput(
+        await tool.execute(validated.value, {
+          item: null,
+          currentAnswerText: "",
+          modelName: "workflow",
+          request: resolvedAgentRequest({
+            conversationKey: 1,
+            mode: "agent",
+            userText: "Which papers are about manifold learning?",
+            libraryID: Zotero.Libraries.userLibraryID,
+          }),
+          runId: `mcp-whole:${intent}:${Date.now()}`,
+        }),
+      ).content as {
+        snippets: Array<{ snippetId: string }>;
+        paperMatches: unknown[];
+      };
+      assert.notProperty(result, "omitted", intent);
+      assert.isNotEmpty(whole.snippets, intent);
+      assert.sameMembers(
+        (result.snippets as Array<{ snippetId: string }>).map(
+          (snippet) => snippet.snippetId,
+        ),
+        whole.snippets.map((snippet) => snippet.snippetId),
+        `${intent}: every passage`,
+      );
+      assert.lengthOf(
+        result.paperMatches,
+        whole.paperMatches.length,
+        `${intent}: every paper`,
+      );
       assertShownRowsCitable(payload);
-      assert.isAtMost(bytes, 100_000, `${intent}: ${bytes} characters`);
-      if (intent === "enumerate") {
-        // Every matching paper of the folder, each with its best passage.
-        const matched = (
-          result.paperMatches as Array<{ itemId: string; matchStatus: string }>
-        ).filter(
-          (row) =>
-            ours.has(row.itemId) && row.matchStatus !== "not_enough_evidence",
-        );
-        assert.isAtLeast(matched.length, 8, "the manifold-learning papers");
-        const withPassage = new Set(
-          (result.snippets as Array<{ itemId: string }>).map(
-            (snippet) => snippet.itemId,
-          ),
-        );
-        for (const row of matched)
-          assert.isTrue(
-            withPassage.has(row.itemId),
-            `a passage for ${row.itemId}`,
-          );
-      }
     }
   });
 

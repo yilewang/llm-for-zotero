@@ -73,7 +73,6 @@ import {
 import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 import { extractVerifiedReadSources } from "../context/readEvidence";
-import { buildSizedModelView } from "../execution/modelView";
 import { shortEvidenceRef } from "../context/evidenceRefTokens";
 import type {
   TrustedReadObservation,
@@ -2313,14 +2312,6 @@ function createToolContext(
 }
 
 /**
- * What an MCP client's model reads in place of rows a sized view left out.
- * The client has no tool-result handle to page, so a narrower call is the
- * way to the rest.
- */
-export const MCP_MODEL_VIEW_NOTICE =
-  "This result is sized to the request; omitted counts what it left out. To see omitted rows, call again with a narrower scope or ask for fewer papers or passages.";
-
-/**
  * A read observation as the result names it. The model cites the short ref,
  * as the plugin Agent's model does; submit_document expands it to the
  * observation of the conversation it names.
@@ -2340,46 +2331,25 @@ function documentEvidenceRef(
 }
 
 /**
- * The call's result as the client's model reads it, the same view the plugin
- * Agent's model reads: a tool that sizes its results (`buildModelView`) is
- * sent its view with the evidence refs of the rows shown; a tool that keeps
- * fields from the model (`modelContent`: a digest's citation records) is
- * sent its model content. The activity event, the citations and the read
- * observations come from the whole result.
+ * The call's result as the client's model reads it. A tool that keeps fields
+ * from the model (`modelContent`: a digest's citation records) is sent its
+ * model content. A sized view (`buildModelView`) is not sent: the client has
+ * no tool-result handle to page what the view leaves out, so it reads the
+ * whole result. The activity event, the citations and the read observations
+ * come from the whole result.
  */
 function formatToolResult(params: {
   execution: Extract<PreparedToolExecution, { kind: "result" }>["execution"];
-  tool:
-    | Pick<AgentToolDefinition<any, any>, "buildModelView" | "modelContent">
-    | undefined;
-  context: AgentToolContext;
+  tool: Pick<AgentToolDefinition<any, any>, "modelContent"> | undefined;
   observations: readonly TrustedReadObservation[];
 }): McpToolCallResult {
   const { execution, tool } = params;
   const { result } = execution;
-  const refs = params.observations.map(documentEvidenceRef);
-  const view =
-    result.ok && tool?.buildModelView
-      ? buildSizedModelView({
-          toolDefinition: tool,
-          toolName: result.name,
-          input: execution.input,
-          result: result.content,
-          context: params.context,
-          documentEvidenceRefs: refs,
-        })
-      : null;
-  let content: unknown = result.content;
-  let documentEvidenceRefs: unknown = refs;
-  if (view) {
-    const { documentEvidenceRefs: keptRefs, ...shown } = view.content;
-    content = shown.omitted
-      ? { ...shown, modelViewNotice: MCP_MODEL_VIEW_NOTICE }
-      : shown;
-    documentEvidenceRefs = keptRefs || [];
-  } else if (result.ok && tool?.modelContent) {
-    content = tool.modelContent(result.content, execution.input);
-  }
+  const documentEvidenceRefs = params.observations.map(documentEvidenceRef);
+  const content =
+    result.ok && tool?.modelContent
+      ? tool.modelContent(result.content, execution.input)
+      : result.content;
   return {
     content: [
       {
@@ -2393,9 +2363,7 @@ function formatToolResult(params: {
               ? { actionReceipts: result.actionReceipts }
               : {}),
             artifacts: result.artifacts,
-            ...((documentEvidenceRefs as unknown[]).length
-              ? { documentEvidenceRefs }
-              : {}),
+            ...(documentEvidenceRefs.length ? { documentEvidenceRefs } : {}),
           },
           null,
           2,
@@ -2859,7 +2827,6 @@ async function handleToolsCall(
     const result = formatToolResult({
       execution: prepared.execution,
       tool,
-      context: toolContext,
       observations: [
         ...readObservations,
         ...rememberedDigestObservations(

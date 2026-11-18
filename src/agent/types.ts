@@ -1859,10 +1859,9 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
    * view's `stored` result, with every evidence ref, under a trh_ handle
    * that context_read pages, and sends `content` with the handle and the
    * evidence refs of the rows it keeps; `omitted.documentEvidenceRefs`
-   * counts the rest. When it cannot store a handle, it sends the whole
-   * result. The MCP server, whose clients have no handle to page, sends
-   * `content` and its kept refs, and tells the model a narrower call returns
-   * the omitted rows. Null sends the whole result.
+   * counts the rest. With no handle to hold the rest, the whole result is
+   * sent: the MCP server, whose clients cannot page a handle, sends the
+   * whole result. Null sends the whole result.
    */
   buildModelView?: (
     input: TInput,
@@ -1875,7 +1874,8 @@ export type AgentToolDefinition<TInput = unknown, TResult = unknown> = {
    * already shows beside each quote). Unlike `buildModelView` it stores
    * nothing: the trace event, the run's citation collector and the panel
    * read the whole result, and the plugin Agent and the MCP server both
-   * send the model this one. A result `buildModelView` sizes does not use it.
+   * send the model this one. A result the plugin Agent sizes with
+   * `buildModelView` does not use it.
    */
   modelContent?: (result: TResult, input: TInput) => unknown;
   /**
