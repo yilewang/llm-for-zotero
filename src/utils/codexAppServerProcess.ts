@@ -14,7 +14,17 @@ import { getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
 import { appLogger } from "../core/logging";
-import { registerAppQuitBlocker } from "./appQuitBlocker";
+import { KeyedProcessPool } from "./keyedProcessPool";
+import {
+  buildLoopbackNoProxyEnvironment,
+  readRuntimeEnvValue,
+} from "./childProcessEnvironment";
+import { loadGeckoSubprocess } from "./geckoSubprocess";
+import {
+  StdioJsonRpcConnection,
+  type StdioJsonRpcChild,
+  type StdioJsonRpcIncoming,
+} from "./stdioJsonRpcConnection";
 import {
   LocalDocumentPathStreamRedactor,
   redactAllRememberedLocalDocumentPathsFromTerminalText,
@@ -30,10 +40,6 @@ export const CODEX_APP_SERVER_CHILD_TURN_GRACE_MS = 15_000;
 // Threads whose turn started before a spawn named them as this turn's child.
 const CODEX_APP_SERVER_UNTRACKED_STARTED_THREADS_MAX = 32;
 const DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;
-const CODEX_APP_SERVER_STDERR_TAIL_WAIT_MS = 100;
-const CODEX_APP_SERVER_DIAGNOSTIC_BUFFER_MAX = 4000;
-const CODEX_APP_SERVER_DIAGNOSTIC_BUFFER_TRIM_THRESHOLD = 8000;
-const CODEX_APP_SERVER_CLOSE_REASON_MAX = 400;
 const CODEX_ENV_KEYS = [
   "CODEX_PATH",
   "HOME",
@@ -51,12 +57,6 @@ const CODEX_ENV_KEYS = [
   "NO_PROXY",
   "no_proxy",
 ];
-const CODEX_LOOPBACK_NO_PROXY_ENTRIES = ["localhost", "127.0.0.1", "::1"];
-
-type PendingRequest = {
-  resolve: (value: unknown) => void;
-  reject: (reason: unknown) => void;
-};
 
 type ActivityHandler = (message: Record<string, unknown>) => void;
 type NotificationHandler = (params: unknown) => void;
@@ -228,12 +228,9 @@ export class CodexAppServerProcessRetiredError extends Error {
 }
 
 export class CodexAppServerProcess {
-  private proc: unknown;
-  private nextId = 1;
-  private pendingRequests = new Map<number, PendingRequest>();
-  private activityHandlers = new Set<ActivityHandler>();
-  private notificationHandlers = new Map<string, Set<NotificationHandler>>();
+  private readonly connection: StdioJsonRpcConnection;
   private requestHandlers = new Map<string, Set<RequestRegistration>>();
+  private notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private serverRequests = new Map<string | number, ServerRequest>();
 
   hasPendingUserInput(threadId?: string, turnId?: string): boolean {
@@ -248,27 +245,29 @@ export class CodexAppServerProcess {
           request.method === "mcpServer/elicitation/request"),
     );
   }
-  private closeHandlers = new Set<(reason?: string) => void>();
-  private closeReason: string | undefined;
-  private readLoopPromise: Promise<void> | null = null;
-  private stderrLoopPromise: Promise<void> | null = null;
   private turnQueues = new Map<string, Promise<void>>();
   private activeTurnCount = 0;
   private destroyWhenIdleRequested = false;
   private serverVersion: [number, number, number] | null = null;
-  private lineBuffer = "";
-  private diagnosticBuffer = "";
-  private readonly diagnosticStreamRedactor =
-    new LocalDocumentPathStreamRedactor(0, { allConversations: true });
-  private launchDescription = "";
-  private destroyed = false;
-  private didNotifyClose = false;
   private injectItemsSupport: CodexAppServerInjectItemsSupport = "unknown";
   private protocolInitialized = false;
 
   private constructor(proc: unknown, launchDescription = "") {
-    this.proc = proc;
-    this.launchDescription = launchDescription;
+    this.connection = new StdioJsonRpcConnection(proc as StdioJsonRpcChild, {
+      label: "codex app-server",
+      launchDescription,
+      destroyedMessage: "CodexAppServerProcess destroyed",
+      redactText: redactAllRememberedLocalDocumentPathsFromTerminalText,
+      diagnosticRedactor: new LocalDocumentPathStreamRedactor(0, {
+        allConversations: true,
+      }),
+      onIncoming: (message) => this.handleIncoming(message),
+      onClosing: () => {
+        for (const request of this.serverRequests.values())
+          request.controller.abort();
+        this.serverRequests.clear();
+      },
+    });
   }
 
   static forTest(proc: unknown, launchDescription = ""): CodexAppServerProcess {
@@ -276,32 +275,7 @@ export class CodexAppServerProcess {
   }
 
   static async loadSubprocessModule(): Promise<any> {
-    const CU = (globalThis as any).ChromeUtils;
-    let Subprocess: any;
-    if (CU?.importESModule) {
-      try {
-        const mod = CU.importESModule(
-          "resource://gre/modules/Subprocess.sys.mjs",
-        );
-        Subprocess = mod.Subprocess || mod.default || mod;
-      } catch {
-        /* fallback */
-      }
-    }
-    if (!Subprocess?.call && CU?.import) {
-      try {
-        const mod = CU.import("resource://gre/modules/Subprocess.jsm");
-        Subprocess = mod.Subprocess || mod;
-      } catch {
-        /* fallback */
-      }
-    }
-    if (!Subprocess?.call) {
-      throw new Error(
-        "Subprocess module not available in this Zotero environment",
-      );
-    }
-    return Subprocess;
+    return loadGeckoSubprocess();
   }
 
   static async spawn(
@@ -346,8 +320,7 @@ export class CodexAppServerProcess {
       proc,
       formatLaunchDescription(command, args),
     );
-    instance.startReadLoop();
-    instance.startStderrReadLoop();
+    instance.connection.start();
     try {
       await instance.initialize();
       return instance;
@@ -358,229 +331,108 @@ export class CodexAppServerProcess {
     }
   }
 
-  private startReadLoop(): void {
-    const proc = this.proc as any;
-    this.readLoopPromise = (async () => {
-      while (!this.destroyed) {
-        let chunk: string;
-        try {
-          chunk = await proc.stdout.readString();
-        } catch {
-          break;
-        }
-        if (!chunk) break;
-        this.lineBuffer += chunk;
-        const lines = this.lineBuffer.split("\n");
-        this.lineBuffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            this.handleMessage(JSON.parse(trimmed));
-          } catch {
-            const redactedLine =
-              redactAllRememberedLocalDocumentPathsFromTerminalText(trimmed);
-            this.appendDiagnostic(`${redactedLine}\n`, "stdout");
-            appLogger.debug(
-              `[llm-for-zotero] codex app-server: failed to parse line: ${redactedLine}`,
-            );
-          }
-        }
-      }
-      if (!this.destroyed) {
-        await this.waitForStderrTail();
-        const diagnostics = this.getDiagnosticTail();
-        this.fail(
-          new Error(
-            `codex app-server process closed unexpectedly${diagnostics ? `: ${diagnostics}` : " with no stderr/stdout diagnostics"}${this.launchDescription ? ` (launched: ${this.launchDescription})` : ""}`,
-          ),
-          false,
-        );
-      }
-    })();
+  /** Starts reading the child's output; `spawn()` does this itself. */
+  startForTest(): void {
+    this.connection.start();
   }
 
-  private startStderrReadLoop(): void {
-    const proc = this.proc as any;
-    if (!proc.stderr?.readString) return;
-    this.stderrLoopPromise = (async () => {
-      while (!this.destroyed) {
-        let chunk: string;
-        try {
-          chunk = await proc.stderr.readString();
-        } catch {
-          break;
-        }
-        if (!chunk) break;
-        this.appendDiagnostic(chunk, "stderr");
-      }
-    })();
-  }
-
-  private appendDiagnostic(chunk: string, channel: string): void {
-    this.diagnosticBuffer += this.diagnosticStreamRedactor.push(channel, chunk);
-    if (
-      this.diagnosticBuffer.length >
-      CODEX_APP_SERVER_DIAGNOSTIC_BUFFER_TRIM_THRESHOLD
-    ) {
-      this.diagnosticBuffer = this.diagnosticBuffer.slice(
-        -CODEX_APP_SERVER_DIAGNOSTIC_BUFFER_MAX,
-      );
+  private handleIncoming(message: StdioJsonRpcIncoming): void {
+    if (message.kind === "request") {
+      this.handleServerRequest(message.id, message.method, message.params);
+      return;
     }
-  }
-
-  private getDiagnosticTail(): string {
-    for (const entry of this.diagnosticStreamRedactor.flushAll()) {
-      this.diagnosticBuffer += entry.text;
+    const { method, params } = message;
+    if (method === "serverRequest/resolved") {
+      const event = params as {
+        requestId: string | number;
+        threadId?: string;
+      };
+      const request = this.serverRequests.get(event.requestId);
+      if (request && event.threadId === request.threadId)
+        request.controller.abort();
     }
-    const pendingStdout = redactAllRememberedLocalDocumentPathsFromTerminalText(
-      this.lineBuffer.trim(),
-    );
-    const combined = `${this.diagnosticBuffer}${pendingStdout ? `\n${pendingStdout}` : ""}`;
-    return redactAllRememberedLocalDocumentPathsFromTerminalText(combined)
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  private async waitForStderrTail(): Promise<void> {
-    if (!this.stderrLoopPromise) return;
-    await Promise.race([
-      this.stderrLoopPromise.catch(() => undefined),
-      new Promise<void>((resolve) =>
-        setTimeout(resolve, CODEX_APP_SERVER_STDERR_TAIL_WAIT_MS),
-      ),
-    ]);
-  }
-
-  private handleMessage(msg: Record<string, unknown>): void {
-    for (const handler of this.activityHandlers) {
+    if (method === "turn/completed") {
+      const event = params as {
+        threadId?: string;
+        turnId?: string;
+        turn?: { id?: string };
+      };
+      const turnId = event.turn?.id || event.turnId;
+      for (const request of this.serverRequests.values()) {
+        if (
+          request.turnId === turnId &&
+          (!event.threadId || request.threadId === event.threadId)
+        )
+          request.controller.abort();
+      }
+    }
+    const handlers = this.notificationHandlers.get(method);
+    if (!handlers) return;
+    for (const handler of handlers) {
       try {
-        handler(msg);
+        handler(params);
       } catch {
         /* ignore */
       }
     }
+  }
 
-    if ("id" in msg && msg.id !== null && msg.id !== undefined) {
-      const id = msg.id as string | number;
-      const pending =
-        typeof msg.method === "string"
-          ? undefined
-          : this.pendingRequests.get(id as number);
-      if (pending) {
-        this.pendingRequests.delete(id as number);
-        if ("error" in msg) {
-          pending.reject(
-            new Error(
-              redactAllRememberedLocalDocumentPathsFromTerminalText(
-                String((msg.error as any)?.message ?? msg.error),
-              ),
-            ),
-          );
-        } else {
-          pending.resolve(msg.result);
-        }
-        return;
+  private handleServerRequest(
+    id: string | number,
+    method: string,
+    params: unknown,
+  ): void {
+    const handlers = this.requestHandlers.get(method);
+    if (this.serverRequests.has(id)) return;
+    const registration = handlers?.size
+      ? selectRequestRegistration(handlers, params)
+      : undefined;
+    if (!registration) {
+      try {
+        appLogger.warn("Codex app-server: unhandled server request", {
+          method,
+          params:
+            redactAllRememberedLocalDocumentPathsFromTerminalValue(params),
+        });
+      } catch {
+        /* diagnostics must not affect protocol responses */
       }
-
-      if (typeof msg.method === "string") {
-        const handlers = this.requestHandlers.get(msg.method);
-        if (this.serverRequests.has(id)) return;
-        const registration = handlers?.size
-          ? selectRequestRegistration(handlers, msg.params)
-          : undefined;
-        if (!registration) {
-          try {
-            appLogger.warn("Codex app-server: unhandled server request", {
-              method: msg.method,
-              params: redactAllRememberedLocalDocumentPathsFromTerminalValue(
-                msg.params,
-              ),
-            });
-          } catch {
-            /* diagnostics must not affect protocol responses */
-          }
-          this.writeRawMessage({
-            id,
-            error: {
-              code: -32601,
-              message: handlers?.size
-                ? `No handler accepted ${msg.method} for its thread`
-                : `No handler registered for ${msg.method}`,
-            },
-          });
-          return;
-        }
-        const handler = registration.handler;
-        const identity = msg.params as { turnId?: unknown } | undefined;
-        const request: ServerRequest = {
-          registration,
-          controller: createAbortController(),
-          method: msg.method,
-          threadId:
-            extractCodexAppServerRequestThreadId(msg.params) || undefined,
-          turnId:
-            typeof identity?.turnId === "string" ? identity.turnId : undefined,
-          pending: true,
-        };
-        this.serverRequests.set(id, request);
-        Promise.resolve()
-          .then(() => handler(msg.params, id, request.controller.signal))
-          .then((result) => {
-            if (request.controller.signal.aborted) return;
-            this.writeRawMessage({ id, result });
-          })
-          .catch((error) => {
-            if (request.controller.signal.aborted) return;
-            this.writeRawMessage({
-              id,
-              error: {
-                code: -32000,
-                message: error instanceof Error ? error.message : String(error),
-              },
-            });
-          })
-          .finally(() => {
-            request.pending = false;
-          });
-        return;
-      }
-    } else if (typeof msg.method === "string") {
-      if (msg.method === "serverRequest/resolved") {
-        const event = msg.params as {
-          requestId: string | number;
-          threadId?: string;
-        };
-        const request = this.serverRequests.get(event.requestId);
-        if (request && event.threadId === request.threadId)
-          request.controller.abort();
-      }
-      if (msg.method === "turn/completed") {
-        const event = msg.params as {
-          threadId?: string;
-          turnId?: string;
-          turn?: { id?: string };
-        };
-        const turnId = event.turn?.id || event.turnId;
-        for (const request of this.serverRequests.values()) {
-          if (
-            request.turnId === turnId &&
-            (!event.threadId || request.threadId === event.threadId)
-          )
-            request.controller.abort();
-        }
-      }
-      const handlers = this.notificationHandlers.get(msg.method);
-      if (handlers) {
-        for (const handler of handlers) {
-          try {
-            handler(msg.params);
-          } catch {
-            /* ignore */
-          }
-        }
-      }
+      this.connection.respondError(id, {
+        code: -32601,
+        message: handlers?.size
+          ? `No handler accepted ${method} for its thread`
+          : `No handler registered for ${method}`,
+      });
+      return;
     }
+    const handler = registration.handler;
+    const identity = params as { turnId?: unknown } | undefined;
+    const request: ServerRequest = {
+      registration,
+      controller: createAbortController(),
+      method,
+      threadId: extractCodexAppServerRequestThreadId(params) || undefined,
+      turnId:
+        typeof identity?.turnId === "string" ? identity.turnId : undefined,
+      pending: true,
+    };
+    this.serverRequests.set(id, request);
+    Promise.resolve()
+      .then(() => handler(params, id, request.controller.signal))
+      .then((result) => {
+        if (request.controller.signal.aborted) return;
+        this.connection.respond(id, result);
+      })
+      .catch((error) => {
+        if (request.controller.signal.aborted) return;
+        this.connection.respondError(id, {
+          code: -32000,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        request.pending = false;
+      });
   }
 
   sendRequest(
@@ -589,60 +441,14 @@ export class CodexAppServerProcess {
     timeoutMs = DEFAULT_CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
     options: SendRequestOptions = {},
   ): Promise<unknown> {
-    if (this.destroyed) {
-      return Promise.reject(new Error("CodexAppServerProcess destroyed"));
-    }
-    return new Promise((resolve, reject) => {
-      const id = this.nextId++;
-      const pending: PendingRequest = {
-        resolve: (value) => {
-          if (timeoutId !== null) clearTimeout(timeoutId);
-          resolve(value);
-        },
-        reject: (reason) => {
-          if (timeoutId !== null) clearTimeout(timeoutId);
-          reject(reason);
-        },
-      };
-      this.pendingRequests.set(id, pending);
-      const timeoutId =
-        timeoutMs > 0
-          ? setTimeout(() => {
-              const activePending = this.pendingRequests.get(id);
-              if (!activePending) return;
-              this.pendingRequests.delete(id);
-              const error = new Error(
-                `Timed out waiting for codex app-server response to ${method} after ${timeoutMs}ms`,
-              );
-              activePending.reject(error);
-              if (options.failProcessOnTimeout !== false)
-                this.fail(error, true);
-            }, timeoutMs)
-          : null;
-      try {
-        this.writeRawMessage({
-          method,
-          id,
-          params,
-        });
-      } catch (err) {
-        if (timeoutId !== null) clearTimeout(timeoutId);
-        this.pendingRequests.delete(id);
-        reject(err);
-      }
+    return this.connection.sendRequest(method, params, {
+      timeoutMs,
+      failOnTimeout: options.failProcessOnTimeout !== false,
     });
   }
 
   sendNotification(method: string, params?: unknown): void {
-    if (this.destroyed) return;
-    try {
-      this.writeRawMessage({
-        method,
-        params,
-      });
-    } catch {
-      /* ignore if process is gone */
-    }
+    this.connection.sendNotification(method, params);
   }
 
   /**
@@ -659,7 +465,7 @@ export class CodexAppServerProcess {
   async runTurnExclusive<T>(callback: () => Promise<T>, key = ""): Promise<T> {
     const queueKey = this.supportsConcurrentTurns() ? `turn:${key}` : "turn:";
     return this.runQueued(queueKey, async () => {
-      if (this.destroyed || this.destroyWhenIdleRequested) {
+      if (this.connection.isClosed() || this.destroyWhenIdleRequested) {
         throw new CodexAppServerProcessRetiredError();
       }
       const release = this.holdActiveTurn();
@@ -756,21 +562,11 @@ export class CodexAppServerProcess {
   }
 
   onActivity(handler: ActivityHandler): () => void {
-    this.activityHandlers.add(handler);
-    return () => {
-      this.activityHandlers.delete(handler);
-    };
+    return this.connection.onActivity(handler);
   }
 
   onClose(handler: (reason?: string) => void): () => void {
-    if (this.didNotifyClose || this.destroyed) {
-      handler(this.closeReason);
-      return () => {};
-    }
-    this.closeHandlers.add(handler);
-    return () => {
-      this.closeHandlers.delete(handler);
-    };
+    return this.connection.onClose(handler);
   }
 
   /**
@@ -831,97 +627,12 @@ export class CodexAppServerProcess {
     this.protocolInitialized = true;
   }
 
-  private writeRawMessage(message: Record<string, unknown>): void {
-    const msg = JSON.stringify(message) + "\n";
-    (this.proc as any).stdin.write(msg);
-  }
-
   destroy(): void {
-    this.fail(new Error("CodexAppServerProcess destroyed"), true);
+    this.connection.destroy();
   }
 
   async destroyAndWait(timeoutMs = 2_000): Promise<boolean> {
-    const rawProcess = this.proc as any;
-    this.destroy();
-    const waitBounded = async (task: Promise<unknown>): Promise<boolean> => {
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          task.then(
-            () => true,
-            () => true,
-          ),
-          new Promise<boolean>((resolve) => {
-            timeoutId = setTimeout(
-              () => resolve(false),
-              Math.max(0, timeoutMs),
-            );
-          }),
-        ]);
-      } finally {
-        if (timeoutId !== undefined) clearTimeout(timeoutId);
-      }
-    };
-    const processExited =
-      typeof rawProcess?.wait === "function"
-        ? await waitBounded(Promise.resolve(rawProcess.wait()))
-        : true;
-    const readLoops = [this.readLoopPromise, this.stderrLoopPromise].filter(
-      (task): task is Promise<void> => Boolean(task),
-    );
-    if (readLoops.length) {
-      const loopsDrained = await waitBounded(Promise.allSettled(readLoops));
-      return processExited && loopsDrained;
-    }
-    return processExited;
-  }
-
-  private fail(error: Error, killProcess: boolean): void {
-    if (this.closeReason === undefined) {
-      const reason = redactAllRememberedLocalDocumentPathsFromTerminalText(
-        error.message || "",
-      )
-        .replace(/\s+/g, " ")
-        .trim();
-      if (reason) {
-        this.closeReason =
-          reason.length > CODEX_APP_SERVER_CLOSE_REASON_MAX
-            ? `${reason.slice(0, CODEX_APP_SERVER_CLOSE_REASON_MAX)}...`
-            : reason;
-      }
-    }
-    if (!this.destroyed) {
-      this.destroyed = true;
-      for (const [, pending] of this.pendingRequests) {
-        pending.reject(error);
-      }
-      this.pendingRequests.clear();
-      for (const request of this.serverRequests.values())
-        request.controller.abort();
-      this.serverRequests.clear();
-    }
-    if (killProcess) {
-      try {
-        (this.proc as any).kill();
-      } catch {
-        /* ignore */
-      }
-    }
-    if (this.didNotifyClose) return;
-    this.didNotifyClose = true;
-    if (this.closeReason) {
-      appLogger.warn(
-        `[llm-for-zotero] codex app-server closed: ${this.closeReason}`,
-      );
-    }
-    for (const handler of this.closeHandlers) {
-      try {
-        handler(this.closeReason);
-      } catch {
-        /* ignore */
-      }
-    }
-    this.closeHandlers.clear();
+    return this.connection.destroyAndWait(timeoutMs);
   }
 }
 
@@ -2324,47 +2035,13 @@ function getNonEmptyEnvValue(
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function getRuntimeEnvValue(key: string): string | undefined {
-  const processValue = (globalThis as any).process?.env?.[key];
-  if (typeof processValue === "string" && processValue.trim()) {
-    return processValue.trim();
-  }
-  try {
-    const servicesValue = (globalThis as any).Services?.env?.get?.(key);
-    if (typeof servicesValue === "string" && servicesValue.trim()) {
-      return servicesValue.trim();
-    }
-  } catch {
-    /* ignore */
-  }
-  return undefined;
-}
-
 function getCodexRuntimeEnv(): Record<string, string | undefined> {
   const processEnv = (globalThis as any).process?.env ?? {};
   const env: Record<string, string | undefined> = { ...processEnv };
   for (const key of CODEX_ENV_KEYS) {
-    env[key] = getRuntimeEnvValue(key);
+    env[key] = readRuntimeEnvValue(key);
   }
   return env;
-}
-
-export function mergeCodexNoProxyValues(
-  ...values: Array<string | undefined>
-): string {
-  const entries: string[] = [];
-  const seen = new Set<string>();
-  for (const value of [...values, CODEX_LOOPBACK_NO_PROXY_ENTRIES.join(",")]) {
-    for (const rawEntry of String(value || "").split(",")) {
-      const entry = rawEntry.trim();
-      if (!entry) continue;
-      const key = entry.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      entries.push(entry);
-    }
-  }
-  return entries.join(",");
 }
 
 async function assertCodexHomeFolder(path: string): Promise<void> {
@@ -2388,15 +2065,9 @@ function buildCodexLaunchEnvironment(
   invocationEnvironment?: Record<string, string>,
   codexHome?: string,
 ): Record<string, string> {
-  const runtimeEnv = getCodexRuntimeEnv();
-  const noProxy = mergeCodexNoProxyValues(
-    runtimeEnv.NO_PROXY,
-    runtimeEnv.no_proxy,
-  );
   return {
     ...invocationEnvironment,
-    NO_PROXY: noProxy,
-    no_proxy: noProxy,
+    ...buildLoopbackNoProxyEnvironment(getCodexRuntimeEnv()),
     // Only the child gets it; an empty setting keeps any inherited CODEX_HOME.
     ...(codexHome ? { CODEX_HOME: codexHome } : {}),
   };
@@ -2721,7 +2392,7 @@ async function resolveWindowsNpmNativeCodexInvocation(
 
     const pathDir = joinRuntimePath("\\", nativeRoot, "path");
     const runtimePath =
-      getRuntimeEnvValue("PATH") || getRuntimeEnvValue("Path") || "";
+      readRuntimeEnvValue("PATH") || readRuntimeEnvValue("Path") || "";
     const environment: Record<string, string> = {
       CODEX_MANAGED_BY_NPM: "1",
     };
@@ -3074,27 +2745,17 @@ export async function resolveCodexBinary(
 }
 
 // Per-auth-mode singleton processes
-const processCache = new Map<string, Promise<CodexAppServerProcess>>();
-let unregisterQuitBlocker: (() => void) | null = null;
+const processPool = new KeyedProcessPool<CodexAppServerProcess>(
+  "LLM for Zotero: stop codex app-server",
+);
 
 /**
- * Stops every cached app-server. Quitting skips onShutdown, so the first spawn
- * registers this for quit too; otherwise the process outlives Zotero (or, on a
- * plugin update, keeps running under the old plugin until Zotero exits).
+ * Stops every cached app-server. The pool also runs this when Zotero quits,
+ * since quitting skips onShutdown; otherwise the process outlives Zotero (or,
+ * on a plugin update, keeps running under the old plugin until Zotero exits).
  */
 export async function destroyAllCachedCodexAppServerProcesses(): Promise<void> {
-  unregisterQuitBlocker?.();
-  unregisterQuitBlocker = null;
-  const pending = [...processCache.values()];
-  processCache.clear();
-  await Promise.all(
-    pending.map((promise) =>
-      promise.then(
-        (proc) => proc.destroyAndWait().catch(() => undefined),
-        () => undefined,
-      ),
-    ),
-  );
+  await processPool.destroyAll();
 }
 
 function buildProcessCacheKey(
@@ -3114,24 +2775,7 @@ export function destroyCachedCodexAppServerProcess(
   proc?: CodexAppServerProcess,
   options: CodexAppServerProcessOptions = {},
 ): void {
-  const effectiveCacheKey = buildProcessCacheKey(cacheKey, options);
-  const existing = processCache.get(effectiveCacheKey);
-  if (!existing) {
-    proc?.destroy();
-    return;
-  }
-
-  processCache.delete(effectiveCacheKey);
-  existing
-    .then((cachedProc) => {
-      if (proc && cachedProc !== proc) return;
-      cachedProc.destroy();
-    })
-    .catch(() => {
-      if (proc) {
-        proc.destroy();
-      }
-    });
+  processPool.destroy(buildProcessCacheKey(cacheKey, options), proc);
 }
 
 /**
@@ -3143,19 +2787,7 @@ export function detachCachedCodexAppServerProcess(
   proc: CodexAppServerProcess,
   options: CodexAppServerProcessOptions = {},
 ): void {
-  const effectiveCacheKey = buildProcessCacheKey(cacheKey, options);
-  const existing = processCache.get(effectiveCacheKey);
-  if (!existing) return;
-  void existing
-    .then((cachedProc) => {
-      if (
-        cachedProc === proc &&
-        processCache.get(effectiveCacheKey) === existing
-      ) {
-        processCache.delete(effectiveCacheKey);
-      }
-    })
-    .catch(() => undefined);
+  processPool.detach(buildProcessCacheKey(cacheKey, options), proc);
 }
 
 /**
@@ -3219,27 +2851,7 @@ export async function getOrCreateCodexAppServerProcess(
   cacheKey: string,
   options: CodexAppServerProcessOptions = {},
 ): Promise<CodexAppServerProcess> {
-  const effectiveCacheKey = buildProcessCacheKey(cacheKey, options);
-  const existing = processCache.get(effectiveCacheKey);
-  if (existing) {
-    return existing;
-  }
-  unregisterQuitBlocker ??= registerAppQuitBlocker(
-    "LLM for Zotero: stop codex app-server",
-    async () => {
-      unregisterQuitBlocker = null;
-      await destroyAllCachedCodexAppServerProcesses();
-    },
+  return processPool.get(buildProcessCacheKey(cacheKey, options), () =>
+    CodexAppServerProcess.spawn(options),
   );
-  const promise = CodexAppServerProcess.spawn(options);
-  promise.then((proc) => {
-    proc.onClose(() => {
-      if (processCache.get(effectiveCacheKey) === promise) {
-        processCache.delete(effectiveCacheKey);
-      }
-    });
-  });
-  processCache.set(effectiveCacheKey, promise);
-  promise.catch(() => processCache.delete(effectiveCacheKey));
-  return promise;
 }
