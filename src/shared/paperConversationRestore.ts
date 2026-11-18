@@ -646,6 +646,12 @@ async function persistScopeSelection(
     throw new Error("Zotero DB is unavailable");
   }
   let selected: RestoreEntry | null = null;
+  let ineligible = false;
+  // An ineligible conversation is an expected refusal, not a failure: the
+  // transaction ends without writing and the refusal is raised after it.
+  // Throwing inside would roll back every statement that ran on the shared
+  // connection meanwhile, including Zotero's own temporary tables (the item
+  // list builds its search results in one, and loses them).
   await db.executeTransaction(async () => {
     if (conversationKey) {
       const upstreamJoin =
@@ -690,8 +696,10 @@ async function persistScopeSelection(
         ),
       );
       const row = rows[0];
-      if (!row)
-        throw new Error("Conversation is not an eligible paper restore target");
+      if (!row) {
+        ineligible = true;
+        return;
+      }
       selected = {
         conversationKey: row.conversationKey,
         instanceID: row.instanceID,
@@ -737,6 +745,9 @@ async function persistScopeSelection(
       await requireExactlyOneChangedRow(db.queryAsync!.bind(db));
     }
   });
+  if (ineligible) {
+    throw new Error("Conversation is not an eligible paper restore target");
+  }
   return selected;
 }
 
