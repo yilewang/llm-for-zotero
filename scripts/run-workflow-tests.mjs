@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   unlinkSync,
 } from "node:fs";
@@ -143,6 +145,29 @@ function prepareShardCheckout(dir) {
   }
   for (const entry of shardCheckoutEntries(readdirSync("."))) {
     symlinkSync(resolve(entry), join(dir, entry));
+  }
+}
+
+/**
+ * Zotero installs its bundled citation styles and translators once, a while
+ * after a profile's first start, and records that in its database. A first
+ * start that was stopped before the install finished left a data folder with
+ * a database but no styles folder, and later runs never completed the
+ * install: every citation in that folder then waited until its test timed
+ * out (seen in a shard on 2026-11-17). Such a folder is disposable test
+ * state, so it is removed and Zotero starts it afresh.
+ */
+function resetInterruptedTestData(cwd, say = console.log) {
+  const testDir = resolve(cwd, ".scaffold/test");
+  const data = join(testDir, "data");
+  if (
+    existsSync(join(data, "zotero.sqlite")) &&
+    !existsSync(join(data, "styles"))
+  ) {
+    say(
+      `The test data in ${testDir} has no citation styles (an interrupted first start); starting it afresh.`,
+    );
+    rmSync(testDir, { recursive: true, force: true });
   }
 }
 
@@ -480,6 +505,7 @@ async function main() {
       console.log(
         `Running ${files.length} workflow test file(s):\n  ${files.join("\n  ")}`,
       );
+    resetInterruptedTestData(process.cwd());
     const { ok, results } = await runGroup({
       cwd: process.cwd(),
       files,
@@ -498,6 +524,7 @@ async function main() {
     const label = `[${i + 1}/${count}]`;
     const cwd = resolve(SHARD_ROOT, String(i + 1));
     prepareShardCheckout(cwd);
+    resetInterruptedTestData(cwd, (text) => console.log(`${label} ${text}`));
     console.log(`${label} ${files.length} file(s): ${files.join(", ")}`);
     let port = await freePort();
     while (ports.has(port)) port = await freePort();
