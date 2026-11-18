@@ -56,6 +56,7 @@ import {
   exerciseChatModeStreamingTurn,
 } from "./chatMemoryReplay";
 import { exerciseAgentDeliveryReplay } from "./agentDeliveryReplay";
+import { exerciseClaudeBridgeTurn } from "./externalTurnReplay";
 import {
   exerciseLongJobBatchStop,
   exerciseLongJobNoteResume,
@@ -12203,6 +12204,8 @@ export function installWorkflowTestHarness(targetAddon: {
         getPanel(input.panelId),
         input.failFinalRefresh,
       ),
+    exerciseClaudeBridgeTurn: (input) =>
+      exerciseClaudeBridgeTurn(getPanel(input.panelId), input.scenario),
     exerciseLongJobReplay: (input) =>
       exerciseLongJobReplay(getPanel(input.panelId), {
         collection: input.collection,

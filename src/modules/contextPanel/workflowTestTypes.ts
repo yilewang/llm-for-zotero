@@ -1425,6 +1425,11 @@ export type WorkflowTestApi = {
       ReturnType<typeof import("./planHistoryReplay").exercisePlanHistoryReplay>
     >
   >;
+  /** One Claude Code turn through the real panel against a scripted bridge. */
+  exerciseClaudeBridgeTurn: (input: {
+    panelId: string;
+    scenario: import("./externalTurnReplay").ExternalTurnScenario;
+  }) => Promise<import("./externalTurnReplay").ExternalTurnResult>;
   exerciseAgentDeliveryReplay: (input: {
     panelId: string;
     failFinalRefresh?: boolean;
