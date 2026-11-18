@@ -49,6 +49,28 @@ describe("workflow: Antigravity turns", function () {
       ],
     },
     {
+      match: /read the attached notes/,
+      title: "Attached notes",
+      steps: [
+        {
+          type: "tool",
+          name: "read_file",
+          kind: "read",
+          title: "File notes.txt",
+          readsAttachments: true,
+          // Reading a file outside agy's folder asks, as in the real agy.
+          askPermission: true,
+          result: "codename HARBOR",
+        },
+        { type: "text", text: "The notes say {{tool}}." },
+      ],
+    },
+    {
+      match: /^\/compact$/,
+      title: "Compact",
+      steps: [{ type: "text", text: "Compacted." }],
+    },
+    {
       match: /take your time/,
       title: "Slow",
       steps: [
@@ -232,6 +254,95 @@ describe("workflow: Antigravity turns", function () {
       "tool_call",
       "agy's own row for a Zotero tool is left to the MCP activity row",
     );
+  });
+
+  it("applies the turn's model and thinking level to agy's session", async function () {
+    const result = await run({
+      question: "Say hello.",
+      model: "gemini-4-hydrogen",
+      thoughtLevel: "xhigh",
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    const session = store.get(String(result.storedSessionId));
+    assert.equal(session?.model, "gemini-4-hydrogen");
+    assert.equal(session?.thoughtLevel, "xhigh");
+  });
+
+  it("gives a new agy session the Zotero instructions as its system prompt, not as prompt text", async function () {
+    const result = await run({ question: "Say hello." });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    const session = store.get(String(result.storedSessionId));
+    assert.include(
+      session?.systemPrompt || "",
+      "Original agent-mode Zotero behavior",
+    );
+    const sent = (session?.history || []).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" &&
+      update.content.type === "text"
+        ? [update.content.text]
+        : [],
+    );
+    assert.lengthOf(sent, 1, JSON.stringify(sent));
+    assert.notInclude(sent[0], "Original agent-mode Zotero behavior");
+    assert.include(sent[0], "Say hello.");
+  });
+
+  it("sends a screenshot as an image and a file as a link that agy reads without a card", async function () {
+    const image =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+    const notesPath = "/tmp/llm-for-zotero-antigravity-test/notes v1.txt";
+    const result = await run({
+      question: "Please read the attached notes.",
+      images: [image],
+      attachments: [
+        {
+          id: "notes-1",
+          name: "notes v1.txt",
+          mimeType: "text/plain",
+          sizeBytes: 12,
+          category: "text",
+          storedPath: notesPath,
+        },
+      ],
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.equal(result.confirmations, 0, "an attached file reads freely");
+    assert.include(result.deliveredText, "The notes say codename HARBOR.");
+    const blocks = (
+      store.get(String(result.storedSessionId))?.history || []
+    ).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" ? [update.content] : [],
+    );
+    const imageBlock = blocks.find((block) => block.type === "image");
+    assert.deepInclude(imageBlock, { type: "image", mimeType: "image/png" });
+    const link = blocks.find((block) => block.type === "resource_link");
+    assert.deepInclude(link, {
+      type: "resource_link",
+      uri: "file:///tmp/llm-for-zotero-antigravity-test/notes%20v1.txt",
+      name: "notes v1.txt",
+    });
+  });
+
+  it("still asks before agy reads a file the user did not attach", async function () {
+    const result = await run({
+      question: "Please read the attached notes.",
+      approve: false,
+    });
+    assert.equal(result.confirmations, 1, JSON.stringify(result));
+    assert.notInclude(result.deliveredText, "codename HARBOR");
+  });
+
+  it("sends a slash message to agy alone and offers agy's commands", async function () {
+    const result = await run({ question: "/compact" });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.equal(result.outcomeText, "Compacted.");
+    const sent = (
+      store.get(String(result.storedSessionId))?.history || []
+    ).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" ? [update.content] : [],
+    );
+    assert.deepEqual(sent, [{ type: "text", text: "/compact" }]);
+    assert.includeMembers(result.slashCommands, ["goal", "compact", "plan"]);
   });
 
   it("ends a stopped turn as cancelled", async function () {

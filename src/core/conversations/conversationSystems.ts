@@ -36,6 +36,15 @@ export const RUNTIME_CONVERSATION_SYSTEMS: readonly RuntimeConversationSystem[] 
     (system): system is RuntimeConversationSystem => system !== "upstream",
   );
 
+/** One value per runtime, in registry order. */
+export function mapRuntimeConversationSystems<T>(
+  value: (system: RuntimeConversationSystem) => T,
+): Record<RuntimeConversationSystem, T> {
+  return Object.fromEntries(
+    RUNTIME_CONVERSATION_SYSTEMS.map((system) => [system, value(system)]),
+  ) as Record<RuntimeConversationSystem, T>;
+}
+
 export function isConversationSystem(
   value: unknown,
 ): value is ConversationSystem {
@@ -91,6 +100,13 @@ export type RuntimeConversationSystemDescriptor = {
   permissionProvider: "claude" | "codex" | "antigravity";
   /** Usage-ledger runtime name (`UsageEventRuntime`). Persisted. */
   usageSource: "claude-code" | "codex" | "antigravity";
+  /**
+   * What runs a turn. `external_turn_host`: the shared external-runtime turn
+   * host (agent/externalRuntimeTurnHost.ts), which takes the plugin's paper
+   * context and Zotero MCP tools and sends slash messages to the runtime as
+   * its own commands. `codex_app_server`: Codex's native app-server path.
+   */
+  engine: "external_turn_host" | "codex_app_server";
 };
 
 export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
@@ -108,6 +124,7 @@ export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
     readerRuntimeKey: "claude",
     permissionProvider: "claude",
     usageSource: "claude-code",
+    engine: "external_turn_host",
   },
   codex: {
     system: "codex",
@@ -121,6 +138,7 @@ export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
     readerRuntimeKey: "codex",
     permissionProvider: "codex",
     usageSource: "codex",
+    engine: "codex_app_server",
   },
   antigravity: {
     system: "antigravity",
@@ -135,8 +153,20 @@ export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
     readerRuntimeKey: "antigravity",
     permissionProvider: "antigravity",
     usageSource: "antigravity",
+    engine: "external_turn_host",
   },
 };
+
+/** True for a runtime whose turns run through the external turn host. */
+export function usesExternalTurnHost(
+  system: RuntimeConversationSystem | null | undefined,
+): boolean {
+  return Boolean(
+    system &&
+    RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].engine ===
+      "external_turn_host",
+  );
+}
 
 export function getRuntimeConversationSystemDescriptor(
   system: RuntimeConversationSystem,

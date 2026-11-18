@@ -50,8 +50,8 @@ export type RuntimeSystemControlState = {
 
 export type RuntimeSystemControlsStateInput = {
   activeSystem: ConversationSystem;
-  codexEnabled: boolean;
-  claudeEnabled: boolean;
+  /** Which runtimes are on (in Preferences, and available on this surface). */
+  runtimeEnabled: Record<RuntimeConversationSystem, boolean>;
   busy?: boolean;
 };
 
@@ -69,10 +69,9 @@ type CreateRuntimeSystemControlsOptions = {
 const RUNTIME_SYSTEM_TOGGLE_ENABLED: RuntimeSystemButtonMap<
   ((input: RuntimeSystemControlsStateInput) => boolean) | null
 > = {
-  codex: (input) => input.codexEnabled,
-  claude_code: (input) => input.claudeEnabled,
-  // Antigravity has no toggle until Phase 5 adds its UI.
-  antigravity: null,
+  codex: (input) => input.runtimeEnabled.codex,
+  claude_code: (input) => input.runtimeEnabled.claude_code,
+  antigravity: (input) => input.runtimeEnabled.antigravity,
 };
 
 function isRuntimeSystemEnabled(
@@ -188,6 +187,11 @@ export function syncRuntimeSystemControls(
     ).length;
     controls.group.style.display = state.groupVisible ? "inline-flex" : "none";
     controls.group.dataset.visibleCount = String(visibleCount);
+    // The stylesheet sizes the group from this count.
+    controls.group.style.setProperty(
+      "--llm-runtime-visible-count",
+      String(Math.max(1, visibleCount)),
+    );
     controls.group.dataset.activeSystem = isRuntimeConversationSystem(
       input.activeSystem,
     )

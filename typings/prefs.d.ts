@@ -89,6 +89,9 @@ declare namespace _ZoteroTypes {
       "antigravityGlobalConversationMap": string;
       "antigravityLastAllocatedConversationKeyMap": string;
       "antigravityPermissionMode": string;
+      "antigravityRuntimeModel": string;
+      "antigravityThoughtLevel": string;
+      "antigravityBinaryPath": string;
       "claudeCodeConversationModeMap": string;
       "claudeCodeGlobalConversationMap": string;
       "claudeCodePaperConversationMap": string;

@@ -39,12 +39,20 @@ import {
 } from "../../shared/conversationWriteFence";
 import { createAbortController } from "../../utils/apiHelpers";
 import type { StdioJsonRpcChild } from "../../utils/stdioJsonRpcConnection";
-import type { AgyLaunchOptions } from "../../antigravity/agyProcess";
+import {
+  startAgyClient,
+  type AgyLaunchOptions,
+} from "../../antigravity/agyProcess";
+import type { ChatAttachment } from "../../shared/types";
+import { listAntigravitySlashCommands } from "../../antigravity/commands";
 
 export type AntigravityTurnScenario = {
   question: string;
-  /** Starts a fake agy; called when the turn needs a new process. */
-  createChild: (launch: AgyLaunchOptions) => StdioJsonRpcChild;
+  /**
+   * Starts a fake agy; called when the turn needs a new process. Without it
+   * the turn runs the installed agy (the live tests).
+   */
+  createChild?: (launch: AgyLaunchOptions) => StdioJsonRpcChild;
   /** Starts a new agy process even if this test already has one. */
   newProcess?: boolean;
   /** Continues this conversation; a new one is created otherwise. */
@@ -53,10 +61,17 @@ export type AntigravityTurnScenario = {
   /** Answers every review card; unset leaves them open. */
   approve?: boolean;
   permissionMode?: AntigravityPermissionMode;
+  /** The surface's picks, as the panel sends them with the turn. */
+  model?: string;
+  thoughtLevel?: string;
   /** Stops the turn once the answer contains this text. */
   abortWhenText?: string;
   /** Clears the conversation once the answer contains this text. */
   clearWhenText?: string;
+  /** Screenshots sent with the turn (data URLs). */
+  images?: string[];
+  /** Files sent with the turn. */
+  attachments?: ChatAttachment[];
 };
 
 export type AntigravityTurnResult = {
@@ -81,6 +96,8 @@ export type AntigravityTurnResult = {
   launches: AgyLaunchOptions[];
   /** How many agy processes the test has started so far. */
   processes: number;
+  /** The slash commands agy has announced, as the menu would list them. */
+  slashCommands: string[];
 };
 
 let replayClient: AcpClient | null = null;
@@ -125,10 +142,12 @@ export async function exerciseAntigravityTurn(
       }
       await replayClient?.destroyAndWait().catch(() => undefined);
       processCount += 1;
-      replayClient = await AcpClient.connect({
-        child: scenario.createChild(launch),
-        readiness: { timeoutMs: 2_000, delayMs: 10 },
-      });
+      replayClient = scenario.createChild
+        ? await AcpClient.connect({
+            child: scenario.createChild(launch),
+            readiness: { timeoutMs: 2_000, delayMs: 10 },
+          })
+        : await startAgyClient(launch);
       return replayClient;
     },
   });
@@ -216,7 +235,22 @@ export async function exerciseAntigravityTurn(
   setAbortController(conversationKey, createAbortController());
   try {
     await sendAgentTurn(
-      { body, item, question: scenario.question },
+      {
+        body,
+        item,
+        question: scenario.question,
+        ...(scenario.images ? { images: scenario.images } : {}),
+        ...(scenario.attachments ? { attachments: scenario.attachments } : {}),
+        ...(scenario.model ? { model: scenario.model } : {}),
+        ...(scenario.thoughtLevel
+          ? {
+              reasoning: {
+                provider: "customized" as const,
+                level: scenario.thoughtLevel,
+              },
+            }
+          : {}),
+      },
       deps,
     ).catch((error) => {
       threw ||= error instanceof Error ? error.message : String(error);
@@ -259,6 +293,9 @@ export async function exerciseAntigravityTurn(
       storedCwd: summary?.cwd,
       launches,
       processes: processCount,
+      slashCommands: listAntigravitySlashCommands().map(
+        (command) => command.name,
+      ),
     };
   } finally {
     setAbortController(conversationKey, previousController);

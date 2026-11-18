@@ -2,6 +2,12 @@ import { getAgentApi, initAgentSubsystem } from "../../../../agent";
 import { getAllSkills } from "../../../../agent/skills";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { refreshClaudeSlashCommands } from "../../../../claudeCode/runtime";
+import { listAntigravitySlashCommands } from "../../../../antigravity/commands";
+import { loadAntigravityPickerSlashCommands } from "../../../../antigravity/runtime";
+import {
+  usesExternalTurnHost,
+  type RuntimeConversationSystem,
+} from "../../../../core/conversations/conversationSystems";
 import { t } from "../../../../utils/i18n";
 import { resolveDisplayConversationKind } from "../../portalScope";
 import { resolveSlashActionChatMode } from "../../slashMenuBehavior";
@@ -24,7 +30,8 @@ export type ActionCommandSlashMenuContext = {
   slashMenu: HTMLDivElement | null;
   getItem: () => Zotero.Item | null;
   getSelectedProfile: () => { authMode?: string } | null;
-  isClaudeConversationSystem: () => boolean;
+  /** The panel's runtime, or null for the plugin's own systems. */
+  getRuntimeConversationSystem: () => RuntimeConversationSystem | null;
   clearAgentSlashItems: () => void;
   clearSkillSlashItems: () => void;
   consumeActiveActionToken: () => boolean;
@@ -39,11 +46,55 @@ export type ActionCommandSlashMenuContext = {
   buildActionRequestContext: () => { mode: ActionChatMode };
 };
 
-type ClaudeSlashMenuItem = {
+type RuntimeSlashMenuItem = {
   name: string;
   description: string;
   argumentHint?: string;
 };
+
+/** Where a runtime's own slash commands come from. */
+type RuntimeCommandSource = {
+  label: string;
+  loadingText: string;
+  list: () => RuntimeSlashMenuItem[];
+  refresh: () => Promise<unknown>;
+};
+
+/**
+ * The panel runtime's own commands, for a runtime that runs through the
+ * external turn host and so takes slash messages as its own commands.
+ */
+function runtimeCommandSource(
+  context: ActionCommandSlashMenuContext,
+): RuntimeCommandSource | null {
+  const system = context.getRuntimeConversationSystem();
+  if (!usesExternalTurnHost(system)) return null;
+  switch (system) {
+    case "claude_code":
+      return {
+        label: "Claude Code",
+        loadingText: t("Loading Claude commands..."),
+        // This panel is on Claude Code, whatever the other surface chose.
+        list: () =>
+          getAgentApi().listSlashCommands?.({
+            conversationSystem: "claude_code",
+          }) || [],
+        refresh: () =>
+          initAgentSubsystem().then((coreRuntime) =>
+            refreshClaudeSlashCommands(coreRuntime, false),
+          ),
+      };
+    case "antigravity":
+      return {
+        label: "Antigravity",
+        loadingText: t("Loading Antigravity commands..."),
+        list: () => listAntigravitySlashCommands(),
+        refresh: () => loadAntigravityPickerSlashCommands(),
+      };
+    default:
+      return null;
+  }
+}
 
 function firstSentence(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
@@ -140,28 +191,32 @@ export function renderAgentActionsInSlashMenu(
     element.setAttribute("data-slash-agent-item", "true");
     return element;
   };
-  if (context.isClaudeConversationSystem()) {
-    let commands: ClaudeSlashMenuItem[] = [];
+  const commandSource = runtimeCommandSource(context);
+  if (commandSource) {
+    let commands: RuntimeSlashMenuItem[] = [];
     try {
-      // This panel is on Claude Code, whatever the other surface chose.
-      commands =
-        getAgentApi().listSlashCommands?.({
-          conversationSystem: "claude_code",
-        }) || [];
+      commands = commandSource.list();
     } catch {
       commands = [];
     }
     if (!commands.length) {
       const loading = mkAgentEl("div", "llm-slash-menu-section");
       loading.setAttribute("aria-hidden", "true");
-      loading.textContent = t("Loading Claude commands...");
+      loading.textContent = commandSource.loadingText;
       list.insertBefore(loading, firstBase);
-      void initAgentSubsystem()
-        .then((coreRuntime) => refreshClaudeSlashCommands(coreRuntime, false))
+      void commandSource
+        .refresh()
         .then(() => {
-          renderAgentActionsInSlashMenu(context, query);
+          // Re-render only when the list arrived, or the loader would loop.
+          if (commandSource.list().length) {
+            renderAgentActionsInSlashMenu(context, query);
+          } else {
+            loading.remove();
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          loading.remove();
+        });
       const baseLabel = mkAgentEl("div", "llm-slash-menu-section");
       baseLabel.setAttribute("aria-hidden", "true");
       baseLabel.textContent = t("Base actions");
@@ -178,7 +233,7 @@ export function renderAgentActionsInSlashMenu(
     if (filtered.length) {
       const section = mkAgentEl("div", "llm-slash-menu-section");
       section.setAttribute("aria-hidden", "true");
-      section.textContent = "Claude Code";
+      section.textContent = commandSource.label;
       list.insertBefore(section, firstBase);
       filtered.forEach((command) => {
         const button = mkAgentEl(

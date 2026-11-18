@@ -17,9 +17,10 @@
  *
  * The choices covered: the model entry (and with it WebChat mode, which is a
  * property of the entry), the conversation system (API / Claude Code /
- * Codex), the Claude Code and Codex runtime model and reasoning effort, the
- * last-used reasoning levels the API model menu falls back to, the Codex
- * Direct reasoning selection per model, and the sticky Chat/Agent default.
+ * Codex / Antigravity), the Claude Code, Codex and Antigravity runtime model
+ * and reasoning effort, the last-used reasoning levels the API model menu
+ * falls back to, the Codex Direct reasoning selection per model, and the
+ * sticky Chat/Agent default.
  * Permission settings are deliberately not here: they stay one global setting.
  *
  * - Each torn-off window ("torn:<id>") keeps its own in-memory choices,
@@ -63,6 +64,12 @@ import {
   setCodexRuntimeModelPref,
 } from "../../codexAppServer/prefs";
 import { DEFAULT_CODEX_RUNTIME_MODEL } from "../../codexAppServer/constants";
+import {
+  getAntigravityRuntimeModelPref,
+  getAntigravityThoughtLevelPref,
+  setAntigravityRuntimeModelPref,
+  setAntigravityThoughtLevelPref,
+} from "../../antigravity/prefs";
 import {
   getCodexDirectReasoningSelection,
   getCodexDirectReasoningSelections,
@@ -449,6 +456,22 @@ const codexReasoningMode = surfaceChoice<string>({
   },
 });
 
+/** The base model agy runs; "" for agy's own default. */
+const antigravityRuntimeModel = surfaceChoice<string>({
+  name: "antigravityRuntimeModel",
+  getPref: getAntigravityRuntimeModelPref,
+  setPref: setAntigravityRuntimeModelPref,
+  normalize: (model) => model.trim(),
+});
+
+/** The thinking level agy runs at; "" for agy's own default. */
+const antigravityThoughtLevel = surfaceChoice<string>({
+  name: "antigravityThoughtLevel",
+  getPref: getAntigravityThoughtLevelPref,
+  setPref: setAntigravityThoughtLevelPref,
+  normalize: (level) => level.trim(),
+});
+
 const lastUsedReasoningLevel = surfaceChoice<ReasoningLevelSelection | null>({
   name: "lastUsedReasoningLevel",
   getPref: getLastUsedReasoningLevel,
@@ -520,6 +543,8 @@ export const surfaceChoices = {
   claudeReasoningMode,
   codexRuntimeModel,
   codexReasoningMode,
+  antigravityRuntimeModel,
+  antigravityThoughtLevel,
   lastUsedReasoningLevel,
   lastUsedReasoningLevelForProvider,
   codexDirectReasoningSelection,
@@ -649,6 +674,14 @@ export function bindSurfaceChoices(resolveSurface: () => SelectionSurface) {
     getCodexReasoningMode: () => codexReasoningMode.get(resolveSurface()),
     setCodexReasoningMode: (mode: string) =>
       codexReasoningMode.set(mode, resolveSurface()),
+    getAntigravityRuntimeModel: () =>
+      antigravityRuntimeModel.get(resolveSurface()),
+    setAntigravityRuntimeModel: (model: string) =>
+      antigravityRuntimeModel.set(model, resolveSurface()),
+    getAntigravityThoughtLevel: () =>
+      antigravityThoughtLevel.get(resolveSurface()),
+    setAntigravityThoughtLevel: (level: string) =>
+      antigravityThoughtLevel.set(level, resolveSurface()),
     getLastUsedReasoningLevel: () =>
       lastUsedReasoningLevel.get(resolveSurface()),
     setLastUsedReasoningLevel: (level: ReasoningLevelSelection) =>

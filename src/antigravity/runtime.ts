@@ -72,11 +72,28 @@ import { AcpClient } from "./acpClient";
 import { getOrStartAgyClient, type AgyLaunchOptions } from "./agyProcess";
 import { getAntigravityProfileSignature } from "./conversationKeys";
 import {
+  getAntigravityBinaryPathPref,
   getAntigravityPermissionModePref,
   isAntigravityModeEnabled,
   type AntigravityPermissionMode,
 } from "./prefs";
 import { antigravityConversationStore } from "./store";
+import { buildAntigravityPromptInput } from "./promptInput";
+import {
+  listAntigravitySlashCommands,
+  trackAntigravityCommands,
+  waitForAntigravityCommands,
+  type AntigravitySlashCommand,
+} from "./commands";
+import {
+  ANTIGRAVITY_MODEL_OPTION_ID,
+  ANTIGRAVITY_THOUGHT_LEVEL_OPTION_ID,
+  getRememberedAntigravityModelCatalog,
+  loadAntigravityModelCatalog,
+  rememberAntigravityModelCatalog,
+  resolveAntigravityModelChoice,
+  type AntigravityModelCatalog,
+} from "./modelCatalog";
 
 /** Every Antigravity conversation of a profile runs in this folder. */
 export function getAntigravityRuntimeCwd(): string {
@@ -113,8 +130,13 @@ export function resolveAntigravitySessionMode(
 export function buildAgyLaunchOptions(
   mode: AntigravityPermissionMode,
   cwd = getAntigravityRuntimeCwd(),
+  agyPath = getAntigravityBinaryPathPref(),
 ): AgyLaunchOptions {
-  return { cwd, skipPermissions: mode === "full-access" };
+  return {
+    cwd,
+    skipPermissions: mode === "full-access",
+    ...(agyPath ? { agyPath } : {}),
+  };
 }
 
 /** The Zotero tool a tool call names, when it is one of this turn's. */
@@ -288,6 +310,8 @@ export function createAcpEventMapper(options: {
 /** What a runtime keeps per agy process: the sessions it has open. */
 type ClientSessionState = {
   modeId?: string;
+  /** The session's config option values, such as `model`. */
+  config: Record<string, string>;
   /** The MCP servers the session was opened with, as JSON. */
   mcpSignature: string;
 };
@@ -358,12 +382,81 @@ type AntigravityServers = {
   servers: AcpMcpServer[];
 };
 
+function readConfigValues(
+  state: Pick<AcpSessionState, "configOptions"> | null | undefined,
+): Record<string, string> {
+  return Object.fromEntries(
+    (state?.configOptions ?? []).map((option) => [
+      option.id,
+      option.currentValue,
+    ]),
+  );
+}
+
+/**
+ * The model and thinking level the turn's chat surface picked: the request's
+ * model (an agy `model` value; empty for agy's own) and reasoning level.
+ */
+export function readAntigravityModelPicks(
+  request: Pick<AgentRuntimeRequest, "model" | "reasoning">,
+): { model: string; thoughtLevel: string } {
+  const level = String(request.reasoning?.level || "").trim();
+  return {
+    model: String(request.model || "").trim(),
+    thoughtLevel: level === "default" ? "" : level,
+  };
+}
+
+/** Applies the turn's model and thinking level to the session. */
+async function applyModelChoice(
+  client: AcpClient,
+  sessionId: string,
+  state: ClientSessionState,
+  picks: { model: string; thoughtLevel: string },
+): Promise<void> {
+  const catalog = getRememberedAntigravityModelCatalog();
+  if (!catalog) return;
+  const choice = resolveAntigravityModelChoice(catalog, picks);
+  if (!choice.model) return;
+  const current = {
+    model: state.config[ANTIGRAVITY_MODEL_OPTION_ID] || "",
+    thoughtLevel: state.config[ANTIGRAVITY_THOUGHT_LEVEL_OPTION_ID] || "",
+  };
+  // A model with a level is one model id in agy's list
+  // (`gemini-4-hydrogen-xhigh`); session/set_model takes it in one call.
+  const levelledId = choice.thoughtLevel
+    ? `${choice.model}-${choice.thoughtLevel}`
+    : "";
+  if (levelledId && catalog.modelIds.includes(levelledId)) {
+    if (
+      current.model === choice.model &&
+      current.thoughtLevel === choice.thoughtLevel
+    ) {
+      return;
+    }
+    await client.setModel(sessionId, levelledId);
+    state.config[ANTIGRAVITY_MODEL_OPTION_ID] = choice.model;
+    state.config[ANTIGRAVITY_THOUGHT_LEVEL_OPTION_ID] = choice.thoughtLevel;
+    return;
+  }
+  if (current.model !== choice.model) {
+    await client.setConfigOption(
+      sessionId,
+      ANTIGRAVITY_MODEL_OPTION_ID,
+      choice.model,
+    );
+    state.config[ANTIGRAVITY_MODEL_OPTION_ID] = choice.model;
+  }
+}
+
 /** Opens the conversation's session on this client: reuse, resume, or new. */
 async function openSession(params: {
   client: AcpClient;
   request: AgentRuntimeRequest;
   cwd: string;
   mcpServers: AcpMcpServer[];
+  /** The standing instructions; a new session takes them as its system prompt. */
+  instructions: string;
 }): Promise<{ sessionId: string; isNew: boolean; state: ClientSessionState }> {
   const { client, request, cwd, mcpServers } = params;
   const sessions = openSessions(client);
@@ -389,39 +482,29 @@ async function openSession(params: {
       });
       const state: ClientSessionState = {
         modeId: resumed?.modes?.currentModeId,
+        config: readConfigValues(resumed),
         mcpSignature,
       };
+      rememberAntigravityModelCatalog(resumed);
       sessions.set(stored, state);
       return { sessionId: stored, isNew: false, state };
     } catch (error) {
       if (!isSessionMissing(error)) throw error;
     }
   }
-  const created = await client.newSession({ cwd, mcpServers });
+  const created = await client.newSession({
+    cwd,
+    mcpServers,
+    _meta: { antigravity: { systemPrompt: { append: params.instructions } } },
+  });
   const state: ClientSessionState = {
     modeId: created.modes?.currentModeId,
+    config: readConfigValues(created),
     mcpSignature,
   };
+  rememberAntigravityModelCatalog(created);
   sessions.set(created.sessionId, state);
   return { sessionId: created.sessionId, isNew: true, state };
-}
-
-async function buildPromptBlocks(params: {
-  request: AgentRuntimeRequest;
-  isNewSession: boolean;
-  rawPdfMode: boolean;
-}): Promise<AcpContentBlock[]> {
-  const { request } = params;
-  const parts: string[] = [];
-  if (params.isNewSession) {
-    parts.push(buildAntigravityInstructions(params.rawPdfMode));
-  }
-  const context = renderTurnContextEnvelopeForModel(
-    buildTurnContextEnvelope(request),
-  );
-  if (context) parts.push(context);
-  parts.push(await buildExternalRuntimeUserText(request));
-  return [{ type: "text", text: parts.filter(Boolean).join("\n\n") }];
 }
 
 function createAbortError(): Error {
@@ -430,12 +513,28 @@ function createAbortError(): Error {
   return error;
 }
 
+/** True for a read-only agy tool call that touches only attached files. */
+export function isAttachedFileRead(
+  toolCall: AcpToolCall,
+  attachedPaths: readonly string[],
+): boolean {
+  if (toolCall.kind !== "read" || !attachedPaths.length) return false;
+  const paths = (toolCall.locations ?? []).map((location) => location.path);
+  return (
+    paths.length > 0 && paths.every((path) => attachedPaths.includes(path))
+  );
+}
+
 /** Answers one agy permission request for the turn. */
-function createPermissionHandler(
-  ctx: ExternalTurnRunContext<AntigravityPrepared, AntigravityServers>,
-  zoteroServerName: string | undefined,
-  onDenied: () => void,
-) {
+function createPermissionHandler(params: {
+  ctx: ExternalTurnRunContext<AntigravityPrepared, AntigravityServers>;
+  zoteroServerName: string | undefined;
+  /** Files the user attached this turn; agy reads them without asking. */
+  attachedPaths: readonly string[];
+  onDenied: () => void;
+}) {
+  const { ctx, zoteroServerName, onDenied } = params;
+  const attachedPaths = params.attachedPaths;
   return async (
     params: AcpRequestPermissionParams,
     signal: AbortSignal,
@@ -450,6 +549,9 @@ function createPermissionHandler(
         zoteroTool,
       )
     ) {
+      return chooseOption(params.options, true);
+    }
+    if (isAttachedFileRead(params.toolCall, attachedPaths)) {
       return chooseOption(params.options, true);
     }
     const resolution = await ctx.requestInteraction(
@@ -518,18 +620,26 @@ export function createAntigravityTransport(
       const signal = ctx.params.signal;
       if (signal?.aborted) throw createAbortError();
       const client = await startClient(prepared.launch);
+      trackAntigravityCommands(client);
       const zoteroServerName = ctx.zoteroMcp?.servers.serverName;
       const session = await openSession({
         client,
         request,
         cwd: prepared.launch.cwd,
         mcpServers: ctx.zoteroMcp?.servers.servers ?? [],
+        instructions: buildAntigravityInstructions(prepared.rawPdfMode),
       });
       await rememberAntigravitySession(
         request,
         session.sessionId,
         prepared.launch.cwd,
         ctx.writeAllowed,
+      );
+      await applyModelChoice(
+        client,
+        session.sessionId,
+        session.state,
+        readAntigravityModelPicks(request),
       );
       if (session.state.modeId !== prepared.sessionMode) {
         await client.setMode(session.sessionId, prepared.sessionMode);
@@ -547,26 +657,30 @@ export function createAntigravityTransport(
       const stopUpdates = client.onSessionUpdate(
         session.sessionId,
         (notification) => {
-          if (notification.update.sessionUpdate === "current_mode_update") {
-            session.state.modeId = notification.update.currentModeId;
+          const update = notification.update;
+          if (update.sessionUpdate === "current_mode_update") {
+            session.state.modeId = update.currentModeId;
+          } else if (update.sessionUpdate === "config_option_update") {
+            Object.assign(session.state.config, readConfigValues(update));
           }
           // Keep updates in order; one slow emit must not reorder them.
           mapping = mapping.then(() => mapper.handle(notification));
         },
       );
+      const input = await buildAntigravityPromptInput(request);
       const stopPermissions = client.setPermissionHandler(
         session.sessionId,
-        createPermissionHandler(ctx, zoteroServerName, () => {
-          denied = true;
+        createPermissionHandler({
+          ctx,
+          zoteroServerName,
+          attachedPaths: input.attachedPaths,
+          onDenied: () => {
+            denied = true;
+          },
         }),
       );
       try {
-        const blocks = await buildPromptBlocks({
-          request,
-          isNewSession: session.isNew,
-          rawPdfMode: prepared.rawPdfMode,
-        });
-        const result = await client.prompt(session.sessionId, blocks, {
+        const result = await client.prompt(session.sessionId, input.blocks, {
           signal,
         });
         await mapping;
@@ -626,7 +740,8 @@ export function createAntigravityRuntime(
       return buildAgentModelCapabilities({
         streaming: true,
         toolCalls: true,
-        fileInputs: false,
+        // Images go inline; other files go as links agy reads (promptInput.ts).
+        fileInputs: true,
         reasoning: true,
       });
     },
@@ -634,8 +749,14 @@ export function createAntigravityRuntime(
       runExternalRuntimeTurn(params, { coreRuntime, transport }),
     listExternalActionsSync: () => [],
     refreshExternalActions: async () => undefined,
-    listSlashCommandsSync: () => [],
-    refreshSlashCommands: async () => undefined,
+    listSlashCommandsSync: () =>
+      listAntigravitySlashCommands().map((command) => ({
+        ...command,
+        source: "sdk" as const,
+      })),
+    refreshSlashCommands: async () => {
+      await loadAntigravityPickerSlashCommands();
+    },
     listEfforts: async () => [],
     listModels: async () => ({ models: [], legacy: false }),
     updateRuntimeRetention: async () => null,
@@ -661,4 +782,52 @@ export function getAntigravityRuntime(
     cachedCore = coreRuntime;
   }
   return cachedRuntime;
+}
+
+/**
+ * The model catalog for the pickers: the remembered one, or one loaded from
+ * the pooled agy for the current permission setting.
+ */
+export async function loadAntigravityPickerModelCatalog(
+  force = false,
+): Promise<AntigravityModelCatalog> {
+  const launch = buildAgyLaunchOptions(getAntigravityPermissionModePref());
+  await ensureDir(launch.cwd);
+  return loadAntigravityModelCatalog({
+    launch,
+    startClient: async (next) => {
+      const client = await getOrStartAgyClient(next);
+      trackAntigravityCommands(client);
+      return client;
+    },
+    force,
+  });
+}
+
+/** How long the slash menu waits for agy to announce its commands. */
+const COMMAND_ANNOUNCEMENT_WAIT_MS = 3000;
+
+/**
+ * agy's slash commands for the menu: the remembered list, or, when none is
+ * known yet, the list agy announces for a session opened (and closed) now.
+ */
+export async function loadAntigravityPickerSlashCommands(
+  options: AntigravityTransportOptions = {},
+): Promise<AntigravitySlashCommand[]> {
+  const known = listAntigravitySlashCommands();
+  if (known.length) return known;
+  const startClient = options.startClient ?? getOrStartAgyClient;
+  const launch = buildAgyLaunchOptions(getAntigravityPermissionModePref());
+  await ensureDir(launch.cwd);
+  const client = await startClient(launch);
+  const announced = waitForAntigravityCommands(
+    client,
+    COMMAND_ANNOUNCEMENT_WAIT_MS,
+  );
+  await loadAntigravityModelCatalog({
+    launch,
+    startClient: async () => client,
+    force: true,
+  });
+  return announced;
 }

@@ -4,6 +4,12 @@ import {
 } from "../shared/conversationSystemPrefs";
 import { config } from "../../package.json";
 import {
+  isAntigravityPermissionMode,
+  type AntigravityPermissionMode,
+} from "../shared/antigravityPermissionMode";
+
+export type { AntigravityPermissionMode };
+import {
   getAntigravityProfileSignature,
   isAntigravityConversationKeyInAllocatedRange,
   isAntigravityConversationKeyInRange,
@@ -217,35 +223,52 @@ export function setLastAllocatedAntigravityPaperConversationKey(
   setLastAllocatedConversationKey("paper", conversationKey);
 }
 
-/**
- * How Antigravity asks before it acts: one of agy's four session modes, or
- * full access, which starts agy with --dangerously-skip-permissions (a
- * process flag, so full access runs in its own agy process).
- */
-export const ANTIGRAVITY_PERMISSION_MODES = [
-  "default",
-  "accept-edits",
-  "auto",
-  "plan",
-  "full-access",
-] as const;
-
-export type AntigravityPermissionMode =
-  (typeof ANTIGRAVITY_PERMISSION_MODES)[number];
-
 const PERMISSION_MODE_PREF = "antigravityPermissionMode";
 
 export function getAntigravityPermissionModePref(): AntigravityPermissionMode {
   const value = String(
     getZoteroPrefs()?.get?.(prefKey(PERMISSION_MODE_PREF), true) || "",
   ).trim();
-  return (ANTIGRAVITY_PERMISSION_MODES as readonly string[]).includes(value)
-    ? (value as AntigravityPermissionMode)
-    : "default";
+  return isAntigravityPermissionMode(value) ? value : "default";
 }
 
 export function setAntigravityPermissionModePref(
   mode: AntigravityPermissionMode,
 ): void {
   getZoteroPrefs()?.set?.(prefKey(PERMISSION_MODE_PREF), mode, true);
+}
+
+function readStringPref(name: string): string {
+  return String(getZoteroPrefs()?.get?.(prefKey(name), true) || "").trim();
+}
+
+function writeStringPref(name: string, value: string): void {
+  getZoteroPrefs()?.set?.(prefKey(name), value.trim(), true);
+}
+
+/** The base model the user picked (agy's `model` option); empty: agy's own. */
+export function getAntigravityRuntimeModelPref(): string {
+  return readStringPref("antigravityRuntimeModel");
+}
+
+export function setAntigravityRuntimeModelPref(model: string): void {
+  writeStringPref("antigravityRuntimeModel", model);
+}
+
+/** The thinking level (agy's `thought_level` option); empty: agy's own. */
+export function getAntigravityThoughtLevelPref(): string {
+  return readStringPref("antigravityThoughtLevel");
+}
+
+export function setAntigravityThoughtLevelPref(level: string): void {
+  writeStringPref("antigravityThoughtLevel", level);
+}
+
+/** A configured agy path; empty: look it up. */
+export function getAntigravityBinaryPathPref(): string {
+  return readStringPref("antigravityBinaryPath");
+}
+
+export function setAntigravityBinaryPathPref(path: string): void {
+  writeStringPref("antigravityBinaryPath", path);
 }

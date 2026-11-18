@@ -15,8 +15,8 @@ export type RuntimeBadgeItem = {
 export type RuntimeBadgeStateInput = {
   system: ConversationSystem;
   agentEnabled: boolean;
-  codexEnabled: boolean;
-  claudeEnabled: boolean;
+  /** Which runtimes are on (in Preferences, and available on this surface). */
+  runtimeEnabled: Record<RuntimeConversationSystem, boolean>;
   isWebChat: boolean;
   /** The window's temporary side chat: the built-in runtime only. */
   isSideChat: boolean;
@@ -54,12 +54,7 @@ export function resolveRuntimeBadgeState(
   input: RuntimeBadgeStateInput,
 ): RuntimeBadgeState {
   const label = getRuntimeBadgeLabel(input.system, input.agentEnabled);
-  const runtimeEnabled: Record<RuntimeConversationSystem, boolean> = {
-    codex: input.codexEnabled,
-    claude_code: input.claudeEnabled,
-    // No Antigravity badge entry until Phase 5 adds its UI.
-    antigravity: false,
-  };
+  const runtimeEnabled = input.runtimeEnabled;
   const items: RuntimeBadgeItem[] = input.isTornWindow
     ? [{ system: input.system, label }]
     : [

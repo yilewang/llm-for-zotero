@@ -10,6 +10,8 @@ import type { ClaudePermissionMode } from "../../shared/claudePermissionMode";
 import { t } from "../../utils/i18n";
 import {
   buildPermissionAccessibleLabel,
+  getAntigravityPermissionModeFromSelectionKey,
+  getAntigravityPermissionOptions,
   getClaudePermissionModeFromSelectionKey,
   getOriginalPermissionModeFromSelectionKey,
   getOriginalPermissionOptions,
@@ -42,12 +44,17 @@ import {
   positionFloatingMenu,
   setFloatingMenuOpen,
 } from "./setupHandlers/controllers/menuController";
+import {
+  getAntigravityPermissionModePref,
+  setAntigravityPermissionModePref,
+} from "../../antigravity/prefs";
+import type { AntigravityPermissionMode } from "../../shared/antigravityPermissionMode";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 
 export const FOOTER_PERMISSION_MENU_OPEN_CLASS = "llm-permission-menu-open";
 
 type VisiblePermissionSurface = {
-  kind: "original" | "claude" | "codex";
+  kind: "original" | "claude" | "codex" | "antigravity";
   selectedKey: string;
   options: PermissionOption[];
 };
@@ -86,6 +93,7 @@ export function resolvePermissionSurface(params: {
   runtimeMode: RuntimeMode;
   originalSelectedId: OriginalAgentPermissionMode;
   claudeSelectedId: ClaudePermissionMode;
+  antigravitySelectedId: AntigravityPermissionMode;
   claudeOptions?: PermissionOption[];
   codexCatalog?: CodexPermissionOptionCatalog;
 }): PermissionSurface {
@@ -114,10 +122,13 @@ export function resolvePermissionSurface(params: {
             provider: "codex",
             message: "Loading permissions…",
           };
-    // Antigravity's ACP permission modes (D6) are Phase 4+ work; until then
-    // it shows no permission chip.
+    // agy's modes are fixed (D6), so there is no catalog to load.
     case "antigravity":
-      return { kind: "hidden" };
+      return {
+        kind: "antigravity",
+        selectedKey: `antigravity:${params.antigravitySelectedId}`,
+        options: getAntigravityPermissionOptions(),
+      };
     case "upstream":
       break;
     default:
@@ -141,7 +152,9 @@ export function attachFooterPermissionControl(params: {
   onWarning?: (message: string) => void;
   loadClaudeOptions?: () => Promise<PermissionOption[]>;
   loadCodexCatalog?: () => Promise<CodexPermissionOptionCatalog>;
-  confirmFullAccess?: () => boolean | Promise<boolean>;
+  confirmFullAccess?: (
+    runtime: "codex" | "antigravity",
+  ) => boolean | Promise<boolean>;
 }) {
   const { control, button, menu } = params;
   let generation = 0;
@@ -162,16 +175,28 @@ export function attachFooterPermissionControl(params: {
     button.setAttribute("aria-expanded", "false");
   };
 
-  const confirmFullAccess = async (): Promise<boolean> => {
+  const FULL_ACCESS_DIALOG = {
+    codex: {
+      title: "Enable Codex full access?",
+      message:
+        "Codex will have unrestricted access to the internet and any file available to Codex.",
+    },
+    antigravity: {
+      title: "Enable Antigravity full access?",
+      message:
+        "Antigravity will run every tool without asking, including commands and file changes, with the access your computer account has.",
+    },
+  } as const;
+  const confirmFullAccess = async (
+    runtime: "codex" | "antigravity",
+  ): Promise<boolean> => {
     if (params.confirmFullAccess)
-      return Boolean(await params.confirmFullAccess());
+      return Boolean(await params.confirmFullAccess(runtime));
     close();
     button?.focus();
     return await showStandaloneConfirmationDialog(params.body.ownerDocument, {
-      title: t("Enable Codex full access?"),
-      message: t(
-        "Codex will have unrestricted access to the internet and any file available to Codex.",
-      ),
+      title: t(FULL_ACCESS_DIALOG[runtime].title),
+      message: t(FULL_ACCESS_DIALOG[runtime].message),
       confirmLabel: t("Enable full access"),
       cancelLabel: t("Cancel"),
       destructive: true,
@@ -194,11 +219,32 @@ export function attachFooterPermissionControl(params: {
       if (mode) setClaudePermissionModePref(mode);
       return;
     }
+    if (next.kind === "antigravity") {
+      const mode = getAntigravityPermissionModeFromSelectionKey(
+        option.selectionKey,
+      );
+      if (!mode) return;
+      if (
+        mode === "full-access" &&
+        getAntigravityPermissionModePref() !== "full-access"
+      ) {
+        if (!(await confirmFullAccess("antigravity"))) return;
+        if (
+          disposed ||
+          surface !== next ||
+          params.getConversationSystem() !== "antigravity"
+        ) {
+          return;
+        }
+      }
+      setAntigravityPermissionModePref(mode);
+      return;
+    }
     const activeCatalog = codexCatalog;
     const choice = activeCatalog?.choices.get(option.selectionKey);
     if (!activeCatalog || !choice) return;
     if (choice.kind === "preset" && choice.preset === "full") {
-      if (!(await confirmFullAccess())) return;
+      if (!(await confirmFullAccess("codex"))) return;
       if (
         disposed ||
         surface !== next ||
@@ -312,7 +358,7 @@ export function attachFooterPermissionControl(params: {
   > = {
     claude_code: loadClaude,
     codex: loadCodex,
-    // No Antigravity catalog until Phase 4+ (its chip stays hidden).
+    // agy's modes are fixed: nothing to load.
     antigravity: null,
   };
   const resolveCatalogKey = (provider: RuntimeConversationSystem): string => {
@@ -344,6 +390,7 @@ export function attachFooterPermissionControl(params: {
       runtimeMode: params.getRuntimeMode(),
       originalSelectedId: getOriginalAgentPermissionMode(),
       claudeSelectedId: getClaudePermissionModePref(),
+      antigravitySelectedId: getAntigravityPermissionModePref(),
     };
     if (provider === "upstream") {
       render(resolvePermissionSurface(common));

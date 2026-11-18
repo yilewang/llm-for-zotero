@@ -206,6 +206,13 @@ export type AcpSetConfigOptionParams = {
 
 // ---------------------------------------------------------------- prompts
 
+/** A slash command the agent offers (`available_commands_update`). */
+export type AcpAvailableCommand = {
+  name: string;
+  description?: string;
+  input?: { hint?: string } | null;
+};
+
 export type AcpContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string; uri?: string }
@@ -297,7 +304,7 @@ export type AcpSessionUpdate =
     }
   | {
       sessionUpdate: "available_commands_update";
-      availableCommands: Array<{ name: string; description?: string }>;
+      availableCommands: AcpAvailableCommand[];
     }
   | { sessionUpdate: "current_mode_update"; currentModeId: string }
   | { sessionUpdate: "config_option_update"; configOptions: AcpConfigOption[] }

@@ -49,6 +49,8 @@ import type { ConversationSystem } from "../../shared/types";
 import {
   isConversationSystem,
   isRuntimeConversationSystem as isRuntimeSystem,
+  mapRuntimeConversationSystems,
+  usesExternalTurnHost,
 } from "../../core/conversations/conversationSystems";
 import { isRuntimeConversationSystemEnabled } from "../../shared/conversationSystemPrefs";
 import {
@@ -659,6 +661,9 @@ import {
   resolveCodexAppServerReasoningSelection,
   type CodexAppServerModelCatalogEntry,
 } from "../../codexAppServer/modelCatalog";
+import { loadAntigravityPickerModelCatalog } from "../../antigravity/runtime";
+import type { AntigravityModelCatalog } from "../../antigravity/modelCatalog";
+import { DEFAULT_TEMPERATURE } from "../../utils/llmDefaults";
 import {
   activeClaudeGlobalConversationByLibrary,
   activeClaudePaperConversationByPaper,
@@ -670,6 +675,7 @@ import {
 } from "../../claudeCode/runtimeRetention";
 import { isClaudePaperPortalItem } from "../../claudeCode/portal";
 import { touchClaudeConversationTitle } from "../../claudeCode/store";
+import { antigravityConversationStore } from "../../antigravity/store";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -685,6 +691,21 @@ import {
   createCodexDirectModelReasoningController,
   type CodexDirectModelReasoningController,
 } from "./setupHandlers/controllers/codexDirectModelReasoningController";
+
+/** Where each runtime's conversation title is stamped on its first send. */
+const RUNTIME_CONVERSATION_TITLE_TOUCHERS: Record<
+  RuntimeConversationSystem,
+  (conversationKey: number, title: string, generation?: number) => Promise<void>
+> = {
+  claude_code: touchClaudeConversationTitle,
+  codex: touchCodexConversationTitle,
+  antigravity: (conversationKey, title, generation) =>
+    antigravityConversationStore.touchConversationTitle(
+      conversationKey,
+      title,
+      generation,
+    ),
+};
 
 type ActionMenuTrigger = "/" | "$";
 type ActiveActionToken = PaperSearchSlashToken & {
@@ -883,6 +904,7 @@ export function setupHandlers(
     runtimeSystemControls,
     codexSystemToggleBtn,
     claudeSystemToggleBtn,
+    antigravitySystemToggleBtn,
     selectTextBtn,
     screenshotBtn,
     uploadBtn,
@@ -1135,8 +1157,15 @@ export function setupHandlers(
   const isClaudeConversationSystem = () =>
     getConversationSystem() === "claude_code";
   const isCodexConversationSystem = () => getConversationSystem() === "codex";
+  const isAntigravityConversationSystem = () =>
+    getConversationSystem() === "antigravity";
   const isRuntimeConversationSystem = () =>
     isRuntimeSystem(getConversationSystem());
+  /** The panel's runtime, or null for the plugin's own systems. */
+  const getRuntimeConversationSystem = (): RuntimeConversationSystem | null => {
+    const system = getConversationSystem();
+    return isRuntimeSystem(system) ? system : null;
+  };
   const shouldRenderDynamicSlashMenuForCurrentConversation = () =>
     shouldRenderDynamicSlashMenu({
       itemPresent: Boolean(item),
@@ -1173,6 +1202,12 @@ export function setupHandlers(
   let codexModelCatalogInFlight: Promise<void> | null = null;
   let codexModelCatalogPath = "";
   let codexModelCatalogRequestId = 0;
+  let antigravityModelCatalogStatus: "idle" | "loading" | "ready" | "error" =
+    "idle";
+  let antigravityModelCatalogError = "";
+  let antigravityModelCatalog: AntigravityModelCatalog | null = null;
+  let antigravityModelCatalogInFlight: Promise<void> | null = null;
+  let antigravityModelCatalogRequestId = 0;
   const resolveClaudeModelCatalogContext = ():
     | ClaudeModelCatalogRequestContext
     | undefined => {
@@ -1333,7 +1368,7 @@ export function setupHandlers(
     }
     return reconciledMode;
   };
-  const refreshOpenCodexModelMenu = () => {
+  const refreshOpenRuntimeModelMenus = () => {
     updateModelButton();
     updateReasoningButton();
     if (reasoningMenu && reasoningBtn && isFloatingMenuOpen(reasoningMenu)) {
@@ -1368,7 +1403,7 @@ export function setupHandlers(
     codexModelCatalogStatus = "loading";
     codexModelCatalogError = "";
     codexModelCatalogPath = codexPath;
-    refreshOpenCodexModelMenu();
+    refreshOpenRuntimeModelMenus();
     codexModelCatalogInFlight = loadCodexAppServerModelCatalog({ codexPath })
       .then((catalog) => {
         if (!isCurrentRequest()) return;
@@ -1387,7 +1422,7 @@ export function setupHandlers(
       .finally(() => {
         if (requestId !== codexModelCatalogRequestId) return;
         codexModelCatalogInFlight = null;
-        if (!setupHandlersCleaned) refreshOpenCodexModelMenu();
+        if (!setupHandlersCleaned) refreshOpenRuntimeModelMenus();
       });
     return codexModelCatalogInFlight;
   };
@@ -1406,6 +1441,152 @@ export function setupHandlers(
       entries.find((entry) => entry.model.toLowerCase() === selectedModel) ||
       entries[0]!
     );
+  };
+  /** The Default entry: agy's own model, stored as "". */
+  const ANTIGRAVITY_DEFAULT_ENTRY_ID = "antigravity_runtime::";
+  const createAntigravityRuntimeModelEntry = (params: {
+    entryId: string;
+    model: string;
+    displayModelLabel: string;
+    providerOrder: number;
+  }): RuntimeModelEntry => ({
+    entryId: params.entryId,
+    groupId: "antigravity_runtime",
+    model: params.model,
+    apiBase: "",
+    apiKey: "",
+    authMode: "api_key",
+    providerProtocol: "openai_chat_compat",
+    providerLabel: "Antigravity",
+    providerOrder: params.providerOrder,
+    displayModelLabel: params.displayModelLabel,
+    advanced: {
+      temperature: DEFAULT_TEMPERATURE,
+      outputTokenLimit: { mode: "auto" },
+    },
+  });
+  /**
+   * Default first, then the catalog's models. A saved model the catalog
+   * lacks (or a catalog not loaded yet) still shows, as Codex's does.
+   */
+  const getAntigravityRuntimeModelEntries = (): RuntimeModelEntry[] => {
+    const selectedModel = panelChoices.getAntigravityRuntimeModel();
+    const models = antigravityModelCatalog?.models || [];
+    const entries = [
+      createAntigravityRuntimeModelEntry({
+        entryId: ANTIGRAVITY_DEFAULT_ENTRY_ID,
+        model: antigravityModelCatalog?.defaultModel || "",
+        displayModelLabel: t("Default"),
+        providerOrder: -1,
+      }),
+    ];
+    if (selectedModel && !models.some((model) => model.id === selectedModel)) {
+      entries.push(
+        createAntigravityRuntimeModelEntry({
+          entryId: `antigravity_runtime::${selectedModel}`,
+          model: selectedModel,
+          displayModelLabel: selectedModel,
+          providerOrder: 0,
+        }),
+      );
+    }
+    for (const [index, model] of models.entries()) {
+      entries.push(
+        createAntigravityRuntimeModelEntry({
+          entryId: `antigravity_runtime::${model.id}`,
+          model: model.id,
+          displayModelLabel: model.name || model.id,
+          providerOrder: index + 1,
+        }),
+      );
+    }
+    return entries;
+  };
+  const getSelectedAntigravityRuntimeEntry = (): RuntimeModelEntry => {
+    const selectedModel = panelChoices.getAntigravityRuntimeModel();
+    const entries = getAntigravityRuntimeModelEntries();
+    return (
+      (selectedModel &&
+        entries.find(
+          (entry) => entry.entryId === `antigravity_runtime::${selectedModel}`,
+        )) ||
+      entries[0]!
+    );
+  };
+  /** Default, then the levels of the model agy will run. */
+  const getAntigravityThoughtLevelChoices = (): CodexReasoningChoice[] => {
+    const modelId =
+      panelChoices.getAntigravityRuntimeModel() ||
+      antigravityModelCatalog?.defaultModel ||
+      "";
+    const model = antigravityModelCatalog?.models.find(
+      (entry) => entry.id === modelId,
+    );
+    return [
+      { value: "", label: t("Default") },
+      ...(model?.thoughtLevels || []).map((level) => ({
+        value: level.value,
+        label: level.name,
+      })),
+    ];
+  };
+  /**
+   * Drops a stored level the selected model does not have. The last catalog
+   * still decides while a refresh is in flight.
+   */
+  const reconcileSelectedAntigravityThoughtLevel = () => {
+    const level = panelChoices.getAntigravityThoughtLevel();
+    if (!antigravityModelCatalog || !level) return level;
+    if (
+      getAntigravityThoughtLevelChoices().some(
+        (choice) => choice.value === level,
+      )
+    ) {
+      return level;
+    }
+    panelChoices.setAntigravityThoughtLevel("");
+    return "";
+  };
+  /**
+   * The catalog agy reported, read lazily. A load reads the catalog the
+   * runtime remembers from its turns, or starts agy once when it has none;
+   * a refresh (each menu open) re-reads it and never starts agy again.
+   */
+  const ensureAntigravityModelCatalogLoaded = (
+    refresh = false,
+  ): Promise<void> => {
+    if (!isAntigravityConversationSystem()) return Promise.resolve();
+    if (!refresh && antigravityModelCatalogStatus === "ready") {
+      return Promise.resolve();
+    }
+    if (antigravityModelCatalogInFlight) return antigravityModelCatalogInFlight;
+    const requestId = ++antigravityModelCatalogRequestId;
+    const isCurrentRequest = () =>
+      !setupHandlersCleaned && requestId === antigravityModelCatalogRequestId;
+    antigravityModelCatalogStatus = "loading";
+    antigravityModelCatalogError = "";
+    refreshOpenRuntimeModelMenus();
+    antigravityModelCatalogInFlight = loadAntigravityPickerModelCatalog()
+      .then((catalog) => {
+        if (!isCurrentRequest()) return;
+        antigravityModelCatalog = catalog;
+        antigravityModelCatalogStatus = "ready";
+        antigravityModelCatalogError = "";
+        reconcileSelectedAntigravityThoughtLevel();
+      })
+      .catch((error: unknown) => {
+        if (!isCurrentRequest()) return;
+        antigravityModelCatalogStatus = "error";
+        antigravityModelCatalogError =
+          error instanceof Error ? error.message : String(error);
+        appLogger.warn("Antigravity: failed to load model catalog", error);
+      })
+      .finally(() => {
+        if (requestId !== antigravityModelCatalogRequestId) return;
+        antigravityModelCatalogInFlight = null;
+        if (!setupHandlersCleaned) refreshOpenRuntimeModelMenus();
+      });
+    return antigravityModelCatalogInFlight;
   };
   const getCurrentLibraryID = (): number => {
     const fromItem =
@@ -1447,8 +1628,7 @@ export function setupHandlers(
     return resolveRuntimeBadgeState({
       system: getConversationSystem(),
       agentEnabled: getAgentModeEnabled(),
-      codexEnabled: isRuntimeModeAvailable("codex"),
-      claudeEnabled: isRuntimeModeAvailable("claude_code"),
+      runtimeEnabled: mapRuntimeConversationSystems(isRuntimeModeAvailable),
       isWebChat: webChatActive,
       isSideChat: isSidePanel,
       isTornWindow: isTornSurface(selectionSurface()),
@@ -1509,8 +1689,7 @@ export function setupHandlers(
     buttons: {
       codex: codexSystemToggleBtn,
       claude_code: claudeSystemToggleBtn,
-      // No Antigravity toggle in the panel until Phase 5 adds its UI.
-      antigravity: null,
+      antigravity: antigravitySystemToggleBtn,
     },
   };
   let runtimeSystemSwitchInFlight = false;
@@ -1520,8 +1699,7 @@ export function setupHandlers(
   const updateRuntimeSystemToggles = () => {
     const state = syncRuntimeSystemControls(panelRuntimeSystemControls, {
       activeSystem: getConversationSystem(),
-      codexEnabled: isRuntimeModeAvailable("codex"),
-      claudeEnabled: isRuntimeModeAvailable("claude_code"),
+      runtimeEnabled: mapRuntimeConversationSystems(isRuntimeModeAvailable),
       busy: runtimeSystemSwitchInFlight,
     });
     // The divider before the runtime systems goes when they do. Their
@@ -2092,13 +2270,15 @@ export function setupHandlers(
       // A side chat's ephemeral conversation is never remembered.
       !isEphemeralConversationKey(Number(conversationKey))
     ) {
-      // Each runtime writes a different set here: Claude Code only the mode;
-      // Codex and upstream also the library chat (map and pref) and the
-      // paper chat (map only). All of it goes to this panel's own surface:
-      // the standalone window's writes stay in its own slots.
+      // Each runtime writes a different set here: a runtime on the external
+      // turn host (Claude Code, Antigravity) only the mode; Codex and
+      // upstream also the library chat (map and pref) and the paper chat
+      // (map only). All of it goes to this panel's own surface: the
+      // standalone window's writes stay in its own slots.
       const surface = selectionSurface();
-      if (isClaudeConversationSystem()) {
-        rememberMode("claude_code", libraryID, mode, { surface });
+      const runtimeSystem = getRuntimeConversationSystem();
+      if (runtimeSystem && usesExternalTurnHost(runtimeSystem)) {
+        rememberMode(runtimeSystem, libraryID, mode, { surface });
       } else if (isCodexConversationSystem()) {
         rememberMode("codex", libraryID, mode, { surface });
         if (mode === "global") {
@@ -3431,8 +3611,7 @@ export function setupHandlers(
         selectedProfile?.apiBase,
         inputMode,
       ),
-      isClaudeCode: isClaudeConversationSystem(),
-      isCodex: isCodexConversationSystem(),
+      runtimeSystem: getRuntimeConversationSystem(),
     });
   };
 
@@ -5589,9 +5768,7 @@ export function setupHandlers(
     getHistorySystems: () =>
       resolveUnifiedHistorySystems({
         activeSystem: getConversationSystem(),
-        codexEnabled: isRuntimeModeAvailable("codex"),
-        claudeEnabled: isRuntimeModeAvailable("claude_code"),
-        antigravityEnabled: isRuntimeModeAvailable("antigravity"),
+        runtimeEnabled: mapRuntimeConversationSystems(isRuntimeModeAvailable),
         singleSystem: isSidePanel || isNoteSession(),
       }),
     isRuntimeSystemSwitchInFlight: () => runtimeSystemSwitchInFlight,
@@ -5740,10 +5917,12 @@ export function setupHandlers(
       ? getClaudeRuntimeModelEntries()
       : isCodexConversationSystem()
         ? getCodexRuntimeModelEntries()
-        : getAvailableModelEntries().filter(
-            // Neither a side chat nor a torn-off window runs on WebChat.
-            (entry) => offersWebChatModels() || entry.authMode !== "webchat",
-          );
+        : isAntigravityConversationSystem()
+          ? getAntigravityRuntimeModelEntries()
+          : getAvailableModelEntries().filter(
+              // Neither a side chat nor a torn-off window runs on WebChat.
+              (entry) => offersWebChatModels() || entry.authMode !== "webchat",
+            );
     const groupedChoices: Array<{
       providerLabel: string;
       entries: RuntimeModelEntry[];
@@ -5773,9 +5952,11 @@ export function setupHandlers(
       ? getSelectedClaudeRuntimeEntry()
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
-        : item
-          ? panelChoices.getSelectedModelEntry()
-          : null;
+        : isAntigravityConversationSystem()
+          ? getSelectedAntigravityRuntimeEntry()
+          : item
+            ? panelChoices.getSelectedModelEntry()
+            : null;
     const currentModel =
       selectedEntry?.model ||
       choices[0]?.model ||
@@ -6012,6 +6193,33 @@ export function setupHandlers(
     });
   };
 
+  const appendAntigravityModelCatalogStatus = (menu: HTMLDivElement) => {
+    if (!isAntigravityConversationSystem()) return;
+    const modelCount = antigravityModelCatalog?.models.length || 0;
+    appendModelCatalogStatus({
+      menu,
+      status: antigravityModelCatalogStatus,
+      modelCount,
+      loadingMessage: modelCount
+        ? t("Refreshing Antigravity models…")
+        : t("Loading Antigravity models…"),
+      errorMessage: modelCount
+        ? t(
+            "Could not refresh Antigravity models. Showing the last known list.",
+          )
+        : t("Could not load Antigravity models. Showing the default only."),
+      errorTitle: antigravityModelCatalogError,
+      emptyMessage: t("Antigravity did not return any available models."),
+      retryLabel: t("Retry loading Antigravity models"),
+      onRetry: (event) => {
+        if (!isPrimaryPointerEvent(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void ensureAntigravityModelCatalogLoaded(true);
+      },
+    });
+  };
+
   const appendClaudeModelCatalogStatus = (menu: HTMLDivElement) => {
     if (!isClaudeConversationSystem()) return;
     const statusHandled = appendModelCatalogStatus({
@@ -6134,6 +6342,7 @@ export function setupHandlers(
     readerMenu.appendCardTitle(list, t("Main Agent"));
     appendClaudeModelCatalogStatus(list);
     appendCodexModelCatalogStatus(list);
+    appendAntigravityModelCatalogStatus(list);
     codexDirectController?.appendCatalogStatus({
       menu: list,
       renderStatus: appendModelCatalogStatus,
@@ -6200,6 +6409,21 @@ export function setupHandlers(
             updateReasoningButton();
             return;
           }
+          if (isAntigravityConversationSystem()) {
+            panelChoices.setAntigravityRuntimeModel(
+              entry.entryId === ANTIGRAVITY_DEFAULT_ENTRY_ID ? "" : entry.model,
+            );
+            reconcileSelectedAntigravityThoughtLevel();
+            setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
+            setFloatingMenuOpen(
+              reasoningMenu,
+              REASONING_MENU_OPEN_CLASS,
+              false,
+            );
+            updateModelButton();
+            updateReasoningButton();
+            return;
+          }
           const wasWebChat = isWebChatMode();
           setFloatingMenuOpen(modelMenu, MODEL_MENU_OPEN_CLASS, false);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
@@ -6249,8 +6473,7 @@ export function setupHandlers(
               entry.apiBase,
               entry.advanced?.inputMode,
             ),
-            isClaudeCode: isClaudeConversationSystem(),
-            isCodex: isCodexConversationSystem(),
+            runtimeSystem: getRuntimeConversationSystem(),
           });
           if (shouldDowngrade) {
             const papers = getManualPaperContextsForItem(
@@ -6610,6 +6833,23 @@ export function setupHandlers(
             : (selectedMode as ReasoningLevelSelection),
       };
     }
+    if (isAntigravityConversationSystem()) {
+      const selectedLevel = panelChoices.getAntigravityThoughtLevel();
+      const options: ReasoningOption[] = getAntigravityThoughtLevelChoices()
+        .filter((choice) => choice.value !== "")
+        .map((choice) => ({
+          level: choice.value as LLMReasoningLevel,
+          enabled: true,
+          label: choice.label,
+        }));
+      return {
+        provider: "unsupported" as const,
+        currentModel,
+        options,
+        enabledLevels: options.map((option) => option.level),
+        selectedLevel: (selectedLevel || "none") as ReasoningLevelSelection,
+      };
+    }
     const directSelection =
       codexDirectController?.resolveReasoningSelection() || {
         mode: "auto",
@@ -6933,20 +7173,29 @@ export function setupHandlers(
               )?.label || "Auto"
             );
           })()
-        : directSelection.choices.length
-          ? directSelection.choices.find(
-              (choice) =>
-                choice.value.toLowerCase() ===
-                directSelection.mode.toLowerCase(),
-            )?.label || "Auto"
-          : available
-            ? getReasoningLevelDisplayLabel(
-                selectedLevel as LLMReasoningLevel,
-                provider,
-                currentModel,
-                options,
-              )
-            : "Not supported";
+        : isAntigravityConversationSystem()
+          ? (() => {
+              const level = panelChoices.getAntigravityThoughtLevel();
+              return (
+                getAntigravityThoughtLevelChoices().find(
+                  (choice) => choice.value === level,
+                )?.label || t("Default")
+              );
+            })()
+          : directSelection.choices.length
+            ? directSelection.choices.find(
+                (choice) =>
+                  choice.value.toLowerCase() ===
+                  directSelection.mode.toLowerCase(),
+              )?.label || "Auto"
+            : available
+              ? getReasoningLevelDisplayLabel(
+                  selectedLevel as LLMReasoningLevel,
+                  provider,
+                  currentModel,
+                  options,
+                )
+              : "Not supported";
     const active = Boolean(available && activeThinking);
     const reasoningLabel = resolvedReasoningLabel;
     const reasoningHint =
@@ -7127,6 +7376,19 @@ export function setupHandlers(
         currentValue: currentMode,
         onSelect: (value) => {
           panelChoices.setCodexReasoningMode(value);
+          setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
+          updateReasoningButton();
+        },
+      });
+      return;
+    }
+    if (isAntigravityConversationSystem()) {
+      appendReasoningChoiceButtons({
+        menu: reasoningMenu,
+        choices: getAntigravityThoughtLevelChoices(),
+        currentValue: panelChoices.getAntigravityThoughtLevel(),
+        onSelect: (value) => {
+          panelChoices.setAntigravityThoughtLevel(value);
           setFloatingMenuOpen(reasoningMenu, REASONING_MENU_OPEN_CLASS, false);
           updateReasoningButton();
         },
@@ -7761,7 +8023,9 @@ export function setupHandlers(
       ? getSelectedClaudeRuntimeEntry()
       : isCodexConversationSystem()
         ? getSelectedCodexRuntimeEntry()
-        : panelChoices.getSelectedModelEntry();
+        : isAntigravityConversationSystem()
+          ? getSelectedAntigravityRuntimeEntry()
+          : panelChoices.getSelectedModelEntry();
     if (!selected) return null;
     return {
       ...selected,
@@ -7781,6 +8045,9 @@ export function setupHandlers(
     if (isCodexConversationSystem()) {
       return getSelectedCodexRuntimeEntry().advanced;
     }
+    if (isAntigravityConversationSystem()) {
+      return getSelectedAntigravityRuntimeEntry().advanced;
+    }
     return getAdvancedModelParamsForEntry(entryId);
   };
 
@@ -7797,6 +8064,12 @@ export function setupHandlers(
           ? reconcileSelectedCodexReasoningMode()
           : panelChoices.getCodexReasoningMode();
       return buildCodexAppServerReasoningConfig(mode);
+    }
+    // The turn carries this surface's level; the runtime applies it to the
+    // agy session. No level means agy's own.
+    if (isAntigravityConversationSystem()) {
+      const level = reconcileSelectedAntigravityThoughtLevel();
+      return level ? { provider: "customized", level } : undefined;
     }
     const directEntry = codexDirectController?.getSelectedEntry();
     if (directEntry) {
@@ -7954,7 +8227,7 @@ export function setupHandlers(
     shouldRenderSkillSlashMenu:
       shouldRenderSkillSlashMenuForCurrentConversation,
     isWebChatMode,
-    isClaudeConversationSystem,
+    getRuntimeConversationSystem,
     getCurrentRuntimeMode,
     setCurrentRuntimeMode,
     getCurrentLibraryID,
@@ -8303,8 +8576,7 @@ export function setupHandlers(
           apiBase,
           inputMode,
         ),
-        isClaudeCode: isClaudeConversationSystem(),
-        isCodex: isCodexConversationSystem(),
+        runtimeSystem: getRuntimeConversationSystem(),
       }),
     uploadPdfForProvider: pdfPaperResolver.uploadPdfForProvider,
     resolvePdfBytes: pdfPaperResolver.resolvePdfBytes,
@@ -8317,11 +8589,12 @@ export function setupHandlers(
     isGlobalMode,
     isClaudeConversationSystem,
     isCodexConversationSystem,
+    getRuntimeConversationSystem,
     normalizeConversationTitleSeed,
     getConversationKey,
     getConversationWriteGeneration,
-    touchClaudeConversationTitle,
-    touchCodexConversationTitle,
+    touchRuntimeConversationTitle: (system, key, title, generation) =>
+      RUNTIME_CONVERSATION_TITLE_TOUCHERS[system](key, title, generation),
     touchGlobalConversationTitle,
     touchPaperConversationTitle,
     getSelectedProfile,
@@ -8557,8 +8830,7 @@ export function setupHandlers(
                 apiBase,
                 inputMode,
               ),
-              isClaudeCode: isClaudeConversationSystem(),
-              isCodex: isCodexConversationSystem(),
+              runtimeSystem: getRuntimeConversationSystem(),
             }),
           resolvePdfPaperAttachments:
             pdfPaperResolver.resolvePdfPaperAttachments,
@@ -9159,6 +9431,10 @@ export function setupHandlers(
       // changes, so a user-initiated open must revalidate. Non-blocking — the
       // menu opens on the cached list and live-updates when the fetch lands.
       void ensureClaudeModelCatalogLoaded(true);
+    } else if (isAntigravityConversationSystem()) {
+      // Re-reads the catalog the runtime remembers from its latest session;
+      // agy starts only when it has none yet.
+      void ensureAntigravityModelCatalogLoaded(true);
     } else if (codexDirectController?.hasConfiguredProvider()) {
       codexDirectController.ensureCatalog();
     }
@@ -9187,6 +9463,8 @@ export function setupHandlers(
     menus.closeMany(MENUS_CLOSED_BY_REASONING_MENU);
     if (isCodexConversationSystem()) {
       void ensureCodexModelCatalogLoaded();
+    } else if (isAntigravityConversationSystem()) {
+      void ensureAntigravityModelCatalogLoaded();
     } else if (codexDirectController?.getSelectedEntry()) {
       codexDirectController.ensureCatalog();
     }

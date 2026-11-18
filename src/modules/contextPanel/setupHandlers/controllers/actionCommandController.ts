@@ -1,4 +1,8 @@
 import { t } from "../../../../utils/i18n";
+import {
+  usesExternalTurnHost,
+  type RuntimeConversationSystem,
+} from "../../../../core/conversations/conversationSystems";
 import { scheduleChatContentScroll } from "../../chatScrollSnapshots";
 import type { AgentSkill } from "../../../../agent/skills/skillLoader";
 import { getAgentApi, initAgentSubsystem } from "../../../../agent";
@@ -100,7 +104,8 @@ type ActionCommandControllerDeps = {
   shouldRenderDynamicSlashMenu: () => boolean;
   shouldRenderSkillSlashMenu: () => boolean;
   isWebChatMode: () => boolean;
-  isClaudeConversationSystem: () => boolean;
+  /** The panel's runtime, or null for the plugin's own systems. */
+  getRuntimeConversationSystem: () => RuntimeConversationSystem | null;
   getCurrentRuntimeMode: () => string;
   setCurrentRuntimeMode: (mode: "chat" | "agent") => void;
   getCurrentLibraryID: () => number;
@@ -913,7 +918,11 @@ export function createActionCommandController(
     actionName: string,
     params: string,
   ): Promise<void> => {
-    if (deps.isClaudeConversationSystem() || params.trim()) {
+    // A runtime on the external turn host takes the command as its own.
+    if (
+      usesExternalTurnHost(deps.getRuntimeConversationSystem()) ||
+      params.trim()
+    ) {
       deps.setCurrentRuntimeMode("agent");
       inputBox.value = params.trim()
         ? `/${actionName} ${params.trim()}`
@@ -993,7 +1002,7 @@ export function createActionCommandController(
     slashMenu,
     getItem: deps.getItem,
     getSelectedProfile: deps.getSelectedProfile,
-    isClaudeConversationSystem: deps.isClaudeConversationSystem,
+    getRuntimeConversationSystem: deps.getRuntimeConversationSystem,
     clearAgentSlashItems,
     clearSkillSlashItems,
     consumeActiveActionToken,

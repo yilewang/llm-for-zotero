@@ -1018,18 +1018,20 @@
   }
 }
 
+/* --llm-runtime-visible-count is the number of runtime buttons shown
+   (runtimeSystemControls.ts); the group is exactly that many buttons wide. */
 .llm-runtime-system-controls {
+  --llm-runtime-count: var(--llm-runtime-visible-count, 1);
   display: inline-flex;
   align-items: center;
   gap: 2px;
   flex: 0 0 auto;
-  width: 24px;
-  min-width: 24px;
-}
-
-.llm-runtime-system-controls[data-visible-count="2"] {
-  width: 50px;
-  min-width: 50px;
+  width: calc(
+    var(--llm-runtime-count) * 24px + (var(--llm-runtime-count) - 1) * 2px
+  );
+  min-width: calc(
+    var(--llm-runtime-count) * 24px + (var(--llm-runtime-count) - 1) * 2px
+  );
 }
 
 .llm-runtime-system-toggle {
@@ -1095,6 +1097,50 @@
 
 .llm-runtime-system-toggle--claude-code[data-active="true"]
   .llm-runtime-system-toggle-icon--claude-code {
+  opacity: 1;
+}
+
+.llm-runtime-system-toggle-icon--antigravity {
+  display: inline-block;
+  position: relative;
+}
+
+.llm-runtime-system-toggle-icon--antigravity::before,
+.llm-runtime-system-toggle-icon--antigravity::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  transition: opacity 0.15s;
+}
+
+.llm-runtime-system-toggle-icon--antigravity::before {
+  background-color: var(--fill-primary, #0d0d0d);
+  mask-image: url("icons/antigravity.svg");
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-image: url("icons/antigravity.svg");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  opacity: 0.62;
+}
+
+.llm-runtime-system-toggle-icon--antigravity::after {
+  background-image: url("icons/antigravity-color.svg");
+  opacity: 0;
+}
+
+.llm-runtime-system-toggle--antigravity[data-active="true"]
+  .llm-runtime-system-toggle-icon--antigravity::before {
+  opacity: 0;
+}
+
+.llm-runtime-system-toggle--antigravity[data-active="true"]
+  .llm-runtime-system-toggle-icon--antigravity::after {
   opacity: 1;
 }
 
@@ -1538,14 +1584,15 @@
   --llm-runtime-button-width: calc(
     24px - 6px * var(--llm-runtime-compression, 0)
   );
-  width: var(--llm-runtime-button-width);
-  min-width: var(--llm-runtime-button-width);
+  width: calc(
+    var(--llm-runtime-count) * var(--llm-runtime-button-width) +
+      (var(--llm-runtime-count) - 1) * var(--llm-runtime-gap)
+  );
+  min-width: calc(
+    var(--llm-runtime-count) * var(--llm-runtime-button-width) +
+      (var(--llm-runtime-count) - 1) * var(--llm-runtime-gap)
+  );
   gap: var(--llm-runtime-gap);
-}
-
-.llm-header .llm-runtime-system-controls[data-visible-count="2"] {
-  width: calc(2 * var(--llm-runtime-button-width) + var(--llm-runtime-gap));
-  min-width: calc(2 * var(--llm-runtime-button-width) + var(--llm-runtime-gap));
 }
 
 .llm-header .llm-runtime-system-toggle {
@@ -13337,6 +13384,10 @@ label.llm-search-results-item:hover {
   color: #d77757;
 }
 
+#llm-runtime-mode-toggle[data-system="antigravity"] {
+  color: #4f7cff;
+}
+
 #llm-runtime-mode-toggle:hover:not(:disabled) {
   background: color-mix(
     in srgb,
@@ -17659,6 +17710,9 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   ),
 .llm-permission-option[data-permission-provider="codex"][data-selection-key="codex:preset:ask"]:hover:not(
     :disabled
+  ),
+.llm-permission-option[data-permission-provider="antigravity"][data-selection-key="antigravity:accept-edits"]:hover:not(
+    :disabled
   ) {
   background: color-mix(in srgb, #22c55e 14%, var(--material-background));
 }
@@ -17671,6 +17725,9 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
   ),
 .llm-permission-option[data-permission-provider="codex"][data-selection-key="codex:preset:approve"]:hover:not(
     :disabled
+  ),
+.llm-permission-option[data-permission-provider="antigravity"][data-selection-key="antigravity:auto"]:hover:not(
+    :disabled
   ) {
   background: var(--color-accent10, rgba(53, 132, 228, 0.14));
 }
@@ -17682,6 +17739,9 @@ details.llm-agent-action-row[open] > summary .llm-agent-action-row-marker {
     :disabled
   ),
 .llm-permission-option[data-permission-provider="codex"][data-selection-key="codex:preset:full"]:hover:not(
+    :disabled
+  ),
+.llm-permission-option[data-permission-provider="antigravity"][data-selection-key="antigravity:full-access"]:hover:not(
     :disabled
   ) {
   background: color-mix(in srgb, #eab308 14%, var(--material-background));

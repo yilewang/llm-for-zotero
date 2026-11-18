@@ -182,10 +182,12 @@ import {
   getConversationSystemPref,
   getStoredConversationSystemPref,
   isConversationSystemEnabled,
+  isRuntimeConversationSystemEnabled,
 } from "../../shared/conversationSystemPrefs";
 import {
   assertNeverConversationSystem,
   isRuntimeConversationSystem as isRuntimeSystem,
+  mapRuntimeConversationSystems,
   type RuntimeConversationSystem,
 } from "../../core/conversations/conversationSystems";
 import { getLastUsedClaudeGlobalConversationKey } from "../../claudeCode/prefs";
@@ -1580,8 +1582,9 @@ function openChatWindowInstance(
       const updateStandaloneSystemToggles = () => {
         syncRuntimeSystemControls(standaloneRuntimeSystemControls, {
           activeSystem: currentConversationSystem,
-          codexEnabled: isCodexAppServerModeEnabled(),
-          claudeEnabled: getClaudeCodeModeEnabled(),
+          runtimeEnabled: mapRuntimeConversationSystems(
+            isRuntimeConversationSystemEnabled,
+          ),
         });
       };
 
@@ -3476,9 +3479,9 @@ function openChatWindowInstance(
       const getStandaloneHistorySystems = (): ConversationSystem[] =>
         resolveUnifiedHistorySystems({
           activeSystem: currentConversationSystem,
-          codexEnabled: isCodexAppServerModeEnabled(),
-          claudeEnabled: getClaudeCodeModeEnabled(),
-          antigravityEnabled: isAntigravityModeEnabled(),
+          runtimeEnabled: mapRuntimeConversationSystems(
+            isRuntimeConversationSystemEnabled,
+          ),
           singleSystem: Boolean(resolveActiveNoteSession(activeItem)),
         });
 

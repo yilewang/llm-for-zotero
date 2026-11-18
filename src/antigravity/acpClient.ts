@@ -25,6 +25,7 @@ import {
   ACP_METHOD_NOT_FOUND_ERROR_CODE,
   ACP_METHODS,
   ACP_PROTOCOL_VERSION,
+  type AcpAvailableCommand,
   type AcpContentBlock,
   type AcpInitializeResult,
   type AcpListSessionsResult,
@@ -144,6 +145,9 @@ export class AcpClient {
   private readonly connection: StdioJsonRpcConnection;
   private readonly label: string;
   private initializeResult: AcpInitializeResult | null = null;
+  private readonly commandListeners = new Set<
+    (commands: AcpAvailableCommand[]) => void
+  >();
   private readonly updateListeners = new Map<
     string,
     Set<AcpSessionUpdateListener>
@@ -433,10 +437,29 @@ export class AcpClient {
     }) as Promise<T>;
   }
 
+  /**
+   * Calls `listener` with every slash-command list agy announces, from any
+   * session; agy may announce one before session/new has answered.
+   */
+  onAvailableCommands(
+    listener: (commands: AcpAvailableCommand[]) => void,
+  ): () => void {
+    this.commandListeners.add(listener);
+    return () => {
+      this.commandListeners.delete(listener);
+    };
+  }
+
   private handleIncoming(message: StdioJsonRpcIncoming): void {
     if (message.kind === "notification") {
       if (message.method !== ACP_METHODS.sessionUpdate) return;
       const notification = message.params as AcpSessionNotification;
+      const update = notification?.update;
+      if (update?.sessionUpdate === "available_commands_update") {
+        for (const listener of [...this.commandListeners]) {
+          listener(update.availableCommands ?? []);
+        }
+      }
       const listeners = this.updateListeners.get(notification?.sessionId);
       if (!listeners) return;
       for (const listener of [...listeners]) {

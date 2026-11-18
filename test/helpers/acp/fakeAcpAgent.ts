@@ -62,6 +62,11 @@ export type FakeAcpStep =
       result?: string;
       /** Overrides the mode-based permission policy. */
       askPermission?: boolean;
+      /**
+       * Names the prompt's attached files (its `resource_link` blocks) as the
+       * tool's locations, like agy's read_file on an attached file.
+       */
+      readsAttachments?: boolean;
     }
   /** A tool on an MCP server the client passed in `session/new`. */
   | {
@@ -103,6 +108,8 @@ export type FakeAcpStoredSession = {
   modeId: string;
   model: string;
   thoughtLevel: string;
+  /** `_meta.antigravity.systemPrompt.append` from session/new. */
+  systemPrompt?: string;
   /** Updates replayed by `session/load`, in order. */
   history: AcpSessionUpdate[];
   usedTokens: number;
@@ -174,6 +181,17 @@ function promptText(prompt: AcpContentBlock[]): string {
   return prompt
     .map((block) => (block.type === "text" ? block.text : ""))
     .join("\n");
+}
+
+/** The local paths of the prompt's `resource_link` file blocks. */
+function attachedFileLocations(
+  prompt: AcpContentBlock[],
+): Array<{ path: string }> {
+  return prompt.flatMap((block) =>
+    block.type === "resource_link" && block.uri.startsWith("file://")
+      ? [{ path: decodeURIComponent(block.uri.slice("file://".length)) }]
+      : [],
+  );
 }
 
 function estimateTokens(text: string): number {
@@ -431,6 +449,9 @@ export class FakeAcpAgent {
       modeId: fixtureDefault("mode"),
       model: fixtureDefault("model"),
       thoughtLevel: fixtureDefault("thought_level"),
+      ...(params._meta?.antigravity?.systemPrompt?.append
+        ? { systemPrompt: params._meta.antigravity.systemPrompt.append }
+        : {}),
       history: [],
       usedTokens: 0,
     };
@@ -688,7 +709,7 @@ export class FakeAcpAgent {
           break;
         case "tool":
         case "mcpTool": {
-          const outcome = await this.runTool(session, step, turn);
+          const outcome = await this.runTool(session, step, turn, prompt);
           if (outcome.status === "cancelled") return finish("cancelled");
           // agy ends the turn silently after a denial: no assistant text.
           if (outcome.status === "denied") return finish("end_turn");
@@ -714,6 +735,7 @@ export class FakeAcpAgent {
     session: FakeAcpStoredSession,
     step: Extract<FakeAcpStep, { type: "tool" | "mcpTool" }>,
     turn: RunningTurn,
+    prompt: AcpContentBlock[],
   ): Promise<
     | { status: "completed"; result: string }
     | { status: "denied" }
@@ -737,7 +759,8 @@ export class FakeAcpAgent {
       rawInput: args,
       kind,
       title: isMcp ? `${serverName}: ${step.tool}` : (step.title ?? name),
-      locations: [],
+      locations:
+        !isMcp && step.readsAttachments ? attachedFileLocations(prompt) : [],
       content: [],
     };
     const update = (

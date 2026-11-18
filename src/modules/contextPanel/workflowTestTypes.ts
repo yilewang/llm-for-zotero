@@ -7,6 +7,7 @@ import type { RetrievalTimingReport } from "../../services/retrieval/retrievalTi
 import type { LibraryTextIndexStatus } from "../../services/libraryTextIndex/scheduler";
 import type { LibraryRetrieveResult } from "../../agent/services/libraryRetrieveService";
 import type { CodexAppServerModelCatalogEntry } from "../../codexAppServer/modelCatalog";
+import type { AntigravityModelCatalog } from "../../antigravity/modelCatalog";
 import type { TornChatIdentity } from "./tornChatWindows";
 
 export type WorkflowTestCodexModelCatalogResponse = {
@@ -2046,6 +2047,15 @@ export type WorkflowTestApi = {
   configureCodexModelCatalogs: (
     responses: WorkflowTestCodexModelCatalogResponse[],
   ) => void;
+  /**
+   * Sets the Antigravity model catalog the pickers read, so a test never
+   * starts agy; null forgets it.
+   */
+  configureAntigravityModelCatalog: (
+    catalog: AntigravityModelCatalog | null,
+  ) => void;
+  /** Loads the installed agy's model catalog (live tests only). */
+  loadAntigravityModelCatalogForTests: () => Promise<AntigravityModelCatalog>;
   getCodexModelCatalogRequests: () => string[];
   resolveDelayedCodexModelCatalog: () => Promise<void>;
   resolveDelayedCodexPermissionCatalog: () => Promise<void>;

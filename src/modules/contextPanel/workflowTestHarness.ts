@@ -283,6 +283,10 @@ import {
   loadClaudeConversation,
 } from "../../claudeCode/store";
 import { antigravityConversationStore } from "../../antigravity/store";
+import {
+  setAntigravityModelCatalogForTests,
+  type AntigravityModelCatalog,
+} from "../../antigravity/modelCatalog";
 import { notifyPastChatAttached } from "../../services/pastConversations/attachSink";
 import {
   ensureMarkedReaderSelectionTrackingListener,
@@ -435,6 +439,17 @@ function configureCodexModelCatalogs(
     if (response?.error) throw new Error(response.error);
     return { models: response?.models || [] };
   });
+}
+
+/**
+ * Sets the Antigravity catalog the pickers read, so a test never starts agy;
+ * null forgets it.
+ */
+function configureAntigravityModelCatalog(
+  catalog: AntigravityModelCatalog | null,
+): void {
+  assertWorkflowTestEnabled();
+  setAntigravityModelCatalogForTests(catalog);
 }
 
 function configurePermissionCatalogs(input?: {
@@ -12539,6 +12554,13 @@ export function installWorkflowTestHarness(targetAddon: {
       modelCatalogRequestHeaders.map((headers) => ({ ...headers })),
     getCodexDirectCatalogRequests: () => [...codexDirectCatalogRequests],
     configureCodexModelCatalogs,
+    configureAntigravityModelCatalog,
+    loadAntigravityModelCatalogForTests: async () => {
+      assertWorkflowTestEnabled();
+      const { loadAntigravityPickerModelCatalog } =
+        await import("../../antigravity/runtime");
+      return loadAntigravityPickerModelCatalog(true);
+    },
     getCodexModelCatalogRequests: () => [...codexModelCatalogRequests],
     resolveDelayedCodexModelCatalog: async () => {
       assertWorkflowTestEnabled();

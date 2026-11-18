@@ -209,11 +209,12 @@ export function buildInlineAskModelMenu(
 
 /**
  * Why the model menu cannot offer the sidebar's own runtime: the sidebar
- * runs Claude Code, or its entry is a WebChat target. Null otherwise.
+ * runs Claude Code or Antigravity, or its entry is a WebChat target. Null
+ * otherwise.
  */
 export function inlineAskModelMenuNote(
   input: Pick<InlineAskModelRuleInput, "conversationSystem" | "sidebarEntry">,
-): "claude_code" | "webchat" | null {
+): "claude_code" | "antigravity" | "webchat" | null {
   const system = input.conversationSystem;
   if (isRuntimeConversationSystem(system)) {
     switch (system) {
@@ -221,9 +222,8 @@ export function inlineAskModelMenuNote(
         return "claude_code";
       case "codex":
         return null;
-      // No Antigravity note until Phase 5 adds its UI text.
       case "antigravity":
-        return null;
+        return "antigravity";
       default:
         return assertNeverConversationSystem(system);
     }

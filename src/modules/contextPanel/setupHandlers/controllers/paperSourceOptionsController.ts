@@ -1,5 +1,6 @@
 import type { PaperContentSourceMode } from "../../types";
 import type { PdfSupport } from "../../../../providers";
+import type { RuntimeConversationSystem } from "../../../../core/conversations/conversationSystems";
 import { resolveContextAttachmentSupport } from "../../../../services/paperContent/contextAttachmentSupport";
 import {
   getContextSourceModeBadgeLabel,
@@ -47,20 +48,17 @@ export type PaperSourceOption = {
   hideTextSource?: boolean;
 };
 
+/** A runtime reads a PDF paper from its local file; others per the model. */
 export function resolvePaperPdfSupportForConversation(params: {
   basePdfSupport: PdfSupport;
-  isClaudeCode: boolean;
-  isCodex: boolean;
+  runtimeSystem: RuntimeConversationSystem | null;
 }): PdfSupport {
-  return params.isClaudeCode || params.isCodex
-    ? "local_path"
-    : params.basePdfSupport;
+  return params.runtimeSystem ? "local_path" : params.basePdfSupport;
 }
 
 export function shouldDowngradePdfSourceForConversation(params: {
   basePdfSupport: PdfSupport;
-  isClaudeCode: boolean;
-  isCodex: boolean;
+  runtimeSystem: RuntimeConversationSystem | null;
 }): boolean {
   const support = resolvePaperPdfSupportForConversation(params);
   return support !== "native" && support !== "local_path";
