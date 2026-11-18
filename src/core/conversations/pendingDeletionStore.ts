@@ -28,6 +28,9 @@ const RUNTIME_PROVIDER_CLEANUP_REQUIRED: Readonly<
   claude_code: (input) =>
     Boolean(input.providerSessionId?.trim()) ||
     Number(input.libraryID || 0) > 0,
+  // ACP has no call that deletes a session; the session stays in the
+  // user's agy history, as a session started in the agy CLI would.
+  antigravity: () => false,
 };
 
 export const PENDING_DELETIONS_TABLE = "llm_for_zotero_pending_deletions";

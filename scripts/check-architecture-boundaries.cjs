@@ -58,6 +58,7 @@ const LAYERS = [
       "src/agent/",
       // Conversation backends the agent layer drives and imports back.
       "src/claudeCode/",
+      "src/antigravity/",
       "src/codexAppServer/",
       "src/webchat/",
     ],
@@ -214,6 +215,9 @@ validateSealedExports(SEALED_EXPORTS);
  */
 const MIGRATION_OBLIGATIONS = [
   // Conversation backends reach into panel state instead of being called by it.
+  "runtime:src/antigravity/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
+  "runtime:src/core/conversations/repository.ts -> src/antigravity/store.ts",
+  "runtime:src/services/notes/noteTarget.ts -> src/antigravity/portal.ts",
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/conversationIdentity.ts",
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/portalScope.ts",
   "runtime:src/claudeCode/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",

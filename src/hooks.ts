@@ -32,6 +32,7 @@ import { initChatStore } from "./utils/chatStore";
 import { initUsageStore } from "./utils/usageStore";
 import { initClaudeCodeStore } from "./claudeCode/store";
 import { initCodexAppServerStore } from "./codexAppServer/store";
+import { initAntigravityStore } from "./antigravity/storage";
 import { pendingDeletionStore } from "./core/conversations/pendingDeletionStore";
 import {
   configurePendingDeletionSubsystem,
@@ -82,6 +83,7 @@ const RUNTIME_STORE_STARTUP: Readonly<
 > = {
   claude_code: { label: "Claude Code store", init: initClaudeCodeStore },
   codex: { label: "Codex App Server store", init: initCodexAppServerStore },
+  antigravity: { label: "Antigravity store", init: initAntigravityStore },
 };
 
 /** Passed by addon/bootstrap.js; isUpgrade is true for an in-place update. */

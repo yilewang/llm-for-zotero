@@ -46,6 +46,8 @@ const RUNTIME_CONVERSATION_MODE: Record<
 > = {
   codex: "chat",
   claude_code: "agent",
+  // Antigravity runs through the shared agent engine like Claude Code (D4).
+  antigravity: "agent",
 };
 
 /**

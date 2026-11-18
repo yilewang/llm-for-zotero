@@ -240,7 +240,7 @@ export async function initConversationSearchIndexStore(): Promise<boolean> {
       search_key TEXT PRIMARY KEY,
       conversation_id TEXT NOT NULL,
       legacy_conversation_key INTEGER NOT NULL,
-      system TEXT NOT NULL CHECK(system IN ('upstream', 'claude_code', 'codex')),
+      system TEXT NOT NULL,
       kind TEXT NOT NULL CHECK(kind IN ('global', 'paper')),
       library_id INTEGER NOT NULL,
       paper_item_id INTEGER,

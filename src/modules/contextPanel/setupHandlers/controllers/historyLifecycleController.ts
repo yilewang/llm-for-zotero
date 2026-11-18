@@ -89,6 +89,14 @@ import {
   createClaudePaperPortalItem,
 } from "../../../../claudeCode/portal";
 import {
+  loadAllAntigravityConversationHistory,
+  toAntigravityConversationHistoryEntry,
+} from "../../../../antigravity/historyLoader";
+import {
+  createAntigravityGlobalPortalItem,
+  createAntigravityPaperPortalItem,
+} from "../../../../antigravity/portal";
+import {
   createCodexGlobalPortalItem,
   createCodexPaperPortalItem,
 } from "../../../../codexAppServer/portal";
@@ -225,6 +233,8 @@ function loadAllRuntimeConversationHistory(
       return loadAllClaudeConversationHistory(params);
     case "codex":
       return loadAllCodexConversationHistory(params);
+    case "antigravity":
+      return loadAllAntigravityConversationHistory(params);
     default:
       return assertNeverConversationSystem(system);
   }
@@ -1829,6 +1839,9 @@ export function createHistoryLifecycleController(
       case "claude_code":
         shape = toClaudeConversationHistoryEntry(row);
         break;
+      case "antigravity":
+        shape = toAntigravityConversationHistoryEntry(row);
+        break;
       case "upstream":
         // An upstream paper chat without a session version cannot be opened.
         if (
@@ -2182,6 +2195,7 @@ export function createHistoryLifecycleController(
     let nextItem: ReturnType<
       | typeof createClaudeGlobalPortalItem
       | typeof createCodexGlobalPortalItem
+      | typeof createAntigravityGlobalPortalItem
       | typeof createGlobalPortalItem
     >;
     switch (system) {
@@ -2193,6 +2207,12 @@ export function createHistoryLifecycleController(
         break;
       case "codex":
         nextItem = createCodexGlobalPortalItem(
+          libraryID,
+          normalizedConversationKey,
+        );
+        break;
+      case "antigravity":
+        nextItem = createAntigravityGlobalPortalItem(
           libraryID,
           normalizedConversationKey,
         );
@@ -2399,6 +2419,24 @@ export function createHistoryLifecycleController(
       }
       case "codex": {
         const nextItem = createCodexPaperPortalItem(
+          paperItem,
+          resolvedConversationKey,
+        ) as any;
+        if (
+          !canCommitPanelConversation(
+            body,
+            nextItem,
+            "switch-paper-conversation-commit",
+            hostLease,
+          ) ||
+          !setCurrentItem(nextItem)
+        ) {
+          return false;
+        }
+        break;
+      }
+      case "antigravity": {
+        const nextItem = createAntigravityPaperPortalItem(
           paperItem,
           resolvedConversationKey,
         ) as any;

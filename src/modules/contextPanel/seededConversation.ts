@@ -159,6 +159,10 @@ export function seededConversationNeedsHandover(
   switch (system) {
     case "claude_code":
       return true;
+    // Like Claude Code (D4): a new ACP session starts with no history, so
+    // the seeded turns must ride in the handover chip.
+    case "antigravity":
+      return true;
     case "codex":
     case "upstream":
       return false;

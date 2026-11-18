@@ -57,6 +57,8 @@ export function resolveRuntimeBadgeState(
   const runtimeEnabled: Record<RuntimeConversationSystem, boolean> = {
     codex: input.codexEnabled,
     claude_code: input.claudeEnabled,
+    // No Antigravity badge entry until Phase 5 adds its UI.
+    antigravity: false,
   };
   const items: RuntimeBadgeItem[] = input.isTornWindow
     ? [{ system: input.system, label }]

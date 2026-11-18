@@ -4,7 +4,7 @@
  *
  * A conversation system is where a conversation lives and which engine runs
  * it: "upstream" is the plugin's own agent; every other system is an external
- * agent runtime (Claude Code, Codex). This module is the single list of them.
+ * agent runtime (Claude Code, Codex, Antigravity). This module is the single list of them.
  *
  * Rules for code that branches on a system:
  * - Membership tests use `isConversationSystem` / `isRuntimeConversationSystem`,
@@ -23,6 +23,7 @@ export const CONVERSATION_SYSTEMS = [
   "upstream",
   "claude_code",
   "codex",
+  "antigravity",
 ] as const;
 
 export type ConversationSystem = (typeof CONVERSATION_SYSTEMS)[number];
@@ -85,11 +86,11 @@ export type RuntimeConversationSystemDescriptor = {
   /** First key of the runtime's global and paper key bands. Persisted. */
   keyBases: { global: number; paper: number };
   /** Reader-model slot the runtime's reader selection is stored under. */
-  readerRuntimeKey: "claude" | "codex";
+  readerRuntimeKey: "claude" | "codex" | "antigravity";
   /** Permission-chip provider id. */
-  permissionProvider: "claude" | "codex";
+  permissionProvider: "claude" | "codex" | "antigravity";
   /** Usage-ledger runtime name (`UsageEventRuntime`). Persisted. */
-  usageSource: "claude-code" | "codex";
+  usageSource: "claude-code" | "codex" | "antigravity";
 };
 
 export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
@@ -120,6 +121,20 @@ export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
     readerRuntimeKey: "codex",
     permissionProvider: "codex",
     usageSource: "codex",
+  },
+  antigravity: {
+    system: "antigravity",
+    label: "Antigravity",
+    shortLabel: "Antigravity",
+    enablePref: "enableAntigravityMode",
+    // The last two bands below Number.MAX_SAFE_INTEGER; no fifth runtime fits.
+    keyBases: {
+      global: 7 * RUNTIME_CONVERSATION_KEY_BAND_SIZE,
+      paper: 8 * RUNTIME_CONVERSATION_KEY_BAND_SIZE,
+    },
+    readerRuntimeKey: "antigravity",
+    permissionProvider: "antigravity",
+    usageSource: "antigravity",
   },
 };
 

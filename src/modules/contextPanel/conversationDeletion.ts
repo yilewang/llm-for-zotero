@@ -77,13 +77,17 @@ import {
 
 type ConversationDeletionKind = "global" | "paper";
 
-// The provider cleanup job each runtime persists for a deleted conversation.
+// The provider cleanup job each runtime persists for a deleted conversation;
+// null when the runtime has no provider-side cleanup.
 const RUNTIME_PROVIDER_CLEANUP_OPERATIONS: Record<
   RuntimeConversationSystem,
-  ConversationCleanupJob["operation"]
+  ConversationCleanupJob["operation"] | null
 > = {
   claude_code: "claude_invalidate",
   codex: "codex_archive",
+  // ACP has no call that deletes a session; it stays in the user's agy
+  // history (see pendingDeletionStore), so there is no job to persist.
+  antigravity: null,
 };
 
 export type ConversationDeletionTarget = {
@@ -637,8 +641,13 @@ export async function finalizeConversationDeletion(
           !normalizedTarget.instanceID ||
           turn.instanceID === normalizedTarget.instanceID),
     )
-    .map((turn) => ({
-      operation: RUNTIME_PROVIDER_CLEANUP_OPERATIONS[turn.system],
+    // A runtime without provider cleanup (Antigravity) contributes no job.
+    .flatMap((turn) => {
+      const operation = RUNTIME_PROVIDER_CLEANUP_OPERATIONS[turn.system];
+      return operation ? [{ turn, operation }] : [];
+    })
+    .map(({ turn, operation }) => ({
+      operation,
       system: turn.system,
       providerSessionId: String(turn.providerSessionId || "").trim(),
       providerScope:
@@ -1076,10 +1085,12 @@ async function ensureQueuedProviderCleanupJob(
   if (entry.providerCleanupState === "complete") return true;
   const providerSessionId = normalizeProviderSessionId(entry.providerSessionId);
   if (!isRuntimeConversationSystem(entry.system)) return true;
+  const operation = RUNTIME_PROVIDER_CLEANUP_OPERATIONS[entry.system];
+  if (!operation) return true;
   if (!providerSessionId && entry.system !== "claude_code") return true;
   try {
     const job = await enqueueConversationCleanupJob({
-      operation: RUNTIME_PROVIDER_CLEANUP_OPERATIONS[entry.system],
+      operation,
       system: entry.system,
       conversationKey: entry.conversationKey,
       providerScope: getClaudeProviderScope({

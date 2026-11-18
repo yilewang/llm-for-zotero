@@ -24,6 +24,7 @@ import {
 } from "../../utils/attachmentRefStore";
 import { initRecentlyDeletedConversationTombstones } from "../../core/conversations/recentlyDeletedConversations";
 import { clearCodexConversationSessionMetadata } from "../../codexAppServer/store";
+import { antigravityConversationStore } from "../../antigravity/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
 import {
   buildClaudeScope,
@@ -453,6 +454,21 @@ export function configurePendingDeletionSubsystem(): void {
                 },
               );
             }
+            return;
+          }
+          if (turn.system === "antigravity") {
+            // ACP cannot delete a session or its turns, so there is no
+            // provider job.  Detach the catalog from the session instead, so
+            // the next turn starts a fresh ACP session that never saw the
+            // deleted turn.
+            const providerSessionId = String(
+              turn.providerSessionId || "",
+            ).trim();
+            await antigravityConversationStore.clearConversationSessionMetadata(
+              turn.conversationKey,
+              providerSessionId || undefined,
+              turn.instanceID,
+            );
             return;
           }
           // The built-in runtime has no provider session to detach.  The

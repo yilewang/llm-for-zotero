@@ -2,7 +2,14 @@ declare const Zotero: any;
 
 import type { ConversationSystem } from "../../shared/types";
 import { getMaintenanceQueryOptions } from "../logging";
-import { isConversationSystem } from "./conversationSystems";
+import {
+  CONVERSATION_SYSTEMS,
+  isConversationSystem,
+} from "./conversationSystems";
+
+const CONVERSATION_SYSTEMS_SQL_LIST = CONVERSATION_SYSTEMS.map(
+  (system) => `'${system}'`,
+).join(", ");
 
 export type ConversationCleanupProviderScope = {
   scopeType: "paper" | "open";
@@ -539,7 +546,7 @@ export async function getNextConversationCleanupJobDueAt(
             OR (? = 1 AND provider_cleanup_state = 'attention_required'))
        AND id <> ''
        AND operation IN ('codex_archive', 'claude_invalidate')
-       AND system IN ('upstream', 'claude_code', 'codex')
+       AND system IN (${CONVERSATION_SYSTEMS_SQL_LIST})
        AND conversation_key > 0
        AND (provider_session_id <> ''
             OR (operation = 'claude_invalidate' AND instance_id <> ''))`,

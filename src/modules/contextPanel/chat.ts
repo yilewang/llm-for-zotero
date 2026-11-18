@@ -49,6 +49,12 @@ import {
 } from "../../codexAppServer/store";
 import { updateClaudeAssistantMessageQuoteLocations } from "../../claudeCode/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
+import { antigravityConversationStore } from "../../antigravity/store";
+import {
+  appendAntigravityConversationMessageWithinWriteLock,
+  updateLatestAntigravityConversationAssistantMessageWithinWriteLock,
+  updateLatestAntigravityConversationUserMessageWithinWriteLock,
+} from "../../antigravity/conversationWrites";
 import {
   enqueueConversationCleanupJob,
   performConversationCleanupJobAttempt,
@@ -2295,6 +2301,14 @@ async function updateStoredLatestUserMessageByConversationUnlocked(
         options,
       );
       break;
+    case "antigravity":
+      written =
+        await updateLatestAntigravityConversationUserMessageWithinWriteLock(
+          conversationKey,
+          message,
+          options,
+        );
+      break;
     case "upstream":
       written = await updateStoredLatestUserMessage(
         conversationKey,
@@ -2466,6 +2480,14 @@ async function updateStoredLatestAssistantMessageByConversationUnlocked(
         options,
       );
       break;
+    case "antigravity":
+      written =
+        await updateLatestAntigravityConversationAssistantMessageWithinWriteLock(
+          conversationKey,
+          withContextUsage(),
+          options,
+        );
+      break;
     case "upstream":
       written = await updateStoredLatestAssistantMessage(
         conversationKey,
@@ -2580,6 +2602,12 @@ export async function updateStoredAssistantQuoteLocations(
           target,
           request.writes,
         );
+      case "antigravity":
+        return antigravityConversationStore.updateAssistantMessageQuoteLocations(
+          conversationKey,
+          target,
+          request.writes,
+        );
       case "upstream":
         return updateStoredAssistantMessageQuoteLocations(
           conversationKey,
@@ -2664,6 +2692,13 @@ async function persistConversationMessage(
           await pruneCodexConversation(
             conversationKey,
             PERSISTED_HISTORY_LIMIT,
+          );
+          break;
+        case "antigravity":
+          await appendAntigravityConversationMessageWithinWriteLock(
+            conversationKey,
+            message,
+            undefined,
           );
           break;
         case "upstream":
@@ -3748,6 +3783,9 @@ function resolveConversationSystemRuntimeMode(
       return "agent";
     case "codex":
       return "chat";
+    // Antigravity runs through the shared agent engine like Claude Code (D4).
+    case "antigravity":
+      return "agent";
     case "upstream":
       return upstreamRuntimeMode;
     default:
@@ -7607,6 +7645,18 @@ async function detachProviderForEdit(
           ),
       );
       if (!attempt.ok) return false;
+      return true;
+    }
+    case "antigravity": {
+      // ACP cannot delete a session or its turns, so there is no provider
+      // job; detaching the catalog from the session makes the next turn
+      // start a fresh session that never saw the truncated turns.
+      if (!providerSessionId) return true;
+      await antigravityConversationStore.clearConversationSessionMetadata(
+        conversationKey,
+        providerSessionId,
+        catalog.instanceID,
+      );
       return true;
     }
     case "upstream":

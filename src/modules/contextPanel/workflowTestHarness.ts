@@ -277,6 +277,7 @@ import {
   appendClaudeMessage,
   loadClaudeConversation,
 } from "../../claudeCode/store";
+import { antigravityConversationStore } from "../../antigravity/store";
 import { notifyPastChatAttached } from "../../services/pastConversations/attachSink";
 import {
   ensureMarkedReaderSelectionTrackingListener,
@@ -700,6 +701,12 @@ async function appendWorkflowStoredMessage(
     case "claude_code":
       await appendClaudeMessage(conversationKey, message);
       return;
+    case "antigravity":
+      await antigravityConversationStore.appendMessage(
+        conversationKey,
+        message,
+      );
+      return;
     case "upstream":
       await appendMessage(conversationKey, message);
       return;
@@ -718,6 +725,11 @@ async function loadWorkflowStoredConversation(
       return await loadCodexConversation(conversationKey, limit);
     case "claude_code":
       return await loadClaudeConversation(conversationKey, limit);
+    case "antigravity":
+      return await antigravityConversationStore.loadConversation(
+        conversationKey,
+        limit,
+      );
     case "upstream":
       return await loadConversation(conversationKey, limit);
     default:
@@ -1108,7 +1120,14 @@ const WORKFLOW_CONVERSATION_PERSISTENCE_TABLES = {
     catalogs: ["llm_for_zotero_codex_conversations"],
     messages: "llm_for_zotero_codex_messages",
   },
-} as const;
+  antigravity: {
+    catalogs: ["llm_for_zotero_antigravity_conversations"],
+    messages: "llm_for_zotero_antigravity_messages",
+  },
+} as const satisfies Record<
+  ConversationSystem,
+  { catalogs: readonly string[]; messages: string }
+>;
 
 async function countWorkflowRows(
   tableName: string,
@@ -11596,6 +11615,30 @@ export function installWorkflowTestHarness(targetAddon: {
 }): void {
   if (__env__ !== "test" && __env__ !== "development") return;
   targetAddon.api.workflowTest = {
+    antigravityStorage: {
+      async init() {
+        const { initAntigravityStore } =
+          await import("../../antigravity/storage");
+        await initAntigravityStore();
+      },
+      async createGlobalConversation(libraryID) {
+        const summary =
+          await antigravityConversationStore.createGlobalConversation(
+            libraryID,
+          );
+        return summary ? Number(summary.conversationKey) : null;
+      },
+      async listGlobalConversationKeys(libraryID) {
+        const listed =
+          await antigravityConversationStore.listGlobalConversations(
+            libraryID,
+            null,
+          );
+        return listed.map((entry) => Number(entry.conversationKey));
+      },
+      deleteConversation: (conversationKey) =>
+        antigravityConversationStore.deleteConversation(conversationKey),
+    },
     planRetrievalQuery: resolveRetrievalQueryPlan,
     async libraryRetrieveBench(input) {
       const { LibraryRetrieveService } =

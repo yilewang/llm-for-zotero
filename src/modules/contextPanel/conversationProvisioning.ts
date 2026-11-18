@@ -3,6 +3,10 @@ declare const Zotero: any;
 import { getNoteConversation } from "../../services/notes/conversationItem";
 
 import {
+  buildDefaultAntigravityGlobalConversationKey,
+  buildDefaultAntigravityPaperConversationKey,
+} from "../../antigravity/conversationKeys";
+import {
   buildDefaultClaudeGlobalConversationKey,
   buildDefaultClaudePaperConversationKey,
 } from "../../claudeCode/constants";
@@ -64,6 +68,10 @@ const RUNTIME_DEFAULT_CONVERSATION_KEY_BUILDERS: Record<
   codex: {
     global: buildDefaultCodexGlobalConversationKey,
     paper: buildDefaultCodexPaperConversationKey,
+  },
+  antigravity: {
+    global: buildDefaultAntigravityGlobalConversationKey,
+    paper: buildDefaultAntigravityPaperConversationKey,
   },
 };
 
@@ -396,6 +404,8 @@ async function provisionConversationEntryUncoalesced(
       return provisionClaudeConversation(scope);
     case "codex":
       return provisionCodexConversation(scope);
+    case "antigravity":
+      return provisionRuntimeConversationUncoalesced("antigravity", scope);
     default:
       return assertNeverConversationSystem(system);
   }

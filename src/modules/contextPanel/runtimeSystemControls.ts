@@ -12,6 +12,7 @@ export { isRuntimeConversationSystem, type RuntimeConversationSystem };
 export const RUNTIME_SYSTEM_DISPLAY_ORDER = [
   "codex",
   "claude_code",
+  "antigravity",
 ] as const satisfies readonly RuntimeConversationSystem[];
 
 // Fails to compile when a runtime is missing from the display order above.
@@ -32,7 +33,8 @@ export type RuntimeSystemControls = {
 
 export type CreatedRuntimeSystemControls = {
   group: HTMLElement;
-  buttons: RuntimeSystemButtonMap<HTMLButtonElement>;
+  /** Null for a runtime without a toggle (see RUNTIME_SYSTEM_TOGGLE_ENABLED). */
+  buttons: RuntimeSystemButtonMap<HTMLButtonElement | null>;
 };
 
 export type RuntimeSystemControlState = {
@@ -60,15 +62,24 @@ type CreateRuntimeSystemControlsOptions = {
   buttonIds?: Partial<RuntimeSystemButtonMap<string>>;
 };
 
+/**
+ * Whether each runtime's toggle is shown; null when the runtime has no toggle
+ * at all, so no button is created for it.
+ */
+const RUNTIME_SYSTEM_TOGGLE_ENABLED: RuntimeSystemButtonMap<
+  ((input: RuntimeSystemControlsStateInput) => boolean) | null
+> = {
+  codex: (input) => input.codexEnabled,
+  claude_code: (input) => input.claudeEnabled,
+  // Antigravity has no toggle until Phase 5 adds its UI.
+  antigravity: null,
+};
+
 function isRuntimeSystemEnabled(
   system: RuntimeConversationSystem,
   input: RuntimeSystemControlsStateInput,
 ): boolean {
-  const enabled: RuntimeSystemButtonMap<boolean> = {
-    codex: input.codexEnabled,
-    claude_code: input.claudeEnabled,
-  };
-  return enabled[system];
+  return RUNTIME_SYSTEM_TOGGLE_ENABLED[system]?.(input) ?? false;
 }
 
 export function resolveRuntimeSystemToggleTarget(
@@ -123,6 +134,10 @@ export function createRuntimeSystemControls(
 
   const buttons = {} as CreatedRuntimeSystemControls["buttons"];
   for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
+    if (!RUNTIME_SYSTEM_TOGGLE_ENABLED[system]) {
+      buttons[system] = null;
+      continue;
+    }
     const button = createElement(
       doc,
       "button",

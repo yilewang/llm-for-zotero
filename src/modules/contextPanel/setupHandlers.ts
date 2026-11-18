@@ -1509,6 +1509,8 @@ export function setupHandlers(
     buttons: {
       codex: codexSystemToggleBtn,
       claude_code: claudeSystemToggleBtn,
+      // No Antigravity toggle in the panel until Phase 5 adds its UI.
+      antigravity: null,
     },
   };
   let runtimeSystemSwitchInFlight = false;
@@ -1656,6 +1658,7 @@ export function setupHandlers(
         nextSystem,
         codexAvailable: isRuntimeModeAvailable("codex"),
         claudeAvailable: isRuntimeModeAvailable("claude_code"),
+        antigravityAvailable: isRuntimeModeAvailable("antigravity"),
       });
       if (!resolvedNextSystem) return false;
       if (resolvedNextSystem === getConversationSystem()) return true;
@@ -5588,6 +5591,7 @@ export function setupHandlers(
         activeSystem: getConversationSystem(),
         codexEnabled: isRuntimeModeAvailable("codex"),
         claudeEnabled: isRuntimeModeAvailable("claude_code"),
+        antigravityEnabled: isRuntimeModeAvailable("antigravity"),
         singleSystem: isSidePanel || isNoteSession(),
       }),
     isRuntimeSystemSwitchInFlight: () => runtimeSystemSwitchInFlight,

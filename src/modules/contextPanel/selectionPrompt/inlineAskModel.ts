@@ -150,6 +150,10 @@ export function resolveInlineAskModelTarget(
         );
       case "claude_code":
         return firstApiTarget(input.entries);
+      // Inline Ask cannot run on the Antigravity runtime; like Claude Code,
+      // it falls back to the first API model.
+      case "antigravity":
+        return firstApiTarget(input.entries);
       default:
         return assertNeverConversationSystem(system);
     }
@@ -216,6 +220,9 @@ export function inlineAskModelMenuNote(
       case "claude_code":
         return "claude_code";
       case "codex":
+        return null;
+      // No Antigravity note until Phase 5 adds its UI text.
+      case "antigravity":
         return null;
       default:
         return assertNeverConversationSystem(system);

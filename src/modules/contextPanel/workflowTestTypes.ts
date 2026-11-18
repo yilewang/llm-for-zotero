@@ -1218,6 +1218,17 @@ export type LibraryRetrieveBenchResult = {
 };
 
 export type WorkflowTestApi = {
+  /**
+   * The plugin's own Antigravity storage (a test bundle cannot import it: its
+   * dependency graph reaches modules only the plugin build can load).
+   */
+  antigravityStorage: {
+    /** Runs the store's startup step, as plugin startup does. */
+    init(): Promise<void>;
+    createGlobalConversation(libraryID: number): Promise<number | null>;
+    listGlobalConversationKeys(libraryID: number): Promise<number[]>;
+    deleteConversation(conversationKey: number): Promise<void>;
+  };
   planRetrievalQuery: typeof resolveRetrievalQueryPlan;
   libraryRetrieveBench: (input: {
     query: string;

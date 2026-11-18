@@ -3,6 +3,7 @@ import {
   assertNeverConversationSystem,
   getRuntimeConversationSystemDescriptor,
   type RuntimeConversationSystem,
+  type RuntimeConversationSystemDescriptor,
 } from "../../core/conversations/conversationSystems";
 import type { OriginalAgentPermissionMode } from "../../shared/originalAgentPermissionMode";
 import type { ClaudePermissionMode } from "../../shared/claudePermissionMode";
@@ -61,7 +62,7 @@ export type PermissionSurface =
     }
   | {
       kind: "error";
-      provider: "claude" | "codex";
+      provider: RuntimeConversationSystemDescriptor["permissionProvider"];
       message: string;
     };
 
@@ -113,6 +114,10 @@ export function resolvePermissionSurface(params: {
             provider: "codex",
             message: "Loading permissions…",
           };
+    // Antigravity's ACP permission modes (D6) are Phase 4+ work; until then
+    // it shows no permission chip.
+    case "antigravity":
+      return { kind: "hidden" };
     case "upstream":
       break;
     default:
@@ -300,12 +305,15 @@ export function attachFooterPermissionControl(params: {
         codexPath: getConfiguredCodexAppServerBinaryPath(),
         cwd: resolveCodexNativeRuntimeCwd(),
       }));
+  // Null when the runtime has no permission catalog to load.
   const catalogLoaders: Record<
     RuntimeConversationSystem,
-    () => Promise<PermissionOption[] | CodexPermissionOptionCatalog>
+    (() => Promise<PermissionOption[] | CodexPermissionOptionCatalog>) | null
   > = {
     claude_code: loadClaude,
     codex: loadCodex,
+    // No Antigravity catalog until Phase 4+ (its chip stays hidden).
+    antigravity: null,
   };
   const resolveCatalogKey = (provider: RuntimeConversationSystem): string => {
     switch (provider) {
@@ -313,6 +321,9 @@ export function attachFooterPermissionControl(params: {
         return `${getClaudeBridgeUrl()}\u0000${getClaudeSettingSourcesByPref().join(",")}`;
       case "codex":
         return `${getConfiguredCodexAppServerBinaryPath()}\u0000${resolveCodexNativeRuntimeCwd()}`;
+      // Never keyed: Antigravity has no catalog loader.
+      case "antigravity":
+        return "";
       default:
         return assertNeverConversationSystem(provider);
     }
@@ -339,6 +350,8 @@ export function attachFooterPermissionControl(params: {
       return;
     }
     render(resolvePermissionSurface(common));
+    const loadCatalog = catalogLoaders[provider];
+    if (!loadCatalog) return;
     const catalogKey = resolveCatalogKey(provider);
     let requestedPromise =
       inFlightCatalog?.provider === provider &&
@@ -346,7 +359,7 @@ export function attachFooterPermissionControl(params: {
         ? inFlightCatalog.promise
         : null;
     if (!requestedPromise) {
-      requestedPromise = catalogLoaders[provider]();
+      requestedPromise = loadCatalog();
       inFlightCatalog = {
         provider,
         key: catalogKey,
@@ -387,6 +400,9 @@ export function attachFooterPermissionControl(params: {
         case "codex":
           codexCatalog = result as CodexPermissionOptionCatalog;
           render(resolvePermissionSurface({ ...common, codexCatalog }));
+          break;
+        // Not reached: Antigravity has no catalog loader.
+        case "antigravity":
           break;
         default:
           assertNeverConversationSystem(provider);

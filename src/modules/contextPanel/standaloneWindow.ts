@@ -206,6 +206,12 @@ import {
   createClaudePaperPortalItem,
 } from "../../claudeCode/portal";
 import { loadAllClaudeConversationHistory } from "../../claudeCode/historyLoader";
+import { loadAllAntigravityConversationHistory } from "../../antigravity/historyLoader";
+import {
+  createAntigravityGlobalPortalItem,
+  createAntigravityPaperPortalItem,
+} from "../../antigravity/portal";
+import { isAntigravityModeEnabled } from "../../antigravity/prefs";
 import { buildDefaultCodexGlobalConversationKey } from "../../codexAppServer/constants";
 import {
   createCodexGlobalPortalItem,
@@ -314,6 +320,8 @@ function createGlobalPortalItemForSystem(
       return createClaudeGlobalPortalItem(libraryID, conversationKey);
     case "codex":
       return createCodexGlobalPortalItem(libraryID, conversationKey);
+    case "antigravity":
+      return createAntigravityGlobalPortalItem(libraryID, conversationKey);
     case "upstream":
       return createGlobalPortalItem(libraryID, conversationKey);
     default:
@@ -336,6 +344,8 @@ function createPaperPortalItemForSystem(
       return createClaudePaperPortalItem(paperItem, conversationKey);
     case "codex":
       return createCodexPaperPortalItem(paperItem, conversationKey);
+    case "antigravity":
+      return createAntigravityPaperPortalItem(paperItem, conversationKey);
     case "upstream":
       return createPaperPortalItem(
         paperItem,
@@ -351,6 +361,7 @@ function createPaperPortalItemForSystem(
 const RUNTIME_CONVERSATION_HISTORY_LOADERS = {
   claude_code: loadAllClaudeConversationHistory,
   codex: loadAllCodexConversationHistory,
+  antigravity: loadAllAntigravityConversationHistory,
 } satisfies Record<RuntimeConversationSystem, unknown>;
 
 function buildTornWindowFeatures(placement?: {
@@ -3467,6 +3478,7 @@ function openChatWindowInstance(
           activeSystem: currentConversationSystem,
           codexEnabled: isCodexAppServerModeEnabled(),
           claudeEnabled: getClaudeCodeModeEnabled(),
+          antigravityEnabled: isAntigravityModeEnabled(),
           singleSystem: Boolean(resolveActiveNoteSession(activeItem)),
         });
 
@@ -5934,6 +5946,7 @@ function openChatWindowInstance(
             nextSystem,
             codexAvailable: isCodexAppServerModeEnabled(),
             claudeAvailable: getClaudeCodeModeEnabled(),
+            antigravityAvailable: isAntigravityModeEnabled(),
           });
           if (!resolvedNextSystem) return;
           if (resolvedNextSystem === currentConversationSystem) return;
@@ -6118,7 +6131,8 @@ function openChatWindowInstance(
       };
 
       for (const system of RUNTIME_SYSTEM_DISPLAY_ORDER) {
-        standaloneRuntimeSystemControls.buttons[system].addEventListener(
+        // A runtime without a toggle (Antigravity, for now) has no button.
+        standaloneRuntimeSystemControls.buttons[system]?.addEventListener(
           "click",
           (event) => {
             event.preventDefault();

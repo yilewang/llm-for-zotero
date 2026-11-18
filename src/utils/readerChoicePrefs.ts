@@ -18,6 +18,7 @@ const READER_CHOICE_PREF_KEYS: Record<ReaderRuntimeKey, string> = {
   agent: "readerChoiceAgent",
   codex: "readerChoiceCodex",
   claude: "readerChoiceClaude",
+  antigravity: "readerChoiceAntigravity",
 };
 
 type ZoteroPrefsAPI = {

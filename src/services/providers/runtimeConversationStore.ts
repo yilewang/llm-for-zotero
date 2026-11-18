@@ -163,9 +163,9 @@ export type RuntimeStoreTables = {
 export type RuntimeStoreConfig = {
   system: RuntimeConversationSystem;
   /** The store name in warnings and error messages. */
-  storeLabel: "Claude" | "Codex";
+  storeLabel: "Claude" | "Codex" | "Antigravity";
   /** Persisted: names the store's startup fingerprint row. */
-  startupStoreID: "claude-code" | "codex";
+  startupStoreID: "claude-code" | "codex" | "antigravity";
   /** Persisted: the store's instance-identity backfill migration. */
   instanceIdMigrationID: string;
   /**

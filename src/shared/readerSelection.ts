@@ -21,12 +21,13 @@ export type ReaderSelection =
   | { kind: "model"; model: string };
 
 /** The runtimes that keep a reader selection of their own. */
-export type ReaderRuntimeKey = "agent" | "codex" | "claude";
+export type ReaderRuntimeKey = "agent" | "codex" | "claude" | "antigravity";
 
 export const READER_RUNTIME_KEYS: readonly ReaderRuntimeKey[] = [
   "agent",
   "codex",
   "claude",
+  "antigravity",
 ];
 
 export function isReaderRuntimeKey(value: unknown): value is ReaderRuntimeKey {

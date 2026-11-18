@@ -29,7 +29,12 @@ export const USAGE_EVENTS_TABLE = "llm_for_zotero_usage_events";
 export type UsageEventMode = "paper" | "library";
 
 /** Which runtime produced the turn, as honestly as the call site can report. */
-export type UsageEventRuntime = "chat" | "agent" | "codex" | "claude-code";
+export type UsageEventRuntime =
+  | "chat"
+  | "agent"
+  | "codex"
+  | "claude-code"
+  | "antigravity";
 
 /**
  * Where a row's token numbers came from.

@@ -59,7 +59,8 @@ const REGISTRY_TABLE = "llm_for_zotero_conversation_registry";
 const RUNTIME_CONFIG: Record<
   ConversationSystem,
   {
-    preference: string;
+    /** The pref the selections moved out of; null for a runtime that never had one. */
+    preference: string | null;
     migrationID: string;
     description: string;
   }
@@ -78,6 +79,11 @@ const RUNTIME_CONFIG: Record<
     preference: "codexAppServerPaperConversationMap",
     migrationID: "paper-restore-selection-v1:codex",
     description: "Move Codex paper restore selections from preferences",
+  },
+  antigravity: {
+    preference: null,
+    migrationID: "paper-restore-selection-v1:antigravity",
+    description: "Antigravity paper restore selections start in the registry",
   },
 };
 
@@ -146,20 +152,25 @@ function getDb(): {
   return Zotero?.DB || null;
 }
 
-function preferenceKey(system: ConversationSystem): string {
-  return `${config.prefsPrefix}.${RUNTIME_CONFIG[system].preference}`;
+function preferenceKey(system: ConversationSystem): string | null {
+  const preference = RUNTIME_CONFIG[system].preference;
+  return preference ? `${config.prefsPrefix}.${preference}` : null;
 }
 
 function readLegacyPreference(system: ConversationSystem): string {
-  const value = Zotero?.Prefs?.get?.(preferenceKey(system), true);
+  const key = preferenceKey(system);
+  if (!key) return "";
+  const value = Zotero?.Prefs?.get?.(key, true);
   return typeof value === "string" ? value.trim() : "";
 }
 
 function clearLegacyPreference(system: ConversationSystem): void {
+  const key = preferenceKey(system);
+  if (!key) return;
   if (typeof Zotero?.Prefs?.clear !== "function") {
     throw new Error("Zotero.Prefs.clear is unavailable");
   }
-  Zotero.Prefs.clear(preferenceKey(system), true);
+  Zotero.Prefs.clear(key, true);
 }
 
 async function requireExactlyOneChangedRow(

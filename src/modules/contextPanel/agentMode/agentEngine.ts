@@ -2151,6 +2151,10 @@ function runtimeUsesLocalPdfTransport(
       return true;
     case "codex":
       return authMode === "codex_app_server";
+    // Antigravity's PDF transport is Phase 4+ work; until then a retry sends
+    // no local PDF files.
+    case "antigravity":
+      return false;
     default:
       return assertNeverConversationSystem(conversationSystem);
   }

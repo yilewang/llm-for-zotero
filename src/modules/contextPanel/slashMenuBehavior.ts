@@ -48,6 +48,8 @@ export function shouldRenderDynamicSlashMenu(params: {
 const RUNTIME_SKILL_SLASH_MENU: Record<RuntimeConversationSystem, boolean> = {
   claude_code: false,
   codex: true,
+  // Antigravity skills are not wired yet (Phase 4+); no skill menu.
+  antigravity: false,
 };
 
 export function shouldRenderSkillSlashMenu(params: {

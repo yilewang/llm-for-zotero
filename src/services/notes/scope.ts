@@ -140,11 +140,13 @@ export function resolvePreferredNoteFocusSystem(params: {
   preferredSystem?: ConversationSystem | null;
   claudeAvailable: boolean;
   codexAvailable: boolean;
+  antigravityAvailable?: boolean;
 }): ConversationSystem {
   const preferred = params.preferredSystem || "upstream";
   const available: Record<RuntimeConversationSystem, boolean> = {
     claude_code: params.claudeAvailable,
     codex: params.codexAvailable,
+    antigravity: Boolean(params.antigravityAvailable),
   };
   if (isRuntimeConversationSystem(preferred) && !available[preferred]) {
     return "upstream";
@@ -156,10 +158,12 @@ export function resolveNoteFocusSystemSwitch(params: {
   nextSystem: ConversationSystem;
   claudeAvailable?: boolean;
   codexAvailable: boolean;
+  antigravityAvailable?: boolean;
 }): ConversationSystem | null {
   const available: Record<RuntimeConversationSystem, boolean> = {
     claude_code: Boolean(params.claudeAvailable),
     codex: params.codexAvailable,
+    antigravity: Boolean(params.antigravityAvailable),
   };
   if (
     isRuntimeConversationSystem(params.nextSystem) &&
