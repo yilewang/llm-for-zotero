@@ -900,6 +900,20 @@ async function shutdownPlugin(reason: PluginLifecycleReason): Promise<void> {
     appLogger.debug("LLM: codex app-server shutdown skipped", error);
   }
   try {
+    const { destroyAllAgyClients } = await import("./antigravity/agyProcess");
+    const finished = await waitWithTimeout(
+      destroyAllAgyClients(),
+      CODEX_SHUTDOWN_TIMEOUT_MS,
+    );
+    if (!finished) {
+      appLogger.warn(
+        `LLM: agy shutdown did not finish in ${CODEX_SHUTDOWN_TIMEOUT_MS}ms; continuing`,
+      );
+    }
+  } catch (error) {
+    appLogger.debug("LLM: agy shutdown skipped", error);
+  }
+  try {
     const { shutdownAgentSubsystem } = require("./agent");
     shutdownAgentSubsystem();
   } catch {
