@@ -50,9 +50,13 @@ import {
   isConversationSystem,
   isRuntimeConversationSystem as isRuntimeSystem,
   mapRuntimeConversationSystems,
+  RUNTIME_CONVERSATION_SYSTEMS,
   usesExternalTurnHost,
 } from "../../core/conversations/conversationSystems";
-import { isRuntimeConversationSystemEnabled } from "../../shared/conversationSystemPrefs";
+import {
+  isRuntimeConversationSystemEnabled,
+  isRuntimeListed,
+} from "../../shared/conversationSystemPrefs";
 import {
   getModelEntryById,
   getModelProviderGroups,
@@ -1622,6 +1626,9 @@ export function setupHandlers(
       isWebChat: webChatActive,
       isSideChat: isSidePanel,
       isTornWindow: isTornSurface(selectionSurface()),
+      allRuntimesAdded: RUNTIME_CONVERSATION_SYSTEMS.every((system) =>
+        isRuntimeListed(system),
+      ),
     });
   };
   const updateRuntimeModeButtonState = () => {
@@ -9052,9 +9059,12 @@ export function setupHandlers(
       add.type = "button";
       add.className =
         "llm-permission-option llm-runtime-menu-row llm-runtime-menu-add";
-      add.dataset.runtimeAction = "add";
       add.setAttribute("role", "menuitem");
-      add.textContent = t("+ Add runtime…");
+      add.dataset.runtimeAction = state.settingsRowKind;
+      add.textContent =
+        state.settingsRowKind === "configure"
+          ? t("Configure runtimes…")
+          : t("+ Add runtime…");
       add.addEventListener("click", (event: Event) => {
         event.preventDefault();
         event.stopPropagation();

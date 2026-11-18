@@ -40,6 +40,8 @@ export type RuntimeBadgeStateInput = {
    * so the badge names it and switches nothing.
    */
   isTornWindow?: boolean;
+  /** Every runtime is added in Settings: nothing is left to add. */
+  allRuntimesAdded?: boolean;
 };
 
 export type RuntimeBadgeState = {
@@ -56,6 +58,11 @@ export type RuntimeBadgeState = {
    * torn-off window, which cannot change runtime, has none.
    */
   showAddRuntime: boolean;
+  /**
+   * The last row's wording: "add" while a runtime is left to add, then
+   * "configure" (both open Settings on the Agent tab).
+   */
+  settingsRowKind: "add" | "configure";
 };
 
 /** The badge reads "Claude", not "Claude Code". */
@@ -114,5 +121,6 @@ export function resolveRuntimeBadgeState(
     clickable: visible && (items.length >= 2 || showAddRuntime),
     items,
     showAddRuntime,
+    settingsRowKind: input.allRuntimesAdded ? "configure" : "add",
   };
 }

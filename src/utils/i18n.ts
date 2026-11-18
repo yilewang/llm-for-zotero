@@ -1224,6 +1224,7 @@ const zhCN: Record<string, string> = {
   "+ Add runtime": "+ 添加运行时",
   Remove: "移除",
   "+ Add runtime…": "+ 添加运行时…",
+  "Configure runtimes…": "配置运行时…",
   "Runs the Codex CLI. Needs codex installed and signed in.":
     "运行 Codex CLI。需要已安装并登录 codex。",
   "Runs Claude Code through its bridge. Needs claude installed and signed in.":

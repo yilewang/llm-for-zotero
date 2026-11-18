@@ -5,6 +5,7 @@
 
 import { config } from "../../package.json";
 import {
+  RUNTIME_CONVERSATION_SYSTEMS,
   RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
   normalizeConversationSystem,
   type ConversationSystem,
@@ -84,4 +85,40 @@ export function isConversationSystemEnabled(
   system: ConversationSystem,
 ): boolean {
   return system === "upstream" || isRuntimeConversationSystemEnabled(system);
+}
+
+/**
+ * The runtimes the user added in Settings (comma-separated system ids); the
+ * built-in runtime is always there and never listed.
+ */
+const ADDED_RUNTIME_SYSTEMS_PREF = "addedRuntimeSystems";
+
+/** The runtimes the user added, in registry order. */
+export function getAddedRuntimeSystems(): RuntimeConversationSystem[] {
+  const raw = String(
+    getZoteroPrefs()?.get?.(prefKey(ADDED_RUNTIME_SYSTEMS_PREF), true) || "",
+  );
+  const names = new Set(raw.split(",").map((name) => name.trim()));
+  return RUNTIME_CONVERSATION_SYSTEMS.filter((system) => names.has(system));
+}
+
+export function setAddedRuntimeSystems(
+  systems: readonly RuntimeConversationSystem[],
+): void {
+  const wanted = new Set(systems);
+  getZoteroPrefs()?.set?.(
+    prefKey(ADDED_RUNTIME_SYSTEMS_PREF),
+    RUNTIME_CONVERSATION_SYSTEMS.filter((system) => wanted.has(system)).join(
+      ",",
+    ),
+    true,
+  );
+}
+
+/** Listed in Settings: added, or switched on (so set up before the list). */
+export function isRuntimeListed(system: RuntimeConversationSystem): boolean {
+  return (
+    getAddedRuntimeSystems().includes(system) ||
+    isRuntimeConversationSystemEnabled(system)
+  );
 }

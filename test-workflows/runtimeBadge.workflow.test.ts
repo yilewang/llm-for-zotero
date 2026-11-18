@@ -189,6 +189,25 @@ describe("workflow: runtime badge", function () {
     });
   });
 
+  it("ends the menu with Configure runtimes once every runtime is added", async function () {
+    await withPrefs(
+      { ...ALL_RUNTIME_PREFS, enableAntigravityMode: true },
+      async () => {
+        const paper = await createPaper("Runtime Badge All Added");
+        const panel = await api.renderPanelForItem(paper.parentItemId);
+        await api.openPanelRuntimeMenu(panel.panelId);
+        const body = Zotero.getMainWindow().document.querySelector(
+          `[data-workflow-panel-id="${panel.panelId}"]`,
+        );
+        const last = body?.querySelector(
+          "#llm-runtime-menu [data-runtime-action]",
+        ) as HTMLElement | null;
+        assert.equal(last?.dataset.runtimeAction, "configure");
+        assert.equal(last?.textContent, "Configure runtimes…");
+      },
+    );
+  });
+
   it("names the built-in runtime Chat when the Agent feature is off but Codex is on", async function () {
     await withPrefs(
       {

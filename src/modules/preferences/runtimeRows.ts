@@ -13,14 +13,16 @@
 import { config } from "../../../package.json";
 import { t } from "../../utils/i18n";
 import {
-  RUNTIME_CONVERSATION_SYSTEMS,
   getRuntimeConversationSystemDescriptor,
   type RuntimeConversationSystem,
 } from "../../core/conversations/conversationSystems";
-import { isRuntimeConversationSystemEnabled } from "../../shared/conversationSystemPrefs";
+import {
+  getAddedRuntimeSystems,
+  isRuntimeConversationSystemEnabled,
+  isRuntimeListed,
+  setAddedRuntimeSystems,
+} from "../../shared/conversationSystemPrefs";
 import { RUNTIME_SYSTEM_DISPLAY_ORDER } from "../contextPanel/runtimeBadge";
-
-export const ADDED_RUNTIME_SYSTEMS_PREF = "addedRuntimeSystems";
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 
@@ -46,38 +48,6 @@ const RUNTIME_ROWS: Record<
     requirement: "Runs the Antigravity CLI. Needs agy installed and signed in.",
   },
 };
-
-function prefKey(): string {
-  return `${config.prefsPrefix}.${ADDED_RUNTIME_SYSTEMS_PREF}`;
-}
-
-/** The runtimes the user added, in registry order. */
-export function getAddedRuntimeSystems(): RuntimeConversationSystem[] {
-  const raw = String(Zotero.Prefs.get(prefKey(), true) || "");
-  const names = new Set(raw.split(",").map((name) => name.trim()));
-  return RUNTIME_CONVERSATION_SYSTEMS.filter((system) => names.has(system));
-}
-
-export function setAddedRuntimeSystems(
-  systems: readonly RuntimeConversationSystem[],
-): void {
-  const wanted = new Set(systems);
-  Zotero.Prefs.set(
-    prefKey(),
-    RUNTIME_CONVERSATION_SYSTEMS.filter((system) => wanted.has(system)).join(
-      ",",
-    ),
-    true,
-  );
-}
-
-/** Listed in Settings: added, or switched on. */
-export function isRuntimeListed(system: RuntimeConversationSystem): boolean {
-  return (
-    getAddedRuntimeSystems().includes(system) ||
-    isRuntimeConversationSystemEnabled(system)
-  );
-}
 
 export function registerRuntimeRows(doc: Document): void {
   const byId = <T extends Element>(id: string) =>
