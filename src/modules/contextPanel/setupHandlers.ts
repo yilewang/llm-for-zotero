@@ -28,7 +28,10 @@ import {
   findAnswerRoots,
   highlightAnswerQuote,
   highlightAnswerQuoteCard,
+  highlightQuotedAnswerText,
   highlightSentenceBeforeMark,
+  SHOW_QUOTED_ANSWER_TEXT_EVENT,
+  type ShowQuotedAnswerTextDetail,
   sentenceClosingMarks,
   pulseAnswerQuote,
 } from "./answerQuoteHighlight";
@@ -5194,43 +5197,17 @@ export function setupHandlers(
       runId: (event as CustomEvent<TaskProgressOpenSourceDetail>).detail.runId,
     });
   });
-  // "Show in answer": scroll the chat to the sentence that uses the source,
-  // light it, and flash its marker (or a library paper's quote chip).
   let clearAnswerLight: ((event: Event) => void) | null = null;
-  body.addEventListener(TASK_PROGRESS_SHOW_IN_ANSWER_EVENT, (event: Event) => {
-    const detail = (event as CustomEvent<TaskProgressShowInAnswerDetail>)
-      .detail;
-    if (!detail?.key) return;
-    const chatBox = body.querySelector(
-      "#llm-chat-box",
-    ) as HTMLDivElement | null;
-    // Older turns of a long conversation may still be waiting to be drawn.
-    flushPendingChatRender(chatBox);
-    clearAnswerQuoteHighlights(body);
-    const roots = findAnswerRoots(body, detail.runId);
-    // A cited passage: every sentence that cites it, by its marks.
-    const passage = detail.citationId
-      ? lightCitedPassage(roots, detail.citationId, detail.texts || [])
-      : null;
-    const mark = passage ? passage.mark : findAnswerSourceMark(detail);
-    const lit = passage
-      ? passage.lit
-      : detail.text
-        ? highlightAnswerQuote(roots, detail.text, mark)
-        : [];
-    // Never a click that does nothing: without the sentence or its marker,
-    // the run's answer itself, and a line that says so.
-    const own = detail.runId ? roots[0] : undefined;
-    const target = lit[0] || mark || own;
-    if (!lit.length && !mark && status && (detail.text || detail.citationId))
-      setStatus(
-        status,
-        target
-          ? t("Couldn't find that sentence in the answer; showing the answer")
-          : t("Couldn't find that sentence in the chat"),
-        "warning",
-      );
-    if (!target) return;
+  /**
+   * Scroll the chat to `target`, pulse what was lit (and flash `mark`), and
+   * keep the light until the next click in the chat.
+   */
+  const showLitAnswer = (
+    chatBox: HTMLDivElement | null,
+    target: HTMLElement,
+    lit: HTMLElement[],
+    mark: HTMLElement | null,
+  ) => {
     const win = body.ownerDocument?.defaultView;
     // Its start at the top of what shows of the chat: a long sentence reads
     // down from there, above the chips and composer. As a navigation, so a
@@ -5288,6 +5265,58 @@ export function setupHandlers(
           chat.addEventListener("mousedown", clear);
       }, 0);
     }
+  };
+  // "Show in answer": scroll the chat to the sentence that uses the source,
+  // light it, and flash its marker (or a library paper's quote chip).
+  body.addEventListener(TASK_PROGRESS_SHOW_IN_ANSWER_EVENT, (event: Event) => {
+    const detail = (event as CustomEvent<TaskProgressShowInAnswerDetail>)
+      .detail;
+    if (!detail?.key) return;
+    const chatBox = body.querySelector(
+      "#llm-chat-box",
+    ) as HTMLDivElement | null;
+    // Older turns of a long conversation may still be waiting to be drawn.
+    flushPendingChatRender(chatBox);
+    clearAnswerQuoteHighlights(body);
+    const roots = findAnswerRoots(body, detail.runId);
+    // A cited passage: every sentence that cites it, by its marks.
+    const passage = detail.citationId
+      ? lightCitedPassage(roots, detail.citationId, detail.texts || [])
+      : null;
+    const mark = passage ? passage.mark : findAnswerSourceMark(detail);
+    const lit = passage
+      ? passage.lit
+      : detail.text
+        ? highlightAnswerQuote(roots, detail.text, mark)
+        : [];
+    // Never a click that does nothing: without the sentence or its marker,
+    // the run's answer itself, and a line that says so.
+    const own = detail.runId ? roots[0] : undefined;
+    const target = lit[0] || mark || own;
+    if (!lit.length && !mark && status && (detail.text || detail.citationId))
+      setStatus(
+        status,
+        target
+          ? t("Couldn't find that sentence in the answer; showing the answer")
+          : t("Couldn't find that sentence in the chat"),
+        "warning",
+      );
+    if (!target) return;
+    showLitAnswer(chatBox, target, lit, mark);
+  });
+  // A chip quoting a model response: show the quoted words in the answer.
+  body.addEventListener(SHOW_QUOTED_ANSWER_TEXT_EVENT, (event: Event) => {
+    const detail = (event as CustomEvent<ShowQuotedAnswerTextDetail>).detail;
+    if (!detail?.text) return;
+    const chatBox = body.querySelector(
+      "#llm-chat-box",
+    ) as HTMLDivElement | null;
+    // Older turns of a long conversation may still be waiting to be drawn.
+    flushPendingChatRender(chatBox);
+    clearAnswerQuoteHighlights(body);
+    const lit = highlightQuotedAnswerText(body, detail.text);
+    if (!lit[0]) return;
+    showLitAnswer(chatBox, lit[0], lit, null);
   });
   /**
    * Light each sentence that cites a passage near the answer's marks that
