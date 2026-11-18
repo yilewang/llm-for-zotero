@@ -137,6 +137,37 @@ describe("workflow: Antigravity storage", function () {
     });
   }
 
+  /**
+   * Antigravity rows that earlier tests in this profile left behind cannot
+   * exist under the old schema; they wait in a side table until `after`.
+   */
+  async function setAsideAntigravityRows(): Promise<void> {
+    for (const table of CONVERSATION_SYSTEM_CHECK_TABLES) {
+      const aside = `${table}__test_set_aside`;
+      await Zotero.DB.executeTransaction(async () => {
+        await Zotero.DB.queryAsync(`DROP TABLE IF EXISTS ${aside}`);
+        await Zotero.DB.queryAsync(
+          `CREATE TABLE ${aside} AS SELECT * FROM ${table} WHERE system = 'antigravity'`,
+        );
+        await Zotero.DB.queryAsync(
+          `DELETE FROM ${table} WHERE system = 'antigravity'`,
+        );
+      });
+    }
+  }
+
+  async function restoreAntigravityRows(): Promise<void> {
+    for (const table of CONVERSATION_SYSTEM_CHECK_TABLES) {
+      const aside = `${table}__test_set_aside`;
+      await Zotero.DB.executeTransaction(async () => {
+        await Zotero.DB.queryAsync(
+          `INSERT OR IGNORE INTO ${table} SELECT * FROM ${aside}`,
+        );
+        await Zotero.DB.queryAsync(`DROP TABLE ${aside}`);
+      });
+    }
+  }
+
   async function restoreOldSchemaEverywhere(): Promise<void> {
     for (const table of CONVERSATION_SYSTEM_CHECK_TABLES) {
       await restoreOldSchema(table);
@@ -164,6 +195,7 @@ describe("workflow: Antigravity storage", function () {
   before(async function () {
     enablePrefBefore = Zotero.Prefs.get(ENABLE_PREF, true);
     Zotero.Prefs.set(ENABLE_PREF, false, true);
+    await setAsideAntigravityRows();
     await restoreOldSchemaEverywhere();
   });
 
@@ -171,6 +203,7 @@ describe("workflow: Antigravity storage", function () {
     Zotero.Prefs.set(ENABLE_PREF, Boolean(enablePrefBefore), true);
     // Leave the profile on the current schema for the suites that follow.
     await removeConversationSystemChecks();
+    await restoreAntigravityRows();
   });
 
   it("starts from the pre-Antigravity schema, which refuses an Antigravity row", async function () {
