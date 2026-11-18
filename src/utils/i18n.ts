@@ -1694,6 +1694,8 @@ const zhCN: Record<string, string> = {
   "Couldn't find that sentence in the answer; showing the answer":
     "在回答中找不到这句话，已显示该回答",
   "Couldn't find that sentence in the chat": "在对话中找不到这句话",
+  "Showing the quoted text in the answer": "已在回答中显示引用的文字",
+  "Couldn't find the quoted text in the chat": "在对话中找不到引用的文字",
 
   // ── Language setting ────────────────────────────────────────────────────
   Language: "语言",

@@ -9864,6 +9864,69 @@ async function exerciseAssistantSelectionNoteSave(input: {
   };
 }
 
+async function exerciseModelQuoteChipShowInAnswer(input: {
+  panelId: string;
+  answers: string[][];
+  quote: string;
+}): ReturnType<WorkflowTestApi["exerciseModelQuoteChipShowInAnswer"]> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(input.panelId);
+  const doc = panel.body.ownerDocument;
+  const chatBox = panel.body.querySelector(
+    "#llm-chat-box",
+  ) as HTMLDivElement | null;
+  if (!chatBox) throw new Error("Workflow panel chat box was not rendered");
+  // Same shape as the answers the chat renders.
+  const answers = input.answers.map((paragraphs) => {
+    const bubble = doc.createElement("div") as HTMLDivElement;
+    bubble.className = "llm-bubble assistant";
+    const answer = doc.createElement("div");
+    answer.className = "llm-assistant-answer";
+    for (const words of paragraphs) {
+      const paragraph = doc.createElement("p");
+      paragraph.textContent = words;
+      answer.appendChild(paragraph);
+    }
+    bubble.appendChild(answer);
+    chatBox.appendChild(bubble);
+    return answer;
+  });
+  try {
+    const mountedItem = activeContextPanels.get(panel.body)?.() || panel.item;
+    const conversationKey = getConversationKey(mountedItem);
+    addSelectedTextContext(panel.body, conversationKey, input.quote, {
+      source: "model",
+      focusInput: false,
+    });
+    const chips = Array.from(
+      panel.body.querySelectorAll(
+        "#llm-selected-context-list .llm-selected-context-meta",
+      ),
+    ) as HTMLButtonElement[];
+    const chip = chips[chips.length - 1];
+    if (!chip) throw new Error("Model quote chip was not rendered");
+    chip.click();
+    await Zotero.Promise.delay(30);
+    const lit = Array.from(
+      chatBox.querySelectorAll(".llm-answer-quote-highlight"),
+    ) as HTMLElement[];
+    const holder = lit[0]?.closest(".llm-assistant-answer") || null;
+    return {
+      litText: lit.map((node) => node.textContent || "").join("|"),
+      litAnswerIndex: holder ? answers.indexOf(holder as HTMLDivElement) : -1,
+      statusText:
+        panel.body.querySelector("#llm-status")?.textContent?.trim() || "",
+      chipExpanded: Boolean(
+        panel.body.querySelector(
+          "#llm-selected-context-list .llm-selected-context.expanded",
+        ),
+      ),
+    };
+  } finally {
+    for (const answer of answers) answer.parentElement?.remove();
+  }
+}
+
 async function exerciseAssistantSelectionInlinePrompt(input: {
   panelId: string;
   assistantText: string;
@@ -12528,6 +12591,7 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseHighlightAwareContextRetrieval,
     exerciseContextChipCardVisibility,
     exerciseAssistantSelectionInlinePrompt,
+    exerciseModelQuoteChipShowInAnswer,
     exerciseAssistantSelectionNoteSave,
     exerciseAssistantSelectionPromptDismissal,
     cleanupFixture,

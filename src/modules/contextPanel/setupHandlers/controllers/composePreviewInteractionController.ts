@@ -20,6 +20,11 @@ import {
 } from "../../../../services/attachmentStorage";
 import { navigateSelectedTextContextToPage as navigateSelectedTextContextToReader } from "../../selectedTextContextNavigation";
 import {
+  ANSWER_LIGHT_SELECTOR,
+  SHOW_QUOTED_ANSWER_TEXT_EVENT,
+  type ShowQuotedAnswerTextDetail,
+} from "../../answerQuoteHighlight";
+import {
   clearSelectedPaperState,
   isPaperContextFullTextMode,
   setPaperModeOverride,
@@ -709,6 +714,17 @@ export function attachComposePreviewInteractionController(
     });
   };
 
+  /** Light a model-response quote in the chat; false when it is not there. */
+  const showQuotedAnswerText = (text: string): boolean => {
+    const EventCtor = body.ownerDocument?.defaultView?.CustomEvent;
+    if (!text || typeof EventCtor !== "function") return false;
+    const detail: ShowQuotedAnswerTextDetail = { text };
+    body.dispatchEvent(
+      new EventCtor(SHOW_QUOTED_ANSWER_TEXT_EVENT, { bubbles: false, detail }),
+    );
+    return Boolean(body.querySelector(ANSWER_LIGHT_SELECTOR));
+  };
+
   if (selectedContextList) {
     selectedContextList.addEventListener("mouseover", (event: Event) => {
       const target = event.target as Element | null;
@@ -844,6 +860,14 @@ export function attachComposePreviewInteractionController(
             setStatus("Could not open the page for this text context", "error");
           });
         return;
+      }
+      // A quote from a model response: its words, lit in the answer.
+      if (targetContext?.source === "model") {
+        if (showQuotedAnswerText(targetContext.text)) {
+          setStatus(t("Showing the quoted text in the answer"), "ready");
+          return;
+        }
+        setStatus(t("Couldn't find the quoted text in the chat"), "warning");
       }
       const expandedIndex = getSelectedTextExpandedIndex(
         textContextKey,

@@ -734,3 +734,47 @@ export function pulseAnswerQuote(lit: readonly HTMLElement[]): void {
     node.classList.add(PULSE_CLASS);
   }
 }
+
+/**
+ * A composer chip quoting a model response: show the quoted words in the
+ * answer. Handled synchronously: once dispatched, what was lit matches
+ * ANSWER_LIGHT_SELECTOR.
+ */
+export const SHOW_QUOTED_ANSWER_TEXT_EVENT = "llm-show-quoted-answer-text";
+
+export type ShowQuotedAnswerTextDetail = { text: string };
+
+/**
+ * Light text the user selected in an answer and quoted. A selection may run
+ * across paragraphs or list items, whose text the answer holds with no
+ * space between, so its words are first matched with spaces left out; the
+ * newest answer first, as the latest answers are the ones quoted most. Then
+ * as "Show in answer" finds a sentence: around chips and maths.
+ */
+export function highlightQuotedAnswerText(
+  body: ParentNode,
+  quote: string,
+): HTMLElement[] {
+  const roots = (Array.from(body.querySelectorAll(ANSWERS)) as HTMLElement[])
+    .filter((root) => !root.closest(".llm-agent-reasoning"))
+    .reverse();
+  const words = foldAnswerWords(quote).replace(/ /g, "");
+  if (!words) return [];
+  for (const root of roots) {
+    const { text, map } = textMap(root);
+    let compact = "";
+    const kept: Piece[] = [];
+    for (let at = 0; at < text.length; at += 1) {
+      if (text[at] === " ") continue;
+      compact += text[at];
+      kept.push(map[at]);
+    }
+    const at = compact.indexOf(words);
+    if (at < 0) continue;
+    const lit = wrapPieces(kept.slice(at, at + words.length));
+    return [...lit, ...lightChipsBetween(root, lit)].sort((left, right) =>
+      left.compareDocumentPosition(right) & 4 ? -1 : 1,
+    );
+  }
+  return highlightAnswerQuote(roots, quote);
+}

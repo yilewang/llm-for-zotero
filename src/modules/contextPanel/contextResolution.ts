@@ -1719,13 +1719,15 @@ export function applySelectedTextPreview(body: Element, itemId: number) {
       (selectedContext.pageIndex as number) >= 0;
     previewMeta.title = isJumpablePdfContext
       ? `Jump to ${pageLabel || "page"}`
-      : selectedSource === "note-edit"
-        ? isExpanded
-          ? "Collapse editing focus"
-          : "Expand editing focus"
-        : isExpanded
-          ? "Collapse text context"
-          : "Expand text context";
+      : selectedSource === "model"
+        ? t("Show in answer")
+        : selectedSource === "note-edit"
+          ? isExpanded
+            ? "Collapse editing focus"
+            : "Expand editing focus"
+          : isExpanded
+            ? "Collapse text context"
+            : "Expand text context";
     previewMeta.setAttribute(
       "aria-expanded",
       isJumpablePdfContext ? "false" : isExpanded ? "true" : "false",

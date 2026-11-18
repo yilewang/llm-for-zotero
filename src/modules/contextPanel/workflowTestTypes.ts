@@ -2387,6 +2387,23 @@ export type WorkflowTestApi = {
     hitIsCard: boolean;
     hitDescription: string;
   }>;
+  /**
+   * Draws two answers (each a run of paragraphs), quotes `quote` as a model
+   * response chip, and clicks the chip.
+   */
+  exerciseModelQuoteChipShowInAnswer: (input: {
+    panelId: string;
+    answers: string[][];
+    quote: string;
+  }) => Promise<{
+    /** Text of what was lit, in reading order, joined by "|". */
+    litText: string;
+    /** Index in `answers` of the answer holding the light, or -1. */
+    litAnswerIndex: number;
+    statusText: string;
+    /** Whether the chip expanded instead (the fallback when not found). */
+    chipExpanded: boolean;
+  }>;
   exerciseAssistantSelectionInlinePrompt: (input: {
     panelId: string;
     assistantText: string;
