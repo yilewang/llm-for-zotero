@@ -73,6 +73,7 @@ import {
 import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 import { extractVerifiedReadSources } from "../context/readEvidence";
+import { buildSizedModelView } from "../execution/modelView";
 import type {
   TrustedReadObservation,
   VerifiedReadSource,
@@ -2311,19 +2312,69 @@ function createToolContext(
 }
 
 /**
- * The call's result as the client's model reads it. A tool that keeps fields
- * from the model (`modelContent`: a digest's citation records) is sent its
- * model content; the activity event carries the whole result.
+ * What an MCP client's model reads in place of rows a sized view left out.
+ * The client has no tool-result handle to page, so a narrower call is the
+ * way to the rest.
  */
-function formatToolResult(
-  execution: Extract<PreparedToolExecution, { kind: "result" }>["execution"],
-  tool: Pick<AgentToolDefinition<any, any>, "modelContent"> | undefined,
-): McpToolCallResult {
+export const MCP_MODEL_VIEW_NOTICE =
+  "This result is sized to the request; omitted counts what it left out. To see omitted rows, call again with a narrower scope or ask for fewer papers or passages.";
+
+/** A read observation as the result names it: the ref the model cites. */
+function documentEvidenceRef(
+  observation: TrustedReadObservation,
+): Record<string, unknown> {
+  return {
+    evidenceRef: observation.observationId,
+    libraryID: observation.libraryID,
+    itemKey: observation.itemKey,
+    capabilities: observation.capabilities,
+    attachmentItemKey: observation.attachmentItemKey,
+    pageIndex: observation.pageIndex,
+    sourceFingerprint: observation.sourceFingerprint,
+  };
+}
+
+/**
+ * The call's result as the client's model reads it, the same view the plugin
+ * Agent's model reads: a tool that sizes its results (`buildModelView`) is
+ * sent its view with the evidence refs of the rows shown; a tool that keeps
+ * fields from the model (`modelContent`: a digest's citation records) is
+ * sent its model content. The activity event, the citations and the read
+ * observations come from the whole result.
+ */
+function formatToolResult(params: {
+  execution: Extract<PreparedToolExecution, { kind: "result" }>["execution"];
+  tool:
+    | Pick<AgentToolDefinition<any, any>, "buildModelView" | "modelContent">
+    | undefined;
+  context: AgentToolContext;
+  observations: readonly TrustedReadObservation[];
+}): McpToolCallResult {
+  const { execution, tool } = params;
   const { result } = execution;
-  const content =
-    result.ok && tool?.modelContent
-      ? tool.modelContent(result.content, execution.input)
-      : result.content;
+  const refs = params.observations.map(documentEvidenceRef);
+  const view =
+    result.ok && tool?.buildModelView
+      ? buildSizedModelView({
+          toolDefinition: tool,
+          toolName: result.name,
+          input: execution.input,
+          result: result.content,
+          context: params.context,
+          documentEvidenceRefs: refs,
+        })
+      : null;
+  let content: unknown = result.content;
+  let documentEvidenceRefs: unknown = refs;
+  if (view) {
+    const { documentEvidenceRefs: keptRefs, ...shown } = view.content;
+    content = shown.omitted
+      ? { ...shown, modelViewNotice: MCP_MODEL_VIEW_NOTICE }
+      : shown;
+    documentEvidenceRefs = keptRefs || [];
+  } else if (result.ok && tool?.modelContent) {
+    content = tool.modelContent(result.content, execution.input);
+  }
   return {
     content: [
       {
@@ -2337,6 +2388,9 @@ function formatToolResult(
               ? { actionReceipts: result.actionReceipts }
               : {}),
             artifacts: result.artifacts,
+            ...((documentEvidenceRefs as unknown[]).length
+              ? { documentEvidenceRefs }
+              : {}),
           },
           null,
           2,
@@ -2438,41 +2492,6 @@ function rememberedDigestObservations(
     }
   }
   return out;
-}
-
-function appendDocumentEvidenceRefs(
-  result: McpToolCallResult,
-  observations: readonly TrustedReadObservation[],
-): McpToolCallResult {
-  if (!observations.length || !result.content.length) return result;
-  const content = result.content.map((part, index) => {
-    if (index !== 0 || part.type !== "text") return part;
-    try {
-      const parsed = JSON.parse(part.text) as Record<string, unknown>;
-      return {
-        ...part,
-        text: JSON.stringify(
-          {
-            ...parsed,
-            documentEvidenceRefs: observations.map((observation) => ({
-              evidenceRef: observation.observationId,
-              libraryID: observation.libraryID,
-              itemKey: observation.itemKey,
-              capabilities: observation.capabilities,
-              attachmentItemKey: observation.attachmentItemKey,
-              pageIndex: observation.pageIndex,
-              sourceFingerprint: observation.sourceFingerprint,
-            })),
-          },
-          null,
-          2,
-        ),
-      };
-    } catch {
-      return part;
-    }
-  });
-  return { ...result, content };
 }
 
 function extractArtifactsFromMcpToolCallResult(
@@ -2789,14 +2808,14 @@ async function handleToolsCall(
     }
     if (scope)
       scope.clarificationHistory = toolContext.request.clarificationHistory;
-    let result = formatToolResult(prepared.execution, tool);
+    const executionOk = prepared.execution.result.ok;
     // One attestation site, one recorder: the read's trusted observations and
     // its Task progress delta come from the same call. Without a
     // conversation there is nothing to record the delta in. A call that is
     // not a read may state paper decisions; the same recorder makes their
     // delta, which rides on the activity as a read's does.
     const { observations: readObservations, paperLedgerDelta } =
-      tool.spec.executionClass === "read" && !result.isError
+      tool.spec.executionClass === "read" && executionOk
         ? await attestAndRecordRead({
             toolName: name,
             callId: prepared.execution.result.callId,
@@ -2808,7 +2827,7 @@ async function handleToolsCall(
           })
         : {
             observations: [],
-            paperLedgerDelta: result.isError
+            paperLedgerDelta: !executionOk
               ? null
               : recordTaskPaperDecisions({
                   toolName: name,
@@ -2821,7 +2840,7 @@ async function handleToolsCall(
     rememberDocumentReadObservations(headers, readObservations);
     // The outside papers a document of this run may cite: what
     // literature_search and literature_read returned.
-    const outsidePapers = result.isError
+    const outsidePapers = !executionOk
       ? []
       : outsidePaperRecordsFromToolResult(
           name,
@@ -2832,15 +2851,20 @@ async function handleToolsCall(
       headers,
       prepared.execution.result.artifacts || [],
     );
-    result = appendDocumentEvidenceRefs(result, [
-      ...readObservations,
-      ...rememberedDigestObservations(
-        name,
-        prepared.execution.result.content,
-        scope?.documentReadObservations,
-        readObservations,
-      ),
-    ]);
+    const result = formatToolResult({
+      execution: prepared.execution,
+      tool,
+      context: toolContext,
+      observations: [
+        ...readObservations,
+        ...rememberedDigestObservations(
+          name,
+          prepared.execution.result.content,
+          scope?.documentReadObservations,
+          readObservations,
+        ),
+      ],
+    });
     // From the whole result: the text the model reads may leave them out.
     const quoteCitations = extractQuoteCitationsFromToolContent(
       prepared.execution.result.content,

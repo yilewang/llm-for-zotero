@@ -2164,6 +2164,23 @@ function hidesQuoteCitationRecords(result: unknown): boolean {
   );
 }
 
+/**
+ * A targeted query read without its retrieval rows: `papers` lists the same
+ * passages, grouped by paper, with their quote ids.
+ */
+function withoutGroupedRetrievalRows(result: unknown): unknown {
+  if (
+    !validateObject<Record<string, unknown>>(result) ||
+    result.mode !== "targeted" ||
+    !Array.isArray(result.results) ||
+    !Array.isArray(result.papers)
+  )
+    return result;
+  const { results, ...rest } = result;
+  void results;
+  return rest;
+}
+
 function targetForPageTool(input: PaperReadInput): Record<string, unknown> {
   const target = input.target || input.targets?.[0];
   return {
@@ -3253,12 +3270,14 @@ export function createPaperReadTool(
     guidance: PAPER_READ_GUIDANCE,
     // A whole-sections, page or full read shows the model each passage's
     // citation id, not the citation records: they would repeat every
-    // passage's quote. The run's collector and the panel read the whole
-    // result.
+    // passage's quote. A query read shows its passages once, grouped by
+    // paper with their quote ids, not also as the retrieval rows they were
+    // grouped from. The run's collector, the read observations and the
+    // panel read the whole result.
     modelContent: (result) =>
       hidesQuoteCitationRecords(result)
         ? withoutDigestQuoteCitations(result)
-        : result,
+        : withoutGroupedRetrievalRows(result),
     presentation: {
       label: "Read Paper",
       traceIcon: "library",
