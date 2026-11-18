@@ -1695,17 +1695,53 @@ function describeMcpHostAccess(toolName: string): string | undefined {
   return undefined;
 }
 
+/**
+ * paper_read's full mode needs a tool-free reader: the chat's own runtime
+ * (Codex, Claude Code) or a reader model the user picked. A scope with
+ * neither (an Antigravity chat without a picked reader) cannot run it.
+ */
+function isFullPaperReadUnavailable(
+  scope: ZoteroMcpActiveScope | null,
+): boolean {
+  return (
+    scope?.exhaustiveReadBackend === "unavailable" && !scope.readerSelection
+  );
+}
+
+const PAPER_READ_NO_FULL_MODE_NOTE =
+  "In this chat mode:'full' is unavailable (no reader model is set): read the paper in parts with mode:'targeted' (sections, or a query), after mode:'outline' when you need its section addresses.";
+
+/** paper_read's schema without the full mode, for such a scope. */
+function withoutFullPaperReadMode(schema: object): object {
+  const record = schema as Record<string, unknown>;
+  const properties = normalizeRecord(record.properties);
+  const mode = normalizeRecord(properties.mode);
+  if (!Array.isArray(mode.enum)) return schema;
+  return {
+    ...record,
+    properties: {
+      ...properties,
+      mode: { ...mode, enum: mode.enum.filter((value) => value !== "full") },
+    },
+  };
+}
+
 function handleToolsList(
   toolRegistry: AgentToolRegistry,
   scope: ZoteroMcpActiveScope | null,
 ): McpToolsListResult {
+  const noFullRead = isFullPaperReadUnavailable(scope);
   const tools: McpToolDefinition[] = toolRegistry
     .listTools()
     .filter((tool) => isMcpToolVisibleInScope(tool, scope))
     .map(({ name, description, inputSchema, executionClass }) => {
       const mutability =
         executionClass === "external_effect" ? "write" : "read";
-      const schema = decorateMcpToolSchema(inputSchema, name);
+      const decorated = decorateMcpToolSchema(inputSchema, name);
+      const schema =
+        name === "paper_read" && noFullRead
+          ? withoutFullPaperReadMode(decorated)
+          : decorated;
       return {
         name,
         title: formatToolTitle(name),
@@ -1722,6 +1758,9 @@ function handleToolsList(
                 )
               : []),
             describeMcpHostAccess(name),
+            name === "paper_read" && noFullRead
+              ? PAPER_READ_NO_FULL_MODE_NOTE
+              : undefined,
             // Codex code-mode discovery renders deeply nested input types as
             // `unknown`. Keep the complete contract discoverable there too;
             // otherwise the agent has to guess evidence and scope shapes.

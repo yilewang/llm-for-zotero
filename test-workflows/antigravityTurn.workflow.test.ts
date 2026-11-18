@@ -49,6 +49,58 @@ describe("workflow: Antigravity turns", function () {
       ],
     },
     {
+      match: /open the paper's page image/,
+      title: "Page image",
+      steps: [
+        {
+          type: "tool",
+          name: "read_file",
+          kind: "read",
+          title: "File page.png",
+          // Real agy asks before any read outside its own folder.
+          askPermission: true,
+          locations: [
+            `${Zotero.DataDirectory.dir}/chat-attachments/blobs/abc/page 5.png`,
+          ],
+          result: "an image",
+        },
+        { type: "text", text: "Saw the page." },
+      ],
+    },
+    {
+      match: /read a file outside zotero/,
+      title: "Outside file",
+      steps: [
+        {
+          type: "tool",
+          name: "read_file",
+          kind: "read",
+          title: "File secrets.txt",
+          askPermission: true,
+          locations: ["/tmp/llm-for-zotero-antigravity-test/secrets.txt"],
+          result: "text",
+        },
+        { type: "text", text: "Read it." },
+      ],
+    },
+    {
+      match: /reread your saved output/,
+      title: "Saved output",
+      steps: [
+        {
+          type: "tool",
+          name: "read_file",
+          kind: "read",
+          title: "File output.txt",
+          locations: [
+            "/Users/someone/.gemini/antigravity-cli/brain/abc/.system_generated/steps/7/output.txt",
+          ],
+          result: "earlier result",
+        },
+        { type: "text", text: "Done rereading." },
+      ],
+    },
+    {
       match: /outline of this paper/,
       title: "Paper outline",
       steps: [
@@ -302,6 +354,97 @@ describe("workflow: Antigravity turns", function () {
     ]);
     assert.equal(result.deliveredText, "Read the paper.");
     assert.include(result.deliveredEvents, "codex_tool_activity");
+  });
+
+  it("lets agy read files in the Zotero data folder without a card, and still asks elsewhere", async function () {
+    const inside = await run({
+      question: "Please open the paper's page image.",
+    });
+    assert.equal(inside.outcomeKind, "completed", JSON.stringify(inside));
+    assert.equal(inside.confirmations, 0, "a Zotero data file reads freely");
+    assert.include(inside.deliveredText, "Saw the page.");
+
+    const outside = await run({
+      question: "Please read a file outside zotero.",
+      approve: false,
+    });
+    assert.equal(outside.confirmations, 1, "any other file still asks");
+  });
+
+  it("shows no activity row for agy rereading its own saved output", async function () {
+    const result = await run({ question: "Please reread your saved output." });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.equal(result.deliveredText, "Done rereading.");
+    assert.notInclude(result.deliveredEvents, "tool_call");
+  });
+
+  it("offers paper_read without full mode when no reader model can run it", async function () {
+    const result = await run({
+      question: "Give me an outline of this paper.",
+      mcp: true,
+      createChild: (launch) =>
+        createFakeAcpChild({
+          scenarios: SCENARIOS,
+          store,
+          skipPermissions: launch.skipPermissions,
+          fetch: zoteroHttpFetch,
+        }),
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    const schema = store.get(String(result.storedSessionId))?.mcpToolSchemas
+      ?.paper_read as { properties?: { mode?: { enum?: string[] } } };
+    const modes = schema?.properties?.mode?.enum || [];
+    assert.include(modes, "targeted");
+    assert.notInclude(modes, "full");
+  });
+
+  it("runs a Zotero write without a card in Auto mode, and asks in Default", async function () {
+    const writeNote: FakeAcpScenario = {
+      match: /write the note/,
+      title: "Note",
+      steps: [
+        {
+          type: "mcpTool",
+          server: "*",
+          tool: "note_write",
+          args: {
+            mode: "create",
+            target: "item",
+            targetItemId: fixture.parentItemId,
+            content: "Antigravity write-policy test note.",
+          },
+          // agy asks before every MCP tool, in every mode.
+          askPermission: true,
+        },
+        { type: "text", text: "Wrote it." },
+      ],
+    };
+    const child = (launch: { skipPermissions: boolean }) =>
+      createFakeAcpChild({
+        scenarios: [writeNote, ...SCENARIOS],
+        store,
+        skipPermissions: launch.skipPermissions,
+        fetch: zoteroHttpFetch,
+      });
+    const auto = await run({
+      question: "Please write the note.",
+      mcp: true,
+      permissionMode: "auto",
+      createChild: child,
+    });
+    assert.equal(auto.outcomeKind, "completed", JSON.stringify(auto));
+    assert.equal(auto.confirmations, 0, "Auto runs a Zotero write unasked");
+    assert.equal(auto.deliveredText, "Wrote it.");
+
+    const ask = await run({
+      question: "Please write the note.",
+      mcp: true,
+      permissionMode: "default",
+      approve: false,
+      newProcess: true,
+      createChild: child,
+    });
+    assert.equal(ask.confirmations, 1, "Default asks before a Zotero write");
   });
 
   it("applies the turn's model and thinking level to agy's session", async function () {

@@ -67,6 +67,8 @@ export type FakeAcpStep =
        * tool's locations, like agy's read_file on an attached file.
        */
       readsAttachments?: boolean;
+      /** Absolute paths the tool touches (its `locations`). */
+      locations?: string[];
     }
   /** A tool on an MCP server the client passed in `session/new`. */
   | {
@@ -113,6 +115,8 @@ export type FakeAcpStoredSession = {
    * agy's tool budget (eagerMcpToolNames).
    */
   callableMcpTools?: string[];
+  /** The input schema of each MCP tool on the last MCP use. */
+  mcpToolSchemas?: Record<string, unknown>;
   /** `_meta.antigravity.systemPrompt.append` from session/new. */
   systemPrompt?: string;
   /** Updates replayed by `session/load`, in order. */
@@ -764,8 +768,11 @@ export class FakeAcpAgent {
       rawInput: args,
       kind,
       title: isMcp ? `${serverName}: ${step.tool}` : (step.title ?? name),
-      locations:
-        !isMcp && step.readsAttachments ? attachedFileLocations(prompt) : [],
+      locations: isMcp
+        ? []
+        : step.readsAttachments
+          ? attachedFileLocations(prompt)
+          : (step.locations ?? []).map((path) => ({ path })),
       content: [],
     };
     const update = (
@@ -922,6 +929,9 @@ export class FakeAcpAgent {
     const session = this.options.store.get(sessionId);
     if (session) {
       session.callableMcpTools = callable;
+      session.mcpToolSchemas = Object.fromEntries(
+        (listed?.tools ?? []).map((entry) => [entry.name, entry.inputSchema]),
+      );
       this.options.store.put(session);
     }
     // agy never offers the model a tool outside its budget.

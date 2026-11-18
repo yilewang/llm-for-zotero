@@ -95,6 +95,18 @@ import {
   type AntigravityModelCatalog,
 } from "./modelCatalog";
 
+/** The Zotero data folder (the library's files), or "" when unknown. */
+function getZoteroDataDirectory(): string {
+  try {
+    return String(
+      (Zotero as unknown as { DataDirectory?: { dir?: string } }).DataDirectory
+        ?.dir || "",
+    );
+  } catch {
+    return "";
+  }
+}
+
 /** Every Antigravity conversation of a profile runs in this folder. */
 export function getAntigravityRuntimeCwd(): string {
   return joinLocalPath(getZoteroAgentRuntimeRootDir(), "antigravity");
@@ -211,6 +223,27 @@ export function buildAntigravityPermissionAction(
  * Turns one turn's ACP updates into agent events. Zotero MCP tool calls are
  * left out: the turn host reports them from the MCP server itself.
  */
+/**
+ * agy saves a long tool result to a file in its own session folder
+ * (`~/.gemini/antigravity-cli/brain/<session>/.system_generated/...`) and
+ * the model reads it back in chunks. Those reads repeat a result the chat
+ * already shows, so they get no activity row of their own.
+ */
+export function isAgyOwnOutputRead(call: AcpToolCall): boolean {
+  if (call.kind !== "read") return false;
+  const paths = (call.locations ?? []).map((location) => location.path);
+  return (
+    paths.length > 0 &&
+    paths.every(
+      (path) =>
+        typeof path === "string" &&
+        /[\\/]\.gemini[\\/]antigravity-cli[\\/]brain[\\/][^\\/]+[\\/]\.system_generated[\\/]/.test(
+          path,
+        ),
+    )
+  );
+}
+
 export function createAcpEventMapper(options: {
   zoteroServerName?: string;
   emit: (event: AgentEvent) => Promise<void>;
@@ -245,7 +278,12 @@ export function createAcpEventMapper(options: {
         }
         return;
       case "tool_call": {
-        if (isZoteroCall(update) || callNames.has(update.toolCallId)) return;
+        if (
+          isZoteroCall(update) ||
+          isAgyOwnOutputRead(update) ||
+          callNames.has(update.toolCallId)
+        )
+          return;
         const name = update.name || update.title || "tool";
         callNames.set(update.toolCallId, name);
         await options.emit({
@@ -514,27 +552,57 @@ function createAbortError(): Error {
 }
 
 /** True for a read-only agy tool call that touches only attached files. */
-export function isAttachedFileRead(
+/**
+ * True for a read-only agy tool call that touches only files the turn may
+ * read freely: files attached to the turn, and anything inside a readable
+ * root (the Zotero data folder: the library's PDFs, and the page images and
+ * attachments the Zotero tools save there). agy asks before reading any
+ * file outside its own folder, in every mode, so without this a paper
+ * question raised a card for each PDF or page image it opened.
+ */
+export function isFreeFileRead(
   toolCall: AcpToolCall,
-  attachedPaths: readonly string[],
+  allowed: {
+    attachedPaths: readonly string[];
+    readableRoots: readonly string[];
+  },
 ): boolean {
-  if (toolCall.kind !== "read" || !attachedPaths.length) return false;
+  if (toolCall.kind !== "read") return false;
   const paths = (toolCall.locations ?? []).map((location) => location.path);
+  const roots = allowed.readableRoots
+    .filter(Boolean)
+    .map((root) => (/[\\/]$/.test(root) ? root : `${root}/`));
   return (
-    paths.length > 0 && paths.every((path) => attachedPaths.includes(path))
+    paths.length > 0 &&
+    paths.every(
+      (path) =>
+        typeof path === "string" &&
+        (allowed.attachedPaths.includes(path) ||
+          (!/(^|[\\/])\.\.([\\/]|$)/.test(path) &&
+            roots.some((root) => path.startsWith(root)))),
+    )
   );
 }
 
 /** Answers one agy permission request for the turn. */
-function createPermissionHandler(params: {
+function createPermissionHandler(options: {
   ctx: ExternalTurnRunContext<AntigravityPrepared, AntigravityServers>;
   zoteroServerName: string | undefined;
-  /** Files the user attached this turn; agy reads them without asking. */
-  attachedPaths: readonly string[];
+  /**
+   * The chip's mode lets Zotero writes run without asking (Accept edits,
+   * Auto). agy asks before every MCP tool in every mode, so the chip's
+   * meaning is applied here, as Codex and Claude Code apply it.
+   */
+  allowZoteroWrites: boolean;
+  /** Files agy reads without asking (see isFreeFileRead). */
+  freeReads: {
+    attachedPaths: readonly string[];
+    readableRoots: readonly string[];
+  };
   onDenied: () => void;
 }) {
-  const { ctx, zoteroServerName, onDenied } = params;
-  const attachedPaths = params.attachedPaths;
+  const { ctx, zoteroServerName, onDenied, freeReads, allowZoteroWrites } =
+    options;
   return async (
     params: AcpRequestPermissionParams,
     signal: AbortSignal,
@@ -542,16 +610,17 @@ function createPermissionHandler(params: {
     const zoteroTool = zoteroServerName
       ? zoteroToolNameOf(params.toolCall, zoteroServerName)
       : null;
-    // The Zotero MCP server reviews every write it runs; its reads are safe.
+    // The Zotero tools' reads are safe; their writes follow the chip.
     if (
       zoteroTool &&
-      (ZOTERO_MCP_SAFE_READ_TOOL_NAMES as readonly string[]).includes(
+      ((ZOTERO_MCP_SAFE_READ_TOOL_NAMES as readonly string[]).includes(
         zoteroTool,
-      )
+      ) ||
+        allowZoteroWrites)
     ) {
       return chooseOption(params.options, true);
     }
-    if (isAttachedFileRead(params.toolCall, attachedPaths)) {
+    if (isFreeFileRead(params.toolCall, freeReads)) {
       return chooseOption(params.options, true);
     }
     const resolution = await ctx.requestInteraction(
@@ -673,7 +742,13 @@ export function createAntigravityTransport(
         createPermissionHandler({
           ctx,
           zoteroServerName,
-          attachedPaths: input.attachedPaths,
+          allowZoteroWrites:
+            prepared.sessionMode === "auto" ||
+            prepared.sessionMode === "accept-edits",
+          freeReads: {
+            attachedPaths: input.attachedPaths,
+            readableRoots: [getZoteroDataDirectory()],
+          },
           onDenied: () => {
             denied = true;
           },
