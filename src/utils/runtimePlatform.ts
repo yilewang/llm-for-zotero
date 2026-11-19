@@ -32,6 +32,18 @@ function resolveRuntimePlatform(): RuntimePlatform {
   return "linux";
 }
 
+/**
+ * The CPU architecture Zotero runs on, from Gecko's XPCOM ABI
+ * ("aarch64-gcc3" → "aarch64"), or null when unknown.
+ */
+export function getRuntimeCpuArch(): "aarch64" | "x86_64" | null {
+  const abi = (globalThis as { Services?: { appinfo?: { XPCOMABI?: string } } })
+    .Services?.appinfo?.XPCOMABI;
+  const arch = typeof abi === "string" ? abi.split("-")[0] : "";
+  if (arch === "aarch64" || arch === "x86_64") return arch;
+  return null;
+}
+
 function resolveWindowsSystemRoot(): string {
   const servicesRoot = (
     globalThis as {

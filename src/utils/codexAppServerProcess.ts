@@ -8,9 +8,9 @@ import type {
   CodexAppServerHistoryItem,
   CodexAppServerUserInput,
 } from "./codexAppServerInput";
-import { getIOUtils, pathExists } from "./geckoFs";
+import { getIOUtils, pathExists, resolveRealPath } from "./geckoFs";
 import { getCodexHomePref } from "./codexHomePref";
-import { getRuntimePlatformInfo } from "./runtimePlatform";
+import { getRuntimeCpuArch, getRuntimePlatformInfo } from "./runtimePlatform";
 import { getReasoningDefaultLevelForModel } from "./reasoningProfiles";
 import { extractContextCacheUsage } from "../contextCache/manager";
 import { appLogger } from "../core/logging";
@@ -140,7 +140,7 @@ export type CodexAppServerProcessOptions = {
   codexPath?: string;
 };
 
-type CodexLaunchInvocation = {
+export type CodexLaunchInvocation = {
   command: string;
   args: string[];
   environment?: Record<string, string>;
@@ -285,20 +285,9 @@ export class CodexAppServerProcess {
     const info = getRuntimePlatformInfo();
     const binary = await resolveCodexBinary(options.codexPath);
 
-    let command: string;
-    let args: string[];
-    let environment: Record<string, string> | undefined;
-    if (info.platform === "windows") {
-      const invocation = await buildWindowsCodexInvocation(binary, info);
-      command = invocation.command;
-      args = invocation.args;
-      environment = invocation.environment;
-    } else {
-      const invocation = await buildPosixCodexInvocation(binary, info);
-      command = invocation.command;
-      args = invocation.args;
-      environment = invocation.environment;
-    }
+    const invocation = await buildCodexLaunchInvocation(binary, info);
+    const { command, args } = invocation;
+    let environment = invocation.environment;
     const codexHome = getCodexHomePref();
     if (codexHome) await assertCodexHomeFolder(codexHome);
     environment = buildCodexLaunchEnvironment(environment, codexHome);
@@ -2250,6 +2239,16 @@ function getWindowsDirectory(path: string): string {
   return getPathDirectory(path);
 }
 
+/** The command, arguments and added environment that start `binary`'s app server. */
+export async function buildCodexLaunchInvocation(
+  binary: string,
+  info: ReturnType<typeof getRuntimePlatformInfo> = getRuntimePlatformInfo(),
+): Promise<CodexLaunchInvocation> {
+  return info.platform === "windows"
+    ? buildWindowsCodexInvocation(binary, info)
+    : buildPosixCodexInvocation(binary, info);
+}
+
 async function buildWindowsCodexInvocation(
   binary: string,
   info: ReturnType<typeof getRuntimePlatformInfo>,
@@ -2334,11 +2333,76 @@ async function buildPosixCodexInvocation(
   const path = uniquePaths([...pathEntries, ...inheritedPath.split(":")]).join(
     ":",
   );
+  const npmNative = await resolvePosixNpmNativeCodex(binary, info);
   return {
-    command: binary,
+    command: npmNative?.command ?? binary,
     args: ["app-server"],
-    ...(path ? { environment: { PATH: path } } : {}),
+    ...(path || npmNative
+      ? {
+          environment: {
+            ...(path ? { PATH: path } : {}),
+            ...npmNative?.environment,
+          },
+        }
+      : {}),
   };
+}
+
+/**
+ * npm installs `codex` as a Node script, @openai/codex/bin/codex.js, that
+ * replaces its own process with the platform package's native binary
+ * (`process.execve`, Node 23.11 and later). A Node process that Zotero
+ * starts is killed at that execve, before it prints anything, so on macOS
+ * and Linux the app server starts the native binary itself, found the way
+ * the script finds it and given the environment the script gives it. A
+ * missing platform package keeps the script, which names the problem.
+ */
+async function resolvePosixNpmNativeCodex(
+  binary: string,
+  info: ReturnType<typeof getRuntimePlatformInfo>,
+): Promise<{ command: string; environment: Record<string, string> } | null> {
+  const script = resolveRealPath(binary);
+  if (!script || !script.endsWith("/@openai/codex/bin/codex.js")) return null;
+  const packageRoot = getPathDirectory(getPathDirectory(script));
+  const arch = getRuntimeCpuArch();
+  if (!arch) return null;
+  const triple =
+    info.platform === "macos"
+      ? `${arch}-apple-darwin`
+      : `${arch}-unknown-linux-musl`;
+  const platformPackage = `codex-${info.platform === "macos" ? "darwin" : "linux"}-${arch === "aarch64" ? "arm64" : "x64"}`;
+  // Node resolves the platform package from the package's own node_modules,
+  // then from the node_modules that holds the package; the script falls back
+  // to a vendor folder of its own.
+  const vendorRoots = [
+    joinRuntimePath(
+      "/",
+      packageRoot,
+      "node_modules",
+      "@openai",
+      platformPackage,
+      "vendor",
+    ),
+    joinRuntimePath(
+      "/",
+      getPathDirectory(packageRoot),
+      platformPackage,
+      "vendor",
+    ),
+    joinRuntimePath("/", packageRoot, "vendor"),
+  ];
+  for (const vendorRoot of vendorRoots) {
+    const native = joinRuntimePath("/", vendorRoot, triple, "bin", "codex");
+    if (!(await pathExists(native))) continue;
+    return {
+      command: resolveRealPath(native) || native,
+      environment: {
+        CODEX_MANAGED_PACKAGE_ROOT: packageRoot,
+        CODEX_MANAGED_BY_NPM: "1",
+      },
+    };
+  }
+  return null;
 }
 
 function getWindowsNpmCodexJsPath(directory: string): string {

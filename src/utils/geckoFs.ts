@@ -71,6 +71,43 @@ export function getOSFile(): GeckoOSFile | undefined {
   return (globalThis as { OS?: { File?: GeckoOSFile } }).OS?.File;
 }
 
+/**
+ * The path with every symbolic link resolved (`realpath`), or null when it
+ * does not exist or Gecko cannot resolve it.
+ */
+export function resolveRealPath(path: string): string | null {
+  try {
+    const components = (
+      globalThis as {
+        Components?: {
+          classes?: Record<
+            string,
+            {
+              createInstance?: (type: unknown) => {
+                initWithPath: (path: string) => void;
+                exists: () => boolean;
+                normalize: () => void;
+                path: string;
+              };
+            }
+          >;
+          interfaces?: { nsIFile?: unknown };
+        };
+      }
+    ).Components;
+    const file = components?.classes?.[
+      "@mozilla.org/file/local;1"
+    ]?.createInstance?.(components.interfaces?.nsIFile);
+    if (!file) return null;
+    file.initWithPath(path);
+    if (!file.exists()) return null;
+    file.normalize();
+    return typeof file.path === "string" ? file.path : null;
+  } catch {
+    return null;
+  }
+}
+
 /** True when the path exists; false on any API error or when no API exists. */
 export async function pathExists(path: string): Promise<boolean> {
   const io = getIOUtils();
