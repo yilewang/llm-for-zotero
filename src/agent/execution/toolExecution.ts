@@ -25,7 +25,7 @@ import {
   buildPaperLedgerUpdateEvent,
   recordTaskPaperDecisions,
 } from "../context/taskPaperLedgerRecorder";
-import { buildSizedModelView } from "./modelView";
+import { buildPagedModelView } from "./modelView";
 import { shortEvidenceRef } from "../context/evidenceRefTokens";
 import {
   taskPaperReadDepths,
@@ -72,10 +72,6 @@ import type {
   AgentToolEffect,
   AgentToolResult,
 } from "../types";
-
-/** How the model reaches what a sized view left out. */
-const MODEL_VIEW_HANDLE_NOTICE =
-  "This result is sized to the request; omitted counts what it left out. context_read source:'tool_result' with this handle pages the exact stored result, which lists the rows shown here first: read a row path from offset = the number of rows shown.";
 
 /** One tool call the turn executed, as the runtime's loop consumes it. */
 export type ExecutedToolCall = {
@@ -541,7 +537,7 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
     toolResult: AgentToolResult;
     documentEvidenceRefs?: unknown[];
   }): Promise<Record<string, unknown> | undefined> => {
-    const view = buildSizedModelView({
+    return buildPagedModelView({
       toolDefinition: params.toolDefinition,
       toolName: params.toolResult.name,
       input: params.input,
@@ -550,19 +546,13 @@ export function createToolExecution(deps: ToolExecutionDeps): ToolExecution {
       documentEvidenceRefs: params.documentEvidenceRefs as
         | Array<Record<string, unknown>>
         | undefined,
+      storeResult: (stored) =>
+        persistResultHandle({
+          call: params.call,
+          input: params.input,
+          content: stored,
+        }),
     });
-    if (!view) return undefined;
-    const handle = await persistResultHandle({
-      call: params.call,
-      input: params.input,
-      content: view.stored,
-    });
-    if (!handle) return undefined;
-    return {
-      ...view.content,
-      toolResultHandle: handle,
-      toolResultHandleNotice: MODEL_VIEW_HANDLE_NOTICE,
-    };
   };
 
   /**
