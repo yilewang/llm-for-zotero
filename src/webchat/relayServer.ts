@@ -32,7 +32,10 @@ import {
 
 const PREFIX = "/llm-for-zotero/webchat";
 const PRE_SUBMIT_RECLAIM_MS = 120_000;
-const PIPELINE_TIMEOUT_MS = 180_000;
+// Only expire a submitted turn when no verified progress (answer text,
+// thinking trace, or turn state) arrived for this long. A web model that
+// reasons for several minutes is not a stalled pipeline.
+const PIPELINE_TIMEOUT_MS = 10 * 60_000;
 export const ATTACHMENT_DELIVERY_CONTRACT_VERSION = 1;
 
 /**
@@ -1509,6 +1512,7 @@ const PollResponseEndpoint = createEndpoint(["GET"], () => {
     diagnostic: S().last_diagnostic,
     current_seq: S().query.seq,
     current_attempt: S().active_attempt,
+    last_activity_at: S().last_activity_at,
   });
 });
 
@@ -1524,6 +1528,12 @@ const UpdatePartialEndpoint = createEndpoint(["POST"], (opts) => {
   }
   if (S().status !== "running") {
     return jsonReply({ ok: false, reason: "attempt_not_running" });
+  }
+  if (body.heartbeat === true) {
+    // The extension reports that the provider run is still working even though
+    // no visible text changed yet (a long reasoning phase). Treat that as
+    // progress so the inactivity timeout does not cut a healthy turn short.
+    S().last_activity_at = Date.now();
   }
   const activityBefore = JSON.stringify([
     S().partial_text,
@@ -2246,6 +2256,7 @@ export function relayPollResponse(): {
   diagnostic: RelayTurnDiagnostic | null;
   current_seq: number;
   current_attempt: number;
+  last_activity_at: number;
 } {
   expireStaleClaimIfNeeded();
   expireRunningPipelineIfNeeded();
@@ -2270,6 +2281,7 @@ export function relayPollResponse(): {
     diagnostic: S().last_diagnostic,
     current_seq: S().query.seq,
     current_attempt: S().active_attempt,
+    last_activity_at: S().last_activity_at,
   };
 }
 

@@ -858,13 +858,14 @@ local cache when needed.
 
 <a id="webchat-setup-chatgpt-web-sync"></a>
 
-## WebChat Setup (ChatGPT, DeepSeek & Gemini Web Sync)
+## WebChat Setup (ChatGPT, DeepSeek, Gemini & Yuanbao Web Sync)
 
 WebChat mode sends questions to [chatgpt.com](https://chatgpt.com),
-[chat.deepseek.com](https://chat.deepseek.com), and
-[gemini.google.com](https://gemini.google.com) through a browser extension,
-then streams responses back into Zotero. It is useful when you want browser
-chat access without a provider API key.
+[chat.deepseek.com](https://chat.deepseek.com),
+[gemini.google.com](https://gemini.google.com), and
+[yuanbao.tencent.com](https://yuanbao.tencent.com) through a browser
+extension, then streams responses back into Zotero. It is useful when you want
+browser chat access without a provider API key.
 
 <details>
 <summary>WebChat prerequisites and setup</summary>
@@ -877,7 +878,7 @@ Prerequisites:
 
 - Access to the selected provider site. Provider account requirements depend on
   the site and feature; Gemini permits some anonymous text conversations, while
-  PDF upload and history may require sign-in.
+  Yuanbao requires sign-in, and PDF upload and history may require sign-in.
 - A Chromium-based browser such as Chrome.
 
 Setup:
@@ -998,7 +999,7 @@ PR.
 - [x] Agent mode (beta)
 - [x] MinerU PDF parsing
 - [x] GitHub Copilot auth
-- [x] WebChat mode (ChatGPT, DeepSeek, and Gemini web sync)
+- [x] WebChat mode (ChatGPT, DeepSeek, Gemini, and Yuanbao web sync)
 - [x] Standalone window mode
 - [x] File-based notes (Obsidian, Logseq, any Markdown directory)
 - [x] Claude Code integration
