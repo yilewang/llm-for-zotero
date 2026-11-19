@@ -86,6 +86,31 @@ const zhCN: Record<string, string> = {
     "DeepSeek 搜索暂时不可用，请稍后重试。",
   "DeepSeek search needs the API key of an official DeepSeek model profile.":
     "DeepSeek 搜索需要官方 DeepSeek 模型配置中的 API 密钥。",
+  "Keenable API key (optional)": "Keenable API 密钥（可选）",
+  "Select Keenable before testing.": "请先选择 Keenable 再测试。",
+  "Keenable results": "Keenable 结果",
+  "Keenable test search failed.": "Keenable 测试搜索失败。",
+  "Works without a key; a key from keenable.ai only raises the rate limits. Saving these settings does not make a request.":
+    "无需密钥即可使用；keenable.ai 的密钥仅用于提高速率限制。保存设置不会发起请求。",
+  "Keenable receives search queries and requested public URLs. Keys stay in local Zotero preferences. Do not send credentials or private library text. No automatic retry or provider fallback is performed.":
+    "Keenable 会接收搜索词和请求的公开网址。密钥保存在本地 Zotero 偏好设置中。请勿发送凭据或私密文献库文本。不会自动重试或回退到其他服务。",
+  "General search and whole-page reading, PDFs included. No depth, topic, date/domain filters, or query-focused page reading. Usage credits are not reported.":
+    "支持通用搜索和整页读取（包括 PDF）。不支持深度、主题、日期或域名过滤以及按问题聚焦的网页读取。不报告积分用量。",
+  "Keenable returned an invalid response.": "Keenable 返回了无效响应。",
+  "Keenable returned an invalid results list.": "Keenable 返回了无效结果列表。",
+  "Keenable returned no page content.": "Keenable 未返回网页内容。",
+  "Keenable rejected the request parameters.": "Keenable 拒绝了请求参数。",
+  "Keenable rejected the API key. Check the key, or leave it blank for keyless access.":
+    "Keenable 拒绝了该 API 密钥。请检查密钥，或留空以无密钥访问。",
+  "Keenable quota exhausted. No retry was made.":
+    "Keenable 额度已耗尽，未重试。",
+  "Keenable rate limit reached. Try again later, or add an API key for higher limits.":
+    "Keenable 请求已被限流。请稍后重试，或添加 API 密钥以提高限额。",
+  "Keenable request failed.": "Keenable 请求失败。",
+  "Keenable request failed or returned an invalid response.":
+    "Keenable 请求失败或返回了无效响应。",
+  "Keenable request timed out.": "Keenable 请求超时。",
+  "Keenable request was cancelled.": "Keenable 请求已取消。",
   // ── Built-in action and skill descriptions (display only) ───────────────
   "Scan the active library for bibliographic metadata issues, then fetch canonical metadata and page through review cards for supported fixes.":
     "扫描当前文库中的书目元数据问题，获取权威元数据，并逐页展示可支持的修复供你审核。",

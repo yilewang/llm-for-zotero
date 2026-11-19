@@ -452,12 +452,12 @@ as Markdown files in `{ZoteroDataDir}/llm-for-zotero/skills/`.
 
 ## General Web Search
 
-Agent Mode can search the current public web with Tavily, AnySearch, or DeepSeek and read returned pages when search-result snippets are not enough.
+Agent Mode can search the current public web with Tavily, AnySearch, DeepSeek, or Keenable and read returned pages when search-result snippets are not enough.
 Use it for current facts, official documentation, news, finance, product information, and other general-web evidence.
 Scholarly discovery remains separate: the agent searches OpenAlex, arXiv, and Europe PMC (with CrossRef and Semantic Scholar for metadata lookup), and it can combine both kinds of search when a question needs academic and general-web sources.
 
 <details>
-<summary>Set up web search with Tavily, AnySearch, or DeepSeek</summary>
+<summary>Set up web search with Tavily, AnySearch, DeepSeek, or Keenable</summary>
 
 To enable general web search with Tavily:
 
@@ -467,7 +467,7 @@ To enable general web search with Tavily:
 4. Enable Agent Mode and ask it to search or verify something online.
 
 There is no separate enable switch.
-The `web_search` and `web_read` tools become available to compatible in-plugin Agent conversations when the selected provider can run: Tavily has a key, AnySearch is selected, or DeepSeek finds an official DeepSeek model profile.
+The `web_search` and `web_read` tools become available to compatible in-plugin Agent conversations when the selected provider can run: Tavily has a key, AnySearch or Keenable is selected, or DeepSeek finds an official DeepSeek model profile.
 Tavily is the default.
 **DeepSeek** is an optional choice that uses the key of an official DeepSeek model profile, and DeepSeek bills that account.
 They are not added to WebChat, Codex App Server, or Claude Code conversations, which use their own runtimes and tool sets.
@@ -509,6 +509,14 @@ automatically retry, switch providers, or report fictional credit usage.
 DeepSeek search uses the key of your first model profile whose API address is the official `https://api.deepseek.com`; keys of relays and other hosts are never sent to DeepSeek.
 It costs $0.75 per 1,000 successful searches or page fetches, billed to that DeepSeek account, and failed or empty calls are not billed.
 Queries are limited to 128 characters, including the site and date filters, and search queries and requested URLs are sent to DeepSeek.
+
+### Keenable
+
+In **Preferences → llm-for-zotero → Agent → Web search**, select **Keenable**.
+It works without a key; an optional key from [keenable.ai](https://keenable.ai) only raises the rate limits.
+Search takes `query` and `maxResults` (1–10), and `web_read` reads one to five URLs returned by search in the same run as whole pages, PDFs included.
+Depth, topic, date/domain filters and query-focused passages are not supported and are rejected rather than silently ignored.
+Search queries and requested URLs are sent to Keenable; do not include credentials or private library content.
 
 </details>
 

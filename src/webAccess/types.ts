@@ -1,7 +1,11 @@
 export type WebAccessDepth = "basic" | "advanced";
 
 /** The saved choice, and the provider that web_search and web_read call. */
-export type WebAccessProviderId = "tavily" | "anysearch" | "deepseek";
+export type WebAccessProviderId =
+  | "tavily"
+  | "anysearch"
+  | "deepseek"
+  | "keenable";
 
 export type WebAccessErrorCode =
   | "authentication"

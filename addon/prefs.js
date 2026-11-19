@@ -57,6 +57,7 @@ pref("tavilyApiKey", "");
 pref("openalexApiKey", "");
 pref("webAccessProvider", "tavily");
 pref("anysearchApiKey", "");
+pref("keenableApiKey", "");
 pref("conversationSystem", "upstream");
 pref("enableCodexAppServerMode", false);
 pref("codexAppServerModel", "gpt-5.4");

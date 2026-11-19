@@ -1,6 +1,7 @@
 import { config } from "../../../package.json";
 import { AnysearchClient } from "../../webAccess/anysearchClient";
 import { DeepSeekSearchClient } from "../../webAccess/deepseekSearchClient";
+import { KeenableClient } from "../../webAccess/keenableClient";
 import {
   getDeepSeekSearchCredential,
   maskApiKey,
@@ -11,8 +12,10 @@ import { createAbortController } from "../../utils/apiHelpers";
 import { subscribeModelProviderGroups } from "../../utils/modelProviders";
 import {
   getAnysearchApiKey,
+  getKeenableApiKey,
   getWebAccessProvider,
   setAnysearchApiKey,
+  setKeenableApiKey,
   setWebAccessProvider,
   type WebAccessProviderId,
 } from "../../webAccess/prefs";
@@ -21,7 +24,7 @@ const NO_DEEPSEEK_PROFILE =
   "Add a DeepSeek model profile with the official API address (api.deepseek.com) to use DeepSeek search. Keys from other hosts do not work.";
 
 function isProviderSetting(value: string): value is WebAccessProviderId {
-  return ["tavily", "anysearch", "deepseek"].includes(value);
+  return ["tavily", "anysearch", "deepseek", "keenable"].includes(value);
 }
 
 export type WebAccessPreferences = {
@@ -63,6 +66,18 @@ export function registerWebAccessPreferences(
   const deepseekStatus = doc.querySelector(
     `#${config.addonRef}-deepseek-search-status`,
   ) as HTMLElement | null;
+  const keenable = doc.querySelector(
+    `#${config.addonRef}-keenable-settings`,
+  ) as HTMLElement | null;
+  const keenableKey = doc.querySelector(
+    `#${config.addonRef}-keenable-api-key`,
+  ) as HTMLInputElement | null;
+  const keenableTest = doc.querySelector(
+    `#${config.addonRef}-keenable-test`,
+  ) as HTMLButtonElement | null;
+  const keenableStatus = doc.querySelector(
+    `#${config.addonRef}-keenable-status`,
+  ) as HTMLElement | null;
   let settingsGeneration = 0;
   let pendingTest: AbortController | undefined;
   let shownSearchTarget = "";
@@ -74,6 +89,8 @@ export function registerWebAccessPreferences(
     if (testButton) testButton.disabled = false;
     if (deepseekStatus) deepseekStatus.textContent = "";
     if (deepseekTest) deepseekTest.disabled = false;
+    if (keenableStatus) keenableStatus.textContent = "";
+    if (keenableTest) keenableTest.disabled = false;
     previous?.abort();
   };
   const render = () => {
@@ -85,6 +102,7 @@ export function registerWebAccessPreferences(
     if (tavily) tavily.hidden = chosen !== "tavily";
     if (anysearch) anysearch.hidden = chosen !== "anysearch";
     if (deepseek) deepseek.hidden = chosen !== "deepseek";
+    if (keenable) keenable.hidden = chosen !== "keenable";
     if (deepseekKey) {
       deepseekKey.textContent = credential
         ? `${t("Key from your DeepSeek model profile")}${credential.label ? ` (${credential.label})` : ""}: ${maskApiKey(credential.apiKey)}`
@@ -101,6 +119,17 @@ export function registerWebAccessPreferences(
     key.addEventListener("input", invalidateTest);
     key.addEventListener("change", saveKey);
     key.addEventListener("blur", saveKey);
+  }
+  if (keenableKey) {
+    keenableKey.value = getKeenableApiKey();
+    const saveKey = () => {
+      if (keenableKey.value.trim() !== getKeenableApiKey()) invalidateTest();
+      setKeenableApiKey(keenableKey.value);
+      keenableKey.value = getKeenableApiKey();
+    };
+    keenableKey.addEventListener("input", invalidateTest);
+    keenableKey.addEventListener("change", saveKey);
+    keenableKey.addEventListener("blur", saveKey);
   }
   provider?.addEventListener("change", () => {
     invalidateTest();
@@ -218,6 +247,63 @@ export function registerWebAccessPreferences(
           pendingTest = undefined;
           deepseekTest.disabled = false;
           if (!isCurrent()) deepseekStatus.textContent = "";
+        }
+      }
+    })();
+  });
+  keenableTest?.addEventListener("click", () => {
+    if (!keenableStatus || keenableTest.disabled) return;
+    if (getWebAccessProvider() !== "keenable") {
+      keenableStatus.textContent = t("Select Keenable before testing.");
+      return;
+    }
+    // Save the visible key, including empty: never revive a previously saved key.
+    if (keenableKey) {
+      setKeenableApiKey(keenableKey.value);
+      keenableKey.value = getKeenableApiKey();
+    }
+    const generation = ++settingsGeneration;
+    let controller: AbortController;
+    try {
+      controller = createAbortController();
+    } catch {
+      keenableStatus.textContent = t("Keenable test search failed.");
+      return;
+    }
+    pendingTest = controller;
+    const testedKey = getKeenableApiKey();
+    const isCurrent = () =>
+      generation === settingsGeneration &&
+      getWebAccessProvider() === "keenable" &&
+      getKeenableApiKey() === testedKey &&
+      (!keenableKey || keenableKey.value.trim() === testedKey) &&
+      (!provider || provider.value === "keenable");
+    keenableTest.disabled = true;
+    keenableStatus.textContent = t("Testing…");
+    void (async () => {
+      try {
+        const result = await new KeenableClient(testedKey).search({
+          query: "Zotero reference management",
+          maxResults: 3,
+          signal: controller.signal,
+        });
+        if (!isCurrent()) return;
+        keenableStatus.textContent = [
+          `${t("Keenable results")}: ${result.results.length}`,
+          ...result.results.map((entry) => `${entry.title}\n${entry.url}`),
+        ].join("\n");
+      } catch (error) {
+        if (!isCurrent()) return;
+        keenableStatus.textContent =
+          error instanceof WebAccessError
+            ? t(error.message)
+            : t("Keenable test search failed.");
+      } finally {
+        // An older completion must not clear a newer test's status or controls.
+        if (generation === settingsGeneration) {
+          pendingTest = undefined;
+          keenableTest.disabled = false;
+          if (!isCurrent()) keenableStatus.textContent = "";
         }
       }
     })();
