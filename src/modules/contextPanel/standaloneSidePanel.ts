@@ -1892,7 +1892,11 @@ export function createStandaloneSidePanel(
     return view;
   };
 
-  const askInSideChat = (text: string, question?: string) => {
+  const askInSideChat = (
+    text: string,
+    question?: string,
+    answerWords?: string,
+  ) => {
     if (deps.readOnly) return;
     const opened = openSidePanel(tabsState);
     const targetId = resolveAskInSideChatTab(opened);
@@ -1907,6 +1911,7 @@ export function createStandaloneSidePanel(
       source: "model",
       focusInput: true,
       question,
+      answerWords,
     });
   };
 
@@ -3507,7 +3512,8 @@ export function createStandaloneSidePanel(
         },
       ],
       sideChatQuote: {
-        quote: (text, question) => askInSideChat(text, question),
+        quote: (selection, question) =>
+          askInSideChat(selection.text, question, selection.answerWords),
       },
       sideChatSlashItem: {
         getState: () => {

@@ -5471,7 +5471,11 @@ export function setupHandlers(
     // Older turns of a long conversation may still be waiting to be drawn.
     flushPendingChatRender(chatBox);
     clearAnswerQuoteHighlights(body);
-    const lit = highlightQuotedAnswerText(body, detail.text);
+    const lit = highlightQuotedAnswerText(
+      body,
+      detail.text,
+      detail.answerWords,
+    );
     if (!lit[0]) return;
     showLitAnswer(chatBox, lit[0], lit, null);
   });
@@ -7564,6 +7568,7 @@ export function setupHandlers(
         outcome = addSelectedTextContext(body, textContextKey, text, {
           source: options.source,
           focusInput: options.focusInput,
+          answerWords: options.answerWords,
         });
       });
       const question = String(options.question || "").trim();

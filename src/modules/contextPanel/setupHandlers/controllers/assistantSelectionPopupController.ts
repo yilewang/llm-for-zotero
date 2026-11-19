@@ -12,6 +12,7 @@ import {
   setStatus,
 } from "../../textUtils";
 import { sanitizeText } from "../../../../utils/textSanitization";
+import { readSelectedAnswerWords } from "../../answerQuoteHighlight";
 import { classifySelectionPromptKey } from "../../selectionPrompt/selectionPromptKeys";
 import { resizeTextareaToContent } from "../../textareaSizing";
 import { getChatPanelExtensions } from "../../chatPanelExtensions";
@@ -135,14 +136,29 @@ export function attachAssistantSelectionPopup(
   promptWrap.append(promptQuoteSection, promptInput, promptHint);
   selectionPopup.append(actionRow, promptWrap);
   panelRoot.appendChild(selectionPopup);
-  let selectionPopupText = "";
+  /**
+   * The selection the popup was opened for: its Markdown, and its words as
+   * the chat draws them, read while it is still selected.
+   */
+  type AssistantSelection = { text: string; answerWords: string };
+  let selectionPopupQuote: AssistantSelection | null = null;
+  const readBubbleSelection = (
+    bubble: HTMLElement,
+  ): AssistantSelection | null => {
+    const text = sanitizeText(
+      getSelectedTextWithinBubble(panelDoc, bubble),
+    ).trim();
+    return text
+      ? { text, answerWords: readSelectedAnswerWords(panelDoc, bubble) }
+      : null;
+  };
   let selectionDragStartBubble: HTMLElement | null = null;
   let disposeSelectionPopup: () => void = () => {};
   let promptExpanded = false;
-  // The conversation and the normalized text of the quoted chip; Enter
-  // attaches the question to that chip.
+  // The conversation and the quoted selection of the chip; Enter attaches
+  // the question to that chip.
   let promptConversationKey: number | null = null;
-  let promptSelectedText = "";
+  let promptSelection: AssistantSelection | null = null;
   // Set when the box was opened by "Quote in side chat": nothing is quoted
   // here, and Enter sends the text and the question to the side chat.
   let promptForSideChat = false;
@@ -166,7 +182,7 @@ export function attachAssistantSelectionPopup(
   const collapsePrompt = () => {
     promptExpanded = false;
     promptConversationKey = null;
-    promptSelectedText = "";
+    promptSelection = null;
     promptForSideChat = false;
     promptQuote.textContent = "";
     promptHint.textContent = promptHintText;
@@ -183,12 +199,12 @@ export function attachAssistantSelectionPopup(
       !selectionPopup.classList.contains("is-visible") &&
       !selectionPopup.classList.contains("is-expanded")
     ) {
-      selectionPopupText = "";
+      selectionPopupQuote = null;
       return;
     }
     collapsePrompt();
     selectionPopup.classList.remove("is-visible");
-    selectionPopupText = "";
+    selectionPopupQuote = null;
   };
   // Keeps the expanded box inside the chat area; its position was computed
   // for the smaller Quote button.
@@ -217,15 +233,15 @@ export function attachAssistantSelectionPopup(
   // existingQuestion prefills the box when the chip already has a question.
   const expandPrompt = (
     conversationKey: number | null,
-    selectedText: string,
+    selection: AssistantSelection,
     existingQuestion = "",
     forSideChat = false,
   ) => {
     promptExpanded = true;
     promptConversationKey = conversationKey;
     promptForSideChat = forSideChat;
-    promptSelectedText = selectedText;
-    promptQuote.textContent = selectedText;
+    promptSelection = selection;
+    promptQuote.textContent = selection.text;
     promptHint.textContent = promptHintText;
     promptInput.value = existingQuestion;
     promptInput.style.height = "";
@@ -286,14 +302,12 @@ export function attachAssistantSelectionPopup(
       hideSelectionPopup();
       return;
     }
-    const selected = sanitizeText(
-      getSelectedTextWithinBubble(panelDoc, targetBubble),
-    ).trim();
+    const selected = readBubbleSelection(targetBubble);
     if (!selected) {
       hideSelectionPopup();
       return;
     }
-    selectionPopupText = selected;
+    selectionPopupQuote = selected;
     // Before the popup is measured, so its width counts the second button.
     syncSideChatQuoteButton();
     const selection = panelWin.getSelection?.();
@@ -370,15 +384,11 @@ export function attachAssistantSelectionPopup(
   };
 
   /** The selected reply text; reports and closes the popup when empty. */
-  const readSelectedAssistantText = (): string => {
-    let selected = sanitizeText(selectionPopupText).trim();
+  const readSelectedAssistantText = () => {
+    let selected = selectionPopupQuote;
     if (!selected) {
       const targetBubble = findAssistantBubbleFromSelection();
-      if (targetBubble) {
-        selected = sanitizeText(
-          getSelectedTextWithinBubble(panelDoc, targetBubble),
-        ).trim();
-      }
+      if (targetBubble) selected = readBubbleSelection(targetBubble);
     }
     if (!selected) {
       hideSelectionPopup();
@@ -401,7 +411,7 @@ export function attachAssistantSelectionPopup(
   /** Sends the box's text and question to the side chat, then closes. */
   const sendPromptToSideChat = (question: string) => {
     const target = getSideChatQuote();
-    const selected = promptSelectedText;
+    const selected = promptSelection;
     hideSelectionPopup();
     if (!target || !selected) {
       inputBox.focus({ preventScroll: true });
@@ -428,10 +438,11 @@ export function attachAssistantSelectionPopup(
     }
     let outcome = "empty" as AppendSelectedTextOutcome;
     runWithChatScrollGuard(() => {
-      outcome = addSelectedTextContext(body, activeItemId, selected, {
+      outcome = addSelectedTextContext(body, activeItemId, selected.text, {
         successStatusText: "Selected response text included",
         focusInput: false,
         source: "model",
+        answerWords: selected.answerWords,
       });
     });
     if (outcome === "added") {
@@ -445,7 +456,12 @@ export function attachAssistantSelectionPopup(
     expandPrompt(
       activeItemId,
       selected,
-      getSelectedTextContextQueryForItem(activeItemId, selected, "model", null),
+      getSelectedTextContextQueryForItem(
+        activeItemId,
+        selected.text,
+        "model",
+        null,
+      ),
     );
   };
 
@@ -498,10 +514,11 @@ export function attachAssistantSelectionPopup(
       return;
     }
     const conversationKey = promptConversationKey;
+    const selectedText = promptSelection?.text || "";
     if (
       text &&
       conversationKey !== null &&
-      !attachPromptQuestion(conversationKey, promptSelectedText, text)
+      !attachPromptQuestion(conversationKey, selectedText, text)
     ) {
       // The chip is gone; keep the box and the typed question.
       promptHint.textContent = t("Selected text is no longer in the context");

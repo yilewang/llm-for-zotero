@@ -160,6 +160,8 @@ export function normalizeSelectedTextContexts(
         : undefined;
     const rawPageLabel = normalizeText(typed.pageLabel, sanitize);
     const userQuery = normalizeSelectedTextUserQuery(typed.userQuery, sanitize);
+    const answerWords =
+      typeof typed.answerWords === "string" ? typed.answerWords : "";
     out.push({
       text,
       source,
@@ -169,6 +171,7 @@ export function normalizeSelectedTextContexts(
       pageIndex,
       // Only a stored label; none is guessed from the page index.
       pageLabel: rawPageLabel || undefined,
+      ...(answerWords ? { answerWords } : {}),
       // Absent, not undefined, when empty (D1).
       ...(userQuery ? { userQuery } : {}),
     });

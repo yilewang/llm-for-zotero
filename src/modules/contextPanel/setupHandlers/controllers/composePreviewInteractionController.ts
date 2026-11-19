@@ -30,6 +30,7 @@ import {
   setPaperModeOverride,
 } from "../../contexts/paperContextState";
 import { composeContextStore } from "../../contexts/composeContextStore";
+import { activeContextPanels } from "../../state";
 import type {
   PaperContentSourceMode,
   PaperContextRef,
@@ -714,15 +715,32 @@ export function attachComposePreviewInteractionController(
     });
   };
 
-  /** Light a model-response quote in the chat; false when it is not there. */
-  const showQuotedAnswerText = (text: string): boolean => {
-    const EventCtor = body.ownerDocument?.defaultView?.CustomEvent;
-    if (!text || typeof EventCtor !== "function") return false;
-    const detail: ShowQuotedAnswerTextDetail = { text };
-    body.dispatchEvent(
-      new EventCtor(SHOW_QUOTED_ANSWER_TEXT_EVENT, { bubbles: false, detail }),
+  /**
+   * Light a model-response quote in the chat it came from: this one, else
+   * another chat of this window (a side chat quotes the main chat's
+   * answers, and the main chat a side chat's). False when it is in none.
+   */
+  const showQuotedAnswerText = (context: SelectedTextContext): boolean => {
+    const doc = body.ownerDocument;
+    const EventCtor = doc?.defaultView?.CustomEvent;
+    if (!context.text || typeof EventCtor !== "function") return false;
+    const detail: ShowQuotedAnswerTextDetail = {
+      text: context.text,
+      answerWords: context.answerWords,
+    };
+    const otherChats = Array.from(activeContextPanels.keys()).filter(
+      (panel) =>
+        panel !== body && panel.ownerDocument === doc && panel.isConnected,
     );
-    return Boolean(body.querySelector(ANSWER_LIGHT_SELECTOR));
+    return [body, ...otherChats].some((chat) => {
+      chat.dispatchEvent(
+        new EventCtor(SHOW_QUOTED_ANSWER_TEXT_EVENT, {
+          bubbles: false,
+          detail,
+        }),
+      );
+      return Boolean(chat.querySelector(ANSWER_LIGHT_SELECTOR));
+    });
   };
 
   if (selectedContextList) {
@@ -863,7 +881,7 @@ export function attachComposePreviewInteractionController(
       }
       // A quote from a model response: its words, lit in the answer.
       if (targetContext?.source === "model") {
-        if (showQuotedAnswerText(targetContext.text)) {
+        if (showQuotedAnswerText(targetContext)) {
           setStatus(t("Showing the quoted text in the answer"), "ready");
           return;
         }
