@@ -63,7 +63,8 @@ describe("live: Antigravity on the installed agy", function () {
   });
 
   after(async function () {
-    await api.reset();
+    // A skipped suite never set api up.
+    if (enabled) await api.reset();
   });
 
   function run(
