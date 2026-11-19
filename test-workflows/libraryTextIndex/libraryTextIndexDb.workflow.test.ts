@@ -52,4 +52,27 @@ describe("library text index database in the real Zotero runtime", function () {
     // cache it would pin the file, and a later Clear index would reopen it read-only.
     await closeLibraryTextIndexDb();
   });
+
+  // #576: an index that already has the current schema must not be rewritten
+  // by opening it, or every Zotero start marks a multi-GB file as changed for
+  // backup and sync tools.
+  it("leaves an up-to-date database file unmodified when it is opened and closed", async function () {
+    await (
+      Zotero as any
+    ).LLMForZotero.api.workflowTest.waitForLibraryTextIndexIdle(30000);
+    assert.isOk(await openLibraryTextIndexDb(), "creates the database");
+    await closeLibraryTextIndexDb();
+    const path = getLibraryTextIndexDbPath();
+    const old = Date.UTC(2020, 0, 1);
+    await IOUtils.setModificationTime(path, old);
+
+    assert.isOk(await openLibraryTextIndexDb(), "reopens the database");
+    await closeLibraryTextIndexDb();
+
+    assert.equal(
+      (await IOUtils.stat(path)).lastModified,
+      old,
+      "opening an up-to-date index wrote nothing to its file",
+    );
+  });
 });

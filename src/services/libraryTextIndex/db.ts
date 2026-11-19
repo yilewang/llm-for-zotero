@@ -143,6 +143,10 @@ export async function ensureLibraryTextIndexSchema(
     for (const table of TABLES) await q(`DROP TABLE IF EXISTS ${table}`);
   }
   for (const sql of SCHEMA_SQL) await q(sql);
+  // Only a new or rebuilt index gets the stamp. Rewriting an unchanged one
+  // would modify the file at every Zotero start (#576); the CREATE ... IF NOT
+  // EXISTS statements above write nothing when the schema is already there.
+  if (recorded === LIBRARY_TEXT_INDEX_SCHEMA_VERSION) return;
   await q(
     `INSERT OR REPLACE INTO index_meta (key, value) VALUES ('schema_version', ?)`,
     [String(LIBRARY_TEXT_INDEX_SCHEMA_VERSION)],
