@@ -4,14 +4,14 @@ import {
 } from "../context/readObservation";
 import type { AgentToolContext, AgentToolDefinition } from "../types";
 
+/** How the model reaches what a sized view left out. */
+export const MODEL_VIEW_HANDLE_NOTICE =
+  "This result is sized to the request; omitted counts what it left out. context_read source:'tool_result' with this handle pages the exact stored result, which lists the rows shown here first: read a row path from offset = the number of rows shown.";
+
 /** A document evidence ref as a result carries it beside its rows. */
 type EvidenceRef = Record<string, unknown>;
 
-/**
- * A tool's sized view of a successful result, as every runtime sends it: the
- * plugin agent and the MCP server build it here, then each says where the
- * rest is (a tool-result handle, or a narrower call).
- */
+/** A tool's sized view of a successful result, before it is stored. */
 export type SizedModelView = {
   /** The view, with the evidence refs of the rows it keeps. */
   content: Record<string, unknown>;
@@ -71,5 +71,34 @@ export function buildSizedModelView(params: {
       refs.length && stored && typeof stored === "object"
         ? { ...stored, documentEvidenceRefs: [...keptRefs, ...omittedRefs] }
         : stored,
+  };
+}
+
+/**
+ * The view the model reads of a result its tool sizes, for every runtime
+ * that can page a stored result: the plugin Agent and an MCP client of a
+ * conversation. `storeResult` keeps the whole result, with every evidence
+ * ref, under a tool-result handle of the conversation, which context_read
+ * pages; the view carries the handle. Undefined, when the tool sends this
+ * result whole or nothing could store it: the caller then sends the whole
+ * result, so no row is out of reach.
+ */
+export async function buildPagedModelView(params: {
+  toolDefinition: Pick<AgentToolDefinition<any, any>, "buildModelView">;
+  toolName: string;
+  input: unknown;
+  result: unknown;
+  context: AgentToolContext;
+  documentEvidenceRefs?: readonly EvidenceRef[];
+  storeResult: (stored: unknown) => Promise<string | undefined>;
+}): Promise<Record<string, unknown> | undefined> {
+  const view = buildSizedModelView(params);
+  if (!view) return undefined;
+  const handle = await params.storeResult(view.stored);
+  if (!handle) return undefined;
+  return {
+    ...view.content,
+    toolResultHandle: handle,
+    toolResultHandleNotice: MODEL_VIEW_HANDLE_NOTICE,
   };
 }

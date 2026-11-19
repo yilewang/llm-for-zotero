@@ -74,6 +74,15 @@ import {
 import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 import { extractVerifiedReadSources } from "../context/readEvidence";
+import { buildPagedModelView } from "../execution/modelView";
+import {
+  createAgentToolResultHandleRecord,
+  getAgentToolResultHandle,
+  upsertAgentToolResultHandles,
+} from "../store/toolResultHandles";
+import { LocalDocumentPathStreamRedactor } from "../privacy/localDocumentPathRedaction";
+import { canonicalJson } from "../services/libraryMutation/canonicalJson";
+import { sha256Text } from "../store/journalRecoveryBlobStore";
 import { shortEvidenceRef } from "../context/evidenceRefTokens";
 import type {
   TrustedReadObservation,
@@ -159,6 +168,12 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   // the user sees, not the library, so it is auto-approved like the other
   // reads.
   "reader_open",
+  // Pages a result the server stored for the scope's conversation under a
+  // tool-result handle (a sized library_retrieve or library_search view).
+  // Listed only to a client of a conversation, and only its tool_result
+  // source: the plugin's own transcript is not the client's
+  // (MCP_REFUSED_TOOL_ARGUMENTS).
+  "context_read",
 ] as const;
 export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
   "request_user_input",
@@ -209,11 +224,6 @@ export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
   // paged result contract ({done, nextOffset, remaining}) lands.
   library_batch:
     "library_batch runs unattended with no progress channel over MCP; use the in-plugin agent or the slash-command surface.",
-  // Both sources are in-plugin conversation state: the transcript and the
-  // turn-scoped tool-result handles. A standalone MCP client shares neither,
-  // and handle reads are gated on a metadata flag the MCP path never sets.
-  context_read:
-    "context_read reads the in-plugin conversation transcript and its stored tool-result handles; an external MCP client has neither, and handle reads are gated on an in-plugin metadata flag the MCP path does not set.",
 };
 /** The tools that read or attach past chats, pinned to the scope's library. */
 const PAST_CHAT_TOOL_NAMES = new Set<string>([
@@ -252,6 +262,10 @@ const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
  */
 const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
   [
+    "context_read",
+    "Page a stored Zotero tool result by the trh_ handle (toolResultHandle) a sized result gave you, with source:'tool_result'. Omit path to list its sections and sizes; set path (e.g. paperMatches, snippets, results) and offset to read rows, starting at offset = the number of rows the sized result showed. Follow nextOffset for more rows. An oversized row returns itemChunk: keep offset and pass its nextTextOffset as textOffset until complete.",
+  ],
+  [
     "read_attachment",
     "Read a non-PDF attachment's text by target.contextItemId (the Zotero attachment item ID). For PDFs use paper_read.",
   ],
@@ -285,19 +299,48 @@ export const MCP_TOOL_DESCRIPTION_NOTES: ReadonlyMap<string, string> = new Map([
  * The tool's in-plugin contract assumes a review that MCP has no channel for.
  * The argument is also removed from the tool's MCP schema.
  */
-const MCP_REFUSED_TOOL_ARGUMENTS: ReadonlyMap<
-  string,
-  { argument: string; message: string }
-> = new Map([
-  [
-    "read_attachment",
-    {
-      argument: "attachFile",
-      message:
-        "read_attachment attachFile:true is not available over MCP: it sends the whole file to the model after the user reviews it, and an MCP call has no such review. Read the attachment's text with target.contextItemId instead, or use paper_read for a PDF.",
-    },
-  ],
-]);
+type McpRefusedToolArgument = {
+  argument: string;
+  /**
+   * The one value refused; the argument itself stays, without that value in
+   * its schema enum. Absent: the argument is refused whatever its value.
+   */
+  value?: string;
+  /** Schema properties that serve only the refused value. */
+  valueOnlyProperties?: readonly string[];
+  message: string;
+};
+
+const MCP_REFUSED_TOOL_ARGUMENTS: ReadonlyMap<string, McpRefusedToolArgument> =
+  new Map([
+    [
+      "read_attachment",
+      {
+        argument: "attachFile",
+        message:
+          "read_attachment attachFile:true is not available over MCP: it sends the whole file to the model after the user reviews it, and an MCP call has no such review. Read the attachment's text with target.contextItemId instead, or use paper_read for a PDF.",
+      },
+    ],
+    [
+      "context_read",
+      {
+        argument: "source",
+        value: "conversation",
+        valueOnlyProperties: ["messageId"],
+        message:
+          "context_read source:'conversation' is not available over MCP: it reads the plugin's own chat transcript, not this client's. Use source:'tool_result' with a trh_ handle a Zotero tool result gave you.",
+      },
+    ],
+  ]);
+
+/** Whether `args` use the argument `refused` refuses. */
+function usesRefusedArgument(
+  refused: McpRefusedToolArgument,
+  args: Record<string, unknown>,
+): boolean {
+  const value = args[refused.argument];
+  return refused.value === undefined ? Boolean(value) : value === refused.value;
+}
 const READ_ONLY_TOOL_ANNOTATIONS = {
   readOnlyHint: true,
   openWorldHint: false,
@@ -1660,6 +1703,19 @@ export const ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES: ReadonlySet<string> = new Set([
   "library_cite",
 ]);
 
+/**
+ * Whether the server stores this scope's sized results for paging: a scope
+ * of a conversation, opened by a runtime's turn. A client without one has
+ * no conversation to keep them in, so it reads results whole.
+ */
+function mcpScopeStoresToolResults(
+  scope: ZoteroMcpActiveScope | null,
+): boolean {
+  return Boolean(
+    normalizePositiveInt(scope?.conversationKey) && scope?.runtimeAuthority,
+  );
+}
+
 function isMcpToolVisibleInScope(
   tool: ToolSpec,
   scope: ZoteroMcpActiveScope | null,
@@ -1672,6 +1728,7 @@ function isMcpToolVisibleInScope(
     return false;
   if (tool.name === "request_user_input")
     return Boolean(scope?.requestInteraction);
+  if (tool.name === "context_read") return mcpScopeStoresToolResults(scope);
   // Of the control tools only submit_document serves an external turn:
   // task_update tracks the in-plugin Agent's own parts.
   if (CURATED_PLAN_TOOL_NAMES.has(tool.name))
@@ -1936,7 +1993,18 @@ function decorateMcpToolSchema(inputSchema: object, toolName: string): object {
   const record = inputSchema as Record<string, unknown>;
   const rawProperties = { ...normalizeRecord(record.properties) };
   const refused = MCP_REFUSED_TOOL_ARGUMENTS.get(toolName);
-  if (refused) delete rawProperties[refused.argument];
+  if (refused?.value === undefined) {
+    if (refused) delete rawProperties[refused.argument];
+  } else {
+    const property = normalizeRecord(rawProperties[refused.argument]);
+    if (Array.isArray(property.enum))
+      rawProperties[refused.argument] = {
+        ...property,
+        enum: property.enum.filter((entry) => entry !== refused.value),
+      };
+    for (const name of refused.valueOnlyProperties || [])
+      delete rawProperties[name];
+  }
   return {
     ...record,
     properties: {
@@ -2211,6 +2279,10 @@ function createToolContext(
     activeNoteContext,
     metadata: {
       sourceMessageTimestamp: scope?.sourceMessageTimestamp,
+      // context_read pages the results this conversation's calls stored.
+      ...(mcpScopeStoresToolResults(scope)
+        ? { agentToolResultReadAvailable: true }
+        : {}),
     },
   };
   const request: AgentRuntimeRequest = scope?.turnPaperScope
@@ -2411,25 +2483,87 @@ function documentEvidenceRef(
 }
 
 /**
- * The call's result as the client's model reads it. A tool that keeps fields
- * from the model (`modelContent`: a digest's citation records) is sent its
- * model content. A sized view (`buildModelView`) is not sent: the client has
- * no tool-result handle to page what the view leaves out, so it reads the
- * whole result. The activity event, the citations and the read observations
- * come from the whole result.
+ * Keeps a call's whole result for the scope's conversation under a
+ * tool-result handle, as the plugin Agent keeps its own, with the
+ * conversation's local document paths redacted. Undefined when nothing
+ * holds it: the conversation is being deleted, or the store refused it.
  */
-function formatToolResult(params: {
+async function storeMcpToolResult(params: {
+  conversationKey: number;
+  toolName: string;
+  callId: string;
+  input: unknown;
+  content: unknown;
+}): Promise<string | undefined> {
+  if (areConversationWritesFrozen(params.conversationKey)) return undefined;
+  const record = createAgentToolResultHandleRecord({
+    conversationKey: params.conversationKey,
+    toolName: params.toolName,
+    toolCallId: params.callId,
+    inputDigest: `sha256:${await sha256Text(canonicalJson(params.input))}`,
+    content: params.content,
+    createdAt: Date.now(),
+  });
+  if (!record) return undefined;
+  await upsertAgentToolResultHandles([
+    new LocalDocumentPathStreamRedactor(
+      params.conversationKey,
+    ).redactTerminalValue(record),
+  ]);
+  const stored = await getAgentToolResultHandle({
+    conversationKey: params.conversationKey,
+    handle: record.handle,
+  });
+  return stored ? stored.handle : undefined;
+}
+
+/**
+ * The call's result as the client's model reads it, as the plugin Agent's
+ * model reads it. A tool that sizes its results (`buildModelView`) is sent
+ * its view when the client can page the rest (`storeResult`): the whole
+ * result is stored under a handle that context_read pages, and the view
+ * carries the handle and the evidence refs of the rows it shows. A client
+ * that cannot page reads the whole result. A tool that keeps fields from the
+ * model (`modelContent`: a digest's citation records) is sent its model
+ * content. The activity event, the citations and the read observations come
+ * from the whole result.
+ */
+async function formatToolResult(params: {
   execution: Extract<PreparedToolExecution, { kind: "result" }>["execution"];
-  tool: Pick<AgentToolDefinition<any, any>, "modelContent"> | undefined;
+  tool:
+    | Pick<AgentToolDefinition<any, any>, "buildModelView" | "modelContent">
+    | undefined;
   observations: readonly TrustedReadObservation[];
-}): McpToolCallResult {
+  context: AgentToolContext;
+  storeResult?: (stored: unknown) => Promise<string | undefined>;
+}): Promise<McpToolCallResult> {
   const { execution, tool } = params;
   const { result } = execution;
-  const documentEvidenceRefs = params.observations.map(documentEvidenceRef);
-  const content =
-    result.ok && tool?.modelContent
-      ? tool.modelContent(result.content, execution.input)
-      : result.content;
+  const refs = params.observations.map(documentEvidenceRef);
+  const paged =
+    result.ok && tool?.buildModelView && params.storeResult
+      ? await buildPagedModelView({
+          toolDefinition: tool,
+          toolName: result.name,
+          input: execution.input,
+          result: result.content,
+          context: params.context,
+          documentEvidenceRefs: refs,
+          storeResult: params.storeResult,
+        })
+      : undefined;
+  let content: unknown;
+  let documentEvidenceRefs: unknown[] = refs;
+  if (paged) {
+    const { documentEvidenceRefs: keptRefs, ...view } = paged;
+    content = view;
+    documentEvidenceRefs = Array.isArray(keptRefs) ? keptRefs : [];
+  } else {
+    content =
+      result.ok && tool?.modelContent
+        ? tool.modelContent(result.content, execution.input)
+        : result.content;
+  }
   return {
     content: [
       {
@@ -2690,7 +2824,10 @@ async function handleToolsCall(
   }
 
   const refusedArgument = MCP_REFUSED_TOOL_ARGUMENTS.get(name);
-  if (refusedArgument && scopeArgs.toolArgs[refusedArgument.argument]) {
+  if (
+    refusedArgument &&
+    usesRefusedArgument(refusedArgument, scopeArgs.toolArgs)
+  ) {
     completeActivity({ ok: false, error: refusedArgument.message });
     return {
       content: [
@@ -2904,9 +3041,29 @@ async function handleToolsCall(
       headers,
       prepared.execution.result.artifacts || [],
     );
-    const result = formatToolResult({
+    // A client that can page a stored result reads a sized view, as the
+    // plugin Agent does; the whole result stays under a handle.
+    const contextReadTool = deps.toolRegistry.getTool("context_read");
+    const storeConversationKey = normalizePositiveInt(scope?.conversationKey);
+    const pagesResults = Boolean(
+      storeConversationKey &&
+      contextReadTool &&
+      isMcpToolVisibleInScope(contextReadTool.spec, scope),
+    );
+    const result = await formatToolResult({
       execution: prepared.execution,
       tool,
+      context: toolContext,
+      storeResult: pagesResults
+        ? (stored) =>
+            storeMcpToolResult({
+              conversationKey: storeConversationKey!,
+              toolName: name,
+              callId: prepared.execution.result.callId,
+              input: prepared.execution.input,
+              content: stored,
+            })
+        : undefined,
       observations: [
         ...readObservations,
         ...rememberedDigestObservations(

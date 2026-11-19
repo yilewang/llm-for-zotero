@@ -63,24 +63,24 @@ type McpPayload = {
 };
 
 /**
- * What an MCP client's model reads. A library_retrieve result is sent whole:
- * the client has no tool-result handle to page rows a sized view would leave
- * out. A targeted paper_read shows its passages once. Every row keeps its
- * citation ids and evidence refs, and a short evidence ref is citable. Real
- * items with multi-page PDFs, called through the installed plugin's MCP
- * endpoint.
+ * What an MCP client's model reads. A client of a conversation reads a
+ * library_retrieve result as the plugin Agent does: a sized view whose
+ * handle context_read pages to every row. A client that cannot page reads
+ * the whole result. A targeted paper_read shows its passages once. Every
+ * row keeps its citation ids and evidence refs, and a short evidence ref is
+ * citable. Real items with multi-page PDFs, called through the installed
+ * plugin's MCP endpoint.
  */
 describe("workflow: MCP tool result size", function () {
   this.timeout(600000);
   let api: WorkflowTestApi;
   const fixtures: WorkflowTestFixture[] = [];
 
-  async function call(
-    name: string,
-    args: Record<string, unknown>,
+  async function rpc(
+    method: string,
+    params: Record<string, unknown>,
     scopeToken?: string,
-    expectOk = true,
-  ): Promise<{ payload: McpPayload; bytes: number }> {
+  ): Promise<any> {
     const EndpointClass = Zotero.Server.Endpoints[ZOTERO_MCP_ENDPOINT_PATH];
     const [status, , body] = await new EndpointClass().init({
       method: "POST",
@@ -88,20 +88,72 @@ describe("workflow: MCP tool result size", function () {
         Authorization: `Bearer ${getOrCreateZoteroMcpBearerToken()}`,
         ...(scopeToken ? { [ZOTERO_MCP_SCOPE_HEADER]: scopeToken } : {}),
       },
-      data: {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: { name, arguments: args },
-      },
+      data: { jsonrpc: "2.0", id: 1, method, params },
     });
     assert.equal(status, 200);
     const response = JSON.parse(body);
     assert.isOk(response.result, body.slice(0, 1000));
-    const text = response.result.content[0].text as string;
+    return response.result;
+  }
+
+  async function call(
+    name: string,
+    args: Record<string, unknown>,
+    scopeToken?: string,
+    expectOk = true,
+  ): Promise<{ payload: McpPayload; bytes: number }> {
+    const response = await rpc(
+      "tools/call",
+      { name, arguments: args },
+      scopeToken,
+    );
+    const text = response.content[0].text as string;
     const payload = JSON.parse(text) as McpPayload;
     assert.equal(payload.ok, expectOk, text.slice(0, 500));
     return { payload, bytes: text.length };
+  }
+
+  /** The tool names a client of `scopeToken` is offered. */
+  async function listedTools(scopeToken?: string): Promise<any[]> {
+    return (await rpc("tools/list", {}, scopeToken)).tools;
+  }
+
+  /** The same library_retrieve call run directly: every row it returns. */
+  async function retrieveDirectly(args: Record<string, unknown>): Promise<{
+    snippets: Array<{ snippetId: string }>;
+    paperMatches: Array<{ itemId: string }>;
+  }> {
+    const tool = (Zotero as any).LLMForZotero.api.agent.getToolDefinition(
+      "library_retrieve",
+    );
+    const validated = tool.validate(args);
+    assert.isTrue(validated.ok, JSON.stringify(validated));
+    return normalizeExecutionOutput(
+      await tool.execute(validated.value, {
+        item: null,
+        currentAnswerText: "",
+        modelName: "workflow",
+        request: resolvedAgentRequest({
+          conversationKey: 1,
+          mode: "agent",
+          userText: "Which papers are about manifold learning?",
+          libraryID: Zotero.Libraries.userLibraryID,
+        }),
+        runId: `mcp-direct:${Date.now()}`,
+      }),
+    ).content as never;
+  }
+
+  /** A scope token of a runtime's turn in a conversation. */
+  function registerScope(runtimeAuthority: "claude" | "antigravity") {
+    const paper = Zotero.Items.get(fixtures[0].parentItemId);
+    return api.registerScopedMcpScope({
+      conversationKey: paper.id,
+      libraryID: paper.libraryID,
+      kind: "paper",
+      runId: `mcp-${runtimeAuthority}:${Date.now()}`,
+      runtimeAuthority,
+    });
   }
 
   function itemKey(itemId: unknown): string {
@@ -159,53 +211,122 @@ describe("workflow: MCP tool result size", function () {
     await api.reset();
   });
 
-  it("sends library_retrieve whole, with the refs and quotes of every row", async function () {
-    const tool = (Zotero as any).LLMForZotero.api.agent.getToolDefinition(
-      "library_retrieve",
-    );
-    for (const intent of ["enumerate", "summarize"]) {
-      const args = {
-        query: "manifold learning dimensionality reduction",
-        queryVariants: ["manifold learning", "dimensionality reduction"],
-        intent,
-      };
-      const { payload } = await call("library_retrieve", args);
-      const result = payload.result;
-      // The same call run directly: the client reads every row it returns.
-      const validated = tool.validate(args);
-      assert.isTrue(validated.ok, JSON.stringify(validated));
-      const whole = normalizeExecutionOutput(
-        await tool.execute(validated.value, {
-          item: null,
-          currentAnswerText: "",
-          modelName: "workflow",
-          request: resolvedAgentRequest({
-            conversationKey: 1,
-            mode: "agent",
-            userText: "Which papers are about manifold learning?",
-            libraryID: Zotero.Libraries.userLibraryID,
-          }),
-          runId: `mcp-whole:${intent}:${Date.now()}`,
-        }),
-      ).content as {
-        snippets: Array<{ snippetId: string }>;
-        paperMatches: unknown[];
-      };
-      assert.notProperty(result, "omitted", intent);
-      assert.isNotEmpty(whole.snippets, intent);
-      assert.sameMembers(
-        (result.snippets as Array<{ snippetId: string }>).map(
-          (snippet) => snippet.snippetId,
-        ),
-        whole.snippets.map((snippet) => snippet.snippetId),
-        `${intent}: every passage`,
+  it("sends library_retrieve whole to a client that cannot page it", async function () {
+    const args = {
+      query: "manifold learning dimensionality reduction",
+      queryVariants: ["manifold learning", "dimensionality reduction"],
+      intent: "summarize",
+    };
+    const whole = await retrieveDirectly(args);
+    assert.isNotEmpty(whole.snippets);
+    const antigravity = registerScope("antigravity");
+    try {
+      // A client of no conversation, and Antigravity, which is not offered
+      // context_read, read every row.
+      assert.notInclude(
+        (await listedTools()).map((entry) => entry.name),
+        "context_read",
       );
-      assert.lengthOf(
-        result.paperMatches,
-        whole.paperMatches.length,
-        `${intent}: every paper`,
+      assert.notInclude(
+        (await listedTools(antigravity.token)).map((entry) => entry.name),
+        "context_read",
       );
-      assertShownRowsCitable(payload);
+      for (const token of [undefined, antigravity.token]) {
+        const { payload } = await call("library_retrieve", args, token);
+        const result = payload.result;
+        assert.notProperty(result, "omitted");
+        assert.notProperty(result, "toolResultHandle");
+        assert.sameMembers(
+          (result.snippets as Array<{ snippetId: string }>).map(
+            (snippet) => snippet.snippetId,
+          ),
+          whole.snippets.map((snippet) => snippet.snippetId),
+          "every passage",
+        );
+        assert.lengthOf(result.paperMatches, whole.paperMatches.length);
+        assertShownRowsCitable(payload);
+      }
+    } finally {
+      api.clearScopedMcpScope(antigravity.token);
+    }
+  });
+
+  it("sends a client of a conversation a sized view it pages to every row", async function () {
+    const scope = registerScope("claude");
+    try {
+      const listing = await listedTools(scope.token);
+      const contextRead = listing.find(
+        (entry) => entry.name === "context_read",
+      );
+      assert.isOk(contextRead, "context_read is offered");
+      assert.notInclude(
+        contextRead.inputSchema.properties.source.enum,
+        "conversation",
+      );
+      assert.notProperty(contextRead.inputSchema.properties, "messageId");
+      for (const intent of ["enumerate", "summarize"]) {
+        const args = {
+          query: "manifold learning dimensionality reduction",
+          queryVariants: ["manifold learning", "dimensionality reduction"],
+          intent,
+        };
+        const whole = await retrieveDirectly(args);
+        const { payload } = await call("library_retrieve", args, scope.token);
+        const view = payload.result;
+        assert.match(view.toolResultHandle, /^trh_/, intent);
+        assert.isAbove(view.omitted?.snippets || 0, 0, `${intent}: sized`);
+        assertShownRowsCitable(payload);
+        // Page each row path from the first row the view did not show.
+        const paged: Record<string, string[]> = {};
+        for (const [path, key] of [
+          ["snippets", "snippetId"],
+          ["paperMatches", "itemId"],
+        ] as const) {
+          const rows = (view[path] as Array<Record<string, string>>).map(
+            (row) => row[key],
+          );
+          let offset: number | undefined = rows.length;
+          while (offset !== undefined) {
+            const page = await call(
+              "context_read",
+              {
+                source: "tool_result",
+                handle: view.toolResultHandle,
+                path,
+                offset,
+                limit: 200,
+              },
+              scope.token,
+            );
+            for (const row of page.payload.result.items as Array<
+              Record<string, string>
+            >)
+              rows.push(row[key]);
+            offset = page.payload.result.nextOffset;
+          }
+          paged[path] = rows;
+        }
+        assert.sameMembers(
+          paged.snippets,
+          whole.snippets.map((snippet) => snippet.snippetId),
+          `${intent}: every passage is reachable`,
+        );
+        assert.sameMembers(
+          paged.paperMatches,
+          whole.paperMatches.map((paper) => paper.itemId),
+          `${intent}: every paper is reachable`,
+        );
+      }
+      // The plugin's own transcript is not the client's to read.
+      const refused = await rpc(
+        "tools/call",
+        { name: "context_read", arguments: { source: "conversation" } },
+        scope.token,
+      );
+      assert.isTrue(refused.isError);
+      assert.include(refused.content[0].text, "not available over MCP");
+    } finally {
+      api.clearScopedMcpScope(scope.token);
     }
   });
 
