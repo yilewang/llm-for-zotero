@@ -11708,9 +11708,14 @@ export function installWorkflowTestHarness(targetAddon: {
       invalidateRetrievalCandidates();
     },
     async checkProviderConversationTransport(input) {
+      // Both paths carry more than one system message, as real turns do:
+      // plain chat adds paper context, and an agent turn adds context blocks
+      // after its fixed prompt.
+      const contextNote = "Paper context for the transport check.";
       const params = {
         ...input,
         prompt: "Say OK",
+        systemMessages: [contextNote],
         requestScope: createProviderRequestScope(input.conversationKey),
       };
       const chat = await callLLM(params);
@@ -11725,13 +11730,23 @@ export function installWorkflowTestHarness(targetAddon: {
       const adapter = createAgentModelAdapter(request);
       const step = {
         request,
-        messages: [{ role: "user" as const, content: "Say OK" }],
+        messages: [
+          {
+            role: "system" as const,
+            content: "You are a concise assistant. Reply with OK.",
+          },
+          { role: "system" as const, content: contextNote },
+          { role: "user" as const, content: "Say OK" },
+        ],
         tools: [],
       };
       const agent = await adapter.runStep(step);
       const continuation = await adapter.runStep({
         ...step,
-        continuationMessages: step.messages,
+        // A real continuation appends only the new turn's messages.
+        continuationMessages: step.messages.filter(
+          (message) => message.role !== "system",
+        ),
       });
       if (agent.kind !== "final" || continuation.kind !== "final") {
         throw new Error(

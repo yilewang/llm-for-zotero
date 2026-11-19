@@ -27,7 +27,7 @@ import {
   createFallbackToolCallId,
   parseToolCallArguments,
 } from "./shared";
-import { resolveContentParts } from "./adapterUtils";
+import { partitionMessages, resolveContentParts } from "./adapterUtils";
 import { resolveAgentTransmittedOutputPolicy } from "./limits";
 import { estimateWirePayloadTokens } from "../../utils/modelInputCap";
 import {
@@ -330,8 +330,16 @@ function hasPdfFileRef(message: AgentModelMessage): boolean {
 async function buildMessagesPayload(
   messages: AgentModelMessage[],
 ): Promise<OpenAIChatRequestMessage[]> {
-  const result: OpenAIChatRequestMessage[] = [];
-  for (const message of messages) {
+  // Many chat-compatible servers (SiliconFlow, and chat templates such as
+  // Qwen's) accept one system message, and only as the first message. The
+  // agent's prompt arrives as several system blocks, so they are joined into
+  // one leading message in their original order, as plain chat does. The
+  // joined text keeps the same prefix, so prefix caching is unaffected.
+  const { systemTexts, conversationMessages } = partitionMessages(messages);
+  const result: OpenAIChatRequestMessage[] = systemTexts.length
+    ? [{ role: "system", content: systemTexts.join("\n\n") }]
+    : [];
+  for (const message of conversationMessages) {
     if (message.role === "tool") {
       result.push({
         role: "tool",
