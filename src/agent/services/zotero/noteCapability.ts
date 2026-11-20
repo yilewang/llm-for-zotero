@@ -19,7 +19,10 @@ import {
   stripNoteHtml,
 } from "../../../services/notes/noteSnapshot";
 import { invalidateCachedContextText } from "../../../services/paperContent/pdfContext";
-import { persistVerifiedNoteHtml } from "../../../services/notePersistence";
+import {
+  persistVerifiedNoteHtml,
+  saveOpenNoteEditors,
+} from "../../../services/notePersistence";
 import {
   writeAssistantItemNote,
   writeAssistantStandaloneNote,
@@ -166,6 +169,7 @@ export class NoteCapability {
     if (!noteItem) {
       throw new Error("No active note is available to edit");
     }
+    await saveOpenNoteEditors(noteItem.id);
     const snapshot = readNoteSnapshot(noteItem);
     if (!snapshot) {
       throw new Error("Could not read the active note");

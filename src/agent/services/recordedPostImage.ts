@@ -1,4 +1,5 @@
 import { canonicalNoteHtml } from "../../utils/noteHtml";
+import { readNativeNoteHtml } from "../../services/notePersistence";
 import type {
   LibraryMutationOperation,
   LibraryMutationState,
@@ -170,7 +171,7 @@ export async function captureCurrentScriptDeclaredGuard(params: {
     return {
       kind: "note_html",
       noteId,
-      checksum: await sha256Text(item?.getNote?.() || ""),
+      checksum: await sha256Text(item ? await readNativeNoteHtml(item) : ""),
     };
   }
   if (guard.kind === "file") {
@@ -272,11 +273,15 @@ export async function readRecordedPostImage(params: {
           null
         : null;
     }
-    if (Object.prototype.hasOwnProperty.call(record, "html")) {
-      current.html = item?.getNote?.() || "";
-    }
-    if (Object.prototype.hasOwnProperty.call(record, "htmlChecksum")) {
-      current.htmlChecksum = await sha256Text(item?.getNote?.() || "");
+    if (
+      Object.prototype.hasOwnProperty.call(record, "html") ||
+      Object.prototype.hasOwnProperty.call(record, "htmlChecksum")
+    ) {
+      const html = item ? await readNativeNoteHtml(item) : "";
+      if (Object.prototype.hasOwnProperty.call(record, "html"))
+        current.html = html;
+      if (Object.prototype.hasOwnProperty.call(record, "htmlChecksum"))
+        current.htmlChecksum = await sha256Text(html);
     }
     if (Object.prototype.hasOwnProperty.call(record, "collections")) {
       current.collections = item?.getCollections?.() || [];
@@ -293,14 +298,15 @@ export async function readRecordedPostImage(params: {
     if (Object.prototype.hasOwnProperty.call(expected, "canonicalChecksum")) {
       if (!item || item.deleted)
         throw new Error("The original note is unavailable");
-      await item.reload(["note"], true);
       return {
         kind: "note_html",
         noteId,
-        canonicalChecksum: await sha256Text(canonicalNoteHtml(item.getNote())),
+        canonicalChecksum: await sha256Text(
+          canonicalNoteHtml(await readNativeNoteHtml(item)),
+        ),
       };
     }
-    const html = item?.getNote?.() || "";
+    const html = item ? await readNativeNoteHtml(item) : "";
     const current: Record<string, unknown> = {
       kind: "note_html",
       noteId,

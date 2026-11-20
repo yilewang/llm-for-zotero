@@ -80,6 +80,7 @@ import {
 import {
   createFinalizedZoteroNote,
   persistVerifiedNoteHtml,
+  readNativeNoteHtml,
   type CreatedZoteroNoteReceipt,
   type NotePersistenceSaveOptions,
 } from "../../services/notePersistence";
@@ -1428,7 +1429,10 @@ export async function createNoteFromAssistantText(
     if (existingNote) {
       try {
         const html = await buildHtml(existingNote.id, 2);
-        const appendedHtml = appendNoteHtml(existingNote.getNote() || "", html);
+        const appendedHtml = appendNoteHtml(
+          await readNativeNoteHtml(existingNote),
+          html,
+        );
         // Verified write: a silently lost saveTx (the #327 failure class)
         // throws here, falling through to create a new note instead of
         // reporting a success that never reached the database.
