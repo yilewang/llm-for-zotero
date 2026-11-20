@@ -1947,53 +1947,42 @@ describe("workflow: torn-off chat windows keep their own paper", function () {
   // ── W14 ──────────────────────────────────────────────────────────────────
 
   it("W14: WebChat rows and note chats are not draggable and have no Open in New Window item", async function () {
-    // A note chat.
-    const note = await api.createStandaloneNoteFixture({
+    // A note chat, listed in its paper's chats (opening a note keeps the
+    // paper's chat; a note's own chats stay in that paper's list).
+    const note = await api.createItemNoteFixture({
+      title: "Torn W14 parent",
+      pdfTitle: "Torn W14 PDF",
       noteHtml: "<p>Torn W14 note</p><p>Body.</p>",
     });
     fixtures.push(note as unknown as WorkflowTestFixture);
-    await api.openStandaloneForItem(note.noteItemId);
-    await until(
-      () => stateOf(standaloneWin()).conversationKey > 0,
-      () =>
-        `the standalone window shows the note chat: ${JSON.stringify(stateOf(standaloneWin()))}`,
+    const notePanel = await api.renderPanelForItem(note.noteItemId);
+    const noteChat = await api.seedPanelStoredUserMessage(
+      notePanel.panelId,
+      "Torn W14 note question",
     );
-    await api.seedStandaloneConversation([
-      { role: "user", text: "Torn W14 note question" },
-      { role: "assistant", text: "Torn W14 note answer" },
-    ]);
+    const noteKey = noteChat.conversationKey!;
+    await api.openStandaloneForItem(note.parentItemId);
     let standalone = standaloneWin()!;
-    const noteKey = stateOf(standalone).conversationKey;
     await until(
       () => Boolean(rowOf(standaloneWin(), noteKey)),
       () =>
         `the note chat ${noteKey} is listed: ${JSON.stringify(listedConversationKeys(standaloneWin()))}`,
     );
-    for (const row of listRows(standalone)) {
-      assert.notEqual(
-        row.getAttribute("draggable"),
-        "true",
-        `note chat row ${row.dataset.conversationKey} is not draggable`,
-      );
-    }
-    assert.isNull(
-      titleOf(standalone)!.getAttribute("draggable"),
-      "the note chat title is not draggable",
-    );
+    standalone = standaloneWin()!;
     const noteRow = rowOf(standalone, noteKey)!;
+    assert.notEqual(
+      noteRow.getAttribute("draggable"),
+      "true",
+      `note chat row ${noteKey} is not draggable`,
+    );
     openRowMenu(standalone, noteRow);
-    assert.isFalse(isConvMenuShown(standalone), "a note chat row has no menu");
+    assert.isFalse(
+      isConvMenuShown(standalone),
+      "a note chat row has no Open in New Window item",
+    );
     let transfer = startDrag(standalone, noteRow);
     assert.notInclude(Array.from(transfer.types), TEAR_OFF_MIME);
     endDrag(standalone, noteRow, transfer, pointOutsideEveryWindow());
-    transfer = startDrag(standalone, titleOf(standalone)!);
-    assert.notInclude(Array.from(transfer.types), TEAR_OFF_MIME);
-    endDrag(
-      standalone,
-      titleOf(standalone)!,
-      transfer,
-      pointOutsideEveryWindow(),
-    );
     await Zotero.Promise.delay(500);
     assert.lengthOf(api.getTornChatWindowsForTest(), 0);
 

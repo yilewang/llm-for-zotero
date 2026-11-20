@@ -1105,6 +1105,8 @@ export type WorkflowTestHistoryRow = {
   runtimeLabel?: string;
   /** The row's time text ("Draft" for an empty draft). */
   isDraft?: boolean;
+  /** The row's scope chip ("Library chat", "Note chat", a paper's label). */
+  scopeLabel?: string;
 };
 
 /** A chat written straight into one runtime's catalog and message store. */

@@ -224,8 +224,11 @@ import {
   createGlobalPortalItem,
   createPaperPortalItem,
   resolveConversationBaseItem,
+  resolveConversationKeyForNoteFocus,
   resolveInitialPanelItemState,
+  resolvePreferredConversationSystem,
 } from "./portalScope";
+import { createNoteConversationItem } from "../../services/notes/conversationItem";
 import {
   allocateEphemeralGlobalConversationKey,
   allocateEphemeralPaperConversationKey,
@@ -1647,15 +1650,28 @@ async function renderPanelForItemInternal(
   const body = appendHost(doc);
   const panelId = `workflow-panel-${++panelCounter}`;
   body.dataset.workflowPanelId = panelId;
+  // A note renders its own note chat, as when the user opens that chat from
+  // the history; opening the note itself keeps the paper or library chat.
+  const noteChatSystem = resolvePreferredConversationSystem({ item });
+  const noteChatItem =
+    !options?.resolveRememberedState && item.isNote()
+      ? createNoteConversationItem(
+          item,
+          noteChatSystem,
+          resolveConversationKeyForNoteFocus(item, {
+            conversationSystem: noteChatSystem,
+          })!,
+        )
+      : null;
   const initialPanelItem = options?.resolveRememberedState
     ? resolveInitialPanelItemState(item).item
-    : item;
+    : noteChatItem || item;
   mountPanelShell({
     body,
     renderItem: initialPanelItem,
     getMountedItem: () => initialPanelItem,
     rawItem: item,
-    setupItem: item,
+    setupItem: noteChatItem || item,
   });
   const mountedItem = activeContextPanels.get(body)?.() || item;
   await ensureConversationLoaded(mountedItem).catch(() => undefined);
@@ -10413,6 +10429,9 @@ function readWorkflowHistoryRow(
       row.querySelector(".llm-history-runtime-label")?.textContent || ""
     ).trim(),
     isDraft: row.dataset.historyDraft === "true",
+    scopeLabel: (
+      row.querySelector(".llm-history-item-scope-chip")?.textContent || ""
+    ).trim(),
   };
 }
 

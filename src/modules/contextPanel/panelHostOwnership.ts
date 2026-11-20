@@ -1,5 +1,6 @@
 import { appLogger } from "../../core/logging";
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
+import { resolveChatFamilyItemID } from "../../services/notes/scope";
 import {
   resolveActiveNoteSession,
   resolveConversationBaseItem,
@@ -375,19 +376,19 @@ function scopeBelongsToHost(
     return true;
   }
   if (!binding.libraryID || scope.libraryID !== binding.libraryID) return false;
-  if (binding.noteID) {
-    return (
-      scope.kind === "note" &&
-      scope.noteID === binding.noteID &&
-      scope.noteParentItemID === binding.noteParentItemID
-    );
+  // An opened note keeps its paper's chats (issue #577): a host showing a
+  // paper, or one of its notes, owns that paper's chats and the chats of the
+  // paper's notes. A standalone note owns the library chat and its own chats.
+  const familyPaperID = binding.noteID
+    ? binding.noteParentItemID
+    : binding.basePaperItemID;
+  if (scope.kind === "note") {
+    return familyPaperID
+      ? scope.noteParentItemID === familyPaperID
+      : Boolean(binding.noteID) && scope.noteID === binding.noteID;
   }
-  if (scope.kind === "note") return false;
   if (scope.kind === "global") return scope.explicitGlobalMode;
-  return (
-    Boolean(binding.basePaperItemID) &&
-    scope.paperItemID === binding.basePaperItemID
-  );
+  return Boolean(familyPaperID) && scope.paperItemID === familyPaperID;
 }
 
 function sameScope(
@@ -751,16 +752,15 @@ export function isPanelHostCompatibleWithPaper(
   if (binding.surface === "standalone" || binding.surface === "side") {
     return true;
   }
-  if (binding.noteID) {
-    return (
-      binding.libraryID === normalizePositiveInt(paperItem.libraryID) &&
-      binding.noteID === normalizePositiveInt(paperItem.id)
-    );
-  }
-  return (
-    binding.libraryID === normalizePositiveInt(paperItem.libraryID) &&
-    binding.basePaperItemID === normalizePositiveInt(paperItem.id)
-  );
+  if (binding.libraryID !== normalizePositiveInt(paperItem.libraryID))
+    return false;
+  // The same family rule as scopeBelongsToHost: a paper and its notes.
+  const familyPaperID = binding.noteID
+    ? binding.noteParentItemID
+    : binding.basePaperItemID;
+  return familyPaperID
+    ? resolveChatFamilyItemID(paperItem.id) === familyPaperID
+    : binding.noteID === normalizePositiveInt(paperItem.id);
 }
 
 export function getConversationScopeIdentityForTests(

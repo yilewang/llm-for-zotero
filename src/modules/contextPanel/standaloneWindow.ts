@@ -2175,6 +2175,14 @@ function openChatWindowInstance(
         if (cancelled || newWin.closed || isInWebChatMode) return null;
         // A note session lists and shows the note's own chats.
         if (resolveActiveNoteSession(activeItem)) return null;
+        // A paper's list also holds its notes' chats; they never tear off.
+        if (
+          candidate.kind === "paper" &&
+          (
+            Zotero.Items.get(Number(candidate.paperItemID || 0)) || null
+          )?.isNote?.()
+        )
+          return null;
         const key = Math.floor(Number(candidate.conversationKey || 0));
         if (!Number.isFinite(key) || key <= 0) return null;
         if (
