@@ -2,6 +2,7 @@ import type { ModelProfileOverride } from "../../modelCapabilities";
 import type {
   CollectionContextRef,
   PaperContextRef,
+  SelectedTextContext,
   TagContextRef,
 } from "../../shared/types";
 import type { ModelProviderAuthMode } from "../../utils/modelProviders";
@@ -71,6 +72,8 @@ export type ActionRequestContext = {
   fullTextPaperContexts?: PaperContextRef[];
   selectedCollectionContexts?: CollectionContextRef[];
   selectedTagContexts?: TagContextRef[];
+  /** The text the user selected for this action, with where it came from. */
+  selectedTextContexts?: SelectedTextContext[];
 };
 
 export type ActionExecutionContext = {

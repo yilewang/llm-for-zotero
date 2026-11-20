@@ -104,6 +104,8 @@ export function createInlineAskTurnRunner(input: {
   getContext: () => Promise<string>;
   /** The card's answer when getModel gives null. */
   noModelMessage?: string;
+  /** Replaces the reader's system message (a note editor's card). */
+  systemMessage?: string;
   /** Test seam: the streaming call. */
   call?: typeof callLLMStream;
 }): InlineAskTurnRunner {
@@ -132,7 +134,7 @@ export function createInlineAskTurnRunner(input: {
       profileOverride: target.advanced?.profileOverride as
         | ChatParams["profileOverride"]
         | undefined,
-      systemMessages: [INLINE_ASK_SYSTEM_MESSAGE],
+      systemMessages: [input.systemMessage || INLINE_ASK_SYSTEM_MESSAGE],
       requestScope,
     };
     const outcome = await callDirectChatTurnWithRecovery({

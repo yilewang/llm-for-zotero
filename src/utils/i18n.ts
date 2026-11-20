@@ -15,6 +15,17 @@ import { config } from "../../package.json";
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
+  // Note editor inline writing card
+  Rewrite: "改写",
+  Expand: "扩写",
+  Shorten: "精简",
+  "Add to chat": "添加到对话",
+  Replace: "替换",
+  "Insert below": "插入到下方",
+  "Ask about or change the selection": "询问或修改所选内容",
+  "Open the chat in the side pane to add text to it.":
+    "请先在侧边栏打开对话，再添加文本。",
+  "The note editor is not open.": "笔记编辑器未打开。",
   "Not in library": "不在文献库中",
   "Web search provider": "网页搜索服务",
   "AnySearch API key (optional)": "AnySearch API 密钥（可选）",

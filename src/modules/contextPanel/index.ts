@@ -1,4 +1,8 @@
 import { appLogger } from "../../core/logging";
+import {
+  closeNoteInlineWritingCard,
+  syncNoteInlineWritingCard,
+} from "./noteEditing/noteInlineWriting";
 import { getSidebarLayout } from "./sidebarLayout";
 /**
  * Context Panel Module
@@ -1796,6 +1800,7 @@ function refreshTrackedNoteEditingSelection(
   if (noteId && noteId === tracker.lastNoteId && !docs.length) return;
   for (const doc of docs) tracker.trackSelectionDocument(doc);
   const text = docs.map(getEditableSelectionFromDocument).find(Boolean) || "";
+  syncNoteInlineWritingCard({ win, noteItem, docs });
   const keys = new Set<number>();
   for (const [body] of activeContextPanelStateSync) {
     if (!body.isConnected) continue;
@@ -1862,6 +1867,7 @@ export function registerNoteEditingSelectionTracking(
 }
 
 export function unregisterNoteEditingSelectionTracking(win: Window): void {
+  closeNoteInlineWritingCard(win);
   const trackedWindow = win as MainWindowWithNoteEditingTracker;
   trackedWindow.__llmNoteEditingSelectionTracking?.dispose();
 }

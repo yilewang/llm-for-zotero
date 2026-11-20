@@ -1,0 +1,298 @@
+import { assert } from "chai";
+import {
+  getModelEntryById,
+  setModelProviderGroups,
+} from "../src/utils/modelProviders";
+import {
+  installHeldChatProvider,
+  type HeldChatProvider,
+} from "./helpers/heldChatProvider";
+
+/**
+ * The note editor's inline writing card, in Zotero's real note editor:
+ * selecting text opens the card under the selection without taking the
+ * keyboard; Rewrite streams a replacement that Replace writes into the note
+ * (keeping typing elsewhere), Insert below adds it after the paragraph, and
+ * Add to chat hands the selection to the paper's chat.
+ *
+ * Only the network is scripted (a held fake provider).
+ */
+
+declare const Zotero: any;
+
+const PREF_PREFIX = "extensions.zotero.llmforzotero.";
+const API_BASE = "https://workflow-note-inline.invalid/v1";
+const ENTRY_ID = "workflow-note-inline-model";
+const SAVED_PREF_KEYS = [
+  "modelProviderGroups",
+  "modelProviderGroupsMigrationVersion",
+  "lastUsedModelEntryId",
+  "conversationSystem",
+  "enableCodexAppServerMode",
+  "enableClaudeCodeMode",
+  "inlineAskModelEntryId",
+];
+
+const SOURCE = "The decoder was fitted on session one.";
+const NOTE_HTML =
+  "<h2>Methods</h2>" + `<p>${SOURCE}</p>` + "<p>Keep this paragraph.</p>";
+
+describe("workflow: inline writing card in the note editor", function () {
+  this.timeout(120_000);
+
+  const api = () => (Zotero as any).LLMForZotero.api.workflowTest;
+  const delay = (ms: number) => Zotero.Promise.delay(ms);
+  let provider: HeldChatProvider;
+  const previousPrefs = new Map<string, unknown>();
+  let fixture: any = null;
+
+  async function until<T>(read: () => T, label: string): Promise<T> {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const value = read();
+      if (value) return value;
+      await delay(25);
+    }
+    throw new Error(`Timed out waiting for ${label}`);
+  }
+
+  async function openEditor(noteId: number) {
+    const win = Zotero.getMainWindow();
+    win.Zotero_Tabs?.select?.("zotero-pane");
+    await win.ZoteroPane.selectItem(noteId);
+    const editor = await until(
+      () =>
+        Array.from(win.document.querySelectorAll("note-editor")).find(
+          (el: any) => el.item?.id === noteId && el.getClientRects().length,
+        ) as any,
+      "the note editor",
+    );
+    const iframe = editor.querySelector("iframe") as HTMLIFrameElement;
+    await until(
+      () =>
+        iframe.contentDocument
+          ?.querySelector(".ProseMirror")
+          ?.textContent?.includes("Keep this paragraph."),
+      "the note editor content",
+    );
+    await delay(1500);
+    const doc = iframe.contentDocument!;
+    const body = () => doc.querySelector(".ProseMirror") as HTMLElement;
+    const textNode = (needle: string) => {
+      const walker = doc.createTreeWalker(body(), 4);
+      let node: Node | null;
+      while ((node = walker.nextNode()))
+        if (node.textContent?.includes(needle)) return node;
+      throw new Error(`No editor text contains ${needle}`);
+    };
+    const setRange = (node: Node, start: number, end: number) => {
+      body().focus();
+      const range = doc.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, end);
+      const selection = doc.defaultView!.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
+    return {
+      doc,
+      text: () => body().textContent || "",
+      card: () =>
+        doc.querySelector("[data-llm-inline-ask]") as HTMLElement | null,
+      /** Selects `needle` as a mouse drag would, ending with a release. */
+      select(needle: string) {
+        const node = textNode(needle);
+        const start = node.textContent!.indexOf(needle);
+        setRange(node, start, start + needle.length);
+        doc.dispatchEvent(new doc.defaultView!.MouseEvent("mouseup"));
+      },
+      collapse() {
+        const node = textNode("Keep this paragraph.");
+        setRange(node, 0, 0);
+        doc.dispatchEvent(new doc.defaultView!.MouseEvent("mouseup"));
+      },
+      typeAfter(anchor: string, text: string) {
+        const node = textNode(anchor);
+        setRange(node, node.textContent!.length, node.textContent!.length);
+        doc.execCommand("insertText", false, text);
+      },
+    };
+  }
+
+  async function storedNote(): Promise<string> {
+    const note = Zotero.Items.get(fixture.noteItemId);
+    await note.reload(["note"], true);
+    return note.getNote();
+  }
+
+  async function rewriteTo(
+    editor: Awaited<ReturnType<typeof openEditor>>,
+    answer: string,
+  ) {
+    const card = (await until(() => editor.card(), "the card"))!;
+    const pill = card.querySelector(
+      "[data-llm-inline-ask-pill='note-rewrite']",
+    ) as HTMLElement;
+    assert.ok(pill, "the card offers Rewrite");
+    pill.click();
+    const stream = await provider.waitForStream("Rewrite the selected text");
+    assert.include(stream.requestBody, SOURCE, "the model sees the selection");
+    stream.push(answer);
+    stream.finish();
+    await until(
+      () => editor.card()?.getAttribute("data-phase") === "answered",
+      "the answer",
+    );
+    return editor.card()!;
+  }
+
+  before(async function () {
+    for (const key of SAVED_PREF_KEYS)
+      previousPrefs.set(key, Zotero.Prefs.get(PREF_PREFIX + key, true));
+    provider = installHeldChatProvider(API_BASE);
+    Zotero.Prefs.set(PREF_PREFIX + "conversationSystem", "upstream", true);
+    Zotero.Prefs.set(PREF_PREFIX + "enableCodexAppServerMode", false, true);
+    Zotero.Prefs.set(PREF_PREFIX + "enableClaudeCodeMode", false, true);
+    setModelProviderGroups([
+      {
+        id: "workflow-note-inline-group",
+        authMode: "api_key",
+        apiBase: API_BASE,
+        apiKey: "workflow-dummy-key",
+        providerProtocol: "openai_chat_compat",
+        models: [
+          {
+            id: ENTRY_ID,
+            model: "note-inline-model",
+            temperature: 0.3,
+            outputTokenLimit: { mode: "auto" },
+          },
+        ],
+      },
+    ] as any);
+    Zotero.Prefs.set(PREF_PREFIX + "lastUsedModelEntryId", ENTRY_ID, true);
+    Zotero.Prefs.set(PREF_PREFIX + "inlineAskModelEntryId", ENTRY_ID, true);
+    assert.isOk(getModelEntryById(ENTRY_ID));
+  });
+
+  after(async function () {
+    provider?.restore();
+    await api().reset();
+    for (const [key, value] of previousPrefs) {
+      if (value === undefined) Zotero.Prefs.clear(PREF_PREFIX + key, true);
+      else Zotero.Prefs.set(PREF_PREFIX + key, value, true);
+    }
+  });
+
+  beforeEach(async function () {
+    await api().reset();
+    fixture = await api().createItemNoteFixture({
+      title: "Inline writing parent",
+      pdfTitle: "Inline writing PDF",
+      noteHtml: NOTE_HTML,
+    });
+  });
+
+  afterEach(async function () {
+    provider.failOpenStreams("workflow case ended");
+    await api().reset();
+    if (fixture) await api().cleanupFixture(fixture);
+    fixture = null;
+  });
+
+  it("opens under a selection without taking the keyboard, and closes when the selection goes", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    const card = (await until(() => editor.card(), "the card"))!;
+    assert.deepEqual(
+      (
+        Array.from(
+          card.querySelectorAll("[data-llm-inline-ask-pill]"),
+        ) as Element[]
+      ).map((pill) => pill.getAttribute("data-llm-inline-ask-pill")),
+      ["note-rewrite", "note-expand", "note-shorten"],
+    );
+    assert.ok(
+      card.querySelector("[data-llm-inline-ask-action='note-add-to-chat']"),
+      "the card offers Add to chat",
+    );
+    assert.isFalse(
+      card.contains(editor.doc.activeElement),
+      "the card does not take the keyboard",
+    );
+
+    editor.collapse();
+    await until(() => !editor.card(), "the card to close");
+  });
+
+  it("Rewrite then Replace writes the answer and keeps typing elsewhere", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    const card = await rewriteTo(
+      editor,
+      "The decoder was trained on session one only.",
+    );
+    editor.typeAfter("Keep this paragraph.", " typed meanwhile");
+    (
+      card.querySelector(
+        "[data-llm-inline-ask-action='note-replace']",
+      ) as HTMLElement
+    ).click();
+    await until(() => !editor.card(), "the card to close after Replace");
+
+    const saved = await storedNote();
+    assert.include(saved, "The decoder was trained on session one only.");
+    assert.notInclude(saved, SOURCE);
+    assert.include(saved, "typed meanwhile", "Replace kept the typing");
+    await delay(500);
+    assert.include(editor.text(), "trained on session one only.");
+  });
+
+  it("Insert below adds the answer after the selected paragraph", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    const card = await rewriteTo(editor, "An added follow-up sentence.");
+    (
+      card.querySelector(
+        "[data-llm-inline-ask-action='note-insert-below']",
+      ) as HTMLElement
+    ).click();
+    await until(() => !editor.card(), "the card to close after Insert");
+    await until(
+      () => editor.text().includes("An added follow-up sentence."),
+      "the inserted paragraph",
+    );
+    const text = editor.text();
+    assert.include(text, SOURCE, "the selection stays");
+    assert.isBelow(
+      text.indexOf(SOURCE),
+      text.indexOf("An added follow-up sentence."),
+    );
+  });
+
+  it("Add to chat hands the selection to the paper's chat", async function () {
+    // The paper's chat, mounted in the main window as the side pane holds it.
+    const panel = await api().renderPanelForItem(fixture.parentItemId);
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    const card = (await until(() => editor.card(), "the card"))!;
+    (
+      card.querySelector(
+        "[data-llm-inline-ask-action='note-add-to-chat']",
+      ) as HTMLElement
+    ).click();
+    await until(() => !editor.card(), "the card to close after Add to chat");
+    const deadline = Date.now() + 10_000;
+    let diagnostics = await api().getDiagnostics(panel.panelId);
+    while (
+      !(diagnostics.selectedContextLabels || []).includes("Editing") &&
+      Date.now() < deadline
+    ) {
+      await delay(50);
+      diagnostics = await api().getDiagnostics(panel.panelId);
+    }
+    // The note selection is a note-editing chip in the paper's composer.
+    assert.include(diagnostics.selectedContextLabels, "Editing");
+    assert.equal(diagnostics.conversationKind, "paper");
+  });
+});

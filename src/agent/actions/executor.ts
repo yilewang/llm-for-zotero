@@ -58,6 +58,7 @@ function buildToolContext(
       selectedCollectionContexts:
         ctx.requestContext?.selectedCollectionContexts,
       selectedTagContexts: ctx.requestContext?.selectedTagContexts,
+      selectedTextContexts: ctx.requestContext?.selectedTextContexts,
     }),
     runId: ctx.runId,
     item: syntheticItem,
