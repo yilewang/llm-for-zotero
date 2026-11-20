@@ -146,6 +146,15 @@ describe("workflow: inline writing popup in the note editor", function () {
       () => editor.card()?.getAttribute("data-phase") === "answered",
       "the answer",
     );
+    // The answer shows as the plugin's diff of the selection.
+    const change = editor
+      .card()!
+      .querySelector("[data-llm-note-inline-change] .llm-agent-hitl-diff");
+    assert.ok(change, "the answer shows as a diff");
+    assert.ok(
+      change!.querySelector(".llm-agent-hitl-diff-line-add"),
+      "the diff shows the new text",
+    );
     return editor.card()!;
   }
 
@@ -298,8 +307,15 @@ describe("workflow: inline writing popup in the note editor", function () {
     assert.include(saved, "The decoder was trained on session one only.");
     assert.notInclude(saved, SOURCE);
     assert.include(saved, "typed meanwhile", "Replace kept the typing");
-    await delay(500);
+    await until(
+      () =>
+        editor.doc.defaultView!.getSelection()!.toString() ===
+        "The decoder was trained on session one only.",
+      "the replacement selected in the note",
+    );
     assert.include(editor.text(), "trained on session one only.");
+    await delay(400);
+    assert.isNull(editor.card(), "selecting the change opens no popup");
   });
 
   it("Insert below adds the answer after the selected paragraph", async function () {

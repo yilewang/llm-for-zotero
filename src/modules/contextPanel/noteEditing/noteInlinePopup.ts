@@ -44,6 +44,11 @@ export type NoteInlinePopupInput = {
     working: string;
   };
   /** Streams the answer to `instruction` about the selection. */
+  /**
+   * The finished answer as a change to the selection (the plugin's diff
+   * view); shown for the writing actions, whose answer replaces it.
+   */
+  renderChange: (answer: string) => HTMLElement;
   ask: (
     instruction: string,
     onDelta: (delta: string) => void,
@@ -134,6 +139,8 @@ export function openNoteInlinePopup(
     "line-height:1.35",
   ]);
   root.setAttribute("data-llm-note-inline-popup", "true");
+  // The panel's stylesheet scope: its diff colors and text sizes.
+  root.className = "llm-note-inline-popup";
   root.setAttribute("data-view", "menu");
 
   // ── Menu view ───────────────────────────────────────────────────────────
@@ -146,7 +153,9 @@ export function openNoteInlinePopup(
   ]);
   for (const action of input.actions) {
     const node = button(action.label, action.id);
-    node.addEventListener("click", () => ask(action.label, action.instruction));
+    node.addEventListener("click", () =>
+      ask(action.label, action.instruction, true),
+    );
     actionRow.append(node);
   }
   const sidebarBtn = button(input.labels.askInSidebar, "ask-in-sidebar");
@@ -251,7 +260,19 @@ export function openNoteInlinePopup(
   const spacer = el("span", ["flex:1 1 auto"]);
   const discardBtn = button(input.labels.discard, "discard");
   resultActions.append(replaceBtn, insertBtn, spacer, discardBtn);
-  result.append(resultTitle, resultText, resultError, resultActions);
+  const resultChange = el("div", [
+    "display:none",
+    "max-height:240px",
+    "overflow:auto",
+  ]);
+  resultChange.setAttribute("data-llm-note-inline-change", "true");
+  result.append(
+    resultTitle,
+    resultText,
+    resultChange,
+    resultError,
+    resultActions,
+  );
 
   root.append(menu, result);
   (doc.documentElement || doc.body)!.appendChild(root);
@@ -305,7 +326,7 @@ export function openNoteInlinePopup(
     input.onClose();
   };
 
-  const ask = (title: string, instruction: string) => {
+  const ask = (title: string, instruction: string, showChange: boolean) => {
     if (closed || engaged || !instruction.trim()) return;
     engaged = true;
     streaming = true;
@@ -348,6 +369,10 @@ export function openNoteInlinePopup(
         if (!answer.trim()) {
           resultText.textContent = "";
           setError(outcome.errorMessage || "The model returned no answer.");
+        } else if (showChange) {
+          resultChange.replaceChildren(input.renderChange(answer));
+          resultChange.style.display = "block";
+          resultText.style.display = "none";
         }
         root.setAttribute("data-phase", "answered");
         syncResultButtons();
@@ -380,7 +405,7 @@ export function openNoteInlinePopup(
 
   const sendComposer = () => {
     const text = composer.value.trim();
-    if (text) ask(text, text);
+    if (text) ask(text, text, false);
   };
   sendBtn.addEventListener("click", sendComposer);
   composer.addEventListener("keydown", (event) => {

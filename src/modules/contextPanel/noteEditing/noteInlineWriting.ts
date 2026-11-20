@@ -20,7 +20,11 @@
  */
 import { getAgentApi, initAgentSubsystem } from "../../../agent";
 import type { NoteContextRef } from "../../../shared/types";
-import { renderRawNoteHtml } from "../../../services/notes/noteRendering";
+import {
+  normalizeNoteSourceText,
+  renderRawNoteHtml,
+} from "../../../services/notes/noteRendering";
+import { renderDiffPreviewField } from "../agentTrace/diffPreviewField";
 import { resolveNoteEditingParentItem } from "../../../services/notes/scope";
 import { resolvePaperContextRefFromItem } from "../../../services/paperContent/paperAttribution";
 import { getAbortController } from "../../../utils/apiHelpers";
@@ -43,6 +47,7 @@ export const NOTE_INLINE_WRITING_SYSTEM_MESSAGE = [
   "Note writing: the user selected text in their own Zotero note and asks for help writing it.",
   "When asked to rewrite, expand, proofread or otherwise change the text, reply with only the new text in Markdown, with no preamble, quotes or commentary, so it can replace the selection as is.",
   "Keep the selection's language, meaning and structure (headings, lists) unless asked to change them.",
+  "The new text replaces exactly the selection, which may start or end mid-sentence: keep its first and last characters' kind, so add no final period or capital letter the selection does not have.",
   "When asked a question, answer briefly.",
   "Do not add citation markers, quote tokens, or source lists.",
 ].join(" ");
@@ -192,6 +197,100 @@ function watchEditorDocument(win: Window, doc: Document): void {
   );
 }
 
+/** The note's text as the editor shows it: its text nodes joined in order. */
+function readEditorText(doc: Document): {
+  text: string;
+  nodes: Array<{ node: Text; start: number }>;
+} {
+  const body = doc.querySelector(".ProseMirror");
+  const nodes: Array<{ node: Text; start: number }> = [];
+  let text = "";
+  if (!body) return { text, nodes };
+  const walker = doc.createTreeWalker(body, 4);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    nodes.push({ node: node as Text, start: text.length });
+    text += node.textContent || "";
+  }
+  return { text, nodes };
+}
+
+/** Where a point of the editor (a node and offset) falls in that text. */
+function editorTextOffset(doc: Document, node: Node, offset: number): number {
+  const { text, nodes } = readEditorText(doc);
+  const entry = nodes.find((candidate) => candidate.node === node);
+  if (entry) return entry.start + offset;
+  // A point between elements: the text before the element's child there.
+  const range = doc.createRange();
+  range.setStart(doc.querySelector(".ProseMirror") || doc.body, 0);
+  range.setEnd(node, offset);
+  return Math.min(text.length, range.toString().length);
+}
+
+/** A DOM point for an offset in the editor's text. */
+function editorTextPoint(
+  nodes: Array<{ node: Text; start: number }>,
+  offset: number,
+  preferEnd: boolean,
+): { node: Text; offset: number } | null {
+  for (const { node, start } of nodes) {
+    const end = start + (node.textContent || "").length;
+    if (offset < end || (preferEnd && offset === end))
+      return { node, offset: offset - start };
+  }
+  const last = nodes.at(-1);
+  return last
+    ? { node: last.node, offset: (last.node.textContent || "").length }
+    : null;
+}
+
+/**
+ * Selects the text an answer put into the note, so the whole change shows,
+ * once the editor shows it: from the first to the last line of the answer,
+ * searched from `from` (where the selection began, or ended for text
+ * inserted below it). The new selection does not open the popup again.
+ */
+function selectWrittenText(
+  win: Window,
+  doc: Document,
+  from: number,
+  answerHtml: string,
+): void {
+  const parsed = new (doc.defaultView as any).DOMParser().parseFromString(
+    answerHtml,
+    "text/html",
+  ) as Document;
+  const lines = Array.from(parsed.body.children)
+    .map((block) => (block.textContent || "").trim())
+    .filter(Boolean);
+  if (!lines.length) return;
+  const firstKey = lines[0].slice(0, 40);
+  const lastKey = lines[lines.length - 1].slice(-40);
+  const deadline = Date.now() + 3000;
+  const attempt = () => {
+    if (!doc.defaultView || Date.now() > deadline) return;
+    const { text, nodes } = readEditorText(doc);
+    const start = text.indexOf(firstKey, Math.max(0, from - 2));
+    const lastAt = start < 0 ? -1 : text.indexOf(lastKey, start);
+    if (start < 0 || lastAt < 0) {
+      win.setTimeout(attempt, 50);
+      return;
+    }
+    const startPoint = editorTextPoint(nodes, start, false);
+    const endPoint = editorTextPoint(nodes, lastAt + lastKey.length, true);
+    const selection = doc.defaultView.getSelection();
+    if (!startPoint || !endPoint || !selection) return;
+    (doc.querySelector(".ProseMirror") as HTMLElement | null)?.focus();
+    const range = doc.createRange();
+    range.setStart(startPoint.node, startPoint.offset);
+    range.setEnd(endPoint.node, endPoint.offset);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    dismissedSelections.set(doc, getEditableSelectionFromDocument(doc));
+  };
+  // After the popup has closed (its close marks the old selection).
+  win.setTimeout(attempt, 50);
+}
+
 function closePopup(win: Window): void {
   openPopups.get(win)?.handle.close();
 }
@@ -210,6 +309,16 @@ function openPopup(params: {
   if (!host || !selection?.rangeCount || !noteContext) return;
   // The selection the popup works on, kept while focus moves to the popup.
   const range = selection.getRangeAt(0).cloneRange();
+  const selectionStart = editorTextOffset(
+    doc,
+    range.startContainer,
+    range.startOffset,
+  );
+  const selectionEnd = editorTextOffset(
+    doc,
+    range.endContainer,
+    range.endOffset,
+  );
   const hostDoc = host.iframe.ownerDocument as Document;
   const readAnchor = (): NoteInlinePopupRect | null => {
     const rect = range.getBoundingClientRect();
@@ -257,6 +366,14 @@ function openPopup(params: {
       discard: t("Discard"),
       working: t("Writing…"),
     },
+    renderChange: (answer) =>
+      renderDiffPreviewField(hostDoc, {
+        type: "diff_preview",
+        id: "noteInlineChange",
+        label: "",
+        before: selectedText,
+        after: normalizeNoteSourceText(answer),
+      }).element,
     ask: (instruction, onDelta, signal) =>
       runTurn({ prompt: instruction, history: [], signal, onDelta }),
     replace: async (answer) => {
@@ -272,16 +389,20 @@ function openPopup(params: {
         selectedText,
         replacement: answer.trim(),
       });
-      return outcome.ok ? { ok: true } : { ok: false, error: outcome.error };
+      if (!outcome.ok) return { ok: false, error: outcome.error };
+      selectWrittenText(win, doc, selectionStart, renderRawNoteHtml(answer));
+      return { ok: true };
     },
     insertBelow: async (answer) => {
       const post = host.editor._editorInstance?._postMessage;
       if (!post) return { ok: false, error: t("The note editor is not open.") };
+      const html = renderRawNoteHtml(answer);
       post.call(host.editor._editorInstance, {
         action: "insertHTML",
         pos: null,
-        html: renderRawNoteHtml(answer),
+        html,
       });
+      selectWrittenText(win, doc, selectionEnd, html);
       return { ok: true };
     },
     askInSidebar: async (composerText) => {

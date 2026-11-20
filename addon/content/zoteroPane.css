@@ -112,15 +112,6 @@
   --llm-context-icon-note-color: #eab308;
   --llm-context-icon-file-color: #64748b;
   --llm-context-icon-model-color: #a855f7;
-  /* Diff preview tints: a light wash for the line, a stronger wash for the
-     changed segment, and a readable foreground for markers and strikethrough.
-     Overridden for dark mode below. */
-  --llm-diff-add-bg: #edf8f0;
-  --llm-diff-add-strong: #bfe9cb;
-  --llm-diff-add-fg: #1f8a49;
-  --llm-diff-remove-bg: #fbeeee;
-  --llm-diff-remove-strong: #f3c9c9;
-  --llm-diff-remove-fg: #b94141;
   --llm-pin-border-color: color-mix(
     in srgb,
     var(--color-accent) 55%,
@@ -297,6 +288,27 @@
   box-shadow: none !important;
 }
 
+/* Diff preview tints: a light wash for the line, a stronger wash for the
+   changed segment, and a readable foreground for markers and strikethrough.
+   Shared by the chat panel and the note editor's inline popup, which shows
+   the same diff. Overridden for dark mode below. */
+.llm-panel,
+.llm-standalone-side-panel-task-progress,
+.llm-note-inline-popup {
+  --llm-diff-add-bg: #edf8f0;
+  --llm-diff-add-strong: #bfe9cb;
+  --llm-diff-add-fg: #1f8a49;
+  --llm-diff-remove-bg: #fbeeee;
+  --llm-diff-remove-strong: #f3c9c9;
+  --llm-diff-remove-fg: #b94141;
+}
+
+/* The inline popup takes the panel's text sizes, not its layout. */
+.llm-note-inline-popup {
+  --llm-font-scale: 1;
+  --llm-fs-10: calc(10px * var(--llm-font-scale));
+}
+
 .window-is-dark .llm-panel,
 :root[lwtheme-brighttext] .llm-panel,
 :root[sizemode][lwtheme-brighttext] .llm-panel,
@@ -305,7 +317,10 @@
 :root[sizemode][lwtheme-brighttext] .llm-standalone-side-panel-item-rendered,
 .window-is-dark .llm-standalone-side-panel-task-progress,
 :root[lwtheme-brighttext] .llm-standalone-side-panel-task-progress,
-:root[sizemode][lwtheme-brighttext] .llm-standalone-side-panel-task-progress {
+:root[sizemode][lwtheme-brighttext] .llm-standalone-side-panel-task-progress,
+.window-is-dark .llm-note-inline-popup,
+:root[lwtheme-brighttext] .llm-note-inline-popup,
+:root[sizemode][lwtheme-brighttext] .llm-note-inline-popup {
   --llm-codeblock-bg: #202020;
   --llm-codeblock-border: color-mix(in srgb, #fff 8%, transparent);
   --llm-flat-surface: color-mix(in srgb, #fff 4.5%, transparent);
@@ -10803,6 +10818,7 @@ label.llm-search-results-item:hover {
    hooks carry the same values; whichever the running window offers wins. */
 @media (prefers-color-scheme: dark) {
   .llm-panel,
+  .llm-note-inline-popup,
   .llm-standalone-side-panel-task-progress {
     --llm-diff-add-bg: rgba(63, 185, 110, 0.13);
     --llm-diff-add-strong: rgba(63, 185, 110, 0.36);
