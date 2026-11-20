@@ -174,6 +174,12 @@ export function openNoteInlinePopup(
     "padding:4px 0",
     "max-height:96px",
   ]);
+  // Zotero's window styles give a focused text field a blue ring and a
+  // native frame; the field around the composer is the only frame it needs.
+  for (const property of ["outline", "box-shadow", "border"])
+    composer.style.setProperty(property, "none", "important");
+  composer.style.setProperty("appearance", "none", "important");
+  composer.style.setProperty("-moz-appearance", "none", "important");
   composer.setAttribute("rows", "1");
   composer.setAttribute("data-llm-note-inline-composer", "true");
   composer.setAttribute("placeholder", input.labels.composerPlaceholder);
