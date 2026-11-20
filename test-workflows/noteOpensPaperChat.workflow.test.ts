@@ -112,4 +112,52 @@ describe("workflow: opening a note keeps its paper's chat", function () {
     assert.notOk(backInPaper.noteId);
     assert.include(backInPaper.messageText || "", "paper chat marker");
   });
+  it("a note chat shows its paper as a removable chip", async function () {
+    const panel = await api().renderPanelForItem(fixture.noteItemId);
+    const diagnostics = await api().getDiagnostics(panel.panelId);
+    assert.equal(diagnostics.noteId, fixture.noteItemId);
+    assert.ok(
+      (diagnostics.composerPaperContextKeys || []).some((key: string) =>
+        key.startsWith(`${fixture.parentItemId}:`),
+      ),
+      JSON.stringify(diagnostics.composerPaperContextKeys),
+    );
+  });
+
+  it("the paper chat beside an open note carries the note as a removable chip", async function () {
+    const win = Zotero.getMainWindow() as any;
+    const panel = await api().renderPanelForItem(fixture.parentItemId);
+    const noteLabel = `Note ${fixture.noteItemId}`;
+    win.Zotero_Tabs?.select?.("zotero-pane");
+    await win.ZoteroPane.selectItem(fixture.noteItemId);
+
+    const labels = async () =>
+      (await api().getDiagnostics(panel.panelId)).selectedContextLabels || [];
+    const deadline = Date.now() + 10000;
+    while (!(await labels()).includes(noteLabel) && Date.now() < deadline)
+      await Zotero.Promise.delay(100);
+    assert.include(await labels(), noteLabel, "the open note is attached");
+    const diagnostics = await api().getDiagnostics(panel.panelId);
+    assert.ok(
+      (diagnostics.composerPaperContextKeys || []).some((key: string) =>
+        key.startsWith(`${fixture.parentItemId}:`),
+      ),
+      "the paper chip stays beside it",
+    );
+
+    const body = win.document.querySelector(
+      `[data-workflow-panel-id='${panel.panelId}']`,
+    ) as HTMLElement;
+    (
+      body.querySelector(
+        ".llm-note-context-chip .llm-selected-context-clear",
+      ) as HTMLElement
+    ).click();
+    await Zotero.Promise.delay(3000);
+    assert.notInclude(
+      await labels(),
+      noteLabel,
+      "a removed note chip stays removed",
+    );
+  });
 });

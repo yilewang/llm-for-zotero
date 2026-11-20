@@ -15,7 +15,9 @@
 import {
   inlineAskPalette,
   sendIcon,
+  type InlineAskModelPicker,
 } from "../selectionPrompt/inlineAskOverlay";
+import { buildInlineAskModelMenu } from "../selectionPrompt/inlineAskModelMenu";
 import { isDarkReaderDocument } from "../selectionPrompt/readerOverlayShared";
 
 export type NoteInlinePopupRect = {
@@ -38,11 +40,14 @@ export type NoteInlinePopupInput = {
     askInSidebar: string;
     composerPlaceholder: string;
     send: string;
+    reasoningEffort: string;
     replace: string;
     insertBelow: string;
     discard: string;
     working: string;
   };
+  /** The model and effort the answer uses, shown and picked in the field. */
+  modelPicker: InlineAskModelPicker;
   /** Streams the answer to `instruction` about the selection. */
   /**
    * The finished answer as a change to the selection (the plugin's diff
@@ -160,12 +165,15 @@ export function openNoteInlinePopup(
   }
   const sidebarBtn = button(input.labels.askInSidebar, "ask-in-sidebar");
   actionRow.append(sidebarBtn);
+  // The Inline Ask card's field: the text, then a bar with the model, the
+  // effort and the send circle.
   const composerRow = el("div", [
+    "position:relative",
     "display:flex",
-    "align-items:flex-end",
-    "gap:4px",
+    "flex-direction:column",
+    "gap:2px",
     "box-sizing:border-box",
-    "padding:4px 2px 1px 11px",
+    "padding:7px 4px 3px 11px",
     "border-radius:14px",
     `background:${palette.fieldBg}`,
     "cursor:text",
@@ -180,7 +188,7 @@ export function openNoteInlinePopup(
     `color:${palette.fg}`,
     "font:inherit",
     "line-height:18px",
-    "padding:4px 0",
+    "padding:0 7px 0 0",
     "max-height:96px",
   ]);
   // Zotero's window styles give a focused text field a blue ring and a
@@ -196,7 +204,7 @@ export function openNoteInlinePopup(
     "flex:none",
     "width:26px",
     "height:26px",
-    "margin:1px 2px 2px 0",
+    "margin:1px 2px 1px 0",
     "border-radius:999px",
     "border:none",
     `background:${palette.sendOffBg}`,
@@ -222,12 +230,146 @@ export function openNoteInlinePopup(
     sendBtn.style.cursor = ready ? "pointer" : "default";
   };
   composerRow.addEventListener("mousedown", (event) => {
-    if (event.target === composerRow) {
+    if (event.target === composerRow || event.target === fieldBar) {
       event.preventDefault();
       composer.focus();
     }
   });
-  composerRow.append(composer, sendBtn);
+  const fieldBar = el("div", [
+    "display:flex",
+    "align-items:center",
+    "min-height:28px",
+    "margin-left:-4px",
+    "min-width:0",
+    "cursor:default",
+  ]);
+  const modelPairCss = [
+    `color:${palette.fill2}`,
+    "font-weight:600",
+    "font-size:11px",
+    "line-height:1",
+    "padding:5px 4px",
+    "border-radius:5px",
+    "white-space:nowrap",
+    "overflow:hidden",
+    "text-overflow:ellipsis",
+    "border:none",
+    "background:transparent",
+    "font-family:inherit",
+    "margin:0",
+    "cursor:pointer",
+  ];
+  const modelLabel = el("button", [...modelPairCss, "max-width:170px"]);
+  modelLabel.setAttribute("data-llm-inline-ask-model", "true");
+  const effortLabel = el("button", [...modelPairCss, "max-width:90px"]);
+  effortLabel.setAttribute("data-llm-inline-ask-effort", "true");
+  effortLabel.setAttribute("title", input.labels.reasoningEffort);
+  for (const node of [modelLabel, effortLabel]) {
+    node.setAttribute("type", "button");
+    node.setAttribute("aria-haspopup", "menu");
+    node.setAttribute("aria-expanded", "false");
+    node.addEventListener("mousedown", (event) => event.preventDefault());
+    node.addEventListener("mouseenter", () => {
+      node.style.color = palette.fg;
+    });
+    node.addEventListener("mouseleave", () => {
+      if (node.getAttribute("aria-expanded") !== "true")
+        node.style.color = palette.fill2;
+    });
+  }
+  const syncModelLine = () => {
+    let line: ReturnType<InlineAskModelPicker["line"]> = null;
+    try {
+      line = input.modelPicker.line();
+    } catch {
+      line = null;
+    }
+    modelLabel.style.display = line ? "" : "none";
+    modelLabel.textContent = line?.label || "";
+    if (line?.title) modelLabel.setAttribute("title", line.title);
+    else modelLabel.removeAttribute("title");
+    effortLabel.style.display = line?.effort ? "" : "none";
+    effortLabel.textContent = line?.effort || "";
+  };
+  let openModelMenu: { kind: "model" | "effort"; node: HTMLElement } | null =
+    null;
+  const closeModelMenu = () => {
+    if (!openModelMenu) return;
+    openModelMenu.node.remove();
+    openModelMenu = null;
+    for (const node of [modelLabel, effortLabel]) {
+      node.setAttribute("aria-expanded", "false");
+      node.style.color = palette.fill2;
+    }
+  };
+  const showModelMenu = (kind: "model" | "effort") => {
+    closeModelMenu();
+    let menuNode: HTMLElement;
+    try {
+      menuNode = buildInlineAskModelMenu({
+        doc,
+        palette,
+        picker: input.modelPicker,
+        kind,
+        onPick: () => {
+          closeModelMenu();
+          syncModelLine();
+        },
+      });
+    } catch {
+      return;
+    }
+    const button = kind === "model" ? modelLabel : effortLabel;
+    button.setAttribute("aria-expanded", "true");
+    button.style.color = palette.fg;
+    menuNode.addEventListener("mousedown", (event) => event.preventDefault());
+    root.append(menuNode);
+    const rootRect = root.getBoundingClientRect();
+    const rect = button.getBoundingClientRect();
+    menuNode.style.left = `${Math.round(rect.left - rootRect.left)}px`;
+    menuNode.style.top = `${Math.round(rect.bottom - rootRect.top + 4)}px`;
+    // Open upwards when the menu would leave the window at the bottom.
+    const viewHeight = doc.defaultView?.innerHeight ?? 600;
+    const menuRect = menuNode.getBoundingClientRect();
+    if (menuRect.bottom > viewHeight - 8 && menuRect.height)
+      menuNode.style.top = `${Math.round(
+        rect.top - rootRect.top - 4 - menuRect.height,
+      )}px`;
+    openModelMenu = { kind, node: menuNode };
+  };
+  const toggleModelMenu = (kind: "model" | "effort") => {
+    if (openModelMenu?.kind === kind) {
+      closeModelMenu();
+      return;
+    }
+    try {
+      input.modelPicker.prepareMenu?.(() => {
+        syncModelLine();
+        if (openModelMenu) showModelMenu(openModelMenu.kind);
+      });
+    } catch {
+      // The menu shows what the picker has now.
+    }
+    showModelMenu(kind);
+  };
+  modelLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleModelMenu("model");
+  });
+  effortLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleModelMenu("effort");
+  });
+  syncModelLine();
+  fieldBar.append(
+    modelLabel,
+    effortLabel,
+    el("span", ["flex:1 1 auto"]),
+    sendBtn,
+  );
+  composerRow.append(composer, fieldBar);
   menu.append(actionRow, composerRow);
 
   // ── Result view ─────────────────────────────────────────────────────────

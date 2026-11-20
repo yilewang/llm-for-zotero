@@ -93,6 +93,22 @@ import {
   type ReaderOverlayPalette,
 } from "./readerOverlayShared";
 import { classifySelectionPromptKey } from "./selectionPromptKeys";
+import { inlineAskPalette, type InlineAskPalette } from "./inlineAskPalette";
+import type {
+  InlineAskModelLine,
+  InlineAskModelPicker,
+} from "./inlineAskModelMenu";
+export { inlineAskPalette, type InlineAskPalette } from "./inlineAskPalette";
+export type {
+  InlineAskModelLine,
+  InlineAskModelPicker,
+} from "./inlineAskModelMenu";
+import {
+  buildInlineAskModelMenu,
+  createInlineAskMenuOption,
+  inlineAskMenuPanelCss,
+  inlineAskMenuSectionCss,
+} from "./inlineAskModelMenu";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -114,34 +130,6 @@ export type InlineAskOverlayLabels = {
   resetTextSize: string;
   /** Shown when no model can answer. */
   modelUnavailable: string;
-};
-
-/** The model line: the model and effort the next question uses. */
-export type InlineAskModelLine = {
-  label: string;
-  effort?: string;
-  title?: string;
-};
-
-/** The model and effort menus behind the model line. */
-export type InlineAskModelPicker = {
-  /** The line now; read again after each pick. */
-  line(): InlineAskModelLine | null;
-  /** A short note shown first (or null), then the models by provider. */
-  modelMenu(): { note: string | null; groups: InlineAskModelMenuGroup[] };
-  pickModel(entryId: string): void;
-  /** The section title and the levels the model in use offers. */
-  effortMenu(): {
-    title: string;
-    levels: Array<{ value: string; label: string; selected: boolean }>;
-  };
-  pickEffort(value: string): void;
-  /**
-   * Called when the model or effort menu opens: may start loading model
-   * data (the Codex Direct catalog) and calls `onChange` when it arrives,
-   * so the card redraws its line and the open menu.
-   */
-  prepareMenu?(onChange: () => void): void;
 };
 
 export type InlineAskPromptEditingSetup = {
@@ -315,80 +303,6 @@ const DEFAULT_CARD_WIDTH = 460;
 const MIN_CARD_WIDTH = 240;
 /** The floating prompt editor; narrower when the card is. */
 const FLOATING_EDITOR_WIDTH = 286;
-
-/** The Inline Ask card's colors; the Add Text prompt keeps its own. */
-export type InlineAskPalette = ReaderOverlayPalette & {
-  /** Placeholder text. */
-  tertiary: string;
-  /** The send circle when a question can go, and its arrow. */
-  sendBg: string;
-  sendFg: string;
-  /** The send circle while the field is empty or a turn runs. */
-  sendOffBg: string;
-  sendOffFg: string;
-  menuBorder: string;
-  cardShadow: string;
-  menuShadow: string;
-  floatShadow: string;
-  /** The passage text at rest (the full color on hover and when open). */
-  quoteRestFg: string;
-  /** The quote line beside the passage. */
-  quoteBar: string;
-};
-
-export function inlineAskPalette(dark: boolean): InlineAskPalette {
-  return dark
-    ? {
-        bg: "#1e1e20",
-        fg: "#ececee",
-        border: "rgba(255,255,255,0.1)",
-        fieldBg: "#2c2c2f",
-        quoteFg: "#f4f4f6",
-        labelFg: "#9a9aa0",
-        fill2: "#9a9aa0",
-        fill3: "#4a4a50",
-        accent: "#0a84ff",
-        accentTint: "rgba(10,132,255,0.16)",
-        accentFg: "#ffffff",
-        hover: "rgba(255,255,255,0.07)",
-        tertiary: "#6c6c72",
-        sendBg: "#ececee",
-        sendFg: "#1e1e20",
-        sendOffBg: "rgba(255,255,255,0.12)",
-        sendOffFg: "#85858b",
-        menuBorder: "rgba(255,255,255,0.12)",
-        cardShadow: "0 4px 14px rgba(0,0,0,.38)",
-        menuShadow: "0 8px 18px rgba(0,0,0,.24)",
-        floatShadow: "0 12px 30px rgba(0,0,0,.5)",
-        quoteRestFg: "rgba(244,244,246,0.7)",
-        quoteBar: "rgba(255,255,255,0.17)",
-      }
-    : {
-        bg: "#ffffff",
-        fg: "#1f1f1f",
-        border: "rgba(0,0,0,0.12)",
-        fieldBg: "#f1f1f2",
-        quoteFg: "#1a1a1a",
-        labelFg: "#6b6b70",
-        fill2: "#6b6b70",
-        fill3: "#c4c4c8",
-        accent: "#3478f6",
-        accentTint: "rgba(52,120,246,0.1)",
-        accentFg: "#ffffff",
-        hover: "rgba(0,0,0,0.055)",
-        tertiary: "#a2a2a7",
-        sendBg: "#1f1f1f",
-        sendFg: "#ffffff",
-        sendOffBg: "rgba(0,0,0,0.09)",
-        sendOffFg: "#8e8e93",
-        menuBorder: "rgba(0,0,0,0.14)",
-        cardShadow: "0 4px 14px rgba(0,0,0,.16)",
-        menuShadow: "0 8px 18px rgba(0,0,0,.14)",
-        floatShadow: "0 12px 30px rgba(0,0,0,.2)",
-        quoteRestFg: "rgba(26,26,26,0.7)",
-        quoteBar: "rgba(0,0,0,0.16)",
-      };
-}
 
 function sidebarIcon(doc: Document): Element {
   return svgIcon(
@@ -1363,45 +1277,8 @@ export function openInlineAskOverlay(
     mountMenu("prompt", menu, Math.min(x, width - 130), y);
   };
 
-  const menuPanelCss = [
-    "position:absolute",
-    "z-index:4",
-    "display:grid",
-    "gap:3px",
-    "width:max-content",
-    "min-width:150px",
-    "max-width:240px",
-    "max-height:min(320px, 60vh)",
-    "overflow-y:auto",
-    "padding:6px",
-    "box-sizing:border-box",
-    `border:1px solid ${palette.menuBorder}`,
-    "border-radius:12px",
-    `background:${bg}`,
-    `box-shadow:${palette.menuShadow}`,
-  ];
-  const sectionCss = [
-    "padding:4px 10px",
-    "font-size:10px",
-    "font-weight:600",
-    `color:${labelFg}`,
-  ];
-  const optionCss = (selected: boolean) => [
-    `border:1px solid ${selected ? palette.accent : "transparent"}`,
-    "border-radius:8px",
-    "background:none",
-    `color:${fg}`,
-    "text-align:left",
-    "padding:7px 9px",
-    "margin:0",
-    "font:inherit",
-    "font-size:11px",
-    "line-height:1.2",
-    "white-space:nowrap",
-    "overflow:hidden",
-    "text-overflow:ellipsis",
-    "cursor:pointer",
-  ];
+  const menuPanelCss = inlineAskMenuPanelCss(palette);
+  const sectionCss = inlineAskMenuSectionCss(palette);
   const menuOption = (
     attribute: string,
     value: string,
@@ -1409,30 +1286,15 @@ export function openInlineAskOverlay(
     selected: boolean,
     pick: () => void,
     title?: string,
-  ): HTMLButtonElement => {
-    const option = el("button", optionCss(selected)) as HTMLButtonElement;
-    option.setAttribute("type", "button");
-    option.setAttribute("role", "menuitemradio");
-    option.setAttribute(attribute, value);
-    option.setAttribute("aria-checked", selected ? "true" : "false");
-    if (title) option.setAttribute("title", title);
-    option.textContent = text;
-    addHover(
-      option,
-      () => {
-        if (!selected) option.style.borderColor = palette.menuBorder;
-      },
-      () => {
-        if (!selected) option.style.borderColor = "transparent";
-      },
-    );
-    option.addEventListener("click", (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      pick();
+  ): HTMLButtonElement =>
+    createInlineAskMenuOption(doc, palette, {
+      attribute,
+      value,
+      text,
+      selected,
+      pick,
+      title,
     });
-    return option;
-  };
   const afterPick = () => {
     closeMenus();
     syncModelLine();
@@ -1471,66 +1333,15 @@ export function openInlineAskOverlay(
   const showModelMenu = (kind: "model" | "effort") => {
     if (!picker) return;
     const button = kind === "model" ? modelLabel : effortLabel;
-    const menu = el("div", menuPanelCss);
-    menu.setAttribute("data-llm-inline-ask-model-menu", kind);
-    menu.setAttribute("role", "menu");
+    let menu: HTMLElement;
     try {
-      if (kind === "model") {
-        const { note, groups } = picker.modelMenu();
-        if (note) {
-          const explain = el("div", [
-            "padding:4px 10px 8px",
-            "font-size:9.5px",
-            "line-height:1.45",
-            `color:${labelFg}`,
-            "white-space:normal",
-          ]);
-          explain.setAttribute("data-llm-inline-ask-model-note", "true");
-          explain.textContent = note;
-          menu.append(explain);
-        }
-        for (const group of groups) {
-          const section = el("div", sectionCss);
-          section.setAttribute("data-llm-inline-ask-menu-section", "true");
-          section.textContent = group.label;
-          menu.append(section);
-          for (const option of group.options) {
-            menu.append(
-              menuOption(
-                "data-llm-inline-ask-model-option",
-                option.entryId,
-                option.label,
-                option.selected,
-                () => {
-                  picker.pickModel(option.entryId);
-                  afterPick();
-                },
-                option.title,
-              ),
-            );
-          }
-        }
-      } else {
-        const { title, levels } = picker.effortMenu();
-        const section = el("div", sectionCss);
-        section.setAttribute("data-llm-inline-ask-menu-section", "true");
-        section.textContent = title;
-        menu.append(section);
-        for (const level of levels) {
-          menu.append(
-            menuOption(
-              "data-llm-inline-ask-effort-option",
-              level.value,
-              level.label,
-              level.selected,
-              () => {
-                picker.pickEffort(level.value);
-                afterPick();
-              },
-            ),
-          );
-        }
-      }
+      menu = buildInlineAskModelMenu({
+        doc,
+        palette,
+        picker,
+        kind,
+        onPick: afterPick,
+      });
     } catch {
       return;
     }

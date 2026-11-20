@@ -3426,7 +3426,9 @@ export function setupHandlers(
       if (activeReaderAttachment?.parentID === parentItem.id) {
         return resolveContextSourceItem(activeReaderAttachment);
       }
-      return null;
+      // A note chat attaches its paper as a paper chat does (a removable
+      // chip), not only while the reader shows that paper.
+      return resolveContextSourceItem(parentItem);
     }
     if (isGlobalMode()) return null;
     const sourceItem =

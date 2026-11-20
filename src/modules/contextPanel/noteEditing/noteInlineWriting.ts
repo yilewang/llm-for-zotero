@@ -33,7 +33,10 @@ import { appendSelectedTextContextForItem } from "../contextResolution";
 import { getEditableSelectionFromDocument } from "../noteSelection";
 import { resolvePaperConversationKeyForBaseItem } from "../portalScope";
 import { refreshSelectedTextPanels } from "../readerTextInclusion";
-import { resolveInlineAskModelChoice } from "../selectionPrompt/inlineAskReader";
+import {
+  createInlineAskModelPicker,
+  resolveInlineAskModelChoice,
+} from "../selectionPrompt/inlineAskReader";
 import { createInlineAskTurnRunner } from "../selectionPrompt/inlineAskRequest";
 import { activeContextPanels } from "../state";
 import {
@@ -334,10 +337,18 @@ function openPopup(params: {
   if (!readAnchor()) return;
 
   const parent = resolveNoteEditingParentItem(noteItem);
-  const choice = resolveInlineAskModelChoice(parent?.id || noteItem.id);
+  // Inline Ask's model choice: the field shows it, its menus change it, and
+  // each answer reads it.
+  const reasoningItemId = parent?.id || noteItem.id;
+  const modelState = { choice: resolveInlineAskModelChoice(reasoningItemId) };
   const runTurn = createInlineAskTurnRunner({
     getModel: () =>
-      choice ? { target: choice.target, reasoning: choice.reasoning } : null,
+      modelState.choice
+        ? {
+            target: modelState.choice.target,
+            reasoning: modelState.choice.reasoning,
+          }
+        : null,
     noModelMessage: t("Inline writing needs an API model."),
     systemMessage: NOTE_INLINE_WRITING_SYSTEM_MESSAGE,
     getContext: async () =>
@@ -357,10 +368,12 @@ function openPopup(params: {
     hostDoc,
     readAnchor,
     actions: writingActions(),
+    modelPicker: createInlineAskModelPicker(reasoningItemId, modelState),
     labels: {
       askInSidebar: t("Ask in sidebar"),
       composerPlaceholder: t("Tell AI what to do with this text…"),
       send: t("Send"),
+      reasoningEffort: t("Reasoning effort"),
       replace: t("Replace"),
       insertBelow: t("Insert below"),
       discard: t("Discard"),

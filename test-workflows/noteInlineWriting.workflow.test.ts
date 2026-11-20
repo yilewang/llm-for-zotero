@@ -227,6 +227,18 @@ describe("workflow: inline writing popup in the note editor", function () {
       ["rewrite", "expand", "proofread", "ask-in-sidebar", "send"],
     );
     assert.ok(card.querySelector("[data-llm-note-inline-composer]"));
+    assert.equal(
+      (
+        card.querySelector("[data-llm-inline-ask-model]")?.textContent || ""
+      ).trim() !== "",
+      true,
+      "the field shows the model it answers with",
+    );
+    (card.querySelector("[data-llm-inline-ask-model]") as HTMLElement).click();
+    assert.ok(
+      card.querySelector("[data-llm-inline-ask-model-menu='model']"),
+      "the model opens its menu",
+    );
     assert.notInclude(
       card.textContent || "",
       SOURCE,
