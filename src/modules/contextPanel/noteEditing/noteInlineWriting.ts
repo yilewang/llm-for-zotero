@@ -1,14 +1,13 @@
 /**
- * The note editor's inline writing card: selecting text in a note opens the
- * Inline Ask card right under the selection, with writing prompts (Rewrite,
- * Expand, Shorten), a question field, and actions that write the answer back
- * (Replace, Insert below) or hand the selection to the chat (Add to chat).
+ * Inline writing in the note editor: selecting text in a note opens a small
+ * popup under the selection (noteInlinePopup.ts) with Rewrite, Expand,
+ * Proofread, Ask in sidebar, and a composer for the user's own instruction.
  *
- * The card opens by itself on every selection (the user chose a full menu
- * over a small icon first), so it does not take the keyboard: the user keeps
- * typing in the note until they click the card. A selection the user leaves
- * (collapsed or changed) closes a card that has no answer yet; a card with
- * an answer stays until it is discarded, used, or closed.
+ * The popup opens on every selection and does not take the keyboard, so the
+ * user keeps typing in the note until they click it. Until the user asks
+ * something it follows the selection: it moves with a new selection and
+ * closes when the selection goes away. Once asked, it stays until the answer
+ * is used or discarded.
  *
  * Writing back:
  * - Replace goes through note_write's bound selection (replaceNoteSelection
@@ -16,6 +15,8 @@
  *   typing is saved first, and the change journal records it for undo.
  * - Insert below asks the note editor itself to insert the answer after the
  *   selected paragraph, so the editor saves it and Cmd+Z undoes it.
+ * - Ask in sidebar adds the selection to the paper's chat (a note-editing
+ *   chip) and moves any composer text into the chat's input.
  */
 import { getAgentApi, initAgentSubsystem } from "../../../agent";
 import type { NoteContextRef } from "../../../shared/types";
@@ -25,52 +26,46 @@ import { resolvePaperContextRefFromItem } from "../../../services/paperContent/p
 import { getAbortController } from "../../../utils/apiHelpers";
 import { t } from "../../../utils/i18n";
 import { appendSelectedTextContextForItem } from "../contextResolution";
-import { setNumberPref } from "../prefHelpers";
+import { getEditableSelectionFromDocument } from "../noteSelection";
 import { resolvePaperConversationKeyForBaseItem } from "../portalScope";
 import { refreshSelectedTextPanels } from "../readerTextInclusion";
-import {
-  openInlineAskOverlay,
-  type InlineAskOverlayHandle,
-} from "../selectionPrompt/inlineAskOverlay";
-import {
-  createInlineAskModelPicker,
-  INLINE_ASK_TEXT_SIZE_PREF,
-  readInlineAskTextSize,
-  resolveInlineAskModelChoice,
-} from "../selectionPrompt/inlineAskReader";
+import { resolveInlineAskModelChoice } from "../selectionPrompt/inlineAskReader";
 import { createInlineAskTurnRunner } from "../selectionPrompt/inlineAskRequest";
-import type { InlineAskQuickPrompt } from "../selectionPrompt/inlineAskPrompts";
 import { activeContextPanels } from "../state";
-import { getEditableSelectionFromDocument } from "../noteSelection";
+import {
+  openNoteInlinePopup,
+  type NoteInlinePopupHandle,
+  type NoteInlinePopupRect,
+} from "./noteInlinePopup";
 import { buildNoteEditingSelectedTextContext } from "./selectionController";
 
 export const NOTE_INLINE_WRITING_SYSTEM_MESSAGE = [
   "Note writing: the user selected text in their own Zotero note and asks for help writing it.",
-  "When asked to rewrite, expand, shorten or otherwise change the text, reply with only the new text in Markdown, with no preamble, quotes or commentary, so it can replace the selection as is.",
+  "When asked to rewrite, expand, proofread or otherwise change the text, reply with only the new text in Markdown, with no preamble, quotes or commentary, so it can replace the selection as is.",
   "Keep the selection's language, meaning and structure (headings, lists) unless asked to change them.",
   "When asked a question, answer briefly.",
   "Do not add citation markers, quote tokens, or source lists.",
 ].join(" ");
 
-function notePrompts(): InlineAskQuickPrompt[] {
+function writingActions() {
   return [
     {
-      id: "note-rewrite",
+      id: "rewrite",
       label: t("Rewrite"),
-      prompt:
+      instruction:
         "Rewrite the selected text so it reads clearly and concisely. Reply with only the rewritten text.",
     },
     {
-      id: "note-expand",
+      id: "expand",
       label: t("Expand"),
-      prompt:
+      instruction:
         "Expand the selected text with more detail, using the paper where it helps. Reply with only the expanded text.",
     },
     {
-      id: "note-shorten",
-      label: t("Shorten"),
-      prompt:
-        "Shorten the selected text while keeping its key points. Reply with only the shortened text.",
+      id: "proofread",
+      label: t("Proofread"),
+      instruction:
+        "Proofread the selected text: fix spelling, grammar and punctuation without changing its meaning or style. Reply with only the corrected text.",
     },
   ];
 }
@@ -140,242 +135,256 @@ function findChatPanelForNote(
   );
 }
 
-/** The note editor element whose document is `doc`. */
+type NoteEditorElement = Element & {
+  _editorInstance?: { _postMessage?: (message: unknown) => void };
+};
+
+/** The note editor element whose iframe holds `doc`. */
 function findNoteEditorForDocument(
   win: Window,
   doc: Document,
-): (Element & { _editorInstance?: any }) | null {
+): { editor: NoteEditorElement; iframe: HTMLIFrameElement } | null {
   for (const editor of Array.from(
     win.document.querySelectorAll("note-editor"),
   ) as Element[]) {
     const iframe = editor.querySelector("iframe") as HTMLIFrameElement | null;
-    if (iframe?.contentDocument === doc) return editor as any;
+    if (iframe?.contentDocument === doc)
+      return { editor: editor as NoteEditorElement, iframe };
   }
   return null;
 }
 
-type OpenCard = {
-  handle: InlineAskOverlayHandle;
+type OpenPopup = {
+  handle: NoteInlinePopupHandle;
   doc: Document;
   noteId: number;
   selectedText: string;
 };
 
-const openCards = new WeakMap<Window, OpenCard>();
-/** The selection whose card the user closed: it does not open again until
+const openPopups = new WeakMap<Window, OpenPopup>();
+/** The selection whose popup the user closed: it does not open again until
  *  the selection changes. */
 const dismissedSelections = new WeakMap<Document, string>();
 const pressedDocuments = new WeakSet<Document>();
 const watchedDocuments = new WeakSet<Document>();
 
-function watchPointer(doc: Document): void {
+function watchEditorDocument(win: Window, doc: Document): void {
   if (watchedDocuments.has(doc)) return;
   watchedDocuments.add(doc);
   doc.addEventListener("mousedown", () => pressedDocuments.add(doc), true);
   doc.addEventListener("mouseup", () => pressedDocuments.delete(doc), true);
+  // Escape in the note closes the popup; scrolling the note moves it.
+  doc.addEventListener(
+    "keydown",
+    (event) => {
+      const popup = openPopups.get(win);
+      if (event.key === "Escape" && popup?.doc === doc) popup.handle.close();
+    },
+    true,
+  );
+  doc.addEventListener(
+    "scroll",
+    () => {
+      const popup = openPopups.get(win);
+      if (popup?.doc === doc) popup.handle.reposition();
+    },
+    true,
+  );
 }
 
-function selectionAnchor(doc: Document) {
-  const selection = doc.defaultView?.getSelection?.();
-  if (!selection || selection.isCollapsed || !selection.rangeCount) return null;
-  const rect = selection.getRangeAt(0).getBoundingClientRect();
-  if (!rect.width && !rect.height) return null;
-  return {
-    left: rect.left,
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
-  };
+function closePopup(win: Window): void {
+  openPopups.get(win)?.handle.close();
 }
 
-function closeCard(win: Window): void {
-  const card = openCards.get(win);
-  if (!card) return;
-  openCards.delete(win);
-  card.handle.close();
-}
-
-function openCard(params: {
+function openPopup(params: {
   win: Window;
   doc: Document;
   noteItem: Zotero.Item;
   selectedText: string;
 }): void {
   const { win, doc, noteItem, selectedText } = params;
-  const anchor = selectionAnchor(doc);
+  const host = findNoteEditorForDocument(win, doc);
+  const selection = doc.defaultView?.getSelection?.();
   const noteContext: NoteContextRef | null =
     buildNoteEditingSelectedTextContext(noteItem);
-  if (!anchor || !noteContext) return;
+  if (!host || !selection?.rangeCount || !noteContext) return;
+  // The selection the popup works on, kept while focus moves to the popup.
+  const range = selection.getRangeAt(0).cloneRange();
+  const hostDoc = host.iframe.ownerDocument as Document;
+  const readAnchor = (): NoteInlinePopupRect | null => {
+    const rect = range.getBoundingClientRect();
+    if (!rect.width && !rect.height) return null;
+    const frame = host.iframe.getBoundingClientRect();
+    return {
+      left: frame.left + rect.left,
+      top: frame.top + rect.top,
+      right: frame.left + rect.right,
+      bottom: frame.top + rect.bottom,
+    };
+  };
+  if (!readAnchor()) return;
+
   const parent = resolveNoteEditingParentItem(noteItem);
-  const reasoningItemId = parent?.id || noteItem.id;
-  const state = { choice: resolveInlineAskModelChoice(reasoningItemId) };
+  const choice = resolveInlineAskModelChoice(parent?.id || noteItem.id);
   const runTurn = createInlineAskTurnRunner({
     getModel: () =>
-      state.choice
-        ? { target: state.choice.target, reasoning: state.choice.reasoning }
-        : null,
-    noModelMessage: t("Inline Ask needs an API model."),
+      choice ? { target: choice.target, reasoning: choice.reasoning } : null,
+    noModelMessage: t("Inline writing needs an API model."),
     systemMessage: NOTE_INLINE_WRITING_SYSTEM_MESSAGE,
-    getContext: async () => {
-      const paper = parent ? resolvePaperContextRefFromItem(parent) : null;
-      return buildNoteInlineWritingContext({
+    getContext: async () =>
+      buildNoteInlineWritingContext({
         noteTitle: noteContext.title,
         noteText: (
           (doc.querySelector(".ProseMirror") as HTMLElement | null)
             ?.innerText || ""
         ).trim(),
-        paper,
+        paper: parent ? resolvePaperContextRefFromItem(parent) : null,
         abstract: readField(parent, "abstractNote"),
         selectedText,
-      });
-    },
+      }),
   });
-  const conversationKeyForChange = () =>
-    findChatPanelForNote(win, noteItem)?.conversationKey ||
-    resolvePaperConversationKeyForBaseItem(parent || noteItem, "upstream");
 
-  const handle = openInlineAskOverlay({
-    doc,
-    anchor,
-    selectedText,
-    sourceLabel: noteContext.title,
-    prompts: notePrompts(),
-    model: state.choice?.line ?? null,
-    modelPicker: createInlineAskModelPicker(reasoningItemId, state),
+  const handle = openNoteInlinePopup({
+    hostDoc,
+    readAnchor,
+    actions: writingActions(),
     labels: {
-      placeholder: t("Ask about or change the selection"),
-      followUpPlaceholder: t("Ask a follow-up"),
-      hint: t("Enter to send · Shift+Enter for a new line · Esc to close"),
+      askInSidebar: t("Ask in sidebar"),
+      composerPlaceholder: t("Tell AI what to do with this text…"),
       send: t("Send"),
-      reading: t("Reading the selection…"),
+      replace: t("Replace"),
+      insertBelow: t("Insert below"),
       discard: t("Discard"),
-      continueInSidebar: t("Continue in sidebar"),
-      saveAsAnnotation: t("Save as annotation"),
-      reasoningEffort: t("Reasoning effort"),
-      more: t("More"),
-      textSize: t("Text size"),
-      resetTextSize: t("Reset to 100%"),
-      modelUnavailable: t("Inline Ask needs an API model."),
+      working: t("Writing…"),
     },
-    textSize: readInlineAskTextSize(),
-    onTextSizeChange: (size) => setNumberPref(INLINE_ASK_TEXT_SIZE_PREF, size),
-    runTurn,
-    autoFocus: false,
-    showSaveAsAnnotation: false,
-    composeActions: [
-      {
-        id: "note-add-to-chat",
-        label: t("Add to chat"),
-        run: async () => {
-          const panel = findChatPanelForNote(win, noteItem);
-          if (!panel)
-            return {
-              ok: false,
-              error: t("Open the chat in the side pane to add text to it."),
-            };
-          appendSelectedTextContextForItem(
-            panel.conversationKey,
-            selectedText,
-            "note-edit",
-            null,
-            null,
-            noteContext,
+    ask: (instruction, onDelta, signal) =>
+      runTurn({ prompt: instruction, history: [], signal, onDelta }),
+    replace: async (answer) => {
+      await initAgentSubsystem();
+      const outcome = await getAgentApi().replaceNoteSelection({
+        noteContext,
+        conversationKey:
+          findChatPanelForNote(win, noteItem)?.conversationKey ||
+          resolvePaperConversationKeyForBaseItem(
+            parent || noteItem,
+            "upstream",
+          ),
+        selectedText,
+        replacement: answer.trim(),
+      });
+      return outcome.ok ? { ok: true } : { ok: false, error: outcome.error };
+    },
+    insertBelow: async (answer) => {
+      const post = host.editor._editorInstance?._postMessage;
+      if (!post) return { ok: false, error: t("The note editor is not open.") };
+      post.call(host.editor._editorInstance, {
+        action: "insertHTML",
+        pos: null,
+        html: renderRawNoteHtml(answer),
+      });
+      return { ok: true };
+    },
+    askInSidebar: async (composerText) => {
+      const panel = findChatPanelForNote(win, noteItem);
+      if (!panel)
+        return {
+          ok: false,
+          error: t("Open the chat in the side pane first."),
+        };
+      appendSelectedTextContextForItem(
+        panel.conversationKey,
+        selectedText,
+        "note-edit",
+        null,
+        null,
+        noteContext,
+      );
+      refreshSelectedTextPanels(panel.body, panel.conversationKey);
+      const input = panel.body.querySelector(
+        "#llm-input",
+      ) as HTMLTextAreaElement | null;
+      if (input) {
+        if (composerText) {
+          input.value = composerText;
+          input.dispatchEvent(
+            new (input.ownerDocument.defaultView as any).Event("input", {
+              bubbles: true,
+            }),
           );
-          refreshSelectedTextPanels(panel.body, panel.conversationKey);
-          return { ok: true };
-        },
-      },
-    ],
-    answerActions: [
-      {
-        id: "note-replace",
-        label: t("Replace"),
-        run: async (answer) => {
-          await initAgentSubsystem();
-          const outcome = await getAgentApi().replaceNoteSelection({
-            noteContext,
-            conversationKey: conversationKeyForChange(),
-            selectedText,
-            replacement: answer.trim(),
-          });
-          return outcome.ok
-            ? { ok: true }
-            : { ok: false, error: outcome.error };
-        },
-      },
-      {
-        id: "note-insert-below",
-        label: t("Insert below"),
-        run: async (answer) => {
-          const editor = findNoteEditorForDocument(win, doc);
-          const instance = editor?._editorInstance;
-          if (!instance?._postMessage)
-            return { ok: false, error: t("The note editor is not open.") };
-          instance._postMessage({
-            action: "insertHTML",
-            pos: null,
-            html: renderRawNoteHtml(answer),
-          });
-          return { ok: true };
-        },
-      },
-    ],
+        }
+        input.focus();
+      }
+      return { ok: true };
+    },
     createAbortController: () => {
       const Controller = getAbortController();
       return Controller ? new Controller() : null;
     },
     onClose: () => {
-      if (openCards.get(win)?.handle === handle) openCards.delete(win);
+      if (openPopups.get(win)?.handle === handle) openPopups.delete(win);
       dismissedSelections.set(doc, selectedText);
     },
   });
-  openCards.set(win, { handle, doc, noteId: noteItem.id, selectedText });
+  openPopups.set(win, { handle, doc, noteId: noteItem.id, selectedText });
 }
 
 /**
  * Follows the selection in the open note editors (called by the note
  * selection tracker after each selection change, mouse release or key).
  */
-export function syncNoteInlineWritingCard(params: {
+export function syncNoteInlineWritingPopup(params: {
   win: Window;
   noteItem: Zotero.Item | null;
   docs: Document[];
 }): void {
   const { win, noteItem, docs } = params;
-  for (const doc of docs) watchPointer(doc);
-  const card = openCards.get(win);
-  // A card with an answer (or a question on its way) stays until the user
-  // closes it; one without follows the selection.
-  if (card?.handle.hasConversation()) return;
+  for (const doc of docs) watchEditorDocument(win, doc);
+  const popup = openPopups.get(win);
+  // Its note is no longer the one shown (another item, a closed editor).
+  if (
+    popup &&
+    (!noteItem ||
+      popup.noteId !== noteItem.id ||
+      !docs.includes(popup.doc) ||
+      !popup.doc.defaultView)
+  ) {
+    closePopup(win);
+    return syncNoteInlineWritingPopup(params);
+  }
+  // Asked, or being worked in (its composer has the focus): it stays.
+  if (
+    popup &&
+    (popup.handle.isEngaged() ||
+      popup.handle.contains(win.document.activeElement))
+  )
+    return;
+  for (const doc of docs)
+    if (!getEditableSelectionFromDocument(doc)) dismissedSelections.delete(doc);
   const live = noteItem
     ? docs
         .map((doc) => ({ doc, text: getEditableSelectionFromDocument(doc) }))
         .find((entry) => entry.text)
     : undefined;
-  for (const doc of docs) {
-    const text = getEditableSelectionFromDocument(doc);
-    if (!text) dismissedSelections.delete(doc);
-  }
   if (!live || !noteItem) {
-    closeCard(win);
+    closePopup(win);
     return;
   }
   // Wait for the drag to end; the tracker checks again on mouse release.
   if (pressedDocuments.has(live.doc)) return;
   if (dismissedSelections.get(live.doc) === live.text) return;
   if (
-    card &&
-    card.doc === live.doc &&
-    card.noteId === noteItem.id &&
-    card.selectedText === live.text
+    popup &&
+    popup.doc === live.doc &&
+    popup.noteId === noteItem.id &&
+    popup.selectedText === live.text
   )
     return;
-  closeCard(win);
+  closePopup(win);
   dismissedSelections.delete(live.doc);
-  openCard({ win, doc: live.doc, noteItem, selectedText: live.text });
+  openPopup({ win, doc: live.doc, noteItem, selectedText: live.text });
 }
 
-/** Closes the window's card (the window or the tracker goes away). */
-export function closeNoteInlineWritingCard(win: Window): void {
-  closeCard(win);
+/** Closes the window's popup (the window or the tracker goes away). */
+export function closeNoteInlineWritingPopup(win: Window): void {
+  closePopup(win);
 }

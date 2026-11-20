@@ -194,18 +194,6 @@ export type InlineAskSaveSetup = {
   save: (payload: InlineAskSavePayload) => Promise<InlineAskSaveResult>;
 };
 
-/** A button the card's owner adds; its run's result shows like Continue in
- *  sidebar's: ok closes the card, an error stays under the thread. */
-export type InlineAskCardAction = {
-  /** Its `data-llm-inline-ask-action` value. */
-  id: string;
-  label: string;
-  /** The latest answer as Markdown; "" for an action shown before one. */
-  run: (
-    answerText: string,
-  ) => Promise<{ ok: true } | { ok: false; error: string }>;
-};
-
 export type InlineAskOverlayInput = {
   /** Reader popup document (the renderTextSelectionPopup event's doc). */
   doc: Document;
@@ -234,17 +222,6 @@ export type InlineAskOverlayInput = {
   onTextSizeChange?: (size: number) => void;
   /** Called exactly once on any close path. */
   onClose?: () => void;
-  /**
-   * False when the card opens by itself on a selection the user is still
-   * working in: the card does not take the keyboard until it is clicked.
-   */
-  autoFocus?: boolean;
-  /** Shown under a finished answer, before Continue in sidebar. */
-  answerActions?: InlineAskCardAction[];
-  /** Shown under the quick prompts before anything is asked. */
-  composeActions?: InlineAskCardAction[];
-  /** False hides Save as annotation (a selection that is not in a PDF). */
-  showSaveAsAnnotation?: boolean;
 };
 
 export type InlineAskOverlayHandle = ReaderOverlayHandle & {
@@ -279,7 +256,7 @@ function svgIcon(
 }
 
 /** The up-arrow send glyph, drawn inside the card's send circle. */
-function sendIcon(doc: Document): Element {
+export function sendIcon(doc: Document): Element {
   return svgIcon(doc, 15, { fill: "none" }, [
     {
       tag: "path",
@@ -340,7 +317,7 @@ const MIN_CARD_WIDTH = 240;
 const FLOATING_EDITOR_WIDTH = 286;
 
 /** The Inline Ask card's colors; the Add Text prompt keeps its own. */
-type InlineAskPalette = ReaderOverlayPalette & {
+export type InlineAskPalette = ReaderOverlayPalette & {
   /** Placeholder text. */
   tertiary: string;
   /** The send circle when a question can go, and its arrow. */
@@ -359,7 +336,7 @@ type InlineAskPalette = ReaderOverlayPalette & {
   quoteBar: string;
 };
 
-function inlineAskPalette(dark: boolean): InlineAskPalette {
+export function inlineAskPalette(dark: boolean): InlineAskPalette {
   return dark
     ? {
         bg: "#1e1e20",
@@ -1092,14 +1069,6 @@ export function openInlineAskOverlay(
     "cursor:grab",
   ]);
   pills.setAttribute("data-llm-inline-ask-pills", "true");
-  // The owner's actions that need no answer (shown in compose only).
-  const composeActionsRow = el("div", [
-    "display:none",
-    "gap:2px",
-    "flex-wrap:wrap",
-    "margin:-4px 0 0 -4px",
-  ]);
-  composeActionsRow.setAttribute("data-llm-inline-ask-compose-actions", "true");
   const promptSetup = input.promptEditing;
   let shownPrompts: InlineAskQuickPrompt[] = input.prompts.slice();
   /** The prompt the editor is open for; id null for Add. */
@@ -1744,25 +1713,7 @@ export function openInlineAskOverlay(
   saveBtn.appendChild(doc.createTextNode(labels.saveAsAnnotation));
   setButtonDisabled(sidebarBtn, true);
   setButtonDisabled(saveBtn, true);
-  if (input.showSaveAsAnnotation === false) saveBtn.style.display = "none";
-  const actionButton = (action: InlineAskCardAction): HTMLButtonElement => {
-    const button = quietAction();
-    button.setAttribute("data-llm-inline-ask-action", action.id);
-    button.textContent = action.label;
-    setButtonDisabled(button, true);
-    return button;
-  };
-  const answerActionButtons = (input.answerActions || []).map((action) => ({
-    action,
-    button: actionButton(action),
-  }));
-  footer.append(
-    ...answerActionButtons.map((entry) => entry.button),
-    saveBtn,
-    sidebarBtn,
-    footerSpacer,
-    discardBtn,
-  );
+  footer.append(saveBtn, sidebarBtn, footerSpacer, discardBtn);
   // Why Continue in sidebar did not move the conversation.
   const sidebarError = scaleText(
     el("div", [
@@ -2046,7 +1997,6 @@ export function openInlineAskOverlay(
     quoteSection,
     thread,
     pills,
-    composeActionsRow,
     composerQuotesBox,
     field,
     notice,
@@ -2257,69 +2207,6 @@ export function openInlineAskOverlay(
         session.getState().phase === "answered",
     );
   };
-  // ── The owner's card actions ──────────────────────────────────────────
-  const composeActionButtons = (input.composeActions || []).map((action) => {
-    const button = actionButton(action);
-    composeActionsRow.append(button);
-    return { action, button };
-  });
-  let runningAction = false;
-  const syncCardActions = () => {
-    const phase = session.getState().phase;
-    const answered =
-      view === "thread" && phase === "answered" && Boolean(lastAnswerText());
-    for (const { button } of answerActionButtons)
-      setButtonDisabled(button, runningAction || continuing || !answered);
-    for (const { button } of composeActionButtons)
-      setButtonDisabled(button, runningAction || phase !== "compose");
-    show(
-      composeActionsRow,
-      composeActionButtons.length > 0 && phase === "compose",
-      "flex",
-    );
-  };
-  const runCardAction = (action: InlineAskCardAction) => {
-    if (runningAction || continuing || closed) return;
-    const answer =
-      session.getState().phase === "answered" ? lastAnswerText() : "";
-    runningAction = true;
-    sidebarErrorText = "";
-    syncCardActions();
-    syncSidebar();
-    let pending: ReturnType<InlineAskCardAction["run"]>;
-    try {
-      pending = action.run(answer);
-    } catch (error) {
-      pending = Promise.reject(error);
-    }
-    void pending
-      .then(
-        (result) => result,
-        (error): { ok: false; error: string } => ({
-          ok: false,
-          error:
-            error instanceof Error && error.message
-              ? error.message
-              : String(error || ""),
-        }),
-      )
-      .then((result) => {
-        if (closed) return;
-        runningAction = false;
-        if (result.ok) {
-          close();
-          return;
-        }
-        sidebarErrorText = result.error;
-        syncCardActions();
-        syncSidebar();
-        // A compose-time failure shows under the prompts.
-        show(sidebarError, Boolean(sidebarErrorText), "block");
-      });
-  };
-  for (const entry of [...answerActionButtons, ...composeActionButtons])
-    entry.button.addEventListener("click", () => runCardAction(entry.action));
-
   const runContinue = () => {
     const run = input.continueInSidebar;
     if (!run || !canContinue()) return;
@@ -2394,7 +2281,6 @@ export function openInlineAskOverlay(
     syncSend();
     syncFooterSave();
     syncSidebar();
-    syncCardActions();
     applyView();
     thread.scrollTop = thread.scrollHeight;
     syncThreadFade();
@@ -3513,10 +3399,9 @@ export function openInlineAskOverlay(
   promptBox.editor.addEventListener("blur", promptFocus.blur);
   promptBox.attach();
   // Deferred so focus lands after the popup's pointerdown handler finishes.
-  if (input.autoFocus !== false)
-    schedule(() => {
-      if (closed) return;
-      editor.focus({ preventScroll: true });
-    }, 0);
+  schedule(() => {
+    if (closed) return;
+    editor.focus({ preventScroll: true });
+  }, 0);
   return handle;
 }

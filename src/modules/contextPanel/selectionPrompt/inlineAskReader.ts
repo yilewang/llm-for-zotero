@@ -101,7 +101,7 @@ export const INLINE_ASK_REASONING_PREF = "inlineAskReasoning";
 export const INLINE_ASK_TEXT_SIZE_PREF = "inlineAskTextSize";
 
 /** The saved text size in percent; an unknown value reads as 100. */
-export function readInlineAskTextSize(): number {
+function readInlineAskTextSize(): number {
   const saved = getNumberPref(INLINE_ASK_TEXT_SIZE_PREF);
   return saved !== null && INLINE_ASK_TEXT_SIZES.includes(saved) ? saved : 100;
 }

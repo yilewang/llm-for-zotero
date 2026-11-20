@@ -9,11 +9,12 @@ import {
 } from "./helpers/heldChatProvider";
 
 /**
- * The note editor's inline writing card, in Zotero's real note editor:
- * selecting text opens the card under the selection without taking the
- * keyboard; Rewrite streams a replacement that Replace writes into the note
- * (keeping typing elsewhere), Insert below adds it after the paragraph, and
- * Add to chat hands the selection to the paper's chat.
+ * The note editor's inline writing popup, in Zotero's real note editor:
+ * selecting text opens it under the selection without taking the keyboard;
+ * its composer takes an instruction without losing the selection; Rewrite
+ * streams a replacement that Replace writes into the note (keeping typing
+ * elsewhere), Insert below adds it after the paragraph, and Ask in sidebar
+ * hands the selection and the composer's text to the paper's chat.
  *
  * Only the network is scripted (a held fake provider).
  */
@@ -37,7 +38,7 @@ const SOURCE = "The decoder was fitted on session one.";
 const NOTE_HTML =
   "<h2>Methods</h2>" + `<p>${SOURCE}</p>` + "<p>Keep this paragraph.</p>";
 
-describe("workflow: inline writing card in the note editor", function () {
+describe("workflow: inline writing popup in the note editor", function () {
   this.timeout(120_000);
 
   const api = () => (Zotero as any).LLMForZotero.api.workflowTest;
@@ -98,7 +99,9 @@ describe("workflow: inline writing card in the note editor", function () {
       doc,
       text: () => body().textContent || "",
       card: () =>
-        doc.querySelector("[data-llm-inline-ask]") as HTMLElement | null,
+        Zotero.getMainWindow().document.querySelector(
+          "[data-llm-note-inline-popup]",
+        ) as HTMLElement | null,
       /** Selects `needle` as a mouse drag would, ending with a release. */
       select(needle: string) {
         const node = textNode(needle);
@@ -129,12 +132,12 @@ describe("workflow: inline writing card in the note editor", function () {
     editor: Awaited<ReturnType<typeof openEditor>>,
     answer: string,
   ) {
-    const card = (await until(() => editor.card(), "the card"))!;
-    const pill = card.querySelector(
-      "[data-llm-inline-ask-pill='note-rewrite']",
+    const card = (await until(() => editor.card(), "the popup"))!;
+    const rewrite = card.querySelector(
+      "[data-llm-note-inline-action='rewrite']",
     ) as HTMLElement;
-    assert.ok(pill, "the card offers Rewrite");
-    pill.click();
+    assert.ok(rewrite, "the popup offers Rewrite");
+    rewrite.click();
     const stream = await provider.waitForStream("Rewrite the selected text");
     assert.include(stream.requestBody, SOURCE, "the model sees the selection");
     stream.push(answer);
@@ -200,29 +203,80 @@ describe("workflow: inline writing card in the note editor", function () {
     fixture = null;
   });
 
-  it("opens under a selection without taking the keyboard, and closes when the selection goes", async function () {
+  it("opens under a selection with only the actions and a composer, without taking the keyboard", async function () {
     const editor = await openEditor(fixture.noteItemId);
     editor.select(SOURCE);
-    const card = (await until(() => editor.card(), "the card"))!;
+    const card = (await until(() => editor.card(), "the popup"))!;
     assert.deepEqual(
       (
         Array.from(
-          card.querySelectorAll("[data-llm-inline-ask-pill]"),
+          card.querySelectorAll("[data-llm-note-inline-action]"),
         ) as Element[]
-      ).map((pill) => pill.getAttribute("data-llm-inline-ask-pill")),
-      ["note-rewrite", "note-expand", "note-shorten"],
+      )
+        .filter((node) => (node as HTMLElement).offsetParent !== null)
+        .map((node) => node.getAttribute("data-llm-note-inline-action")),
+      ["rewrite", "expand", "proofread", "ask-in-sidebar", "send"],
     );
-    assert.ok(
-      card.querySelector("[data-llm-inline-ask-action='note-add-to-chat']"),
-      "the card offers Add to chat",
+    assert.ok(card.querySelector("[data-llm-note-inline-composer]"));
+    assert.notInclude(
+      card.textContent || "",
+      SOURCE,
+      "the popup does not repeat the selection",
     );
     assert.isFalse(
-      card.contains(editor.doc.activeElement),
-      "the card does not take the keyboard",
+      card.contains(Zotero.getMainWindow().document.activeElement),
+      "the popup does not take the keyboard",
     );
+    const frame = (
+      Array.from(
+        Zotero.getMainWindow().document.querySelectorAll("note-editor iframe"),
+      ) as HTMLIFrameElement[]
+    )
+      .find((iframe) => iframe.contentDocument === editor.doc)!
+      .getBoundingClientRect();
+    const popupRect = card.getBoundingClientRect();
+    assert.isAbove(popupRect.top, frame.top, "the popup sits on the note");
 
     editor.collapse();
-    await until(() => !editor.card(), "the card to close");
+    await until(() => !editor.card(), "the popup to close");
+  });
+
+  it("keeps the popup and the selection while the user types an instruction", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    const card = (await until(() => editor.card(), "the popup"))!;
+    const composer = card.querySelector(
+      "[data-llm-note-inline-composer]",
+    ) as HTMLTextAreaElement;
+    const win = Zotero.getMainWindow();
+    composer.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true }));
+    composer.focus();
+    win.document.dispatchEvent(
+      new win.MouseEvent("mouseup", { bubbles: true }),
+    );
+    composer.value = "Make it sound more formal";
+    await delay(800);
+    assert.ok(editor.card(), "the popup stays open while typing");
+    assert.equal(
+      editor.doc.defaultView!.getSelection()!.toString(),
+      SOURCE,
+      "the note keeps its selection",
+    );
+    composer.dispatchEvent(
+      new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+    );
+    const stream = await provider.waitForStream("Make it sound more formal");
+    stream.push("The decoder was formally fitted on session one.");
+    stream.finish();
+    await until(
+      () => editor.card()?.getAttribute("data-phase") === "answered",
+      "the answer",
+    );
+    assert.include(
+      editor.card()!.querySelector("[data-llm-note-inline-answer]")!
+        .textContent || "",
+      "formally fitted",
+    );
   });
 
   it("Rewrite then Replace writes the answer and keeps typing elsewhere", async function () {
@@ -235,7 +289,7 @@ describe("workflow: inline writing card in the note editor", function () {
     editor.typeAfter("Keep this paragraph.", " typed meanwhile");
     (
       card.querySelector(
-        "[data-llm-inline-ask-action='note-replace']",
+        "[data-llm-note-inline-action='replace']",
       ) as HTMLElement
     ).click();
     await until(() => !editor.card(), "the card to close after Replace");
@@ -254,7 +308,7 @@ describe("workflow: inline writing card in the note editor", function () {
     const card = await rewriteTo(editor, "An added follow-up sentence.");
     (
       card.querySelector(
-        "[data-llm-inline-ask-action='note-insert-below']",
+        "[data-llm-note-inline-action='insert-below']",
       ) as HTMLElement
     ).click();
     await until(() => !editor.card(), "the card to close after Insert");
@@ -270,7 +324,7 @@ describe("workflow: inline writing card in the note editor", function () {
     );
   });
 
-  it("Add to chat hands the selection to the paper's chat", async function () {
+  it("Ask in sidebar hands the selection to the paper's chat", async function () {
     // The paper's chat, mounted in the main window as the side pane holds it.
     const panel = await api().renderPanelForItem(fixture.parentItemId);
     const editor = await openEditor(fixture.noteItemId);
@@ -278,10 +332,13 @@ describe("workflow: inline writing card in the note editor", function () {
     const card = (await until(() => editor.card(), "the card"))!;
     (
       card.querySelector(
-        "[data-llm-inline-ask-action='note-add-to-chat']",
+        "[data-llm-note-inline-action='ask-in-sidebar']",
       ) as HTMLElement
     ).click();
-    await until(() => !editor.card(), "the card to close after Add to chat");
+    await until(
+      () => !editor.card(),
+      "the popup to close after Ask in sidebar",
+    );
     const deadline = Date.now() + 10_000;
     let diagnostics = await api().getDiagnostics(panel.panelId);
     while (
