@@ -38,7 +38,8 @@ const SOURCE = "The decoder was fitted on session one.";
 const NOTE_HTML =
   "<h2>Methods</h2>" +
   `<p>${SOURCE}</p>` +
-  "<ul><li>First item text.</li><li>Second item text.</li><li>Third item stays.</li></ul>" +
+  // As Zotero's editor stores items: each one's text in a paragraph.
+  "<ul><li><p>First item text.</p></li><li><p>Second item text.</p></li><li><p>Third item stays.</p></li></ul>" +
   "<p>Keep this paragraph.</p>";
 
 describe("workflow: inline writing popup in the note editor", function () {

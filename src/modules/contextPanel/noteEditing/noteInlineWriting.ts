@@ -52,29 +52,42 @@ export const NOTE_INLINE_WRITING_SYSTEM_MESSAGE = [
   "When asked to rewrite, expand, proofread or otherwise change the text, reply with only the new text in Markdown, with no preamble, quotes or commentary, so it can replace the selection as is.",
   "Keep the selection's language, meaning and structure (headings, lists) unless asked to change them.",
   "The new text replaces exactly the selection, which may start or end mid-sentence: keep its first and last characters' kind, so add no final period or capital letter the selection does not have.",
+  "Cover only the selected text: the whole note is there for context, so never add, repeat or continue text from outside the selection, such as further list items.",
+  "Keep the selection's list items as list items (one Markdown item each, with their numbering or bullets), and keep their number unless asked to change it.",
   "When asked a question, answer briefly.",
   "Do not add citation markers, quote tokens, or source lists.",
 ].join(" ");
 
-function writingActions() {
+/**
+ * What the answer must look like to replace the selection: a selection of
+ * list items comes back as the same number of items, so a model that sees
+ * the whole note does not add the items around the selection.
+ */
+export function describeSelectionShape(selectedMarkdown: string): string {
+  const items = selectedMarkdown
+    .split("\n")
+    .filter((line) => /^(?:[-*]|\d+\.) /.test(line)).length;
+  if (!items) return "";
+  return ` The selection is ${items} list item${items === 1 ? "" : "s"}: reply with exactly ${items} Markdown list item${items === 1 ? "" : "s"}, numbered or bulleted as in the selection, and nothing from the items around it.`;
+}
+
+function writingActions(selectedMarkdown: string) {
+  const shape = describeSelectionShape(selectedMarkdown);
   return [
     {
       id: "rewrite",
       label: t("Rewrite"),
-      instruction:
-        "Rewrite the selected text so it reads clearly and concisely. Reply with only the rewritten text.",
+      instruction: `Rewrite the selected text so it reads clearly and concisely. Reply with only the rewritten text.${shape}`,
     },
     {
       id: "expand",
       label: t("Expand"),
-      instruction:
-        "Expand the selected text with more detail, using the paper where it helps. Reply with only the expanded text.",
+      instruction: `Expand the selected text with more detail, using the paper where it helps. Reply with only the expanded text.${shape}`,
     },
     {
       id: "proofread",
       label: t("Proofread"),
-      instruction:
-        "Proofread the selected text: fix spelling, grammar and punctuation without changing its meaning or style. Reply with only the corrected text.",
+      instruction: `Proofread the selected text: fix spelling, grammar and punctuation without changing its meaning or style. Reply with only the corrected text.${shape}`,
     },
   ];
 }
@@ -397,7 +410,7 @@ function openPopup(params: {
   const handle = openNoteInlinePopup({
     hostDoc,
     readAnchor,
-    actions: writingActions(),
+    actions: writingActions(selectedMarkdown),
     modelPicker: createInlineAskModelPicker(reasoningItemId, modelState),
     labels: {
       askInSidebar: t("Ask in sidebar"),
