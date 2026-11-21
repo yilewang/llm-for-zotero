@@ -21,6 +21,7 @@
 import { getAgentApi, initAgentSubsystem } from "../../../agent";
 import type { NoteContextRef } from "../../../shared/types";
 import {
+  noteHtmlToModelText,
   normalizeNoteSourceText,
   renderRawNoteHtml,
 } from "../../../services/notes/noteRendering";
@@ -200,6 +201,35 @@ function watchEditorDocument(win: Window, doc: Document): void {
   );
 }
 
+/**
+ * The selection as Markdown, keeping its structure: a selection across list
+ * items is read inside its list (and quote), so the model sees "- " items
+ * and answers with items, which Replace writes back as items. Plain text
+ * only finds the passage in the note; it is never what the model rewrites.
+ */
+function readSelectionMarkdown(doc: Document, range: Range): string {
+  const holder = doc.createElement("div");
+  holder.append(range.cloneContents());
+  let html = holder.innerHTML;
+  const body = doc.querySelector(".ProseMirror");
+  const spansBlocks = Boolean(
+    holder.querySelector("p, li, h1, h2, h3, h4, h5, h6, blockquote, pre"),
+  );
+  const start = range.commonAncestorContainer;
+  let element: Element | null =
+    start.nodeType === 1 ? (start as Element) : start.parentElement;
+  for (
+    ;
+    spansBlocks && element && element !== body;
+    element = element.parentElement
+  ) {
+    const tag = element.tagName.toLowerCase();
+    if (tag === "ul" || tag === "ol" || tag === "blockquote")
+      html = `<${tag}>${html}</${tag}>`;
+  }
+  return noteHtmlToModelText(html).trim() || range.toString();
+}
+
 /** The note's text as the editor shows it: its text nodes joined in order. */
 function readEditorText(doc: Document): {
   text: string;
@@ -312,6 +342,7 @@ function openPopup(params: {
   if (!host || !selection?.rangeCount || !noteContext) return;
   // The selection the popup works on, kept while focus moves to the popup.
   const range = selection.getRangeAt(0).cloneRange();
+  const selectedMarkdown = readSelectionMarkdown(doc, range);
   const selectionStart = editorTextOffset(
     doc,
     range.startContainer,
@@ -354,13 +385,12 @@ function openPopup(params: {
     getContext: async () =>
       buildNoteInlineWritingContext({
         noteTitle: noteContext.title,
-        noteText: (
-          (doc.querySelector(".ProseMirror") as HTMLElement | null)
-            ?.innerText || ""
+        noteText: noteHtmlToModelText(
+          doc.querySelector(".ProseMirror")?.innerHTML || "",
         ).trim(),
         paper: parent ? resolvePaperContextRefFromItem(parent) : null,
         abstract: readField(parent, "abstractNote"),
-        selectedText,
+        selectedText: selectedMarkdown,
       }),
   });
 
@@ -384,7 +414,7 @@ function openPopup(params: {
         type: "diff_preview",
         id: "noteInlineChange",
         label: "",
-        before: selectedText,
+        before: selectedMarkdown,
         after: normalizeNoteSourceText(answer),
       }).element,
     ask: (instruction, onDelta, signal) =>

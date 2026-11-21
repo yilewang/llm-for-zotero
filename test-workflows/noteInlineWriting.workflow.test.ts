@@ -36,7 +36,10 @@ const SAVED_PREF_KEYS = [
 
 const SOURCE = "The decoder was fitted on session one.";
 const NOTE_HTML =
-  "<h2>Methods</h2>" + `<p>${SOURCE}</p>` + "<p>Keep this paragraph.</p>";
+  "<h2>Methods</h2>" +
+  `<p>${SOURCE}</p>` +
+  "<ul><li>First item text.</li><li>Second item text.</li><li>Third item stays.</li></ul>" +
+  "<p>Keep this paragraph.</p>";
 
 describe("workflow: inline writing popup in the note editor", function () {
   this.timeout(120_000);
@@ -107,6 +110,19 @@ describe("workflow: inline writing popup in the note editor", function () {
         const node = textNode(needle);
         const start = node.textContent!.indexOf(needle);
         setRange(node, start, start + needle.length);
+        doc.dispatchEvent(new doc.defaultView!.MouseEvent("mouseup"));
+      },
+      /** Selects from the start of `first` to the end of `last`. */
+      selectAcross(first: string, last: string) {
+        const startNode = textNode(first);
+        const endNode = textNode(last);
+        body().focus();
+        const range = doc.createRange();
+        range.setStart(startNode, startNode.textContent!.indexOf(first));
+        range.setEnd(endNode, endNode.textContent!.indexOf(last) + last.length);
+        const selection = doc.defaultView!.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
         doc.dispatchEvent(new doc.defaultView!.MouseEvent("mouseup"));
       },
       collapse() {
@@ -379,5 +395,41 @@ describe("workflow: inline writing popup in the note editor", function () {
     // The note selection is a note-editing chip in the paper's composer.
     assert.include(diagnostics.selectedContextLabels, "Editing");
     assert.equal(diagnostics.conversationKind, "paper");
+  });
+  it("keeps list items when two items of a list are rewritten and replaced", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.selectAcross("First item text.", "Second item text.");
+    const card = (await until(() => editor.card(), "the popup"))!;
+    (
+      card.querySelector(
+        "[data-llm-note-inline-action='rewrite']",
+      ) as HTMLElement
+    ).click();
+    const stream = await provider.waitForStream("Rewrite the selected text");
+    assert.match(
+      stream.requestBody,
+      /- First item text\.\\n- Second item text\./,
+      "the model sees the selection as list items",
+    );
+    stream.push("- First item, rewritten.\n- Second item, rewritten.");
+    stream.finish();
+    await until(
+      () => editor.card()?.getAttribute("data-phase") === "answered",
+      "the answer",
+    );
+    (
+      editor
+        .card()!
+        .querySelector("[data-llm-note-inline-action='replace']") as HTMLElement
+    ).click();
+    await until(() => !editor.card(), "the popup to close after Replace");
+
+    const saved = await storedNote();
+    assert.match(
+      saved,
+      /<ul>\s*<li>\s*(<p>)?First item, rewritten\.(<\/p>)?\s*<\/li>\s*<li>\s*(<p>)?Second item, rewritten\.(<\/p>)?\s*<\/li>\s*<li>\s*(<p>)?Third item stays\./,
+      saved,
+    );
+    assert.notMatch(saved, /<p>- /, "no list marker is written as text");
   });
 });

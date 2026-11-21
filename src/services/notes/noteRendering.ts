@@ -26,6 +26,32 @@ export function normalizeNoteSourceText(contentText: string): string {
   return decodeNoteHtmlEntities(noteHtmlToMarkdown(raw)) || stripNoteHtml(raw);
 }
 
+/**
+ * List items as Markdown items: "- " in a bulleted list, "1. " in a
+ * numbered one, indented two spaces per level of nesting. The paragraph
+ * Zotero's editor puts inside each item stays on the item's own line.
+ */
+function listItemsToMarkdown(html: string): string {
+  const flat = html
+    .replace(/(<li\b[^>]*>)\s*<p\b[^>]*>/gi, "$1")
+    .replace(/<\/p>\s*(<\/li>|<ul\b|<ol\b)/gi, "$1");
+  const lists: Array<{ ordered: boolean; count: number }> = [];
+  return flat.replace(/<(\/?)(ul|ol|li)\b[^>]*>/gi, (_tag, close, name) => {
+    const tag = String(name).toLowerCase();
+    if (tag === "li") {
+      if (close) return "";
+      const list = lists[lists.length - 1];
+      const indent = "  ".repeat(Math.max(0, lists.length - 1));
+      if (!list) return "\n- ";
+      list.count += 1;
+      return `\n${indent}${list.ordered ? `${list.count}.` : "-"} `;
+    }
+    if (close) lists.pop();
+    else lists.push({ ordered: tag === "ol", count: 0 });
+    return "";
+  });
+}
+
 /** Compose first; decode entities once at the public HTML-to-text boundary. */
 function noteHtmlToMarkdown(raw: string): string {
   let normalized = raw.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, "");
@@ -83,18 +109,20 @@ function noteHtmlToMarkdown(raw: string): string {
     (_match, level, text) =>
       `\n\n${"#".repeat(Number(level) || 1)} ${stripNoteMarkup(text).trim()}\n\n`,
   );
-  normalized = normalized.replace(/<li[^>]*>/gi, "\n- ");
-  normalized = normalized.replace(/<\/li>/gi, "");
+  normalized = listItemsToMarkdown(normalized);
   normalized = normalized.replace(
     /<\/?(?:p|div|section|article)\b[^>]*>/gi,
     "\n\n",
   );
   normalized = normalized.replace(/<(?!img\b)[^>]+>/g, "");
-  return normalized
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+  return (
+    normalized
+      .replace(/[ \t]+\n/g, "\n")
+      // A nested list item keeps its indent; other lines lose theirs.
+      .replace(/\n[ \t]+(?![ \t]|(?:[-*]|\d+\.) )/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
 }
 
 export function renderRawNoteHtml(contentText: string): string {
