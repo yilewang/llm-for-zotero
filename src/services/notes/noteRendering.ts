@@ -36,9 +36,9 @@ function listItemsToMarkdown(html: string): string {
     .replace(/(<li\b[^>]*>)\s*<p\b[^>]*>/gi, "$1")
     .replace(/<\/p>\s*(<\/li>|<ul\b|<ol\b)/gi, "$1");
   const lists: Array<{ ordered: boolean; count: number }> = [];
-  return flat.replace(/<(\/?)(ul|ol|li)\b[^>]*>/gi, (_tag, close, name) => {
-    const tag = String(name).toLowerCase();
-    if (tag === "li") {
+  return flat.replace(/<(\/?)(ul|ol|li)\b[^>]*>/gi, (tag, close, name) => {
+    const kind = String(name).toLowerCase();
+    if (kind === "li") {
       if (close) return "";
       const list = lists[lists.length - 1];
       const indent = "  ".repeat(Math.max(0, lists.length - 1));
@@ -47,7 +47,11 @@ function listItemsToMarkdown(html: string): string {
       return `\n${indent}${list.ordered ? `${list.count}.` : "-"} `;
     }
     if (close) lists.pop();
-    else lists.push({ ordered: tag === "ol", count: 0 });
+    else {
+      // A numbered list may start past 1 (start="3" counts from 3).
+      const start = Number(/\bstart\s*=\s*["']?(\d+)/i.exec(tag)?.[1] || 1);
+      lists.push({ ordered: kind === "ol", count: Math.max(0, start - 1) });
+    }
     return "";
   });
 }

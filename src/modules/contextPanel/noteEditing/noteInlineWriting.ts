@@ -237,8 +237,17 @@ function readSelectionMarkdown(doc: Document, range: Range): string {
     element = element.parentElement
   ) {
     const tag = element.tagName.toLowerCase();
-    if (tag === "ul" || tag === "ol" || tag === "blockquote")
-      html = `<${tag}>${html}</${tag}>`;
+    if (tag === "ul" || tag === "blockquote") html = `<${tag}>${html}</${tag}>`;
+    if (tag === "ol") {
+      // Numbered from the selection's first item, as the note numbers it.
+      const items = Array.from(element.children).filter(
+        (child) => child.tagName.toLowerCase() === "li",
+      );
+      const first = items.findIndex((item) => range.intersectsNode(item));
+      const start =
+        Number(element.getAttribute("start") || 1) + Math.max(0, first);
+      html = `<ol start="${start}">${html}</ol>`;
+    }
   }
   return noteHtmlToModelText(html).trim() || range.toString();
 }
