@@ -144,7 +144,7 @@ const MODEL_TOOL_DESCRIPTIONS: Readonly<Record<string, string>> = {
     "Trash or restore Zotero objects, or merge duplicates into a named master.",
   undo: "Undo the latest reversible action in this chat; count or actionIds revert several, dryRun lists them with conflicts.",
   annotate_pdf:
-    "Highlight a quoted PDF passage with an optional comment; Zotero computes the placement.",
+    "Highlight or underline a quoted PDF passage with an optional comment, or put a sticky note at it (annotationType:'note'; comment is its required text); Zotero computes the placement.",
   file_io:
     "Read or write local files, including partial text and images, for data, scripts and exports; read papers with paper_read. Zotero asks no approval for reads; a write can be undone and goes through the caller's approval rules.",
   run_command:

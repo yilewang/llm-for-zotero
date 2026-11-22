@@ -41,7 +41,7 @@ export function createImportLocalFilesTool(
     spec: {
       name: "import_local_files",
       description:
-        "Import local files from the filesystem into Zotero. A bibliography file (.ris, .bib, .enw, .nbib, RDF) is read through Zotero's translators, so its references become real items; other files are attached, and PDFs go through Zotero's metadata recognition so they arrive with a title, authors and DOI rather than as a bare file.",
+        "Import local files from the filesystem into Zotero. A bibliography file (.ris, .bib, .enw, .nbib, RDF) is read through Zotero's translators, so its references become real items; any other file becomes a new standalone item, and PDFs go through Zotero's metadata recognition so they arrive with a title, authors and DOI rather than as a bare file. Every import creates new top-level items; it never adds a file to an existing item.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
@@ -58,7 +58,7 @@ export function createImportLocalFilesTool(
             enum: ["auto", "translate", "attach"],
             default: "auto",
             description:
-              "'auto' (default) reads bibliography files as references and attaches everything else. 'translate' insists on reading the file as a bibliography and fails if Zotero has no translator for it. 'attach' stores the file as an attachment even if it is a bibliography.",
+              "'auto' (default) reads bibliography files as references and stores everything else as new standalone items. 'translate' insists on reading the file as a bibliography and fails if Zotero has no translator for it. 'attach' stores the file as a new standalone attachment even if it is a bibliography.",
           },
           recognize: {
             type: "boolean",
@@ -146,7 +146,7 @@ export function createImportLocalFilesTool(
       return {
         toolName: "import_local_files",
         title: `Import ${operation.filePaths.length} file${operation.filePaths.length === 1 ? "" : "s"}`,
-        description: `Import local files into your Zotero library. Bibliography files (.ris, .bib, .enw, .nbib, RDF) have their references imported as items; other files are attached, and Zotero looks up metadata for PDFs.`,
+        description: `Import local files into your Zotero library. Bibliography files (.ris, .bib, .enw, .nbib, RDF) have their references imported as items; other files are added as new items, and Zotero looks up metadata for PDFs.`,
         confirmLabel: "Import",
         cancelLabel: "Cancel",
         fields: [
