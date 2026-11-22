@@ -6,6 +6,10 @@ import {
   SIDEBAR_LAYOUT_PREF,
 } from "./contextPanel/sidebarLayout";
 import { config } from "../../package.json";
+import {
+  NOTE_INCLUDE_USER_PROMPT_PREF,
+  includeUserPromptInSavedNotes,
+} from "./contextPanel/notes";
 import { consumeRequestedPreferencesTab } from "../utils/preferencesStartTab";
 import { t } from "../utils/i18n";
 import { WEBCHAT_TARGETS } from "../webchat/types";
@@ -1920,6 +1924,9 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
   const popupInlineAskEnabledInput = doc.querySelector(
     `#${config.addonRef}-popup-inline-ask-enabled`,
   ) as HTMLInputElement | null;
+  const noteIncludeUserPromptInput = doc.querySelector(
+    `#${config.addonRef}-note-include-user-prompt`,
+  ) as HTMLInputElement | null;
   const enableAgentModeInput = doc.querySelector(
     `#${config.addonRef}-enable-agent-mode`,
   ) as HTMLInputElement | null;
@@ -3585,6 +3592,17 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       Zotero.Prefs.set(
         `${config.prefsPrefix}.showPopupInlineAsk`,
         popupInlineAskEnabledInput.checked,
+        true,
+      );
+    });
+  }
+
+  if (noteIncludeUserPromptInput) {
+    noteIncludeUserPromptInput.checked = includeUserPromptInSavedNotes();
+    noteIncludeUserPromptInput.addEventListener("change", () => {
+      Zotero.Prefs.set(
+        `${config.prefsPrefix}.${NOTE_INCLUDE_USER_PROMPT_PREF}`,
+        noteIncludeUserPromptInput.checked,
         true,
       );
     });

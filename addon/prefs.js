@@ -21,6 +21,7 @@ pref("readerChoiceAntigravity", "");
 pref("systemPrompt", "");
 pref("showPopupAddText", true);
 pref("showPopupInlineAsk", true);
+pref("noteIncludeUserPrompt", true);
 pref("inlineAskPrompts", "");
 pref("inlineAskDeletedPrompts", "");
 pref("inlineAskModelEntryId", "");

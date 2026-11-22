@@ -555,6 +555,10 @@ const zhCN: Record<string, string> = {
     '在阅读器选区弹出菜单中显示"划词提问"',
   "Disable this if you prefer not to show the Inline Ask option in Zotero's text selection popup menu.":
     '如果你不想在 Zotero 文本选区弹出菜单中显示"划词提问"选项，请禁用此项。',
+  "Include your prompt when saving a response as a note":
+    "将回复保存为笔记时包含你的提问",
+  "Turn this off to save only the AI response, without the question you asked.":
+    "关闭此项后，只保存 AI 回复，不包含你提出的问题。",
   "Enable Agent Mode (Beta)": "启用 Agent 模式（测试版）",
   'Shows the "Agent" runtime in the context bar, enabling the agentic multi-step assistant. Off by default — enable only if you want to experiment with the beta feature.':
     '在上下文栏显示"Agent"运行时，启用多步骤 Agent 助手。默认关闭 — 仅在你想体验测试版功能时启用。',

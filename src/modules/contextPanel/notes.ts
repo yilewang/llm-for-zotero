@@ -1,3 +1,4 @@
+import { config } from "../../../package.json";
 import { appLogger } from "../../core/logging";
 import { t } from "../../utils/i18n";
 import { renderMarkdownForNote } from "../../utils/markdown";
@@ -537,6 +538,20 @@ function buildAssistantNoteHtml(
   );
 }
 
+export const NOTE_INCLUDE_USER_PROMPT_PREF = "noteIncludeUserPrompt";
+
+/**
+ * Whether a response saved as a note carries the question that asked for it
+ * (Settings › Customization). On by default; off saves the response alone.
+ */
+export function includeUserPromptInSavedNotes(): boolean {
+  const value = Zotero.Prefs.get(
+    `${config.prefsPrefix}.${NOTE_INCLUDE_USER_PROMPT_PREF}`,
+    true,
+  );
+  return value !== false && `${value ?? ""}`.toLowerCase() !== "false";
+}
+
 async function buildAssistantNoteHtmlForSave(
   contentText: string,
   modelName: string,
@@ -552,9 +567,10 @@ async function buildAssistantNoteHtmlForSave(
     headingLevel?: 1 | 2;
   } = {},
 ): Promise<string> {
+  const savedQueryText = includeUserPromptInSavedNotes() ? queryText : "";
   const query = buildQuoteExpandedMarkdown(
     {
-      markdown: sanitizeText(queryText || "").trim(),
+      markdown: sanitizeText(savedQueryText || "").trim(),
       quoteCitations,
     },
     { paragraphCitations: "line-labels" },
@@ -593,7 +609,7 @@ async function buildAssistantNoteHtmlForSave(
     queryHtml,
     source,
     timestamp,
-    sanitizeText(queryText || "").trim(),
+    sanitizeText(savedQueryText || "").trim(),
     options.headingLevel,
     query,
   );

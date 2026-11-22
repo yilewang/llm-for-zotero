@@ -30,6 +30,7 @@ declare namespace _ZoteroTypes {
       "systemPrompt": string;
       "showPopupAddText": boolean;
       "showPopupInlineAsk": boolean;
+      "noteIncludeUserPrompt": boolean;
       "inlineAskPrompts": string;
       "inlineAskDeletedPrompts": string;
       "inlineAskModelEntryId": string;
