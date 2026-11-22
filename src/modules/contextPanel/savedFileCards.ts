@@ -19,6 +19,7 @@ import { markStandaloneFlatScope } from "./contentChrome";
 import { t } from "../../utils/i18n";
 import { getIOUtils } from "../../utils/geckoFs";
 import {
+  areEquivalentLocalPaths,
   fileUrlToPath,
   isAbsoluteLocalPath,
   joinLocalPath,
@@ -1120,6 +1121,22 @@ export async function createSavedFileCard(
  * marked as a "file" item, so it gets a row in Miscellaneous, like the other
  * things the answer made.
  */
+/**
+ * The local pictures the answer already shows in its text (`![plot](path)`),
+ * read from the rendered answer the cards sit under.
+ */
+function picturesShownInAnswer(host: HTMLElement): string[] {
+  const answer = host.parentElement;
+  if (!answer) return [];
+  return (
+    Array.from(
+      answer.querySelectorAll("img.llm-chat-inline-figure"),
+    ) as HTMLImageElement[]
+  )
+    .map((img) => fileUrlToPath(img.getAttribute("src") || ""))
+    .filter((path): path is string => Boolean(path));
+}
+
 export async function mountSavedFileCards(
   host: HTMLElement,
   params: Parameters<typeof resolveTurnSavedFiles>[0] &
@@ -1128,7 +1145,11 @@ export async function mountSavedFileCards(
       onMounted?: () => void;
     },
 ): Promise<void> {
-  const paths = await resolveTurnSavedFiles(params);
+  // A picture shown in the answer's text needs no second copy as a card.
+  const shown = picturesShownInAnswer(host);
+  const paths = (await resolveTurnSavedFiles(params)).filter(
+    (path) => !shown.some((inline) => areEquivalentLocalPaths(inline, path)),
+  );
   if (!paths.length || !host.isConnected) return;
   const doc = host.ownerDocument;
   const cards = await Promise.all(

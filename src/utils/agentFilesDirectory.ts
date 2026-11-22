@@ -234,7 +234,10 @@ export function buildAgentFilesInstruction(folder: string | null): string {
       `- Helper scripts and scratch files go in ${joinLocalPath(folder, AGENT_FILES_WORK_FOLDER)}.`,
     );
   }
-  lines.push("- Give each saved file's full path in the answer.");
+  lines.push(
+    "- Give each saved file's full path in the answer.",
+    "- To show a picture you saved (a plot, chart or figure) in the answer, put it where it belongs in the text as ![short caption](its full path); the chat shows the picture there.",
+  );
   return lines.join("\n");
 }
 

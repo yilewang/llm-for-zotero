@@ -38,6 +38,7 @@ import {
   needsPreviewThemeSheet,
   previewSurfaceFor,
 } from "./previewTheme";
+import { isAbsoluteLocalPath, toFileUrl } from "./localPath";
 
 // =============================================================================
 // Types
@@ -2279,7 +2280,10 @@ function renderInline(text: string): string {
           );
         }
       }
-      const safeSrc = sanitizeMarkdownUrl(trimmedSrc, "image");
+      const safeSrc = sanitizeMarkdownUrl(
+        markdownImageSource(trimmedSrc),
+        "image",
+      );
       if (!safeSrc) return escapeHtml(alt || trimmedSrc);
       // Always render as <img> — works for file://, data:, and http(s):// URLs
       return protect(
@@ -2311,6 +2315,54 @@ function renderInline(text: string): string {
   return result;
 }
 
+/**
+ * The address a Markdown picture loads from. A picture the reply names by its
+ * place on this computer (`![plot](/Users/me/plot.png)`, as an agent does for a
+ * file it saved) loads through a file: URL; anything else is left as written.
+ */
+function markdownImageSource(src: string): string {
+  return isAbsoluteLocalPath(src) ? toFileUrl(src) || src : src;
+}
+
+/**
+ * `![caption](/a folder/plot.png)`: a picture named by a local path that has
+ * spaces in it. Marked reads a link target only up to its first space, and the
+ * folders agents save into are named "KEY - Title", so without this the reply
+ * would show the raw Markdown. A trailing `"title"` stays a title.
+ */
+const LOCAL_IMAGE_WITH_SPACES_PATTERN =
+  /^!\[([^\]\n]*)\]\(\s*((?:\/|[A-Za-z]:[\\/])[^)"\n]*?\s[^)"\n]*?)(?:\s+"([^"\n]*)")?\s*\)/;
+
+function createLocalImageExtension(target: MarkdownRenderTarget) {
+  return {
+    name: "llmLocalImage",
+    level: "inline" as const,
+    start(src: string) {
+      const index = src.indexOf("![");
+      return index >= 0 ? index : undefined;
+    },
+    tokenizer(src: string) {
+      const match = LOCAL_IMAGE_WITH_SPACES_PATTERN.exec(src);
+      if (!match) return undefined;
+      return {
+        type: "llmLocalImage",
+        raw: match[0],
+        alt: match[1],
+        href: match[2].trim(),
+        title: match[3] ?? null,
+      };
+    },
+    renderer(token: { alt?: string; href?: string; title?: string | null }) {
+      return renderMarkdownImage(
+        token.alt || "",
+        token.href || "",
+        token.title,
+        target,
+      );
+    },
+  };
+}
+
 function renderMarkdownImage(
   alt: string,
   href: string,
@@ -2322,7 +2374,10 @@ function renderMarkdownImage(
   if (activeImageResolver) {
     resolvedSrc = activeImageResolver(trimmedHref);
   }
-  const safeSrc = sanitizeMarkdownUrl(resolvedSrc || trimmedHref, "image");
+  const safeSrc = sanitizeMarkdownUrl(
+    resolvedSrc || markdownImageSource(trimmedHref),
+    "image",
+  );
   if (!safeSrc) return escapeHtml(alt || trimmedHref);
 
   const titleAttr = title ? ` title="${escapeAttribute(title)}"` : "";
@@ -2511,7 +2566,11 @@ function createMarkedMarkdownRenderer(target: MarkdownRenderTarget): Marked {
     breaks: false,
     gfm: true,
     renderer: createMarkedRenderer(target),
-    extensions: [...mathExtensions, literalTildeExtension],
+    extensions: [
+      ...mathExtensions,
+      literalTildeExtension,
+      createLocalImageExtension(target),
+    ],
     tokenizer: {
       lheading(src) {
         const heading = Tokenizer.prototype.lheading.call(this, src);
