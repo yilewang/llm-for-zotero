@@ -14,6 +14,10 @@ import {
   saveSelectionAnnotation,
   type SaveSelectionAnnotationInput,
 } from "./actions/saveSelectionAnnotation";
+import {
+  replaceNoteSelection,
+  type ReplaceNoteSelectionInput,
+} from "./actions/replaceNoteSelection";
 import { undoNoteChange } from "./actions/undoNoteChange";
 import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { initAgentCoverageStore } from "./context/coverageLedger";
@@ -255,6 +259,17 @@ export function getAgentApi() {
       if (!_toolRegistry || !_zoteroGateway)
         throw new Error("Agent subsystem is not initialized");
       return saveSelectionAnnotation(_toolRegistry, _zoteroGateway, input);
+    },
+    /**
+     * Replaces the text selected in a note with an inline answer (the note
+     * editor's inline card). The card's Replace click confirms the change it
+     * shows; the change journal records it for undo. Resolves `ok` only for
+     * an applied, verified change.
+     */
+    replaceNoteSelection: (input: ReplaceNoteSelectionInput) => {
+      if (!_toolRegistry || !_zoteroGateway)
+        throw new Error("Agent subsystem is not initialized");
+      return replaceNoteSelection(_toolRegistry, _zoteroGateway, input);
     },
     // ── Core turn API ──────────────────────────────────────────────────────
     /**

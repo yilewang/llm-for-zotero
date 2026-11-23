@@ -890,6 +890,7 @@ function buildSelectedTextContext(
   paperContext?: PaperContextRef | null,
   location?: SelectedTextPageLocation | null,
   noteContext?: NoteContextRef | null,
+  answerWords?: string,
 ): SelectedTextContext {
   const normalizedPaperContext = normalizePaperContextRefs([paperContext])[0];
   const normalizedLocation = normalizeSelectedTextPageLocation(location);
@@ -904,6 +905,7 @@ function buildSelectedTextContext(
     contextItemId: normalizedLocation?.contextItemId,
     pageIndex: normalizedLocation?.pageIndex,
     pageLabel: normalizedLocation?.pageLabel,
+    ...(answerWords ? { answerWords } : {}),
   };
 }
 
@@ -1047,6 +1049,7 @@ export function appendSelectedTextContextForItemDetailed(
   paperContext?: PaperContextRef | null,
   location?: SelectedTextPageLocation | null,
   noteContext?: NoteContextRef | null,
+  answerWords?: string,
 ): AppendSelectedTextOutcome {
   const normalizedText = normalizeSelectedText(text || "", source);
   if (!normalizedText) return "empty";
@@ -1057,6 +1060,7 @@ export function appendSelectedTextContextForItemDetailed(
     paperContext,
     location,
     noteContext,
+    answerWords,
   );
   const incomingNoteKey = getSelectedNoteContextIdentityKey(incomingEntry);
   if (
@@ -1335,6 +1339,8 @@ type AddSelectedTextContextOptions = {
   paperContext?: PaperContextRef | null;
   location?: SelectedTextPageLocation | null;
   noteContext?: NoteContextRef | null;
+  /** For text selected in a chat answer: see `SelectedTextContext`. */
+  answerWords?: string;
 };
 
 export function addSelectedTextContext(
@@ -1359,6 +1365,7 @@ export function addSelectedTextContext(
     options.paperContext,
     options.location,
     options.noteContext,
+    options.answerWords,
   );
   if (outcome === "duplicate") {
     if (status) setStatus(status, t("Selected text already included"), "ready");

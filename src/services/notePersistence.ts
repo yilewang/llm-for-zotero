@@ -114,6 +114,82 @@ export class NoteVerificationError extends Error {
   }
 }
 
+/** The parts of Zotero's `EditorInstance` that saving pending typing uses. */
+type OpenNoteEditor = {
+  itemID?: number;
+  saveSync?: () => void;
+  _iframeWindow?: {
+    wrappedJSObject?: {
+      /** With `true`, the editor's unsaved note, or null when it has none.
+       *  Reading it does not change the editor. */
+      getDataSync?: (onlyChanged: boolean) => { html?: string | null } | null;
+    };
+  };
+};
+
+const OPEN_EDITOR_SAVE_TIMEOUT_MS = 10000;
+
+function openNoteEditors(noteId?: number): OpenNoteEditor[] {
+  const editors = (
+    Zotero as unknown as { Notes?: { _editorInstances?: OpenNoteEditor[] } }
+  ).Notes?._editorInstances;
+  return (editors || []).filter(
+    (editor) => noteId === undefined || editor.itemID === noteId,
+  );
+}
+
+async function waitForEditorSave(noteId: number, html: string): Promise<void> {
+  const note = Zotero.Items.get(noteId) as Zotero.Item | false;
+  if (!note) return;
+  const deadline = Date.now() + OPEN_EDITOR_SAVE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (Zotero.DB.inTransaction()) {
+      // The caller may itself hold the transaction the save waits behind,
+      // so the wait is bounded by the deadline, not by the transaction.
+      await Promise.race([
+        (Zotero.DB.waitForTransaction as () => Promise<void>)(),
+        Zotero.Promise.delay(Math.max(0, deadline - Date.now())),
+      ]);
+      continue;
+    }
+    await note.reload(["note"], true);
+    if (noteHtmlMatches(note.getNote() || "", html)) return;
+    await Zotero.Promise.delay(10);
+  }
+  throw new Error(
+    "The open note editor did not save the latest typing in time; no change was made. Try again.",
+  );
+}
+
+/**
+ * Save typing that an open Zotero note editor holds but has not saved yet.
+ *
+ * The editor saves about a second after the user types. A read that decides
+ * a note write must call this first: otherwise it reads the note without that
+ * typing, and the write, followed by the editor reloading the written note,
+ * replaces text the user can still see. Omit `noteId` to save every open note.
+ */
+export async function saveOpenNoteEditors(noteId?: number): Promise<void> {
+  for (const editor of openNoteEditors(noteId)) {
+    const pending = editor._iframeWindow?.wrappedJSObject?.getDataSync?.(true);
+    if (!pending?.html || !editor.itemID || !editor.saveSync) continue;
+    editor.saveSync();
+    await waitForEditorSave(editor.itemID, pending.html);
+  }
+}
+
+/**
+ * The note's current HTML as Zotero stores it, after any open editor has
+ * saved its pending typing. Every read that decides a note write uses this;
+ * a check that a write landed reads with `verifyNativeNoteHtml` instead,
+ * because an open editor then holds its own copy of that write.
+ */
+export async function readNativeNoteHtml(note: Zotero.Item): Promise<string> {
+  await saveOpenNoteEditors(note.id);
+  await note.reload(["note"], true);
+  return note.getNote() || "";
+}
+
 /** A successful read is always a forced native reload, never an in-memory echo. */
 export async function verifyNativeNoteHtml(
   note: Zotero.Item,

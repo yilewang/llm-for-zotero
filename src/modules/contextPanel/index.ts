@@ -1,4 +1,9 @@
 import { appLogger } from "../../core/logging";
+import {
+  closeNoteInlineWritingPopup,
+  syncNoteInlineWritingPopup,
+} from "./noteEditing/noteInlineWriting";
+import { syncOpenNoteContext } from "./noteEditing/openNoteContext";
 import { getSidebarLayout } from "./sidebarLayout";
 /**
  * Context Panel Module
@@ -1796,6 +1801,22 @@ function refreshTrackedNoteEditingSelection(
   if (noteId && noteId === tracker.lastNoteId && !docs.length) return;
   for (const doc of docs) tracker.trackSelectionDocument(doc);
   const text = docs.map(getEditableSelectionFromDocument).find(Boolean) || "";
+  syncNoteInlineWritingPopup({ win, noteItem, docs });
+  const mountedChats: Array<{ conversationKey: number; root: HTMLElement }> =
+    [];
+  for (const [body] of activeContextPanelStateSync) {
+    if (
+      !body.isConnected ||
+      (body.ownerDocument?.defaultView as unknown) !== win
+    )
+      continue;
+    const root = body.querySelector("#llm-main") as HTMLElement | null;
+    const conversationKey = Number(root?.dataset.itemId || 0);
+    if (root && conversationKey > 0)
+      mountedChats.push({ conversationKey, root });
+  }
+  for (const key of syncOpenNoteContext({ noteItem, panels: mountedChats }))
+    refreshPanelsForConversationKey(key);
   const keys = new Set<number>();
   for (const [body] of activeContextPanelStateSync) {
     if (!body.isConnected) continue;
@@ -1862,6 +1883,7 @@ export function registerNoteEditingSelectionTracking(
 }
 
 export function unregisterNoteEditingSelectionTracking(win: Window): void {
+  closeNoteInlineWritingPopup(win);
   const trackedWindow = win as MainWindowWithNoteEditingTracker;
   trackedWindow.__llmNoteEditingSelectionTracking?.dispose();
 }

@@ -190,6 +190,7 @@ import {
 import { installSidebarModeSwitch } from "../../sidebarModeSwitch";
 import { endInlineEdit } from "../../inlineEditState";
 import { subscribeConversationCatalogChanges } from "../../../../core/conversations/conversationCatalogEvents";
+import { resolveChatFamilyItemID } from "../../../../services/notes/scope";
 import {
   createCatalogReloadScheduler,
   isChatPanelBodyShown,
@@ -803,11 +804,17 @@ export function createHistoryLifecycleController(
       : t("Library chat");
   };
 
+  const isNoteChatHistoryEntry = (entry: ConversationHistoryEntry): boolean =>
+    entry.kind === "paper" &&
+    !isOrphanHistoryEntry(entry) &&
+    Boolean((Zotero.Items.get(Number(entry.paperItemID)) || null)?.isNote?.());
+
   const resolveHistoryScopeChipLabel = (
     entry: ConversationHistoryEntry,
   ): string => {
     if (isOrphanHistoryEntry(entry)) return t("Orphan");
     if (entry.kind !== "paper") return t("Library chat");
+    if (isNoteChatHistoryEntry(entry)) return t("Note chat");
     return formatHistoryPaperScopeLabel(
       resolveHistoryEntryPaperDisplayMetadata(
         entry,
@@ -1532,7 +1539,9 @@ export function createHistoryLifecycleController(
           "llm-history-item-title-row",
         ) as HTMLDivElement;
 
-        if (searchActive) {
+        // A paper's list also holds its notes' chats; their chip tells them
+        // apart even outside a search.
+        if (searchActive || isNoteChatHistoryEntry(entry)) {
           const scopeChip = createElement(
             body.ownerDocument as Document,
             "span",
@@ -1697,9 +1706,13 @@ export function createHistoryLifecycleController(
 
   const filterHistoryForCurrentNote = (entries: ConversationHistoryEntry[]) => {
     if (!isNoteSession()) return entries;
-    const noteID = resolveCurrentPaperBaseItem()?.id;
+    // A note chat reaches its own chats and, for a child note, the chats of
+    // its paper and that paper's other notes.
+    const familyID = resolveChatFamilyItemID(resolveCurrentPaperBaseItem()?.id);
     return entries.filter(
-      (entry) => entry.kind === "paper" && entry.paperItemID === noteID,
+      (entry) =>
+        entry.kind === "paper" &&
+        resolveChatFamilyItemID(entry.paperItemID) === familyID,
     );
   };
 
@@ -2810,9 +2823,13 @@ export function createHistoryLifecycleController(
         }
         return false;
       }
+      // A chat of the same paper family (the paper or one of its notes)
+      // opens in place; another paper's chat selects that paper.
       const navigationDecision = resolvePaperHistoryNavigationDecision({
-        entryPaperItemID: paperItem.id,
-        currentPaperItemID: getCurrentHistoryPaperItemID(),
+        entryPaperItemID: resolveChatFamilyItemID(paperItem.id),
+        currentPaperItemID: resolveChatFamilyItemID(
+          getCurrentHistoryPaperItemID(),
+        ),
       });
       if (navigationDecision === "missing-target-paper") {
         if (status) {

@@ -224,8 +224,11 @@ import {
   createGlobalPortalItem,
   createPaperPortalItem,
   resolveConversationBaseItem,
+  resolveConversationKeyForNoteFocus,
   resolveInitialPanelItemState,
+  resolvePreferredConversationSystem,
 } from "./portalScope";
+import { createNoteConversationItem } from "../../services/notes/conversationItem";
 import {
   allocateEphemeralGlobalConversationKey,
   allocateEphemeralPaperConversationKey,
@@ -239,6 +242,8 @@ import {
   renderQuoteCitationPlaceholders,
 } from "./assistantCitationLinks";
 import { renderRenderedMarkdownInto } from "./renderedMarkdown";
+import { updateChatPanelExtensions } from "./chatPanelExtensions";
+import { getPanelHandle } from "./panelHandle";
 import { setPluginUpdateDepsForTest } from "../pluginUpdateAdapters";
 import { openStandalonePlanDocumentWindow } from "./standalonePlanDocumentWindow";
 import { renderPlanDocumentContent } from "./planDocumentPresentation";
@@ -1645,15 +1650,28 @@ async function renderPanelForItemInternal(
   const body = appendHost(doc);
   const panelId = `workflow-panel-${++panelCounter}`;
   body.dataset.workflowPanelId = panelId;
+  // A note renders its own note chat, as when the user opens that chat from
+  // the history; opening the note itself keeps the paper or library chat.
+  const noteChatSystem = resolvePreferredConversationSystem({ item });
+  const noteChatItem =
+    !options?.resolveRememberedState && item.isNote()
+      ? createNoteConversationItem(
+          item,
+          noteChatSystem,
+          resolveConversationKeyForNoteFocus(item, {
+            conversationSystem: noteChatSystem,
+          })!,
+        )
+      : null;
   const initialPanelItem = options?.resolveRememberedState
     ? resolveInitialPanelItemState(item).item
-    : item;
+    : noteChatItem || item;
   mountPanelShell({
     body,
     renderItem: initialPanelItem,
     getMountedItem: () => initialPanelItem,
     rawItem: item,
-    setupItem: item,
+    setupItem: noteChatItem || item,
   });
   const mountedItem = activeContextPanels.get(body)?.() || item;
   await ensureConversationLoaded(mountedItem).catch(() => undefined);
@@ -9962,6 +9980,155 @@ async function exerciseAssistantSelectionInlinePrompt(input: {
   }
 }
 
+/** Where `needle` sits in one drawn text node of `root` (maths left out). */
+function findDrawnTextPosition(
+  root: Element,
+  needle: string,
+  occurrence: number,
+): { node: Text; offset: number } {
+  const walker = root.ownerDocument.createTreeWalker(root, 4);
+  let seen = 0;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.parentElement?.closest(".katex")) continue;
+    const value = node.nodeValue || "";
+    for (
+      let at = value.indexOf(needle);
+      at >= 0;
+      at = value.indexOf(needle, at + 1)
+    ) {
+      if (seen === occurrence) return { node: node as Text, offset: at };
+      seen += 1;
+    }
+  }
+  throw new Error(`"${needle}" is not drawn in one text node of the answer`);
+}
+
+async function exerciseAssistantSelectionShowInAnswer(input: {
+  panelId: string;
+  markdown: string;
+  startText: string;
+  endText: string;
+  endOccurrence?: number;
+  sideChatPanelId?: string;
+}): ReturnType<WorkflowTestApi["exerciseAssistantSelectionShowInAnswer"]> {
+  assertWorkflowTestEnabled();
+  const panel = getPanel(input.panelId);
+  // The chat the chip lands in: this one, or the side chat that "Quote in
+  // side chat" sends to, wired as the window's side panel wires it.
+  const chipPanel = input.sideChatPanelId
+    ? getPanel(input.sideChatPanelId)
+    : panel;
+  if (chipPanel !== panel) {
+    updateChatPanelExtensions(panel.body, {
+      sideChatQuote: {
+        quote: (selection, question) => {
+          getPanelHandle(chipPanel.body)?.addTextContext(selection.text, {
+            source: "model",
+            focusInput: false,
+            question,
+            answerWords: selection.answerWords,
+          });
+        },
+      },
+    });
+  }
+  const doc = panel.body.ownerDocument;
+  const win = doc.defaultView;
+  if (!win) throw new Error("Workflow panel window is unavailable");
+  const chatBox = panel.body.querySelector(
+    "#llm-chat-box",
+  ) as HTMLDivElement | null;
+  if (!chatBox) throw new Error("Workflow panel chat box was not rendered");
+  // Same shape as the answers the chat renders.
+  const bubble = doc.createElement("div") as HTMLDivElement;
+  bubble.className = "llm-bubble assistant";
+  const answer = doc.createElement("div") as HTMLDivElement;
+  answer.className = "llm-assistant-answer";
+  bubble.appendChild(answer);
+  chatBox.appendChild(bubble);
+  try {
+    renderRenderedMarkdownInto(answer, input.markdown, doc);
+    const start = findDrawnTextPosition(answer, input.startText, 0);
+    const end = findDrawnTextPosition(
+      answer,
+      input.endText,
+      input.endOccurrence ?? 0,
+    );
+    const range = doc.createRange();
+    range.setStart(start.node, start.offset);
+    range.setEnd(end.node, end.offset + input.endText.length);
+    const selection = win.getSelection();
+    if (!selection) throw new Error("Workflow panel selection is unavailable");
+    selection.removeAllRanges();
+    selection.addRange(range);
+    end.node.parentElement?.dispatchEvent(
+      new win.MouseEvent("mouseup", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      }),
+    );
+    await Zotero.Promise.delay(30);
+    const quoteButton = panel.body.querySelector(
+      chipPanel === panel
+        ? ".llm-assistant-selection-popup .llm-assistant-selection-action"
+        : ".llm-assistant-selection-popup .llm-assistant-selection-side-action",
+    ) as HTMLButtonElement | null;
+    if (!quoteButton) throw new Error("Quote button was not rendered");
+    quoteButton.dispatchEvent(
+      new win.MouseEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      }),
+    );
+    await Zotero.Promise.delay(30);
+    if (chipPanel !== panel) {
+      // An empty Enter in the box sends the quote to the side chat.
+      panel.body
+        .querySelector(".llm-assistant-selection-prompt-input")
+        ?.dispatchEvent(
+          new win.KeyboardEvent("keydown", {
+            key: "Enter",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      await Zotero.Promise.delay(30);
+    }
+    const mountedItem =
+      activeContextPanels.get(chipPanel.body)?.() || chipPanel.item;
+    const contexts = getSelectedTextContextEntries(
+      getConversationKey(mountedItem),
+    );
+    const chipText = contexts[contexts.length - 1]?.text || "";
+    const chips = Array.from(
+      chipPanel.body.querySelectorAll(
+        "#llm-selected-context-list .llm-selected-context-meta",
+      ),
+    ) as HTMLButtonElement[];
+    const chip = chips[chips.length - 1];
+    if (!chip) throw new Error("Selected text chip was not rendered");
+    win.getSelection()?.removeAllRanges();
+    chip.click();
+    await Zotero.Promise.delay(30);
+    const lit = Array.from(
+      answer.querySelectorAll(".llm-answer-quote-highlight"),
+    ) as HTMLElement[];
+    return {
+      chipText,
+      litText: lit.map((node) => node.textContent || "").join(""),
+      statusText:
+        chipPanel.body.querySelector("#llm-status")?.textContent?.trim() || "",
+    };
+  } finally {
+    if (chipPanel !== panel)
+      updateChatPanelExtensions(panel.body, { sideChatQuote: undefined });
+    win.getSelection()?.removeAllRanges();
+    bubble.remove();
+  }
+}
+
 /**
  * Escape and an empty Enter close the assistant inline prompt without
  * sending and keep the chip without a question; quoting the same text again
@@ -10262,6 +10429,9 @@ function readWorkflowHistoryRow(
       row.querySelector(".llm-history-runtime-label")?.textContent || ""
     ).trim(),
     isDraft: row.dataset.historyDraft === "true",
+    scopeLabel: (
+      row.querySelector(".llm-history-item-scope-chip")?.textContent || ""
+    ).trim(),
   };
 }
 
@@ -12491,6 +12661,7 @@ export function installWorkflowTestHarness(targetAddon: {
     exerciseContextChipCardVisibility,
     exerciseAssistantSelectionInlinePrompt,
     exerciseModelQuoteChipShowInAnswer,
+    exerciseAssistantSelectionShowInAnswer,
     exerciseAssistantSelectionNoteSave,
     exerciseAssistantSelectionPromptDismissal,
     cleanupFixture,

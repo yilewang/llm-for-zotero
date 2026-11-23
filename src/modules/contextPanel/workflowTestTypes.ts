@@ -1105,6 +1105,8 @@ export type WorkflowTestHistoryRow = {
   runtimeLabel?: string;
   /** The row's time text ("Draft" for an empty draft). */
   isDraft?: boolean;
+  /** The row's scope chip ("Library chat", "Note chat", a paper's label). */
+  scopeLabel?: string;
 };
 
 /** A chat written straight into one runtime's catalog and message store. */
@@ -2429,6 +2431,27 @@ export type WorkflowTestApi = {
     statusText: string;
     /** Whether the chip expanded instead (the fallback when not found). */
     chipExpanded: boolean;
+  }>;
+  /**
+   * Renders `markdown` as an answer, selects from the start of `startText`
+   * to the end of `endText` (its `endOccurrence`, zero-based) in the drawn
+   * answer, quotes it with the selection popup, then clicks its chip. With
+   * `sideChatPanelId`, quotes it into that side chat with "Quote in side
+   * chat" and clicks the chip there.
+   */
+  exerciseAssistantSelectionShowInAnswer: (input: {
+    panelId: string;
+    markdown: string;
+    startText: string;
+    endText: string;
+    endOccurrence?: number;
+    sideChatPanelId?: string;
+  }) => Promise<{
+    /** The chip's text, as the model receives it. */
+    chipText: string;
+    /** The lit words, in reading order. */
+    litText: string;
+    statusText: string;
   }>;
   exerciseAssistantSelectionInlinePrompt: (input: {
     panelId: string;

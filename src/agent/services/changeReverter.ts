@@ -1,4 +1,5 @@
 import { canonicalNoteHtml, noteHtmlMatches } from "../../utils/noteHtml";
+import { readNativeNoteHtml } from "../../services/notePersistence";
 import type {
   LibraryMutationOperation,
   LibraryMutationState,
@@ -1316,8 +1317,7 @@ async function nonLibraryInverseIsSatisfied(params: {
   if (materialized.kind === "note_html") {
     const item = service.getGateway().getItem(materialized.noteId);
     if (!item) return false;
-    await item.reload(["note"], true);
-    return noteHtmlMatches(item.getNote(), materialized.html);
+    return noteHtmlMatches(await readNativeNoteHtml(item), materialized.html);
   }
   if (materialized.kind === "file_delete") {
     return (await readFileBytes(materialized.path)) === null;

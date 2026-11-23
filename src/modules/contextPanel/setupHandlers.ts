@@ -3426,7 +3426,9 @@ export function setupHandlers(
       if (activeReaderAttachment?.parentID === parentItem.id) {
         return resolveContextSourceItem(activeReaderAttachment);
       }
-      return null;
+      // A note chat attaches its paper as a paper chat does (a removable
+      // chip), not only while the reader shows that paper.
+      return resolveContextSourceItem(parentItem);
     }
     if (isGlobalMode()) return null;
     const sourceItem =
@@ -5471,7 +5473,11 @@ export function setupHandlers(
     // Older turns of a long conversation may still be waiting to be drawn.
     flushPendingChatRender(chatBox);
     clearAnswerQuoteHighlights(body);
-    const lit = highlightQuotedAnswerText(body, detail.text);
+    const lit = highlightQuotedAnswerText(
+      body,
+      detail.text,
+      detail.answerWords,
+    );
     if (!lit[0]) return;
     showLitAnswer(chatBox, lit[0], lit, null);
   });
@@ -7564,6 +7570,7 @@ export function setupHandlers(
         outcome = addSelectedTextContext(body, textContextKey, text, {
           source: options.source,
           focusInput: options.focusInput,
+          answerWords: options.answerWords,
         });
       });
       const question = String(options.question || "").trim();

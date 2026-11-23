@@ -15,6 +15,7 @@
  * list rules (no drafts, no search fallbacks) and does not use this file.
  */
 import { appLogger } from "../../core/logging";
+import { listChatFamilyItemIDs } from "../../services/notes/scope";
 import {
   conversationRepository,
   type ConversationCatalogEntry,
@@ -131,28 +132,32 @@ export async function listUnifiedHistoryEntries(params: {
 }): Promise<ConversationCatalogEntry[]> {
   if (!(params.libraryID > 0)) return [];
   if (params.scope === "paper" && !(Number(params.paperItemID) > 0)) return [];
+  // A paper's history also lists the chats of its notes (and a child note's
+  // history its paper's), so a note chat stays reachable from its paper.
+  const paperItemIDs =
+    params.scope === "paper" ? listChatFamilyItemIDs(params.paperItemID) : [];
   const perSystem = await Promise.all(
     params.systems.map(async (system) => {
       try {
-        const rows = await conversationRepository.listCatalogEntries({
-          system,
-          kind: params.scope,
-          libraryID: params.libraryID,
-          ...(params.scope === "paper"
-            ? { paperItemID: params.paperItemID }
-            : {}),
-          limit: params.limit,
-          includeEmpty: system === params.activeSystem,
-        });
+        const listScope = async (paperItemID?: number) => {
+          const rows = await conversationRepository.listCatalogEntries({
+            system,
+            kind: params.scope,
+            libraryID: params.libraryID,
+            ...(paperItemID ? { paperItemID } : {}),
+            limit: params.limit,
+            includeEmpty: system === params.activeSystem,
+          });
+          return paperItemID
+            ? rows.filter((row) => Number(row.paperItemID) === paperItemID)
+            : rows;
+        };
         return {
           system,
           rows:
             params.scope === "paper"
-              ? rows.filter(
-                  (row) =>
-                    Number(row.paperItemID) === Number(params.paperItemID),
-                )
-              : rows,
+              ? (await Promise.all(paperItemIDs.map(listScope))).flat()
+              : await listScope(),
         };
       } catch (err) {
         appLogger.warn("LLM: Failed to load history rows of a runtime", {

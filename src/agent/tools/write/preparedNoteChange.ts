@@ -5,6 +5,7 @@ import {
 } from "../../../utils/noteCitations";
 import {
   persistVerifiedNoteHtml,
+  saveOpenNoteEditors,
   verifyNativeNoteHtml,
 } from "../../../services/notePersistence";
 import {
@@ -147,6 +148,9 @@ async function execute(
       );
     }
   } else {
+    // The prepared change is decided against what the user sees, including
+    // typing an open editor has not saved yet.
+    await saveOpenNoteEditors(note.id);
     const current = await verifyNativeNoteHtml(
       note,
       params.expectedOriginalHtml ?? note.getNote(),
@@ -209,6 +213,9 @@ async function execute(
     };
   };
   const write = async () => {
+    // Typing since preparation is saved first, so the check below refuses
+    // the write instead of the write replacing that typing.
+    await saveOpenNoteEditors(note.id);
     const current = await verifyNativeNoteHtml(note, expected);
     if (finalized && current.matches) return result();
     if (!noteHtmlMatches(current.html, before))

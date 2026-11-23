@@ -30,10 +30,15 @@ export type ChatPanelSideChatSlashItem = {
 
 export type ChatPanelSideChatQuote = {
   /**
-   * Quotes `text` into the shown side chat, or a new one when none is shown;
-   * `question` becomes the chip's question.
+   * Quotes a selection into the shown side chat, or a new one when none is
+   * shown: its Markdown `text`, and its `answerWords` as drawn here, by
+   * which its chip finds it in this chat. `question` becomes the chip's
+   * question.
    */
-  quote(text: string, question?: string): void;
+  quote(
+    selection: { text: string; answerWords?: string },
+    question?: string,
+  ): void;
 };
 
 export type ChatPanelExtensions = {

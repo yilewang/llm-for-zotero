@@ -185,7 +185,7 @@ export function replaceNoteSelectionHtml(
       ? () => ({ html: replacement })
       : replacement,
   );
-  const replacementHtml = embeds.html;
+  let replacementHtml = embeds.html;
   const carriedStarts = new Set(
     [...embeds.carried, ...embeds.removed].map((embed) => embed.start),
   );
@@ -258,11 +258,32 @@ export function replaceNoteSelectionHtml(
       }
     }
   }
+  // Items selected inside one list, replaced by a list of the same kind:
+  // the new items join that list in their place, so the list stays one list
+  // (and a nested list stays nested) instead of splitting around a new one.
+  const list = elements
+    .filter((n) => (n.tagName === "ul" || n.tagName === "ol") && encloses(n))
+    .at(-1);
+  const replacementBlocks = parseFragment(replacementHtml).childNodes.filter(
+    (n) =>
+      n.nodeName !== "#text" ||
+      (n as DefaultTreeAdapterTypes.TextNode).value.trim(),
+  );
+  const replacementList =
+    list &&
+    replacementBlocks.length === 1 &&
+    "tagName" in replacementBlocks[0] &&
+    replacementBlocks[0].tagName === list.tagName
+      ? replacementBlocks[0]
+      : null;
+  if (replacementList) replacementHtml = serialize(replacementList);
   // Keep the enclosing flow container (including Zotero's native root).
   // A completely selected list item belongs to its list, not to itself.
-  const flow = elements
-    .filter((n) => flowNames.has(n.tagName) && encloses(n) && n !== block)
-    .at(-1);
+  const flow = replacementList
+    ? list
+    : elements
+        .filter((n) => flowNames.has(n.tagName) && encloses(n) && n !== block)
+        .at(-1);
   const nodes = flow?.childNodes || root.childNodes;
   const flowLoc = flow?.sourceCodeLocation;
   const scopeStart = flowLoc?.startTag?.endOffset ?? 0;

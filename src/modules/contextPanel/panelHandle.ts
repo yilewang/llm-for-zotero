@@ -29,6 +29,8 @@ export type PanelHandle = {
       source: "model" | "sidechat" | "inlineask";
       focusInput?: boolean;
       question?: string;
+      /** Text selected in a chat answer: see `SelectedTextContext`. */
+      answerWords?: string;
     },
   ): boolean;
   /** Show the reasoning effort that the Claude runtime resolved. */

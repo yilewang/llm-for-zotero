@@ -86,6 +86,52 @@ export function resolveNoteEditingParentItem(
   return parentItem?.isRegularItem?.() ? parentItem : null;
 }
 
+/**
+ * Where the chat goes while the user works in a note they opened.
+ *
+ * An opened note is a place to write, not a conversation of its own: the
+ * chat stays on the parent paper's conversation, or on the library chat for
+ * a standalone note. A note conversation the user opens on purpose (from the
+ * history) is already bound to its note and is not redirected.
+ * Returns null for anything that is not a note the user opened.
+ */
+export function resolveOpenedNoteChatDestination(
+  item: Zotero.Item | null | undefined,
+):
+  | { kind: "paper"; paperItem: Zotero.Item }
+  | { kind: "library"; libraryID: number }
+  | null {
+  if (!item || getNoteConversation(item) || !(item as any).isNote?.())
+    return null;
+  const paperItem = resolveNoteEditingParentItem(item);
+  if (paperItem) return { kind: "paper", paperItem };
+  const libraryID = normalizePositiveInt(item.libraryID);
+  return libraryID ? { kind: "library", libraryID } : null;
+}
+
+/**
+ * The item whose chats a history row belongs with: a child note's chats sit
+ * with its parent paper's chats, so a paper's history also lists the chats
+ * of its notes. Anything else is its own family.
+ */
+export function resolveChatFamilyItemID(itemID: unknown): number {
+  const id = normalizePositiveInt(itemID);
+  if (!id) return 0;
+  const item = Zotero.Items.get(id) || null;
+  return normalizePositiveInt(resolveNoteEditingParentItem(item)?.id) || id;
+}
+
+/** The family's own item first, then the notes of a regular item. */
+export function listChatFamilyItemIDs(itemID: unknown): number[] {
+  const rootID = resolveChatFamilyItemID(itemID);
+  if (!rootID) return [];
+  const root = Zotero.Items.get(rootID) || null;
+  const noteIDs = root?.isRegularItem?.()
+    ? (root.getNotes?.() || []).map(Number)
+    : [];
+  return [rootID, ...noteIDs.filter((id: number) => id > 0 && id !== rootID)];
+}
+
 export function resolveNoteEditingTitle(
   item: Zotero.Item | null | undefined,
 ): string {

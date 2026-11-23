@@ -51,6 +51,25 @@ function registeredWorks(value: string): string {
  * With `registryWorksOnly`, the root registry counts only by the works it
  * registers; every chip and its own citation data still count in full.
  */
+/**
+ * A list item's content, with the one plain paragraph Zotero's editor wraps
+ * an item's text in read through: `<li><p>Item</p></li>` and `<li>Item</li>`
+ * are the same item, and the editor saves the first for a note written as
+ * the second.
+ */
+function listItemContent(node: DefaultTreeAdapterTypes.Element): Node[] {
+  if (node.tagName !== "li") return node.childNodes;
+  const significant = node.childNodes.filter(
+    (n) =>
+      n.nodeName !== "#text" ||
+      (n as DefaultTreeAdapterTypes.TextNode).value.trim(),
+  );
+  const only = significant.length === 1 ? significant[0] : undefined;
+  return only && "tagName" in only && only.tagName === "p" && !only.attrs.length
+    ? only.childNodes
+    : node.childNodes;
+}
+
 export function canonicalNoteHtml(
   html: string,
   options: { registryWorksOnly?: boolean } = {},
@@ -90,7 +109,7 @@ export function canonicalNoteHtml(
         [
           node.tagName,
           attrs,
-          children(node.childNodes, verbatim, blocks.has(node.tagName)),
+          children(listItemContent(node), verbatim, blocks.has(node.tagName)),
         ],
       ];
     });

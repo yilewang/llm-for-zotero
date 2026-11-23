@@ -918,7 +918,11 @@ function canOpenInlineDollarMath(text: string, index: number): boolean {
   return Boolean(next && !/\s/.test(next));
 }
 
-function canCloseInlineDollarMath(text: string, index: number): boolean {
+function canCloseInlineDollarMath(
+  text: string,
+  index: number,
+  openIndex: number,
+): boolean {
   if (text[index] !== "$") return false;
   if (isEscapedDelimiter(text, index)) return false;
   if (text[index - 1] === "$") return false;
@@ -926,15 +930,18 @@ function canCloseInlineDollarMath(text: string, index: number): boolean {
   const next = text[index + 1] || "";
   if (!previous || /\s/.test(previous)) return false;
   // In prose, a dollar sign followed by a digit is almost always another
-  // currency amount, not the closing delimiter for math.
-  if (/\d/.test(next)) return false;
+  // currency amount, not the closing delimiter for math; unless what it
+  // closes holds a TeX command ("$\le$70%"), which no amount of money does.
+  if (/\d/.test(next)) {
+    return /\\[a-zA-Z]/.test(text.slice(openIndex + 1, index));
+  }
   return true;
 }
 
 function findClosingInlineDollarMath(text: string, openIndex: number): number {
   for (let index = openIndex + 1; index < text.length; index++) {
     if (text[index] !== "$") continue;
-    if (canCloseInlineDollarMath(text, index)) return index;
+    if (canCloseInlineDollarMath(text, index, openIndex)) return index;
   }
   return -1;
 }

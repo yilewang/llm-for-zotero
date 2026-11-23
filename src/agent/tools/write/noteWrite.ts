@@ -1,4 +1,5 @@
 import { executeNoteCreation } from "../../services/noteCreation";
+import { saveOpenNoteEditors } from "../../../services/notePersistence";
 import { executePreparedNoteChange } from "./preparedNoteChange";
 import { importLocalImagesIntoNote } from "../../../services/notes/noteImages";
 import {
@@ -1369,6 +1370,9 @@ export function createNoteWriteTool(
           input.sourceMessageId,
         );
       await prepareWorkflowDocumentNote(input, context);
+      // The note snapshot below is read synchronously; first let any open
+      // editor save typing it has not saved yet.
+      await saveOpenNoteEditors();
       prepareNoteWriteInput(zoteroGateway, input, context);
       const hasLocalImages =
         /!\[[^\]]*\]\(file:\/\/|<img\s+[^>]*src\s*=\s*"file:\/\//i.test(
@@ -1388,6 +1392,7 @@ export function createNoteWriteTool(
     },
     execute: async (input, context) => {
       await prepareWorkflowDocumentNote(input, context);
+      await saveOpenNoteEditors();
       prepareNoteWriteInput(zoteroGateway, input, context);
       if (input.documentId && input.mode === "create") {
         const documentId = input.documentId;

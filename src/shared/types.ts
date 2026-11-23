@@ -170,6 +170,12 @@ export type SelectedTextContext = {
   /** User-facing PDF page label, which may be non-numeric. */
   pageLabel?: string;
   /**
+   * Text selected in a chat answer: its words as the chat draws them
+   * (folded, no spaces), so the chip finds the selection again; `text`
+   * keeps it as Markdown for the model.
+   */
+  answerWords?: string;
+  /**
    * The user's question about this text, attached from the inline box.
    * Trimmed, whitespace-collapsed, at most 2000 characters; absent when empty.
    */

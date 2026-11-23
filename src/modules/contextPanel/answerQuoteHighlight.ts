@@ -221,9 +221,13 @@ function findByEnds(text: string, words: string): [number, number] | null {
   return null;
 }
 
-/** Maths as written: $…$, $$…$$, \\(…\\) or \\[…\\]. */
+/**
+ * Maths as written: $…$, $$…$$, \\(…\\) or \\[…\\]. As the chat typesets
+ * it, a $…$ right before a number is maths only when it holds a TeX command
+ * ("$\le$70%"); otherwise it is money.
+ */
 const MATH =
-  /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$\w])\$(?=\S)[^$\n]+?(?<=\S)\$(?![\w$])/g;
+  /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|(?<![\\$\w])\$(?=\S)(?:[^$\n]*?\\[a-zA-Z][^$\n]*?(?<=\S)\$(?![a-zA-Z_$])|[^$\n]+?(?<=\S)\$(?![\w$]))/g;
 
 /**
  * The quote around what the answer draws in place of its words: "Bexley &
@@ -742,39 +746,106 @@ export function pulseAnswerQuote(lit: readonly HTMLElement[]): void {
  */
 export const SHOW_QUOTED_ANSWER_TEXT_EVENT = "llm-show-quoted-answer-text";
 
-export type ShowQuotedAnswerTextDetail = { text: string };
+export type ShowQuotedAnswerTextDetail = {
+  text: string;
+  /** The selection's drawn words, from `readSelectedAnswerWords`. */
+  answerWords?: string;
+};
 
-/**
- * Light text the user selected in an answer and quoted. A selection may run
- * across paragraphs or list items, whose text the answer holds with no
- * space between, so its words are first matched with spaces left out; the
- * newest answer first, as the latest answers are the ones quoted most. Then
- * as "Show in answer" finds a sentence: around chips and maths.
- */
-export function highlightQuotedAnswerText(
-  body: ParentNode,
-  quote: string,
-): HTMLElement[] {
-  const roots = (Array.from(body.querySelectorAll(ANSWERS)) as HTMLElement[])
+/** Text as the quote search compares it: drawn words with no spaces. */
+function compactTextMap(root: Element): { text: string; map: Piece[] } {
+  const { text, map } = textMap(root);
+  let compact = "";
+  const kept: Piece[] = [];
+  for (let at = 0; at < text.length; at += 1) {
+    if (text[at] === " ") continue;
+    compact += text[at];
+    kept.push(map[at]);
+  }
+  return { text: compact, map: kept };
+}
+
+/** The answers in `body` a quote may come from, newest first. */
+function quotableAnswerRoots(body: ParentNode): HTMLElement[] {
+  return (Array.from(body.querySelectorAll(ANSWERS)) as HTMLElement[])
     .filter((root) => !root.closest(".llm-agent-reasoning"))
     .reverse();
-  const words = foldAnswerWords(quote).replace(/ /g, "");
-  if (!words) return [];
+}
+
+/**
+ * The words the user selected in `bubble`, read with the same walk that
+ * lights them, so they are always found again while the answer is drawn:
+ * the Markdown a quote keeps for the model (bold marks, list markers,
+ * LaTeX) is not what the chat draws. Empty when nothing is selected there.
+ */
+export function readSelectedAnswerWords(
+  doc: Document,
+  bubble: Element,
+): string {
+  const selection = doc.defaultView?.getSelection?.();
+  if (!selection || selection.isCollapsed) return "";
+  const ranges: Range[] = [];
+  for (let index = 0; index < selection.rangeCount; index += 1)
+    ranges.push(selection.getRangeAt(index));
+  const roots = [
+    ...(bubble.matches(ANSWERS) ? [bubble as HTMLElement] : []),
+    ...quotableAnswerRoots(bubble).reverse(),
+  ];
+  let words = "";
   for (const root of roots) {
-    const { text, map } = textMap(root);
-    let compact = "";
-    const kept: Piece[] = [];
+    const { text, map } = compactTextMap(root);
     for (let at = 0; at < text.length; at += 1) {
-      if (text[at] === " ") continue;
-      compact += text[at];
-      kept.push(map[at]);
+      const { node, start, end } = map[at];
+      if (
+        ranges.some(
+          (range) =>
+            range.comparePoint(node, start) >= 0 &&
+            range.comparePoint(node, end) <= 0,
+        )
+      )
+        words += text[at];
     }
-    const at = compact.indexOf(words);
+  }
+  return words;
+}
+
+/**
+ * Light the selected words a quote recorded (`readSelectedAnswerWords`):
+ * the newest answer that draws them.
+ */
+function highlightSelectedAnswerWords(
+  roots: readonly HTMLElement[],
+  words: string,
+): HTMLElement[] {
+  for (const root of roots) {
+    const { text, map } = compactTextMap(root);
+    const at = text.indexOf(words);
     if (at < 0) continue;
-    const lit = wrapPieces(kept.slice(at, at + words.length));
+    const lit = wrapPieces(map.slice(at, at + words.length));
     return [...lit, ...lightChipsBetween(root, lit)].sort((left, right) =>
       left.compareDocumentPosition(right) & 4 ? -1 : 1,
     );
   }
-  return highlightAnswerQuote(roots, quote);
+  return [];
+}
+
+/**
+ * Light text the user selected in an answer and quoted: by the drawn words
+ * recorded when it was selected (`answerWords`), the newest answer first, as
+ * the latest answers are the ones quoted most. A quote with none (text
+ * quoted elsewhere) is matched by its own words with spaces left out, as a
+ * selection may run across paragraphs or list items; then as "Show in
+ * answer" finds a sentence: around chips and maths.
+ */
+export function highlightQuotedAnswerText(
+  body: ParentNode,
+  quote: string,
+  answerWords?: string,
+): HTMLElement[] {
+  const roots = quotableAnswerRoots(body);
+  if (answerWords) return highlightSelectedAnswerWords(roots, answerWords);
+  const words = foldAnswerWords(quote).replace(/ /g, "");
+  if (!words) return [];
+  const lit = highlightSelectedAnswerWords(roots, words);
+  return lit.length ? lit : highlightAnswerQuote(roots, quote);
 }
