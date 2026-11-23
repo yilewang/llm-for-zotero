@@ -193,10 +193,11 @@ describe("workflow: standalone Task progress alignment", function () {
         return curtain().dataset.curtain === "open";
       }, "the Task progress row is down in the chat");
 
-      // In the chat, the card spans the chat's width, and its →| stays
-      // inside the card, at a wide window's chrome gap and at a narrow one's.
-      // (Its padding is read from the pixels in
-      // taskProgressEdgePadding.workflow.test.ts.)
+      // In the chat, the card spans the chat's column (the composer's
+      // width; the chat box itself runs on to the window's edge for its
+      // scrollbar), and its →| stays inside the card, at a wide window's
+      // chrome gap and at a narrow one's. (Its padding is read from the
+      // pixels in taskProgressEdgePadding.workflow.test.ts.)
       const rectOf = (selector: string, within: ParentNode = doc) =>
         within.querySelector(selector)!.getBoundingClientRect();
       for (const width of [1100, 500]) {
@@ -205,10 +206,11 @@ describe("workflow: standalone Task progress alignment", function () {
         const label = `${width}px window`;
         const card = rectOf(".llm-task-progress-card", root());
         const chat = rectOf("#llm-chat-box", root());
+        const column = rectOf(".llm-input-section", root());
         assert.closeTo(card.left, chat.left, 0.5, `${label}: card's left edge`);
         assert.closeTo(
           card.right,
-          chat.right,
+          column.right,
           0.5,
           `${label}: card's right edge`,
         );

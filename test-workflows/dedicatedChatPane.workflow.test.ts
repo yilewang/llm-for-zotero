@@ -187,11 +187,13 @@ describe("workflow: dedicated native chat pane", function () {
       0,
       "shortcut is visible",
     );
+    // 12px: the chips and composer keep clear of the chat's scrollbar strip
+    // at the right edge, and keep the same gap on the left (#582).
     assert.closeTo(
       chip.getBoundingClientRect().left - panel.getBoundingClientRect().left,
-      5,
+      12,
       0.05,
-      "shortcut outer edge is 5px from the Independent sidebar boundary",
+      "shortcut outer edge is 12px from the Independent sidebar boundary",
     );
     const composer = panel.querySelector(":scope > .llm-input-section")!;
     assert.isAbove(
@@ -202,16 +204,16 @@ describe("workflow: dedicated native chat pane", function () {
     assert.closeTo(
       composer.getBoundingClientRect().left -
         panel.getBoundingClientRect().left,
-      5,
+      12,
       0.05,
-      "composer outer edge aligns with the shortcuts at 5px",
+      "composer outer edge aligns with the shortcuts at 12px",
     );
     assert.closeTo(
       panel.getBoundingClientRect().right -
         composer.getBoundingClientRect().right,
-      5,
+      12,
       0.05,
-      "composer right edge is 5px from the Independent sidebar boundary",
+      "composer right edge is 12px from the Independent sidebar boundary",
     );
   }
 
@@ -273,7 +275,7 @@ describe("workflow: dedicated native chat pane", function () {
     ) as any;
   }
 
-  it("aligns shortcuts and the composer at a 5px left gap after switching sidebar layouts", async function () {
+  it("aligns shortcuts and the composer at a 12px gap after switching sidebar layouts", async function () {
     const details = await openChatPane();
     assertSidebarGaps(details);
     assertHeaderRows(details, "independent");

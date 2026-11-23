@@ -185,6 +185,11 @@
   overflow-anchor: none;
   position: relative;
   padding: 2px;
+  /* The chat box reaches past the right padding to the pane's edge. */
+  --llm-shell-overhang: 2px;
+  /* The strip at that edge kept clear for the chat's scrollbar: the
+     sidebar's chips and composer stay this far in on both sides. */
+  --llm-scrollbar-lane: 12px;
   box-sizing: border-box;
   color: var(--fill-primary);
   background: var(--material-sidepane);
@@ -5245,6 +5250,13 @@
   margin: 0 auto;
   /* 6px at the bottom leaves room for the composer corner arc. */
   padding: 5px 12px;
+  /* The chat box reaches past the right padding and the centring space to
+     the window's edge (the content wrapper is the cqw container). The
+     wrapper clips, so the panel need not. */
+  --llm-shell-overhang: calc(
+    12px + (100cqw - min(100cqw, var(--llm-standalone-chat-max-width))) / 2
+  );
+  overflow: visible;
 }
 
 /* ---- Chat start page (shared layout for all modes) ---- */
@@ -5538,11 +5550,16 @@
 /* The chat area resizes through its corner handle
    (.llm-chat-shell-resize-handle); the composer grows with its text. */
 
+/* The chat box runs out to the right edge of the pane or window
+   (--llm-shell-overhang past the panel's content), so its scrollbar sits at
+   that edge, as in Claude's desktop app. The text keeps the panel's column:
+   the overhang comes back as padding inside the chat (.llm-messages). */
 .llm-chat-shell {
   position: relative;
   flex: 1 1 auto;
-  width: 100%;
-  max-width: 100%;
+  width: calc(100% + var(--llm-shell-overhang, 0px));
+  max-width: calc(100% + var(--llm-shell-overhang, 0px));
+  margin-right: calc(-1 * var(--llm-shell-overhang, 0px));
   min-width: 0;
   height: 50vh;
   min-height: 320px;
@@ -5563,11 +5580,16 @@
   contain: inline-size;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Thin on every platform, so the scrollbar fits the strip the sidebar's
+     composer keeps clear (--llm-scrollbar-lane), Windows' classic bars
+     included. */
+  scrollbar-width: thin;
   overscroll-behavior-y: contain;
   overflow-anchor: none;
   border: none;
   border-radius: 0;
   padding: 12px;
+  padding-right: calc(12px + var(--llm-shell-overhang, 0px));
   /* Room under the last message for the floating chips and composer. */
   padding-bottom: calc(12px + var(--llm-chat-floor, 0px));
   /* What the chat scrolls into view ("Show in answer") lands above them. */
@@ -5657,7 +5679,8 @@
   box-sizing: border-box;
   position: absolute;
   z-index: 7;
-  left: 50%;
+  /* Centred on the text column, not the chat box's overhang. */
+  left: calc((100% - var(--llm-shell-overhang, 0px)) / 2);
   bottom: calc(12px + var(--llm-chat-floor, 0px));
   transform: translateX(-50%);
   display: flex;
@@ -5973,20 +5996,20 @@
     var(--material-sidepane);
 }
 
-/* 2px panel padding plus 3px shortcut padding gives a 5px left gap. */
-:root[data-llm-sidebar-layout="independent"]
-  .llm-dedicated-chat-pane
-  .llm-shortcuts {
-  padding-left: 3px;
+/* In the sidebar the chips and the composer float over the chat's scrollbar
+   strip at the right edge: keep them the strip's width in from both edges,
+   so the scrollbar stays clear the whole way down (#582). The panel's own
+   padding is part of that width. */
+.llm-panel:not([data-standalone="true"]) > .llm-shortcuts,
+.llm-panel:not([data-standalone="true"]) > .llm-input-section {
+  width: auto;
+  margin-left: calc(var(--llm-scrollbar-lane) - var(--llm-shell-overhang));
+  margin-right: calc(var(--llm-scrollbar-lane) - var(--llm-shell-overhang));
 }
 
-/* Keep a 5px composer gap on both sides, aligned with the shortcuts. */
-:root[data-llm-sidebar-layout="independent"]
-  .llm-dedicated-chat-pane
-  .llm-panel
-  > .llm-input-section {
-  margin-left: 3px;
-  margin-right: 3px;
+/* The first chip starts where the composer does. */
+.llm-panel:not([data-standalone="true"]) > .llm-shortcuts {
+  padding-inline: 0;
 }
 
 /* Keep native button margins from consuming the shortcut row's left gap. */
@@ -19085,6 +19108,9 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
   box-sizing: border-box;
   min-height: 0;
   margin: 0 2px 6px;
+  /* The chat box overhangs the panel on the right; the card keeps to the
+     panel's column. */
+  margin-right: calc(2px + var(--llm-shell-overhang, 0px));
   overflow: clip;
   /* The plugin's popup-surface stroke: themed light and dark, in the panel
      and the standalone window (--stroke-secondary is unset in Zotero 10). */
@@ -21162,6 +21188,7 @@ item-pane-sidenav .llm-persistent-rail-entry[hidden] {
  * the same distance before it as the status pill sits before the chevron. */
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked) {
   margin-inline: 0;
+  margin-right: var(--llm-shell-overhang, 0px);
 }
 
 .llm-task-progress-card[data-movable="true"]:not(.llm-task-progress-docked)
