@@ -15,6 +15,7 @@ import {
   type SaveSelectionAnnotationInput,
 } from "./actions/saveSelectionAnnotation";
 import { undoNoteChange } from "./actions/undoNoteChange";
+import { readTurnSafetyLimits } from "./loop/turnSafetyPrefs";
 import { initAgentEvidenceStore } from "./context/cacheManagement";
 import { initAgentCoverageStore } from "./context/coverageLedger";
 import { setLibraryOverviewGateway } from "./context/libraryOverview";
@@ -118,6 +119,7 @@ async function createAgentSubsystemRuntime(
   const nextRuntime = new AgentRuntime({
     registry: toolRegistry,
     adapterFactory: (request) => createAgentModelAdapter(request),
+    turnLimits: readTurnSafetyLimits(),
     paperContextResolver: (selector) =>
       zoteroGateway.resolvePaperContextTarget(selector),
     resolveTurnScopePapers: async (request) => {
