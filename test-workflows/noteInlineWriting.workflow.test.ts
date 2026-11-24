@@ -456,4 +456,44 @@ describe("workflow: inline writing popup in the note editor", function () {
     );
     assert.notMatch(saved, /<p>- /, "no list marker is written as text");
   });
+
+  it("opens no second popup on the text Replace just wrote", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.selectAcross("First item text.", "Second item text.");
+    const card = (await until(() => editor.card(), "the popup"))!;
+    (
+      card.querySelector(
+        "[data-llm-note-inline-action='rewrite']",
+      ) as HTMLElement
+    ).click();
+    const stream = await provider.waitForStream("Rewrite the selected text");
+    stream.push("- First item, rewritten.\n- Second item, rewritten.");
+    stream.finish();
+    await until(
+      () => editor.card()?.getAttribute("data-phase") === "answered",
+      "the answer",
+    );
+    (
+      editor
+        .card()!
+        .querySelector("[data-llm-note-inline-action='replace']") as HTMLElement
+    ).click();
+    // The editor holds a selection of its own between the write and the
+    // plugin selecting what was written. The selection tracker checks on a
+    // timer and at every mouse or key release; here a check lands in between.
+    const released = Date.now() + 400;
+    while (Date.now() < released) {
+      editor.doc.dispatchEvent(
+        new editor.doc.defaultView!.MouseEvent("mouseup"),
+      );
+      await delay(5);
+    }
+    await delay(600);
+    assert.isNull(editor.card(), "the written text opens no popup");
+    assert.include(
+      String(editor.doc.defaultView!.getSelection()),
+      "Second item, rewritten.",
+      "the whole written text ends up selected",
+    );
+  });
 });

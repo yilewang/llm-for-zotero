@@ -188,6 +188,9 @@ const openPopups = new WeakMap<Window, OpenPopup>();
  *  the selection changes. */
 const dismissedSelections = new WeakMap<Document, string>();
 const pressedDocuments = new WeakSet<Document>();
+/** Editors an answer was just written into: until the written text is
+ *  selected, their selection is the editor's own doing, not the user's. */
+const settlingDocuments = new WeakSet<Document>();
 const watchedDocuments = new WeakSet<Document>();
 
 function watchEditorDocument(win: Window, doc: Document): void {
@@ -321,19 +324,17 @@ function selectWrittenText(
   const firstKey = lines[0].slice(0, 40);
   const lastKey = lines[lines.length - 1].slice(-40);
   const deadline = Date.now() + 3000;
-  const attempt = () => {
-    if (!doc.defaultView || Date.now() > deadline) return;
+  settlingDocuments.add(doc);
+  const select = (): "retry" | "done" => {
+    if (!doc.defaultView || Date.now() > deadline) return "done";
     const { text, nodes } = readEditorText(doc);
     const start = text.indexOf(firstKey, Math.max(0, from - 2));
     const lastAt = start < 0 ? -1 : text.indexOf(lastKey, start);
-    if (start < 0 || lastAt < 0) {
-      win.setTimeout(attempt, 50);
-      return;
-    }
+    if (start < 0 || lastAt < 0) return "retry";
     const startPoint = editorTextPoint(nodes, start, false);
     const endPoint = editorTextPoint(nodes, lastAt + lastKey.length, true);
     const selection = doc.defaultView.getSelection();
-    if (!startPoint || !endPoint || !selection) return;
+    if (!startPoint || !endPoint || !selection) return "done";
     (doc.querySelector(".ProseMirror") as HTMLElement | null)?.focus();
     const range = doc.createRange();
     range.setStart(startPoint.node, startPoint.offset);
@@ -341,6 +342,11 @@ function selectWrittenText(
     selection.removeAllRanges();
     selection.addRange(range);
     dismissedSelections.set(doc, getEditableSelectionFromDocument(doc));
+    return "done";
+  };
+  const attempt = () => {
+    if (select() === "retry") win.setTimeout(attempt, 50);
+    else settlingDocuments.delete(doc);
   };
   // After the popup has closed (its close marks the old selection).
   win.setTimeout(attempt, 50);
@@ -557,6 +563,8 @@ export function syncNoteInlineWritingPopup(params: {
   }
   // Wait for the drag to end; the tracker checks again on mouse release.
   if (pressedDocuments.has(live.doc)) return;
+  // Wait for the written text to be selected; that selection is dismissed.
+  if (settlingDocuments.has(live.doc)) return;
   if (dismissedSelections.get(live.doc) === live.text) return;
   if (
     popup &&
