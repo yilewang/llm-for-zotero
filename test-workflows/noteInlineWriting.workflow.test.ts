@@ -62,17 +62,36 @@ describe("workflow: inline writing popup in the note editor", function () {
     throw new Error(`Timed out waiting for ${label}`);
   }
 
+  /** The note's editor in the library pane. */
   async function openEditor(noteId: number) {
     const win = Zotero.getMainWindow();
     win.Zotero_Tabs?.select?.("zotero-pane");
     await win.ZoteroPane.selectItem(noteId);
-    const editor = await until(
+    return editorControls(
       () =>
         Array.from(win.document.querySelectorAll("note-editor")).find(
           (el: any) => el.item?.id === noteId && el.getClientRects().length,
         ) as any,
-      "the note editor",
     );
+  }
+
+  /** The note's editor in a tab of its own. */
+  async function openEditorTab(noteId: number) {
+    const win = Zotero.getMainWindow();
+    await (Zotero as any).Notes.open(noteId, undefined, {
+      openInWindow: false,
+    });
+    return editorControls(
+      () =>
+        Array.from(win.document.querySelectorAll("note-editor.note-tab")).find(
+          (el: any) => el.item?.id === noteId,
+        ) as any,
+    );
+  }
+
+  /** Ways to select and type in the editor `find` returns, once it shows the note. */
+  async function editorControls(find: () => any) {
+    const editor = await until(find, "the note editor");
     const iframe = editor.querySelector("iframe") as HTMLIFrameElement;
     await until(
       () =>
@@ -517,6 +536,26 @@ describe("workflow: inline writing popup in the note editor", function () {
     assert.isNull(
       replaceNoteSelectionHtml(html, "one", "1", { index: 2, count: 3 }),
     );
+  });
+
+  it("opens in the note's own tab while the library pane's editor still holds a selection", async function () {
+    const win = Zotero.getMainWindow() as any;
+    const pane = await openEditor(fixture.noteItemId);
+    pane.select(SOURCE);
+    await until(() => pane.card(), "the popup in the library pane");
+    pane.doc.dispatchEvent(
+      new pane.doc.defaultView!.KeyboardEvent("keydown", { key: "Escape" }),
+    );
+    await until(() => !pane.card(), "the popup to close on Escape");
+
+    const tab = await openEditorTab(fixture.noteItemId);
+    try {
+      tab.select("Keep this paragraph.");
+      await until(() => tab.card(), "the popup in the note's own tab");
+    } finally {
+      win.Zotero_Tabs.close(win.Zotero_Tabs.selectedID);
+      win.Zotero_Tabs.select("zotero-pane");
+    }
   });
 
   it("opens no second popup on the text Replace just wrote", async function () {

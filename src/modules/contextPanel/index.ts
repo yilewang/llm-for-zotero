@@ -145,6 +145,7 @@ import {
 import { resolveActiveLibraryID } from "../../utils/zoteroLibraryScope";
 import { getLockedGlobalConversationKey } from "./prefHelpers";
 import { getEditableSelectionFromDocument } from "./noteSelection";
+import { isShownOnScreen } from "./shownOnScreen";
 import {
   clearCompletedPanelLifecycleSignature,
   hasCompletedPanelLifecycleSignature,
@@ -1673,11 +1674,12 @@ type MainWindowWithNoteEditingTracker = _ZoteroTypes.MainWindow & {
 const noteEditingSelectionTrackingWindows =
   new Set<MainWindowWithNoteEditingTracker>();
 
+/** The note's editors on screen: one in a tab that is not selected is left out. */
 function getNoteEditorDocuments(rootDoc: Document, noteId: number): Document[] {
   const result: Document[] = [];
   for (const editor of Array.from(rootDoc.querySelectorAll("note-editor"))) {
     const noteEditor = editor as Element & { item?: Zotero.Item };
-    if (noteEditor.item?.id !== noteId || !noteEditor.getClientRects().length)
+    if (noteEditor.item?.id !== noteId || !isShownOnScreen(noteEditor))
       continue;
     const doc = (noteEditor.querySelector("iframe") as HTMLIFrameElement | null)
       ?.contentDocument;

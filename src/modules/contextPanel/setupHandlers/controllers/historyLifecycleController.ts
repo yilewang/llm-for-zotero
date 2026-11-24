@@ -193,9 +193,9 @@ import { subscribeConversationCatalogChanges } from "../../../../core/conversati
 import { resolveChatFamilyItemID } from "../../../../services/notes/scope";
 import {
   createCatalogReloadScheduler,
-  isChatPanelBodyShown,
   watchChatPanelShown,
 } from "../../historyCatalogReload";
+import { isShownOnScreen } from "../../shownOnScreen";
 import {
   canCommitPanelConversation,
   capturePanelOperationLease,
@@ -4340,7 +4340,7 @@ export function createHistoryLifecycleController(
       if (win) win.setTimeout(run, 0);
     },
     isAlive: () => body.isConnected,
-    isShown: () => isChatPanelBodyShown(body),
+    isShown: () => isShownOnScreen(body),
     watchShown: (onMaybeShown) => watchChatPanelShown(body, onMaybeShown),
     reloadsStarted: () => historyReloadsStarted,
     reload: () => {

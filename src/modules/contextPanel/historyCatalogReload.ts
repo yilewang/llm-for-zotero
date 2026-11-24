@@ -84,38 +84,6 @@ export function createCatalogReloadScheduler(
   };
 }
 
-type PanelWindow = Window & {
-  windowState?: number;
-  STATE_MINIMIZED?: number;
-};
-
-/**
- * Whether a chat panel is on screen: still in its document, laid out with a
- * size (not display:none, not in a collapsed pane), not hidden (a reader
- * tab's pane that is not selected), in a window that is not minimized.
- */
-export function isChatPanelBodyShown(body: Element): boolean {
-  if (!body.isConnected) return false;
-  const win = body.ownerDocument?.defaultView as PanelWindow | null;
-  if (!win) return false;
-  // STATE_MINIMIZED is 2 on every Gecko chrome window.
-  if (
-    typeof win.windowState === "number" &&
-    win.windowState === (win.STATE_MINIMIZED ?? 2)
-  ) {
-    return false;
-  }
-  try {
-    const visibility = win.getComputedStyle(body)?.visibility;
-    if (visibility === "hidden" || visibility === "collapse") return false;
-  } catch {
-    // No computed style: fall back to the layout box below.
-  }
-  const rect = (body as HTMLElement).getBoundingClientRect?.();
-  if (rect && (rect.width <= 0 || rect.height <= 0)) return false;
-  return true;
-}
-
 type TabSelectionNotifier = {
   registerObserver: (
     observer: { notify: (event: string) => void },
