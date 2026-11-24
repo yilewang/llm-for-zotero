@@ -94,7 +94,7 @@ describe("workflow: the chat scrollbar runs at the right edge, clear of the comp
         "it scrolls",
       );
       assert.equal(
-        win.getComputedStyle(messages).scrollbarWidth,
+        win.getComputedStyle(messages)?.scrollbarWidth,
         "thin",
         "the chat's scrollbar is thin, so it fits the clear strip",
       );
