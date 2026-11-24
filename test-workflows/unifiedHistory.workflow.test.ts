@@ -515,6 +515,65 @@ describe("workflow: unified history across Agent, Codex and Claude", function ()
     });
   });
 
+  it("7a: the window's library tab keeps its own chats when the paper tab's list arrives late", async function () {
+    await withPrefs(ALL_RUNTIME_PREFS, async () => {
+      const paper = await createPaper("Unified History Late List");
+      const claude = await seed({
+        system: "claude_code",
+        kind: "global",
+        userText: "Unified late list Claude chat",
+      });
+      await api.openStandaloneForItem(paper.parentItemId);
+      await api.clickStandaloneTab("open");
+      const doc = ((Zotero as any).LLMForZotero.data.standaloneWindow as Window)
+        .document;
+
+      // The user clicks the paper tab and straight back to the library tab.
+      // Only the paper tab's reads are slow, so its list arrives last.
+      const db = Zotero.DB as unknown as {
+        queryAsync: (...args: unknown[]) => Promise<unknown>;
+      };
+      const queryAsync = db.queryAsync;
+      let slowReads = 0;
+      let slowReadsPending = 0;
+      db.queryAsync = async function (this: unknown, ...args: unknown[]) {
+        slowReads += 1;
+        slowReadsPending += 1;
+        try {
+          await Zotero.Promise.delay(600);
+          return await queryAsync.apply(this, args);
+        } finally {
+          slowReadsPending -= 1;
+        }
+      };
+      try {
+        (
+          doc.querySelector(
+            ".llm-standalone-tab-row .llm-standalone-tab[data-tab='paper']",
+          ) as HTMLElement
+        ).click();
+        const deadline = Date.now() + 5000;
+        while (!slowReads && Date.now() < deadline)
+          await Zotero.Promise.delay(10);
+        await Zotero.Promise.delay(150);
+      } finally {
+        db.queryAsync = queryAsync;
+      }
+      assert.isAbove(slowReads, 0, "the paper tab's list is still loading");
+      await api.clickStandaloneTab("open");
+      const settled = Date.now() + 10000;
+      while (slowReadsPending && Date.now() < settled)
+        await Zotero.Promise.delay(25);
+      await Zotero.Promise.delay(500);
+
+      const rows = await api.listStandaloneSidebarHistory();
+      assert.isOk(
+        rows.find((row) => row.conversationKey === claude.conversationKey),
+        message(rows),
+      );
+    });
+  });
+
   it("7b: with WebChat on in the window, a searched Codex row leaves WebChat first", async function () {
     const apiEntry = "workflow-unified-api-model";
     const webChatEntry = "workflow-unified-webchat-model";

@@ -3884,6 +3884,9 @@ function openChatWindowInstance(
         }
       };
 
+      // The newest render owns the list: one whose rows finish loading after a
+      // newer render started (the user switched tab meanwhile) is dropped.
+      let sidebarRenderSeq = 0;
       const renderSidebar = async () => {
         if (cancelled) return;
         // In webchat mode, sidebar is managed by renderWebChatSidebar() — skip local rendering
@@ -3892,6 +3895,7 @@ function openChatWindowInstance(
           await seedFollowerConversation();
           return;
         }
+        const mySeq = ++sidebarRenderSeq;
         appLogger.debug(
           "LLM: standalone renderSidebar",
           "mode=" + standaloneMode,
@@ -3918,7 +3922,7 @@ function openChatWindowInstance(
                 limit: 50,
               })
             ).map(toSidebarConversation);
-            if (cancelled) return;
+            if (cancelled || mySeq !== sidebarRenderSeq) return;
             renderSidebarItems(conversations);
           } else {
             if (!currentBasePaperItem) {
@@ -3954,7 +3958,7 @@ function openChatWindowInstance(
                 limit: 50,
               })
             ).map(toSidebarConversation);
-            if (cancelled) return;
+            if (cancelled || mySeq !== sidebarRenderSeq) return;
             renderSidebarItems(conversations);
           }
         } catch (err) {
