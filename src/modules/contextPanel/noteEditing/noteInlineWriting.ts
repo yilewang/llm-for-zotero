@@ -19,7 +19,7 @@
  *   chip) and moves any composer text into the chat's input.
  */
 import { getAgentApi, initAgentSubsystem } from "../../../agent";
-import type { NoteContextRef } from "../../../shared/types";
+import type { NoteContextRef, NoteTextOccurrence } from "../../../shared/types";
 import {
   noteHtmlToModelText,
   normalizeNoteSourceText,
@@ -29,6 +29,7 @@ import { renderDiffPreviewField } from "../agentTrace/diffPreviewField";
 import { resolveNoteEditingParentItem } from "../../../services/notes/scope";
 import { resolvePaperContextRefFromItem } from "../../../services/paperContent/paperAttribution";
 import { getAbortController } from "../../../utils/apiHelpers";
+import { locateNoteTextOccurrence } from "../../../utils/noteEdit";
 import { t } from "../../../utils/i18n";
 import { appendSelectedTextContextForItem } from "../contextResolution";
 import { getEditableSelectionFromDocument } from "../noteSelection";
@@ -272,6 +273,30 @@ function readEditorText(doc: Document): {
   return { text, nodes };
 }
 
+/**
+ * Which of the note's occurrences of the selected text the range is, in the
+ * note as the editor shows it now, so Replace changes that one when the text
+ * repeats. Null when the range no longer holds the selected text.
+ */
+function readSelectionOccurrence(
+  doc: Document,
+  range: Range,
+  selectedText: string,
+): NoteTextOccurrence | null {
+  const body = doc.querySelector(".ProseMirror");
+  if (!body) return null;
+  const toSelectionEnd = doc.createRange();
+  toSelectionEnd.selectNodeContents(body);
+  toSelectionEnd.setEnd(range.endContainer, range.endOffset);
+  const holder = doc.createElement("div");
+  holder.append(toSelectionEnd.cloneContents());
+  return locateNoteTextOccurrence(
+    body.innerHTML,
+    holder.innerHTML,
+    selectedText,
+  );
+}
+
 /** Where a point of the editor (a node and offset) falls in that text. */
 function editorTextOffset(doc: Document, node: Node, offset: number): number {
   const { text, nodes } = readEditorText(doc);
@@ -458,6 +483,8 @@ function openPopup(params: {
             "upstream",
           ),
         selectedText,
+        occurrence:
+          readSelectionOccurrence(doc, range, selectedText) || undefined,
         replacement: answer.trim(),
       });
       if (!outcome.ok) return { ok: false, error: outcome.error };

@@ -162,11 +162,21 @@ export function normalizeSelectedTextContexts(
     const userQuery = normalizeSelectedTextUserQuery(typed.userQuery, sanitize);
     const answerWords =
       typeof typed.answerWords === "string" ? typed.answerWords : "";
+    const occurrence = typed.noteOccurrence as
+      | { index?: unknown; count?: unknown }
+      | undefined;
+    const occurrenceIndex = normalizePositiveInt(occurrence?.index);
+    const occurrenceCount = normalizePositiveInt(occurrence?.count);
     out.push({
       text,
       source,
       paperContext,
       noteContext,
+      ...(occurrenceIndex &&
+      occurrenceCount &&
+      occurrenceIndex <= occurrenceCount
+        ? { noteOccurrence: { index: occurrenceIndex, count: occurrenceCount } }
+        : {}),
       contextItemId,
       pageIndex,
       // Only a stored label; none is guessed from the page index.

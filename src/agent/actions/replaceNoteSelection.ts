@@ -1,4 +1,4 @@
-import type { NoteContextRef } from "../../shared/types";
+import type { NoteContextRef, NoteTextOccurrence } from "../../shared/types";
 import type { ZoteroGateway } from "../services/zoteroGateway";
 import type { AgentToolRegistry } from "../tools/registry";
 import type { AgentToolResult } from "../types";
@@ -11,6 +11,8 @@ export type ReplaceNoteSelectionInput = {
   conversationKey: number;
   /** The selected text, exactly as the note editor showed it. */
   selectedText: string;
+  /** Which of the note's occurrences of that text was selected, if known. */
+  occurrence?: NoteTextOccurrence;
   /** The replacement, as Markdown. */
   replacement: string;
 };
@@ -34,11 +36,12 @@ function failureText(result: AgentToolResult): string {
  * note editor's inline card).
  *
  * It takes the action route of note_write's bound selection: the selected
- * text must still occur exactly once in the note, the change keeps the
- * selection's structure and embeds, an open editor's unsaved typing is saved
- * first, and the change journal records it for undo. The card shows the
- * replacement, so its Replace click is the user's confirmation: the review
- * is resolved here, and a second review is refused.
+ * text must still occur exactly once in the note, or be the occurrence the
+ * editor counted while the note still holds as many of them. The change
+ * keeps the selection's structure and embeds, an open editor's unsaved
+ * typing is saved first, and the change journal records it for undo. The
+ * card shows the replacement, so its Replace click is the user's
+ * confirmation: the review is resolved here, and a second review is refused.
  */
 export async function replaceNoteSelection(
   registry: AgentToolRegistry,
@@ -79,6 +82,7 @@ export async function replaceNoteSelection(
             source: "note-edit",
             noteContext: input.noteContext,
             contextItemId: noteId,
+            noteOccurrence: input.occurrence,
           },
         ],
       },

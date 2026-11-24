@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { replaceNoteSelectionHtml } from "../src/utils/noteEdit";
 import {
   getModelEntryById,
   setModelProviderGroups,
@@ -109,6 +110,13 @@ describe("workflow: inline writing popup in the note editor", function () {
       /** Selects `needle` as a mouse drag would, ending with a release. */
       select(needle: string) {
         const node = textNode(needle);
+        const start = node.textContent!.indexOf(needle);
+        setRange(node, start, start + needle.length);
+        doc.dispatchEvent(new doc.defaultView!.MouseEvent("mouseup"));
+      },
+      /** Selects `needle` inside the text that holds `anchor`. */
+      selectIn(anchor: string, needle: string) {
+        const node = textNode(anchor);
         const start = node.textContent!.indexOf(needle);
         setRange(node, start, start + needle.length);
         doc.dispatchEvent(new doc.defaultView!.MouseEvent("mouseup"));
@@ -455,6 +463,60 @@ describe("workflow: inline writing popup in the note editor", function () {
       saved,
     );
     assert.notMatch(saved, /<p>- /, "no list marker is written as text");
+  });
+
+  it("Replace changes the occurrence the user selected when the text repeats in the note", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    // "item text." also ends the first list item.
+    editor.selectIn("Second item text.", "item text.");
+    const card = (await until(() => editor.card(), "the popup"))!;
+    (
+      card.querySelector(
+        "[data-llm-note-inline-action='rewrite']",
+      ) as HTMLElement
+    ).click();
+    const stream = await provider.waitForStream("Rewrite the selected text");
+    stream.push("entry, rewritten.");
+    stream.finish();
+    await until(
+      () => editor.card()?.getAttribute("data-phase") === "answered",
+      "the answer",
+    );
+    (
+      editor
+        .card()!
+        .querySelector("[data-llm-note-inline-action='replace']") as HTMLElement
+    ).click();
+    const outcome = await until(
+      () =>
+        editor.card()
+          ? editor
+              .card()!
+              .querySelector("[data-llm-note-inline-error]")
+              ?.textContent?.trim()
+          : "replaced",
+      "Replace to finish",
+    );
+    assert.equal(outcome, "replaced");
+
+    const saved = await storedNote();
+    assert.include(saved, "First item text.", "the first one is untouched");
+    assert.include(saved, "Second entry, rewritten.");
+    assert.notInclude(saved, "Second item text.");
+  });
+
+  it("refuses an occurrence the note does not have, rather than change another one", function () {
+    const html = "<p>a one b</p><p>c one d</p>";
+    const second = replaceNoteSelectionHtml(html, "one", "1", {
+      index: 2,
+      count: 2,
+    });
+    assert.include(second || "", "<p>a one b</p>", "the first one stays");
+    assert.notInclude(second || "", "c one");
+    // The editor counted three; the note holds two.
+    assert.isNull(
+      replaceNoteSelectionHtml(html, "one", "1", { index: 2, count: 3 }),
+    );
   });
 
   it("opens no second popup on the text Replace just wrote", async function () {

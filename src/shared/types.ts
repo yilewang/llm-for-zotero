@@ -157,12 +157,24 @@ export type NoteContextRef = {
   title: string;
 };
 
+/**
+ * Which occurrence of a text in a note (1-based, in reading order), out of
+ * how many the note held when it was counted.
+ */
+export type NoteTextOccurrence = { index: number; count: number };
+
 /** Stable user-selected text state persisted with a conversation turn. */
 export type SelectedTextContext = {
   text: string;
   source: SelectedTextSource;
   paperContext?: PaperContextRef;
   noteContext?: NoteContextRef;
+  /**
+   * For a note selection whose place in the note is known: which of the
+   * note's occurrences of `text` it is. An edit of the selection changes
+   * that one; without it, `text` must occur exactly once.
+   */
+  noteOccurrence?: NoteTextOccurrence;
   /** Zotero attachment or note item that owns the selected text. */
   contextItemId?: number;
   /** Zero-based PDF page index used for machine operations. */

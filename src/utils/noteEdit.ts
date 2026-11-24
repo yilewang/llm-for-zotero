@@ -6,6 +6,7 @@ import {
 } from "./noteText";
 import { escapeNoteHtml } from "./textSanitization";
 import { collectNoteEmbeds, type NoteEmbed } from "./noteEmbeds";
+import type { NoteTextOccurrence } from "../shared/types";
 
 const NOTE_TEXT_BREAK_TAG = new RegExp(
   `^(?:${NOTE_TEXT_BREAK_PATTERN.source})$`,
@@ -13,18 +14,14 @@ const NOTE_TEXT_BREAK_TAG = new RegExp(
 );
 
 /**
- * Map visible UTF-16 text, including synthetic block boundaries, onto native
- * source spans. Selection edits require a unique match; precise text patches
- * retain their documented first-occurrence semantics.
+ * The note's visible UTF-16 text, including synthetic block boundaries, with
+ * each character's native source spans.
  */
-function locateText(html: string, find: string, unique: boolean) {
-  if (!find) return null;
-
+function mapNoteText(html: string): { text: string; spans: TextSpan[][] } {
   // Match only text tokens, never attributes. Keep the source markup intact
   // rather than serializing a parsed document or replacing an HTML range that
   // may contain just one side of an inline element.
   const textChars: string[] = [];
-  type TextSpan = { start: number; end: number };
   const spans: TextSpan[][] = [];
   const append = (character: string, span?: TextSpan) => {
     const normalized = character === "\r" ? "\n" : character;
@@ -56,15 +53,68 @@ function locateText(html: string, find: string, unique: boolean) {
     }
   }
 
-  const text = textChars.join("");
-  const normalizedFind = find.replace(/[\r\n]+/g, "\n");
-  const findIdx = text.indexOf(normalizedFind);
-  if (findIdx < 0 || (unique && text.indexOf(normalizedFind, findIdx + 1) >= 0))
-    return null;
+  return { text: textChars.join(""), spans };
+}
+
+const normalizeFind = (find: string) => find.replace(/[\r\n]+/g, "\n");
+
+/** Every place `find` starts in `text`, overlapping ones included. */
+function matchStarts(text: string, find: string): number[] {
+  const starts: number[] = [];
+  for (let at = text.indexOf(find); at >= 0; at = text.indexOf(find, at + 1))
+    starts.push(at);
+  return starts;
+}
+
+/**
+ * Map a visible text onto native source spans. A selection edit takes the
+ * only match, or the occurrence its selection was counted as while the note
+ * still holds as many; precise text patches keep their documented
+ * first-occurrence semantics.
+ */
+function locateText(
+  html: string,
+  find: string,
+  which: "first" | "only" | NoteTextOccurrence,
+) {
+  const normalizedFind = normalizeFind(find);
+  if (!normalizedFind) return null;
+  const { text, spans } = mapNoteText(html);
+  const starts = matchStarts(text, normalizedFind);
+  const findIdx =
+    which === "first"
+      ? starts[0]
+      : which === "only"
+        ? starts.length === 1
+          ? starts[0]
+          : undefined
+        : starts.length === which.count
+          ? starts[which.index - 1]
+          : undefined;
+  if (findIdx === undefined) return null;
 
   const matched = spans.slice(findIdx, findIdx + normalizedFind.length).flat();
   if (!matched.length) return null;
   return { matched, start: matched[0].start, end: matched.at(-1)!.end };
+}
+
+/**
+ * Which of a note's occurrences of `find` a selection is: `htmlToSelectionEnd`
+ * is the note from its start to the end of the selection. Null when that part
+ * does not end with `find`.
+ */
+export function locateNoteTextOccurrence(
+  noteHtml: string,
+  htmlToSelectionEnd: string,
+  find: string,
+): NoteTextOccurrence | null {
+  const normalizedFind = normalizeFind(find);
+  const before = mapNoteText(htmlToSelectionEnd).text.replace(/\n+$/, "");
+  if (!normalizedFind || !before.endsWith(normalizedFind)) return null;
+  return {
+    index: matchStarts(before, normalizedFind).length,
+    count: matchStarts(mapNoteText(noteHtml).text, normalizedFind).length,
+  };
 }
 
 type Node = DefaultTreeAdapterTypes.ChildNode;
@@ -169,13 +219,16 @@ function splitRangeAroundEmbeds(
 
 /** Replace a visible selection in the native tree. Complete selected blocks
  * are replaced as blocks; partial inline selections stay inside their block.
- * Source slices preserve every untouched element and attachment attribute. */
+ * Source slices preserve every untouched element and attachment attribute.
+ * The text must occur once, or be the `occurrence` its selection was counted
+ * as. */
 export function replaceNoteSelectionHtml(
   html: string,
   find: string,
   replacement: string | NoteRangeReplacement,
+  occurrence?: NoteTextOccurrence,
 ): string | null {
-  const range = locateText(html, find, true);
+  const range = locateText(html, find, occurrence || "only");
   if (!range) return null;
   const { start: rangeStart, end: rangeEnd } = range;
   const embeds = splitRangeAroundEmbeds(
@@ -359,7 +412,7 @@ export function replaceTextContentInHtml(
   find: string,
   replace: string | NoteRangeReplacement,
 ): string | null {
-  const range = locateText(html, find, false);
+  const range = locateText(html, find, "first");
   if (!range) return null;
   const embeds = splitRangeAroundEmbeds(
     html,

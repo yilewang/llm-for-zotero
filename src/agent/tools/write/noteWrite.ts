@@ -690,6 +690,7 @@ function prepareNoteWriteInput(
             ),
           input.removeEmbeds,
         ),
+        selected.noteOccurrence,
       );
       if (patched === null)
         throw new Error(
