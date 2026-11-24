@@ -12,6 +12,8 @@ import {
   setSelectedTextExpandedIndex,
   setNoteContextExpanded,
 } from "../contextResolution";
+import { isOpenNoteContext } from "../noteEditing/openNoteContext";
+import { isMirroredNoteSelection } from "../noteEditing/selectionController";
 import type { SelectedTextContext } from "../types";
 
 export function clearSelectedTextState(
@@ -24,19 +26,28 @@ export function clearSelectedTextState(
   clearPinnedContextOwner(pinnedSelectedTextKeys, itemId);
 }
 
+/**
+ * What stays in the composer after a send: the pinned chips, and the chips
+ * the note tracker keeps current for this conversation (the open note, and
+ * the note's selection where the chat mirrors it). Every other chip went
+ * with the message, a selection handed over from a note included.
+ */
 export function retainPinnedTextState(
   pinnedSelectedTextKeys: Map<number, Set<string>>,
   itemId: number,
 ): void {
   const contexts = getSelectedTextContextEntries(itemId);
-  const liveNoteEditingContexts = contexts.filter(
-    (context) => context.source === "note-edit",
-  );
-  const retained = retainPinnedSelectedTextContexts(
-    pinnedSelectedTextKeys,
-    itemId,
-    contexts.filter((context) => context.source !== "note-edit"),
-  );
+  const isKeptCurrent = (context: SelectedTextContext) =>
+    isMirroredNoteSelection(itemId, context) ||
+    isOpenNoteContext(itemId, context);
+  const kept = new Set([
+    ...contexts.filter(isKeptCurrent),
+    ...retainPinnedSelectedTextContexts(
+      pinnedSelectedTextKeys,
+      itemId,
+      contexts.filter((context) => !isKeptCurrent(context)),
+    ),
+  ]);
   // A kept chip keeps its text across sends; its question was for the turn
   // just sent (D5).
   const withoutQuestion = (context: SelectedTextContext) => {
@@ -46,7 +57,7 @@ export function retainPinnedTextState(
   };
   setSelectedTextContextEntries(
     itemId,
-    [...liveNoteEditingContexts, ...retained].map(withoutQuestion),
+    contexts.filter((context) => kept.has(context)).map(withoutQuestion),
   );
   setSelectedTextExpandedIndex(itemId, null);
   setNoteContextExpanded(itemId, null);

@@ -124,19 +124,25 @@ describe("workflow: opening a note keeps its paper's chat", function () {
     );
   });
 
-  it("the paper chat beside an open note carries the note as a removable chip", async function () {
+  /** The paper's chat with its note open beside it, once the note's chip shows. */
+  async function openNoteBesidePaperChat() {
     const win = Zotero.getMainWindow() as any;
     const panel = await api().renderPanelForItem(fixture.parentItemId);
     const noteLabel = `Note ${fixture.noteItemId}`;
     win.Zotero_Tabs?.select?.("zotero-pane");
     await win.ZoteroPane.selectItem(fixture.noteItemId);
 
-    const labels = async () =>
+    const labels = async (): Promise<string[]> =>
       (await api().getDiagnostics(panel.panelId)).selectedContextLabels || [];
     const deadline = Date.now() + 10000;
     while (!(await labels()).includes(noteLabel) && Date.now() < deadline)
       await Zotero.Promise.delay(100);
     assert.include(await labels(), noteLabel, "the open note is attached");
+    return { win, panel, noteLabel, labels };
+  }
+
+  it("the paper chat beside an open note carries the note as a removable chip", async function () {
+    const { win, panel, noteLabel, labels } = await openNoteBesidePaperChat();
     const diagnostics = await api().getDiagnostics(panel.panelId);
     assert.ok(
       (diagnostics.composerPaperContextKeys || []).some((key: string) =>
@@ -159,5 +165,66 @@ describe("workflow: opening a note keeps its paper's chat", function () {
       noteLabel,
       "a removed note chip stays removed",
     );
+
+    await win.ZoteroPane.selectItem(fixture.parentItemId);
+    await Zotero.Promise.delay(3000);
+    await win.ZoteroPane.selectItem(fixture.noteItemId);
+    await Zotero.Promise.delay(3000);
+    assert.notInclude(
+      await labels(),
+      noteLabel,
+      "it stays removed when the note is closed and opened again",
+    );
+  });
+
+  it("sends the open note with every message, as it is when the message is sent", async function () {
+    const { panel, noteLabel, labels } = await openNoteBesidePaperChat();
+
+    const first = await api().ask(panel.panelId, "What does my note say?");
+    assert.include(
+      (first.selectedTexts || []).join("\n"),
+      "Notes taken while reading.",
+    );
+    assert.include(
+      await labels(),
+      noteLabel,
+      "the open note's chip outlives the send",
+    );
+
+    // The user keeps writing; the next message carries the note as it is now.
+    const note = Zotero.Items.get(fixture.noteItemId);
+    note.setNote("<p>Notes rewritten after the first answer.</p>");
+    await note.saveTx();
+    const second = await api().ask(panel.panelId, "And what does it say now?");
+    assert.include(
+      (second.selectedTexts || []).join("\n"),
+      "Notes rewritten after the first answer.",
+    );
+  });
+
+  it("sends a note that was closed once more, and attaches it again when it is reopened", async function () {
+    const { win, panel, noteLabel, labels } = await openNoteBesidePaperChat();
+
+    await win.ZoteroPane.selectItem(fixture.parentItemId);
+    // The note tracker's safety-net check runs every two seconds.
+    await Zotero.Promise.delay(3000);
+    assert.include(
+      await labels(),
+      noteLabel,
+      "closing the note leaves its chip",
+    );
+
+    await api().ask(panel.panelId, "One more question about that note");
+    assert.notInclude(
+      await labels(),
+      noteLabel,
+      "a closed note's chip goes with the next message",
+    );
+
+    await win.ZoteroPane.selectItem(fixture.noteItemId);
+    const deadline = Date.now() + 10000;
+    while (!(await labels()).includes(noteLabel) && Date.now() < deadline)
+      await Zotero.Promise.delay(100);
+    assert.include(await labels(), noteLabel, "reopening the note attaches it");
   });
 });

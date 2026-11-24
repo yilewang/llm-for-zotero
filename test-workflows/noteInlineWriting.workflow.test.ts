@@ -369,7 +369,8 @@ describe("workflow: inline writing popup in the note editor", function () {
     );
   });
 
-  it("Ask in sidebar hands the selection to the paper's chat", async function () {
+  /** Selects SOURCE in the open note and hands it to the paper's chat. */
+  async function handSelectionToSidebar() {
     // The paper's chat, mounted in the main window as the side pane holds it.
     const panel = await api().renderPanelForItem(fixture.parentItemId);
     const editor = await openEditor(fixture.noteItemId);
@@ -393,9 +394,31 @@ describe("workflow: inline writing popup in the note editor", function () {
       await delay(50);
       diagnostics = await api().getDiagnostics(panel.panelId);
     }
+    return { panel, diagnostics };
+  }
+
+  it("Ask in sidebar hands the selection to the paper's chat", async function () {
+    const { diagnostics } = await handSelectionToSidebar();
     // The note selection is a note-editing chip in the paper's composer.
     assert.include(diagnostics.selectedContextLabels, "Editing");
     assert.equal(diagnostics.conversationKind, "paper");
+  });
+
+  it("sends a selection handed to the sidebar once", async function () {
+    const { panel, diagnostics } = await handSelectionToSidebar();
+    assert.include(diagnostics.selectedContextLabels, "Editing");
+
+    const first = await api().ask(panel.panelId, "Explain this sentence");
+    assert.include(first.selectedTexts, SOURCE);
+    assert.include(first.selectedTextSources, "note-edit");
+    assert.notInclude(
+      (await api().getDiagnostics(panel.panelId)).selectedContextLabels,
+      "Editing",
+      "the handed selection leaves the composer with its message",
+    );
+
+    const second = await api().ask(panel.panelId, "And in simpler words?");
+    assert.notInclude(second.selectedTextSources || [], "note-edit");
   });
   it("keeps list items when two items of a list are rewritten and replaced", async function () {
     const editor = await openEditor(fixture.noteItemId);

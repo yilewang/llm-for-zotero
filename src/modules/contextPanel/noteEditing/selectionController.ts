@@ -1,4 +1,8 @@
-import type { ConversationSystem, NoteContextRef } from "../../../shared/types";
+import type {
+  ConversationSystem,
+  NoteContextRef,
+  SelectedTextContext,
+} from "../../../shared/types";
 import {
   getSelectedTextContextEntries,
   setSelectedTextContextEntries,
@@ -12,6 +16,27 @@ import {
 
 function normalizeTitle(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * The conversations whose "Editing" chip mirrors the note's selection: the
+ * note tracker rewrites the chip as the selection changes and clears it when
+ * the selection ends.
+ */
+const mirroredConversations = new Set<number>();
+
+/**
+ * True for the "Editing" chip of a conversation that mirrors the note's
+ * selection, which a send leaves in the composer. A selection handed to
+ * another chat (the inline popup's Ask in sidebar) is not mirrored there.
+ */
+export function isMirroredNoteSelection(
+  conversationKey: number,
+  context: SelectedTextContext,
+): boolean {
+  return (
+    context.source === "note-edit" && mirroredConversations.has(conversationKey)
+  );
 }
 
 export function getNoteFocusConversationKey(
@@ -51,6 +76,7 @@ export function syncNoteEditingSelectedText(params: {
     getNoteFocusConversationKey(params.noteItem, params.system);
   const noteContext = buildNoteEditingSelectedTextContext(params.noteItem);
   if (!conversationKey || !noteContext) return null;
+  mirroredConversations.add(conversationKey);
   return {
     conversationKey,
     changed: syncSelectedTextContextForSource(
@@ -67,6 +93,7 @@ export function clearNoteEditingSelectedText(
 ): { conversationKey: number; changed: boolean } | null {
   const normalized = Math.floor(Number(conversationKey || 0));
   if (!Number.isFinite(normalized) || normalized <= 0) return null;
+  mirroredConversations.delete(normalized);
   return {
     conversationKey: normalized,
     changed: syncSelectedTextContextForSource(normalized, "", "note-edit"),
@@ -90,5 +117,6 @@ export function copyNoteEditingSelectedTextContext(params: {
     (entry) => entry.source !== "note-edit",
   );
   setSelectedTextContextEntries(toKey, [...noteEditingEntries, ...existing]);
+  mirroredConversations.add(toKey);
   return true;
 }
