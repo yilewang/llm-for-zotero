@@ -6944,9 +6944,17 @@ export function disposeAgentTrace(root: HTMLElement): void {
  */
 const committedReasoningText = new WeakMap<HTMLElement, string>();
 
+/**
+ * A thought as its block shows it. Model reasoning may quote web source
+ * markers, and a runtime may end every thought with blank lines (Antigravity
+ * sends three newlines); neither is shown.
+ */
+function shownReasoningText(raw: string): string {
+  return stripWebSourceMarkersForDisplay(raw).trimEnd();
+}
+
 function updateReasoningText(target: HTMLElement, rawNext: string): void {
-  // Model reasoning may quote web source markers; show it without them.
-  const next = stripWebSourceMarkersForDisplay(rawNext);
+  const next = shownReasoningText(rawNext);
   const previous =
     committedReasoningText.get(target) ?? target.textContent ?? "";
   if (previous === next) return;
@@ -7365,7 +7373,7 @@ export function renderAgentTrace({
           summaryBlock.className = "llm-agent-reasoning-block";
           const text = doc.createElement("div") as HTMLDivElement;
           text.className = "llm-agent-reasoning-text";
-          const shownText = stripWebSourceMarkersForDisplay(reasoningText);
+          const shownText = shownReasoningText(reasoningText);
           text.textContent = shownText;
           committedReasoningText.set(text, shownText);
           reasoningTextNode = text;
