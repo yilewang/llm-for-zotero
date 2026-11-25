@@ -57,6 +57,41 @@ describe("workflow: opening a note keeps its paper's chat", function () {
     assert.include(opened.messageText || "", "paper chat marker");
   });
 
+  it("a standalone note's library chat is not remembered as the chat for papers", async function () {
+    const standalone = await api().createStandaloneNoteFixture({
+      noteHtml: "<p>A note of its own.</p>",
+    });
+    try {
+      const paperBefore = await api().renderStartupPanelForItem(
+        fixture.parentItemId,
+      );
+      assert.equal(
+        (await api().getDiagnostics(paperBefore.panelId)).conversationKind,
+        "paper",
+      );
+
+      // A standalone note has no paper: the library chat is its only chat.
+      const notePanel = await api().renderStartupPanelForItem(
+        standalone.noteItemId,
+      );
+      assert.equal(
+        (await api().getDiagnostics(notePanel.panelId)).conversationKind,
+        "global",
+      );
+
+      const paperAfter = await api().renderStartupPanelForItem(
+        fixture.parentItemId,
+      );
+      assert.equal(
+        (await api().getDiagnostics(paperAfter.panelId)).conversationKind,
+        "paper",
+        "the paper opens in its own chat again",
+      );
+    } finally {
+      await api().cleanupFixture(standalone);
+    }
+  });
+
   it("lists a note's chat in its paper's history and moves between the two", async function () {
     // A note chat from before this change, or opened from the history.
     const noteChatPanel = await api().renderPanelForItem(fixture.noteItemId);
