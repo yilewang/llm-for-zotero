@@ -496,14 +496,13 @@ describe("workflow: note editing mode", function () {
     );
   });
 
-  it("opens a standalone note's window on the library chat, not a note chat", async function () {
+  it("labels a standalone note as Note chat when opened", async function () {
     fixture = await api.createStandaloneNoteFixture({
       noteHtml: "<p>Standalone note label consistency.</p>",
     });
     const standalone = await api.openStandaloneForItem(fixture.noteItemId);
     try {
-      assert.equal(standalone.conversationKind, "global");
-      assert.notEqual(standalone.paperTabText, "Note chat");
+      assert.equal(standalone.paperTabText, "Note chat");
     } finally {
       await api.closeStandalone();
     }

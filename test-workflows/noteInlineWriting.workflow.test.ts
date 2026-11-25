@@ -447,6 +447,54 @@ describe("workflow: inline writing popup in the note editor", function () {
     const second = await api().ask(panel.panelId, "And in simpler words?");
     assert.notInclude(second.selectedTextSources || [], "note-edit");
   });
+
+  it("Ask in sidebar from a standalone note goes to the note's own chat, not a library chat", async function () {
+    const standalone = await api().createStandaloneNoteFixture({
+      noteHtml: NOTE_HTML,
+    });
+    try {
+      // A library chat mounted first: it is not this note's chat.
+      const libraryPanel = await api().renderPanelForItem(fixture.parentItemId);
+      const library = await api().togglePanelConversationMode(
+        libraryPanel.panelId,
+      );
+      assert.equal(library.conversationKind, "global");
+      const notePanel = await api().renderPanelForItem(standalone.noteItemId);
+
+      const editor = await openEditor(standalone.noteItemId);
+      editor.select(SOURCE);
+      const card = (await until(() => editor.card(), "the card"))!;
+      (
+        card.querySelector(
+          "[data-llm-note-inline-action='ask-in-sidebar']",
+        ) as HTMLElement
+      ).click();
+      await until(
+        () => !editor.card(),
+        "the popup to close after Ask in sidebar",
+      );
+      const labels = async (panelId: string): Promise<string[]> =>
+        (await api().getDiagnostics(panelId)).selectedContextLabels || [];
+      const deadline = Date.now() + 10_000;
+      while (
+        !(await labels(notePanel.panelId)).includes("Editing") &&
+        Date.now() < deadline
+      )
+        await delay(50);
+      assert.include(
+        await labels(notePanel.panelId),
+        "Editing",
+        "the selection is in the note's own chat",
+      );
+      assert.notInclude(
+        await labels(libraryPanel.panelId),
+        "Editing",
+        "the library chat is not the note's chat",
+      );
+    } finally {
+      await api().cleanupFixture(standalone);
+    }
+  });
   it("keeps list items when two items of a list are rewritten and replaced", async function () {
     const editor = await openEditor(fixture.noteItemId);
     editor.selectAcross("First item text.", "Second item text.");

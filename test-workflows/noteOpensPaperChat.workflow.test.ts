@@ -57,7 +57,7 @@ describe("workflow: opening a note keeps its paper's chat", function () {
     assert.include(opened.messageText || "", "paper chat marker");
   });
 
-  it("a standalone note's library chat is not remembered as the chat for papers", async function () {
+  it("a standalone note opens its own chat, and the paper opened next keeps its paper chat", async function () {
     const standalone = await api().createStandaloneNoteFixture({
       noteHtml: "<p>A note of its own.</p>",
     });
@@ -70,23 +70,27 @@ describe("workflow: opening a note keeps its paper's chat", function () {
         "paper",
       );
 
-      // A standalone note has no paper: the library chat is its only chat.
+      // A standalone note belongs to no paper: it has a chat of its own.
       const notePanel = await api().renderStartupPanelForItem(
         standalone.noteItemId,
       );
+      const noteChat = await api().getDiagnostics(notePanel.panelId);
       assert.equal(
-        (await api().getDiagnostics(notePanel.panelId)).conversationKind,
-        "global",
+        noteChat.noteId,
+        standalone.noteItemId,
+        JSON.stringify({ ...noteChat, contextSnapshot: undefined }),
       );
 
       const paperAfter = await api().renderStartupPanelForItem(
         fixture.parentItemId,
       );
+      const paperChat = await api().getDiagnostics(paperAfter.panelId);
       assert.equal(
-        (await api().getDiagnostics(paperAfter.panelId)).conversationKind,
+        paperChat.conversationKind,
         "paper",
         "the paper opens in its own chat again",
       );
+      assert.notOk(paperChat.noteId, "and not in the note's chat");
     } finally {
       await api().cleanupFixture(standalone);
     }

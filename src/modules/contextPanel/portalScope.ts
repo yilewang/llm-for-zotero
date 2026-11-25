@@ -73,7 +73,7 @@ import {
   resolveNoteEditingParentItem,
   resolveNoteEditingScope,
   resolveNoteEditingTitle,
-  resolveOpenedNoteChatDestination,
+  resolveOpenedNotePaper,
   resolvePreferredNoteFocusSystem,
 } from "../../services/notes/scope";
 import {
@@ -549,24 +549,7 @@ export function resolveInitialPanelItemState(
   basePaperItem: Zotero.Item | null;
 } {
   const surface = options?.surface;
-  let item = initialItem || null;
-  const openedNote = resolveOpenedNoteChatDestination(item);
-  if (openedNote?.kind === "library") {
-    const system = resolvePreferredConversationSystem({
-      item: null,
-      preferredSystem: options?.conversationSystem,
-      surface,
-    });
-    return {
-      item: resolveRememberedGlobalPanelItem(
-        openedNote.libraryID,
-        system,
-        surface,
-      ),
-      basePaperItem: null,
-    };
-  }
-  if (openedNote) item = openedNote.paperItem;
+  let item = resolveOpenedNotePaper(initialItem) || initialItem || null;
   const noteSession = resolveActiveNoteSession(item);
   if (noteSession && item) {
     const system = resolvePreferredConversationSystem({

@@ -87,26 +87,19 @@ export function resolveNoteEditingParentItem(
 }
 
 /**
- * Where the chat goes while the user works in a note they opened.
+ * The paper whose chat an opened note joins.
  *
- * An opened note is a place to write, not a conversation of its own: the
- * chat stays on the parent paper's conversation, or on the library chat for
- * a standalone note. A note conversation the user opens on purpose (from the
- * history) is already bound to its note and is not redirected.
- * Returns null for anything that is not a note the user opened.
+ * A note joins the chat of what it belongs to: a paper's note is a place to
+ * write beside that paper's conversation, so opening it keeps the paper's
+ * chat. A standalone note belongs to nothing and keeps its own chat, and a
+ * note conversation the user opens on purpose (from the history) is already
+ * bound to its note: both return null, as does anything that is not a note.
  */
-export function resolveOpenedNoteChatDestination(
+export function resolveOpenedNotePaper(
   item: Zotero.Item | null | undefined,
-):
-  | { kind: "paper"; paperItem: Zotero.Item }
-  | { kind: "library"; libraryID: number }
-  | null {
-  if (!item || getNoteConversation(item) || !(item as any).isNote?.())
-    return null;
-  const paperItem = resolveNoteEditingParentItem(item);
-  if (paperItem) return { kind: "paper", paperItem };
-  const libraryID = normalizePositiveInt(item.libraryID);
-  return libraryID ? { kind: "library", libraryID } : null;
+): Zotero.Item | null {
+  if (!item || getNoteConversation(item)) return null;
+  return resolveNoteEditingParentItem(item);
 }
 
 /**

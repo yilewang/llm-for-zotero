@@ -378,7 +378,7 @@ function scopeBelongsToHost(
   if (!binding.libraryID || scope.libraryID !== binding.libraryID) return false;
   // An opened note keeps its paper's chats (issue #577): a host showing a
   // paper, or one of its notes, owns that paper's chats and the chats of the
-  // paper's notes. A standalone note owns the library chat and its own chats.
+  // paper's notes. A standalone note owns its own chats.
   const familyPaperID = binding.noteID
     ? binding.noteParentItemID
     : binding.basePaperItemID;

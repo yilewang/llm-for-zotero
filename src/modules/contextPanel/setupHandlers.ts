@@ -38,7 +38,6 @@ import {
 import { resolveTaskPaperScopeItemIds } from "../../agent/context/taskPaperScopeListing";
 import { libraryIndexService } from "../../services/libraryIndexService";
 import { createNoteConversationItem } from "../../services/notes/conversationItem";
-import { resolveOpenedNoteChatDestination } from "../../services/notes/scope";
 /* eslint-disable @typescript-eslint/no-require-imports */
 import { createElement } from "../../utils/domHelpers";
 import { t } from "../../utils/i18n";
@@ -2263,22 +2262,11 @@ export function setupHandlers(
       // (map only). All of it goes to this panel's own surface: the
       // standalone window's writes stay in its own slots.
       const surface = selectionSurface();
-      // A standalone note the user opened has no paper chat to choose, so
-      // its library chat is not a choice of mode: the library keeps the mode
-      // it had for the papers opened next.
-      const modeWasChosen = !(
-        mode === "global" &&
-        resolveOpenedNoteChatDestination(resolveLiveRawPanelItem())?.kind ===
-          "library"
-      );
-      const rememberPanelMode = (system: ConversationSystem) => {
-        if (modeWasChosen) rememberMode(system, libraryID, mode, { surface });
-      };
       const runtimeSystem = getRuntimeConversationSystem();
       if (runtimeSystem && usesExternalTurnHost(runtimeSystem)) {
-        rememberPanelMode(runtimeSystem);
+        rememberMode(runtimeSystem, libraryID, mode, { surface });
       } else if (isCodexConversationSystem()) {
-        rememberPanelMode("codex");
+        rememberMode("codex", libraryID, mode, { surface });
         if (mode === "global") {
           remember(
             { system: "codex", libraryID, kind: "global", surface },
@@ -2303,7 +2291,7 @@ export function setupHandlers(
           );
         }
       } else {
-        rememberPanelMode("upstream");
+        rememberMode("upstream", libraryID, mode, { surface });
         if (mode === "global") {
           remember(
             { system: "upstream", libraryID, kind: "global", surface },

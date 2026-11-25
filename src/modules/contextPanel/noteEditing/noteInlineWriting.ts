@@ -129,8 +129,8 @@ export function buildNoteInlineWritingContext(input: {
   return sections.join("\n\n");
 }
 
-/** The visible chat panel showing this note's paper (or the library chat
- *  for a standalone note); one in the editor's own window first. */
+/** The visible chat panel this note writes beside: its paper's chat, or its
+ *  own chat for a standalone note; one in the editor's own window first. */
 function findChatPanelForNote(
   win: Window,
   noteItem: Zotero.Item,
@@ -145,8 +145,7 @@ function findChatPanelForNote(
     const matches = parent
       ? Number(root.dataset.basePaperItemId || 0) === parent.id ||
         Number(root.dataset.noteParentItemId || 0) === parent.id
-      : root.dataset.conversationKind === "global" ||
-        Number(root.dataset.noteId || 0) === noteItem.id;
+      : Number(root.dataset.noteId || 0) === noteItem.id;
     if (matches) candidates.push({ body, conversationKey });
   }
   return (

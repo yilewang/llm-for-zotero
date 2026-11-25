@@ -1651,7 +1651,7 @@ async function renderPanelForItemInternal(
   const panelId = `workflow-panel-${++panelCounter}`;
   body.dataset.workflowPanelId = panelId;
   // A note renders its own note chat, as when the user opens that chat from
-  // the history; opening the note itself keeps the paper or library chat.
+  // the history; opening a paper's note itself keeps the paper's chat.
   const noteChatSystem = resolvePreferredConversationSystem({ item });
   const noteChatItem =
     !options?.resolveRememberedState && item.isNote()
