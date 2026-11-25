@@ -40,6 +40,7 @@ import {
 import { createAbortController } from "../../utils/apiHelpers";
 import type { StdioJsonRpcChild } from "../../utils/stdioJsonRpcConnection";
 import {
+  buildAgyPoolKey,
   startAgyClient,
   type AgyLaunchOptions,
 } from "../../antigravity/agyProcess";
@@ -101,12 +102,14 @@ export type AntigravityTurnResult = {
 };
 
 let replayClient: AcpClient | null = null;
+let replayPoolKey = "";
 let processCount = 0;
 
 /** Stops the test's agy clients. */
 export async function resetAntigravityReplay(): Promise<void> {
   const client = replayClient;
   replayClient = null;
+  replayPoolKey = "";
   processCount = 0;
   await client?.destroyAndWait().catch(() => undefined);
 }
@@ -137,9 +140,18 @@ export async function exerciseAntigravityTurn(
   const transport = createAntigravityTransport({
     startClient: async (launch) => {
       launches.push(launch);
-      if (replayClient && !replayClient.isClosed() && !scenario.newProcess) {
+      // Like the process pool: one agy per launch, which names the chat's
+      // config, so another chat (or permission level) gets another agy.
+      const poolKey = buildAgyPoolKey(launch);
+      if (
+        replayClient &&
+        !replayClient.isClosed() &&
+        !scenario.newProcess &&
+        replayPoolKey === poolKey
+      ) {
         return replayClient;
       }
+      replayPoolKey = poolKey;
       await replayClient?.destroyAndWait().catch(() => undefined);
       processCount += 1;
       replayClient = scenario.createChild

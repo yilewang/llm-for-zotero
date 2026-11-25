@@ -397,6 +397,25 @@ describe("workflow: Antigravity turns", function () {
     );
   });
 
+  it("gives each chat its own agy, so each reaches Zotero under its own token", async function () {
+    const search = {
+      question: "Please search my library.",
+      mcp: true,
+      createChild: (launch: Launch) =>
+        fakeAgy(launch, { fetch: zoteroHttpFetch }),
+    };
+    const first = await run(search);
+    assert.equal(first.deliveredText, "Searched the library.");
+    // A second chat on the same paper: agy read the first chat's config at
+    // start, so the second chat needs an agy of its own.
+    const second = await run(search);
+    assert.notEqual(second.conversationKey, first.conversationKey);
+    assert.equal(second.outcomeKind, "completed", JSON.stringify(second));
+    assert.equal(second.deliveredText, "Searched the library.");
+    assert.include(second.deliveredEvents, "codex_tool_activity");
+    assert.equal(second.processes, 2);
+  });
+
   it("gives agy the whole Zotero catalog: the core tools directly, the rest on demand", async function () {
     const result = await run({
       question: "Give me an outline of this paper.",
