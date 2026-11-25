@@ -18,28 +18,31 @@ and save notes without leaving your library. It works with standard API
 providers, local OpenAI-compatible models, WebChat, Codex App-Server,
 and Claude Code.
 
+website:
+
+- [LLM-for-Zotero](https://yilewang.github.io/llm-for-zotero)
+
 Documentation:
 
-- [English](https://yilewang.github.io/llm-for-zotero)
-- [Chinese](https://yilewang.github.io/llm-for-zotero/zh/)
+- [English](https://yilewang.github.io/llm-for-zotero/manual/)
+- [Chinese](https://yilewang.github.io/llm-for-zotero/manual/zh/)
 
 <p align="center">
   <img src="./assets/demo.png" alt="Screenshot of the llm-for-zotero sidebar inside the Zotero PDF reader" width="1024" />
 </p>
 
-<img width="1863" height="1332" alt="Screenshot 2026-10-26 at 17 39 20" src="https://github.com/user-attachments/assets/8886ba6c-37a4-4da7-be1e-571d3760cf11" />
-
 ## Demo Video
 
-How to do a library chat literature review with llm-for-zotero agent
-
 <div align="center">
-  <video
-    src="https://github.com/user-attachments/assets/c3c80e9c-a8cd-487f-9b1c-49ff717f514c"
-    width="1024"
+    <video
+    src="https://github.com/user-attachments/assets/bd7a0a48-c8ec-4ce1-a6fd-08feb2123b15"
     controls>
-  </video>
+    </video>
 </div>
+
+
+
+
 
 ## Table of Contents
 
