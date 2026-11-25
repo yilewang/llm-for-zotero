@@ -570,6 +570,12 @@ describe("workflow: Antigravity turns", function () {
       session?.systemPrompt || "",
       "Original agent-mode Zotero behavior",
     );
+    // agy cuts the middle out of a long tool result; the model is told to
+    // open the saved full output.
+    assert.include(
+      session?.systemPrompt || "",
+      "read the whole file it names before you answer",
+    );
     const sent = (session?.history || []).flatMap((update) =>
       update.sessionUpdate === "user_message_chunk" &&
       update.content.type === "text"

@@ -135,6 +135,16 @@ const DENIED_TURN_TEXT =
 const ANTIGRAVITY_SEARCH_ROUTES =
   "Search tools: the Zotero MCP tools read the turn's papers (paper_read), search the library (library_retrieve, library_search), search scholarly sources (literature_search), and read a found paper's abstract and open-access text (literature_read). Write web search queries in the user's language by default.";
 
+/**
+ * agy shows its model a tool result whole only up to about 10 KB. A longer
+ * one arrives with its middle removed and a note naming the file that holds
+ * all of it, and the model answers from the shortened result unless it is
+ * told to open that file (probed on agy 1.5.17: a summary used a fifth of a
+ * 40 KB result without this instruction, and all of it with).
+ */
+const ANTIGRAVITY_LONG_RESULT_RULE =
+  "A tool result longer than about 10 KB reaches you with its middle removed and a note naming the file that holds the full output. Whenever a result carries that note, read the whole file it names before you answer; never answer from a shortened result.";
+
 /** The standing instructions sent once at the start of a session. */
 export function buildAntigravityInstructions(rawPdfMode: boolean): string {
   return [
@@ -144,6 +154,7 @@ export function buildAntigravityInstructions(rawPdfMode: boolean): string {
       ? "You receive Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
       : "You receive Zotero access through the scoped Zotero MCP tools. Use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets.",
     ANTIGRAVITY_SEARCH_ROUTES,
+    ANTIGRAVITY_LONG_RESULT_RULE,
     'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", and "this tag" against those selected Zotero scopes.',
     "A note you are asked to write is a Zotero note: use the Zotero note_write tool, not a file-writing tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note.",
   ].join("\n\n");
