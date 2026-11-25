@@ -648,7 +648,6 @@ async function parseGeminiStepStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let text = "";
-  let reasoningText = "";
   let completion: ModelTurnCompletion = { status: "complete" };
   // Streaming chunks each carry only the new parts; accumulate them all so
   // the cached model turn keeps every functionCall and thoughtSignature
@@ -664,17 +663,8 @@ async function parseGeminiStepStream(
     const normalized = normalizeGeminiResponse(parsed);
     completion = normalized.completion;
     allParts.push(...normalized.responseParts);
-    if (normalized.reasoningText) {
-      let reasoningDelta = normalized.reasoningText;
-      if (normalized.reasoningText.startsWith(reasoningText)) {
-        reasoningDelta = normalized.reasoningText.slice(reasoningText.length);
-        reasoningText = normalized.reasoningText;
-      } else {
-        reasoningText += reasoningDelta;
-      }
-      if (reasoningDelta && onReasoning) {
-        await onReasoning({ details: reasoningDelta });
-      }
+    if (normalized.reasoningText && onReasoning) {
+      await onReasoning({ details: normalized.reasoningText });
     }
     if (!normalized.text) return;
     text += normalized.text;
