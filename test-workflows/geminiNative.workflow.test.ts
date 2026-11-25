@@ -1,61 +1,72 @@
 import { assert } from "chai";
-import { resolveAgentRuntimeRequest } from "../src/agent/context/resolvedAgentRequest";
-import { GeminiNativeAgentAdapter } from "../src/agent/model/geminiNative";
+import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 
-describe("Gemini native Agent streaming", function () {
+/**
+ * Gemini streams a reply in fragments, each carrying only what is new. A
+ * fragment that repeats the text so far ("ha" then "ha") is still new text.
+ */
+describe("workflow: Gemini native agent streaming", function () {
+  this.timeout(30000);
+
   it("preserves consecutive identical text and reasoning deltas", async function () {
-    const event = {
-      candidates: [{ content: { parts: [{ text: "ha" }] } }],
+    const apiBase = "https://generativelanguage.googleapis.com/v1beta";
+    const frame = (part: Record<string, unknown>) =>
+      `data: ${JSON.stringify({
+        candidates: [{ content: { parts: [part] } }],
+      })}\n\n`;
+    const thought = frame({ text: "Thinking", thought: true });
+    const reply = frame({ text: "ha" });
+    const frames = [thought, thought, reply, reply].map((text) =>
+      new TextEncoder().encode(text),
+    );
+
+    const toolkit = (Zotero as any).LLMForZotero.data.ztoolkit;
+    const originalGetGlobal = toolkit.getGlobal;
+    toolkit.getGlobal = function (name: string) {
+      if (name !== "fetch") return originalGetGlobal.call(this, name);
+      return async (url: string) => {
+        if (!String(url).startsWith(apiBase))
+          throw new Error(
+            "Unexpected network destination in isolated Gemini workflow",
+          );
+        let next = 0;
+        return {
+          ok: true,
+          status: 200,
+          statusText: "",
+          headers: { get: () => "text/event-stream" },
+          body: {
+            getReader: () => ({
+              read: async () =>
+                next < frames.length
+                  ? { value: frames[next++], done: false }
+                  : { done: true },
+              releaseLock: () => undefined,
+              cancel: async () => undefined,
+            }),
+          },
+        };
+      };
     };
-    const thoughtEvent = {
-      candidates: [
-        { content: { parts: [{ text: "Thinking", thought: true }] } },
-      ],
-    };
-    const thoughtFrame = `data: ${JSON.stringify(thoughtEvent)}\n\n`;
-    const frame = `data: ${JSON.stringify(event)}\n\n`;
-    const originalGetGlobal = ztoolkit.getGlobal;
-    ztoolkit.getGlobal = ((name: string) =>
-      name === "fetch"
-        ? async () =>
-            new Response(thoughtFrame + thoughtFrame + frame + frame, {
-              headers: { "Content-Type": "text/event-stream" },
-            })
-        : Reflect.apply(originalGetGlobal, ztoolkit, [
-            name,
-          ])) as typeof originalGetGlobal;
 
     try {
-      const deltas: string[] = [];
-      const reasoning: string[] = [];
-      const step = await new GeminiNativeAgentAdapter().runStep({
-        request: resolveAgentRuntimeRequest({
-          conversationKey: 1,
-          mode: "agent",
-          userText: "Say haha",
-          apiBase: "https://generativelanguage.googleapis.com/v1beta",
-          model: "gemini-2.5-flash",
-        }),
-        messages: [{ role: "user", content: "Say haha" }],
-        tools: [],
-        onReasoning({ details }) {
-          if (details) reasoning.push(details);
-        },
-        onTextDelta(delta) {
-          deltas.push(delta);
-        },
+      const api = (Zotero as any).LLMForZotero.api
+        .workflowTest as WorkflowTestApi;
+      const step = await api.streamAgentModelStep({
+        conversationKey: -58300583,
+        apiBase,
+        apiKey: "workflow-dummy-key",
+        model: "gemini-2.5-flash",
+        providerProtocol: "gemini_native",
       });
 
-      assert.deepEqual(
-        { text: step.text, deltas, reasoning },
-        {
-          text: "haha",
-          deltas: ["ha", "ha"],
-          reasoning: ["Thinking", "Thinking"],
-        },
-      );
+      assert.deepEqual(step, {
+        text: "haha",
+        textDeltas: ["ha", "ha"],
+        reasoning: ["Thinking", "Thinking"],
+      });
     } finally {
-      ztoolkit.getGlobal = originalGetGlobal;
+      toolkit.getGlobal = originalGetGlobal;
     }
   });
 });

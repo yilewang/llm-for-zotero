@@ -9,6 +9,7 @@ import type { LibraryRetrieveResult } from "../../agent/services/libraryRetrieve
 import type { CodexAppServerModelCatalogEntry } from "../../codexAppServer/modelCatalog";
 import type { AntigravityModelCatalog } from "../../antigravity/modelCatalog";
 import type { TornChatIdentity } from "./tornChatWindows";
+import type { ProviderProtocol } from "../../utils/providerProtocol";
 
 export type WorkflowTestCodexModelCatalogResponse = {
   models?: CodexAppServerModelCatalogEntry[];
@@ -1312,6 +1313,17 @@ export type WorkflowTestApi = {
     agent: string;
     continuation: string;
   }>;
+  /**
+   * Runs one agent model step through the provider's adapter and returns the
+   * reply with each text and reasoning fragment the adapter streamed.
+   */
+  streamAgentModelStep: (params: {
+    conversationKey: number;
+    model: string;
+    apiBase: string;
+    apiKey: string;
+    providerProtocol: ProviderProtocol;
+  }) => Promise<{ text: string; textDeltas: string[]; reasoning: string[] }>;
   /**
    * Sends one plain-chat request that carries document context, the way a
    * paper chat does, once through callLLM and once through callLLMStream.

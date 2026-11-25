@@ -11964,6 +11964,32 @@ export function installWorkflowTestHarness(targetAddon: {
         continuation: continuation.text,
       };
     },
+    async streamAgentModelStep(input) {
+      const request = resolveAgentRuntimeRequest({
+        ...input,
+        mode: "agent",
+        userText: "Say OK",
+        libraryID: Zotero.Libraries.userLibraryID,
+        conversationKind: "global",
+      });
+      const textDeltas: string[] = [];
+      const reasoning: string[] = [];
+      const step = await createAgentModelAdapter(request).runStep({
+        request,
+        messages: [{ role: "user", content: "Say OK" }],
+        tools: [],
+        onTextDelta: (delta) => {
+          textDeltas.push(delta);
+        },
+        onReasoning: ({ details }) => {
+          if (details) reasoning.push(details);
+        },
+      });
+      if (step.kind !== "final") {
+        throw new Error("Agent model step did not produce a final answer");
+      }
+      return { text: step.text, textDeltas, reasoning };
+    },
     async sendDocumentContextRequest(input) {
       const params = documentContextRequestParams(input);
       const chat = await callLLM(params);
