@@ -677,15 +677,9 @@ async function parseGeminiStepStream(
       }
     }
     if (!normalized.text) return;
-    let delta = normalized.text;
-    if (normalized.text.startsWith(text)) {
-      delta = normalized.text.slice(text.length);
-      text = normalized.text;
-    } else {
-      text += delta;
-    }
-    if (delta && onTextDelta) {
-      await onTextDelta(delta);
+    text += normalized.text;
+    if (onTextDelta) {
+      await onTextDelta(normalized.text);
     }
   };
 
