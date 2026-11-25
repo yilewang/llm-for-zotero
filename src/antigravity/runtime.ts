@@ -3,12 +3,12 @@
  * driving `agy acp` through the ACP client.
  *
  * A turn:
- * 1. starts (or reuses) the pooled agy process for the working folder and
- *    permission level;
+ * 1. writes the conversation's agy config, which names the Zotero MCP server
+ *    under a conversation-stable scope token (agyProfile.ts), and starts (or
+ *    reuses) the pooled agy process for that config, the working folder, and
+ *    the permission level;
  * 2. reuses the conversation's agy session when this process already has
- *    it, resumes the stored one otherwise, or starts a new one; the Zotero
- *    MCP server goes in with the session, under a conversation-stable scope
- *    token, so later turns keep the same server;
+ *    it, resumes the stored one otherwise, or starts a new one;
  * 3. sets the session's mode from the permission setting;
  * 4. sends the prompt and maps agy's updates to agent events;
  * 5. answers agy's permission requests: read-only Zotero tools are allowed
@@ -23,7 +23,6 @@
 import {
   ACP_METHOD_NOT_FOUND_ERROR_CODE,
   type AcpContentBlock,
-  type AcpMcpServer,
   type AcpPermissionOption,
   type AcpRequestPermissionParams,
   type AcpRequestPermissionResult,
@@ -57,10 +56,13 @@ import {
   buildTurnContextEnvelope,
   renderTurnContextEnvelopeForModel,
 } from "../agent/context/turnContextEnvelope";
-import { ZOTERO_MCP_SAFE_READ_TOOL_NAMES } from "../agent/mcp/server";
+import {
+  ZOTERO_MCP_HOST_ACCESS_TOOL_NAMES,
+  ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
+} from "../agent/mcp/server";
 import { getZoteroAgentRuntimeRootDir } from "../agent/skills/nativeSkillPaths";
 import {
-  buildAcpZoteroMcpServerConfig,
+  buildAgyZoteroMcpServerConfig,
   REQUIRED_ANTIGRAVITY_RAW_PDF_MCP_TOOL_NAMES,
   REQUIRED_ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES,
 } from "../codexAppServer/mcpSetup";
@@ -69,7 +71,22 @@ import { JsonRpcResponseError } from "../utils/stdioJsonRpcConnection";
 import { ensureDir } from "../utils/geckoFs";
 import { joinLocalPath } from "../utils/localPath";
 import { AcpClient } from "./acpClient";
-import { getOrStartAgyClient, type AgyLaunchOptions } from "./agyProcess";
+import {
+  getOrStartAgyClient,
+  holdAgyProcess,
+  type AgyLaunchOptions,
+} from "./agyProcess";
+import {
+  isAgyOwnFileRead,
+  toolArguments,
+  zoteroToolNameOf,
+} from "./agyToolCalls";
+import {
+  ANTIGRAVITY_EAGER_ZOTERO_TOOL_NAMES,
+  prepareAgyProfile,
+  type AgyMcpServer,
+  type AgyProfile,
+} from "./agyProfile";
 import { getAntigravityProfileSignature } from "./conversationKeys";
 import {
   getAntigravityBinaryPathPref,
@@ -141,6 +158,7 @@ export function resolveAntigravitySessionMode(
 
 export function buildAgyLaunchOptions(
   mode: AntigravityPermissionMode,
+  profile: AgyProfile,
   cwd = getAntigravityRuntimeCwd(),
   agyPath = getAntigravityBinaryPathPref(),
 ): AgyLaunchOptions {
@@ -148,18 +166,23 @@ export function buildAgyLaunchOptions(
     cwd,
     skipPermissions: mode === "full-access",
     ...(agyPath ? { agyPath } : {}),
+    profile,
   };
 }
 
-/** The Zotero tool a tool call names, when it is one of this turn's. */
-export function zoteroToolNameOf(
-  call: Pick<AcpToolCall, "name">,
-  serverName: string,
-): string | null {
-  const prefix = `mcp_${serverName}_`;
-  return call.name && call.name.startsWith(prefix)
-    ? call.name.slice(prefix.length)
-    : null;
+/**
+ * The launch options of an agy that serves no conversation: the pickers'
+ * model and command lists, and the settings test. It has no MCP server.
+ */
+export async function prepareAgyPickerLaunchOptions(
+  mode = getAntigravityPermissionModePref(),
+): Promise<AgyLaunchOptions> {
+  const launch = buildAgyLaunchOptions(
+    mode,
+    await prepareAgyProfile({ servers: [] }),
+  );
+  await ensureDir(launch.cwd);
+  return launch;
 }
 
 function chooseOption(
@@ -173,10 +196,6 @@ function chooseOption(
   return option
     ? { outcome: { outcome: "selected", optionId: option.optionId } }
     : { outcome: { outcome: "cancelled" } };
-}
-
-function toolArguments(call: AcpToolCall): unknown {
-  return call.args ?? call.rawInput ?? {};
 }
 
 function describeToolContent(call: AcpToolCall): unknown {
@@ -223,29 +242,10 @@ export function buildAntigravityPermissionAction(
  * Turns one turn's ACP updates into agent events. Zotero MCP tool calls are
  * left out: the turn host reports them from the MCP server itself.
  */
-/**
- * agy saves a long tool result to a file in its own session folder
- * (`~/.gemini/antigravity-cli/brain/<session>/.system_generated/...`) and
- * the model reads it back in chunks. Those reads repeat a result the chat
- * already shows, so they get no activity row of their own.
- */
-export function isAgyOwnOutputRead(call: AcpToolCall): boolean {
-  if (call.kind !== "read") return false;
-  const paths = (call.locations ?? []).map((location) => location.path);
-  return (
-    paths.length > 0 &&
-    paths.every(
-      (path) =>
-        typeof path === "string" &&
-        /[\\/]\.gemini[\\/]antigravity-cli[\\/]brain[\\/][^\\/]+[\\/]\.system_generated[\\/]/.test(
-          path,
-        ),
-    )
-  );
-}
-
 export function createAcpEventMapper(options: {
   zoteroServerName?: string;
+  /** agy's data folder (see isAgyOwnFileRead). */
+  agyDataDir?: string;
   emit: (event: AgentEvent) => Promise<void>;
 }) {
   let text = "";
@@ -280,7 +280,7 @@ export function createAcpEventMapper(options: {
       case "tool_call": {
         if (
           isZoteroCall(update) ||
-          isAgyOwnOutputRead(update) ||
+          isAgyOwnFileRead(update, options.agyDataDir ?? "") ||
           callNames.has(update.toolCallId)
         )
           return;
@@ -350,8 +350,6 @@ type ClientSessionState = {
   modeId?: string;
   /** The session's config option values, such as `model`. */
   config: Record<string, string>;
-  /** The MCP servers the session was opened with, as JSON. */
-  mcpSignature: string;
 };
 
 const openSessionsByClient = new WeakMap<
@@ -410,15 +408,14 @@ async function rememberAntigravitySession(
 }
 
 type AntigravityPrepared = {
-  launch: AgyLaunchOptions;
+  mode: AntigravityPermissionMode;
+  cwd: string;
   sessionMode: string;
   rawPdfMode: boolean;
 };
 
-type AntigravityServers = {
-  serverName: string;
-  servers: AcpMcpServer[];
-};
+/** The turn's Zotero MCP server, as agy's config names it. */
+type AntigravityServers = AgyMcpServer;
 
 function readConfigValues(
   state: Pick<AcpSessionState, "configOptions"> | null | undefined,
@@ -492,13 +489,13 @@ async function openSession(params: {
   client: AcpClient;
   request: AgentRuntimeRequest;
   cwd: string;
-  mcpServers: AcpMcpServer[];
   /** The standing instructions; a new session takes them as its system prompt. */
   instructions: string;
 }): Promise<{ sessionId: string; isNew: boolean; state: ClientSessionState }> {
-  const { client, request, cwd, mcpServers } = params;
+  const { client, request, cwd } = params;
   const sessions = openSessions(client);
-  const mcpSignature = JSON.stringify(mcpServers);
+  // agy takes its MCP servers from its own config, not from the session.
+  const mcpServers: [] = [];
   const forceFresh = request.metadata?.forceFreshSession === true;
   const summary = await antigravityConversationStore.getSummary(
     request.conversationKey,
@@ -509,25 +506,34 @@ async function openSession(params: {
       : "";
   if (stored) {
     const open = sessions.get(stored);
-    if (open && open.mcpSignature === mcpSignature) {
+    if (open) {
       return { sessionId: stored, isNew: false, state: open };
     }
+    const target = { sessionId: stored, cwd, mcpServers };
+    let resumed: AcpSessionState | null = null;
     try {
-      const resumed: AcpSessionState = await client.resumeSession({
-        sessionId: stored,
-        cwd,
-        mcpServers,
-      });
+      resumed = await client.resumeSession(target);
+    } catch (error) {
+      if (!isSessionMissing(error)) {
+        // agy answers a resume it cannot serve with a general error that
+        // points to session/load, and session/load says whether agy's data
+        // holds the session at all. It does not for a chat from before the
+        // plugin ran agy on its own data folder (agyProfile.ts).
+        try {
+          resumed = await client.loadSession(target);
+        } catch (loadError) {
+          if (!isSessionMissing(loadError)) throw error;
+        }
+      }
+    }
+    if (resumed) {
       const state: ClientSessionState = {
-        modeId: resumed?.modes?.currentModeId,
+        modeId: resumed.modes?.currentModeId,
         config: readConfigValues(resumed),
-        mcpSignature,
       };
       rememberAntigravityModelCatalog(resumed);
       sessions.set(stored, state);
       return { sessionId: stored, isNew: false, state };
-    } catch (error) {
-      if (!isSessionMissing(error)) throw error;
     }
   }
   const created = await client.newSession({
@@ -538,7 +544,6 @@ async function openSession(params: {
   const state: ClientSessionState = {
     modeId: created.modes?.currentModeId,
     config: readConfigValues(created),
-    mcpSignature,
   };
   rememberAntigravityModelCatalog(created);
   sessions.set(created.sessionId, state);
@@ -591,7 +596,9 @@ function createPermissionHandler(options: {
   /**
    * The chip's mode lets Zotero writes run without asking (Accept edits,
    * Auto). agy asks before every MCP tool in every mode, so the chip's
-   * meaning is applied here, as Codex and Claude Code apply it.
+   * meaning is applied here, as Codex and Claude Code apply it. The tools
+   * that reach the computer itself (commands, files, scripts) are not
+   * library writes: outside full access they always ask.
    */
   allowZoteroWrites: boolean;
   /** Files agy reads without asking (see isFreeFileRead). */
@@ -616,7 +623,10 @@ function createPermissionHandler(options: {
       ((ZOTERO_MCP_SAFE_READ_TOOL_NAMES as readonly string[]).includes(
         zoteroTool,
       ) ||
-        allowZoteroWrites)
+        (allowZoteroWrites &&
+          !(ZOTERO_MCP_HOST_ACCESS_TOOL_NAMES as readonly string[]).includes(
+            zoteroTool,
+          )))
     ) {
       return chooseOption(params.options, true);
     }
@@ -641,15 +651,117 @@ export function createAntigravityTransport(
   options: AntigravityTransportOptions = {},
 ): ExternalRuntimeTransport<AntigravityPrepared, AntigravityServers> {
   const startClient = options.startClient ?? getOrStartAgyClient;
+
+  async function runTurnOnAgy(
+    ctx: ExternalTurnRunContext<AntigravityPrepared, AntigravityServers>,
+    launch: AgyLaunchOptions,
+  ): Promise<ExternalTurnOutcome> {
+    const { request, prepared } = ctx;
+    const signal = ctx.params.signal;
+    const client = await startClient(launch);
+    trackAntigravityCommands(client);
+    const zoteroServerName = ctx.zoteroMcp?.servers.name;
+    const session = await openSession({
+      client,
+      request,
+      cwd: launch.cwd,
+      instructions: buildAntigravityInstructions(prepared.rawPdfMode),
+    });
+    await rememberAntigravitySession(
+      request,
+      session.sessionId,
+      launch.cwd,
+      ctx.writeAllowed,
+    );
+    await applyModelChoice(
+      client,
+      session.sessionId,
+      session.state,
+      readAntigravityModelPicks(request),
+    );
+    if (session.state.modeId !== prepared.sessionMode) {
+      await client.setMode(session.sessionId, prepared.sessionMode);
+      session.state.modeId = prepared.sessionMode;
+    }
+    const runId = `antigravity-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await ctx.onStart(runId);
+
+    let denied = false;
+    const mapper = createAcpEventMapper({
+      zoteroServerName,
+      agyDataDir: launch.profile.dataDir,
+      emit: ctx.emit,
+    });
+    let mapping = Promise.resolve();
+    const stopUpdates = client.onSessionUpdate(
+      session.sessionId,
+      (notification) => {
+        const update = notification.update;
+        if (update.sessionUpdate === "current_mode_update") {
+          session.state.modeId = update.currentModeId;
+        } else if (update.sessionUpdate === "config_option_update") {
+          Object.assign(session.state.config, readConfigValues(update));
+        }
+        // Keep updates in order; one slow emit must not reorder them.
+        mapping = mapping.then(() => mapper.handle(notification));
+      },
+    );
+    const input = await buildAntigravityPromptInput(request);
+    const stopPermissions = client.setPermissionHandler(
+      session.sessionId,
+      createPermissionHandler({
+        ctx,
+        zoteroServerName,
+        allowZoteroWrites:
+          prepared.sessionMode === "auto" ||
+          prepared.sessionMode === "accept-edits",
+        freeReads: {
+          attachedPaths: input.attachedPaths,
+          readableRoots: [getZoteroDataDirectory()],
+        },
+        onDenied: () => {
+          denied = true;
+        },
+      }),
+    );
+    try {
+      const result = await client.prompt(session.sessionId, input.blocks, {
+        signal,
+      });
+      await mapping;
+      if (result.stopReason === "cancelled" && signal?.aborted) {
+        throw createAbortError();
+      }
+      let text = mapper.text();
+      if (!text.trim() && denied) {
+        text = DENIED_TURN_TEXT;
+        await ctx.emit({ type: "message_delta", text });
+      }
+      if (!text.trim()) {
+        return {
+          kind: "fallback",
+          runId,
+          reason: `Antigravity ended the turn without an answer (${result.stopReason}).`,
+          usedFallback: true,
+        };
+      }
+      return { kind: "completed", runId, text, usedFallback: false };
+    } finally {
+      stopPermissions();
+      stopUpdates();
+    }
+  }
+
   return {
     logLabel: "Antigravity",
     failureRunIdPrefix: "antigravity-error",
     prepare: async ({ request }) => {
       const mode = getAntigravityPermissionModePref();
-      const launch = buildAgyLaunchOptions(mode);
-      await ensureDir(launch.cwd);
+      const cwd = getAntigravityRuntimeCwd();
+      await ensureDir(cwd);
       return {
-        launch,
+        mode,
+        cwd,
         sessionMode: resolveAntigravitySessionMode(mode),
         rawPdfMode: Boolean(request.localDocuments?.length),
       };
@@ -665,7 +777,7 @@ export function createAntigravityTransport(
         }),
       scopeToken: resolveClaudeBridgeMcpScopeToken,
       buildServerConfig: ({ profileSignature, scopeToken, rawPdfMode }) => {
-        const config = buildAcpZoteroMcpServerConfig({
+        const config = buildAgyZoteroMcpServerConfig({
           profileSignature,
           scopeToken,
           required: true,
@@ -674,8 +786,10 @@ export function createAntigravityTransport(
         return {
           serverName: config.serverName,
           servers: {
-            serverName: config.serverName,
-            servers: config.mcpServers,
+            name: config.serverName,
+            url: config.url,
+            headers: config.headers,
+            eagerTools: ANTIGRAVITY_EAGER_ZOTERO_TOOL_NAMES,
           },
         };
       },
@@ -688,97 +802,21 @@ export function createAntigravityTransport(
       const { request, prepared } = ctx;
       const signal = ctx.params.signal;
       if (signal?.aborted) throw createAbortError();
-      const client = await startClient(prepared.launch);
-      trackAntigravityCommands(client);
-      const zoteroServerName = ctx.zoteroMcp?.servers.serverName;
-      const session = await openSession({
-        client,
-        request,
-        cwd: prepared.launch.cwd,
-        mcpServers: ctx.zoteroMcp?.servers.servers ?? [],
-        instructions: buildAntigravityInstructions(prepared.rawPdfMode),
+      const zoteroServer = ctx.zoteroMcp?.servers;
+      const profile = await prepareAgyProfile({
+        conversationKey: request.conversationKey,
+        servers: zoteroServer ? [zoteroServer] : [],
       });
-      await rememberAntigravitySession(
-        request,
-        session.sessionId,
-        prepared.launch.cwd,
-        ctx.writeAllowed,
+      const launch = buildAgyLaunchOptions(
+        prepared.mode,
+        profile,
+        prepared.cwd,
       );
-      await applyModelChoice(
-        client,
-        session.sessionId,
-        session.state,
-        readAntigravityModelPicks(request),
-      );
-      if (session.state.modeId !== prepared.sessionMode) {
-        await client.setMode(session.sessionId, prepared.sessionMode);
-        session.state.modeId = prepared.sessionMode;
-      }
-      const runId = `antigravity-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await ctx.onStart(runId);
-
-      let denied = false;
-      const mapper = createAcpEventMapper({
-        zoteroServerName,
-        emit: ctx.emit,
-      });
-      let mapping = Promise.resolve();
-      const stopUpdates = client.onSessionUpdate(
-        session.sessionId,
-        (notification) => {
-          const update = notification.update;
-          if (update.sessionUpdate === "current_mode_update") {
-            session.state.modeId = update.currentModeId;
-          } else if (update.sessionUpdate === "config_option_update") {
-            Object.assign(session.state.config, readConfigValues(update));
-          }
-          // Keep updates in order; one slow emit must not reorder them.
-          mapping = mapping.then(() => mapper.handle(notification));
-        },
-      );
-      const input = await buildAntigravityPromptInput(request);
-      const stopPermissions = client.setPermissionHandler(
-        session.sessionId,
-        createPermissionHandler({
-          ctx,
-          zoteroServerName,
-          allowZoteroWrites:
-            prepared.sessionMode === "auto" ||
-            prepared.sessionMode === "accept-edits",
-          freeReads: {
-            attachedPaths: input.attachedPaths,
-            readableRoots: [getZoteroDataDirectory()],
-          },
-          onDenied: () => {
-            denied = true;
-          },
-        }),
-      );
+      const releaseProcess = holdAgyProcess(launch);
       try {
-        const result = await client.prompt(session.sessionId, input.blocks, {
-          signal,
-        });
-        await mapping;
-        if (result.stopReason === "cancelled" && signal?.aborted) {
-          throw createAbortError();
-        }
-        let text = mapper.text();
-        if (!text.trim() && denied) {
-          text = DENIED_TURN_TEXT;
-          await ctx.emit({ type: "message_delta", text });
-        }
-        if (!text.trim()) {
-          return {
-            kind: "fallback",
-            runId,
-            reason: `Antigravity ended the turn without an answer (${result.stopReason}).`,
-            usedFallback: true,
-          };
-        }
-        return { kind: "completed", runId, text, usedFallback: false };
+        return await runTurnOnAgy(ctx, launch);
       } finally {
-        stopPermissions();
-        stopUpdates();
+        releaseProcess();
       }
     },
     describeFailure: (error) =>
@@ -866,8 +904,7 @@ export function getAntigravityRuntime(
 export async function loadAntigravityPickerModelCatalog(
   force = false,
 ): Promise<AntigravityModelCatalog> {
-  const launch = buildAgyLaunchOptions(getAntigravityPermissionModePref());
-  await ensureDir(launch.cwd);
+  const launch = await prepareAgyPickerLaunchOptions();
   return loadAntigravityModelCatalog({
     launch,
     startClient: async (next) => {
@@ -892,8 +929,7 @@ export async function loadAntigravityPickerSlashCommands(
   const known = listAntigravitySlashCommands();
   if (known.length) return known;
   const startClient = options.startClient ?? getOrStartAgyClient;
-  const launch = buildAgyLaunchOptions(getAntigravityPermissionModePref());
-  await ensureDir(launch.cwd);
+  const launch = await prepareAgyPickerLaunchOptions();
   const client = await startClient(launch);
   const announced = waitForAntigravityCommands(
     client,

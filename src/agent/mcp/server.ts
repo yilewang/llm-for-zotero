@@ -175,6 +175,15 @@ export const ZOTERO_MCP_SAFE_READ_TOOL_NAMES = [
   // (MCP_REFUSED_TOOL_ARGUMENTS).
   "context_read",
 ] as const;
+/**
+ * The tools that reach the computer itself, not only the library: commands,
+ * files, and scripts. The calling agent owns their approval.
+ */
+export const ZOTERO_MCP_HOST_ACCESS_TOOL_NAMES = [
+  "run_command",
+  "file_io",
+  "zotero_script",
+] as const;
 export const ZOTERO_MCP_PLAN_TOOL_NAMES = [
   "request_user_input",
   "task_update",
@@ -383,11 +392,9 @@ const MCP_READ_DEDUPE_TOOL_NAMES = new Set([
   "library_retrieve",
   "paper_read",
 ]);
-const RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES = new Set([
-  "run_command",
-  "file_io",
-  "zotero_script",
-]);
+const RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES = new Set<string>(
+  ZOTERO_MCP_HOST_ACCESS_TOOL_NAMES,
+);
 // paper_digest reads Zotero's text of each paper, which a raw-PDF turn
 // reads natively instead.
 const RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES = new Set([
@@ -1683,27 +1690,6 @@ function hasRawPdfScope(scope: ZoteroMcpActiveScope | null): boolean {
 }
 
 /**
- * The Zotero tools an Antigravity turn sees. agy (1.5.10) lets the model
- * call only the MCP tools whose definitions fit a budget of about 42 KB per
- * session, shared by every MCP server and filled smallest first; it offers
- * no way to call the rest. The full catalog is about 117 KB, so paper_read,
- * library_search and the other core tools never fit. This set (about 41 KB
- * as agy stores it) keeps reading, outside-paper search, and note writing.
- */
-export const ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES: ReadonlySet<string> = new Set([
-  "paper_read",
-  "library_retrieve",
-  "library_search",
-  "library_read",
-  "read_attachment",
-  "literature_search",
-  "literature_read",
-  "note_write",
-  "undo",
-  "library_cite",
-]);
-
-/**
  * Whether the server stores this scope's sized results for paging: a scope
  * of a conversation, opened by a runtime's turn. A client without one has
  * no conversation to keep them in, so it reads results whole.
@@ -1721,11 +1707,6 @@ function isMcpToolVisibleInScope(
   scope: ZoteroMcpActiveScope | null,
 ): boolean {
   if (!isMcpExposedTool(tool)) return false;
-  if (
-    scope?.runtimeAuthority === "antigravity" &&
-    !ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES.has(tool.name)
-  )
-    return false;
   if (tool.name === "request_user_input")
     return Boolean(scope?.requestInteraction);
   if (tool.name === "context_read") return mcpScopeStoresToolResults(scope);

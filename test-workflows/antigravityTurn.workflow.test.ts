@@ -6,8 +6,10 @@ import type {
 } from "../src/modules/contextPanel/antigravityTurnReplay";
 import {
   createMemoryFakeAcpSessionStore,
+  type FakeAcpAgentOptions,
   type FakeAcpScenario,
   type FakeAcpSessionStore,
+  type FakeAgyMcpConfig,
 } from "../test/helpers/acp/fakeAcpAgent";
 import { createFakeAcpChild } from "../test/helpers/acp/fakeAcpChild";
 import { zoteroHttpFetch } from "../test/helpers/acp/zoteroHttpFetch";
@@ -93,9 +95,17 @@ describe("workflow: Antigravity turns", function () {
           kind: "read",
           title: "File output.txt",
           locations: [
-            "/Users/someone/.gemini/antigravity-cli/brain/abc/.system_generated/steps/7/output.txt",
+            "{{dataDir}}/brain/abc/.system_generated/steps/7/output.txt",
           ],
           result: "earlier result",
+        },
+        {
+          type: "tool",
+          name: "read_file",
+          kind: "read",
+          title: "File past_chat_search.json",
+          locations: ["{{dataDir}}/mcp/zotero/past_chat_search.json"],
+          result: "a tool definition",
         },
         { type: "text", text: "Done rereading." },
       ],
@@ -111,6 +121,34 @@ describe("workflow: Antigravity turns", function () {
           args: { mode: "outline" },
         },
         { type: "text", text: "Read the paper." },
+      ],
+    },
+    {
+      match: /search my past chats/,
+      title: "Past chats",
+      steps: [
+        {
+          type: "mcpTool",
+          server: "*",
+          tool: "past_chat_search",
+          args: { query: "attention" },
+        },
+        { type: "text", text: "Searched the chats." },
+      ],
+    },
+    {
+      match: /run a command through zotero/,
+      title: "Zotero command",
+      steps: [
+        {
+          type: "mcpTool",
+          server: "*",
+          tool: "run_command",
+          args: { command: "echo hello" },
+          // agy asks before every MCP tool, in every mode.
+          askPermission: true,
+        },
+        { type: "text", text: "Ran it." },
       ],
     },
     {
@@ -190,6 +228,28 @@ describe("workflow: Antigravity turns", function () {
     await api.reset();
   });
 
+  type Launch = Parameters<
+    NonNullable<AntigravityTurnScenario["createChild"]>
+  >[0];
+
+  /**
+   * A fake agy started the way the plugin starts the real one: it reads the
+   * MCP config the plugin wrote for the launch, as agy does at start.
+   */
+  function fakeAgy(launch: Launch, options: FakeAcpAgentOptions = {}) {
+    return createFakeAcpChild({
+      scenarios: SCENARIOS,
+      store,
+      skipPermissions: launch.skipPermissions,
+      dataDir: launch.profile.dataDir,
+      mcpConfig: () =>
+        IOUtils.readJSON(
+          PathUtils.join(launch.profile.configDir, "config", "mcp_config.json"),
+        ) as Promise<FakeAgyMcpConfig>,
+      ...options,
+    });
+  }
+
   function run(
     scenario: Omit<AntigravityTurnScenario, "createChild"> &
       Partial<Pick<AntigravityTurnScenario, "createChild">>,
@@ -197,12 +257,7 @@ describe("workflow: Antigravity turns", function () {
     return api.exerciseAntigravityTurn({
       panelId,
       scenario: {
-        createChild: (launch) =>
-          createFakeAcpChild({
-            scenarios: SCENARIOS,
-            store,
-            skipPermissions: launch.skipPermissions,
-          }),
+        createChild: (launch) => fakeAgy(launch),
         ...scenario,
       },
     });
@@ -232,6 +287,12 @@ describe("workflow: Antigravity turns", function () {
       [false],
     );
     assert.match(result.launches[0].cwd, /[\\/]antigravity$/);
+    // Each conversation has its own agy config folder; the data is shared.
+    assert.match(
+      result.launches[0].profile.configDir,
+      new RegExp(`[\\\\/]conversation-${result.conversationKey}$`),
+    );
+    assert.match(result.launches[0].profile.dataDir, /[\\/]data$/);
   });
 
   it("continues the same agy session in the same process, and resumes it in a fresh one", async function () {
@@ -252,6 +313,27 @@ describe("workflow: Antigravity turns", function () {
     assert.equal(resumed.outcomeKind, "completed", JSON.stringify(resumed));
     assert.equal(resumed.processes, 2);
     assert.equal(resumed.storedSessionId, first.storedSessionId);
+  });
+
+  it("starts a new agy session when agy's data no longer holds the chat's session", async function () {
+    const first = await run({ question: "Say hello." });
+    assert.equal(first.outcomeKind, "completed", JSON.stringify(first));
+    // A chat from before the plugin ran agy on its own data folder: agy has
+    // no record of the session the chat stored.
+    store = createMemoryFakeAcpSessionStore();
+    const second = await run({
+      question: "Say hello again.",
+      conversationKey: first.conversationKey,
+      newProcess: true,
+    });
+    assert.equal(second.outcomeKind, "completed", JSON.stringify(second));
+    assert.equal(second.deliveredText, "Hello from Antigravity.");
+    // The chat now points at a session agy holds, with this turn only.
+    const session = store.get(String(second.storedSessionId));
+    const asked = (session?.history || []).filter(
+      (update) => update.sessionUpdate === "user_message_chunk",
+    );
+    assert.lengthOf(asked, 1, JSON.stringify(session?.history));
   });
 
   it("shows agy's permission request as a review card and passes the answer on", async function () {
@@ -298,13 +380,7 @@ describe("workflow: Antigravity turns", function () {
     const result = await run({
       question: "Please search my library.",
       mcp: true,
-      createChild: (launch) =>
-        createFakeAcpChild({
-          scenarios: SCENARIOS,
-          store,
-          skipPermissions: launch.skipPermissions,
-          fetch: zoteroHttpFetch,
-        }),
+      createChild: (launch) => fakeAgy(launch, { fetch: zoteroHttpFetch }),
     });
     assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
     assert.equal(result.confirmations, 0);
@@ -321,30 +397,23 @@ describe("workflow: Antigravity turns", function () {
     );
   });
 
-  it("offers agy only the core Zotero tools, so paper_read fits agy's tool budget", async function () {
+  it("gives agy the whole Zotero catalog: the core tools directly, the rest on demand", async function () {
     const result = await run({
       question: "Give me an outline of this paper.",
       mcp: true,
-      createChild: (launch) =>
-        createFakeAcpChild({
-          scenarios: SCENARIOS,
-          store,
-          skipPermissions: launch.skipPermissions,
-          fetch: zoteroHttpFetch,
-        }),
+      createChild: (launch) => fakeAgy(launch, { fetch: zoteroHttpFetch }),
     });
     assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
     assert.equal(result.confirmations, 0);
-    const callable = store.get(
-      String(result.storedSessionId),
-    )?.callableMcpTools;
-    // The fake gives the model only what fits agy's budget, as agy does;
-    // the whole core set has to fit, paper_read included.
-    assert.sameMembers(callable || [], [
+    const session = store.get(String(result.storedSessionId));
+    // The fake offers directly only what agy would: the tools marked eager
+    // that fit agy's budget. The whole core set has to fit.
+    assert.sameMembers(session?.directMcpTools || [], [
       "paper_read",
       "library_retrieve",
       "library_search",
       "library_read",
+      "context_read",
       "read_attachment",
       "literature_search",
       "literature_read",
@@ -352,8 +421,38 @@ describe("workflow: Antigravity turns", function () {
       "undo",
       "library_cite",
     ]);
+    // Every other tool stays reachable, as in Codex and Claude Code.
+    assert.includeMembers(session?.callableMcpTools || [], [
+      "annotate_pdf",
+      "library_update",
+      "past_chat_search",
+      "file_io",
+    ]);
     assert.equal(result.deliveredText, "Read the paper.");
     assert.include(result.deliveredEvents, "codex_tool_activity");
+  });
+
+  it("runs a Zotero tool agy calls on demand like one it calls directly", async function () {
+    const result = await run({
+      question: "Please search my past chats.",
+      mcp: true,
+      createChild: (launch) => fakeAgy(launch, { fetch: zoteroHttpFetch }),
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.equal(result.deliveredText, "Searched the chats.");
+    const calls = (
+      store.get(String(result.storedSessionId))?.history || []
+    ).flatMap((update) =>
+      update.sessionUpdate === "tool_call" ? [update.name] : [],
+    );
+    assert.deepEqual(calls, ["call_mcp_tool"], "agy's on-demand tool call");
+    assert.equal(result.confirmations, 0, "a safe read runs without a card");
+    assert.include(result.deliveredEvents, "codex_tool_activity");
+    assert.notInclude(
+      result.deliveredEvents,
+      "tool_call",
+      "agy's own row for a Zotero tool is left to the MCP activity row",
+    );
   });
 
   it("lets agy read files in the Zotero data folder without a card, and still asks elsewhere", async function () {
@@ -382,13 +481,7 @@ describe("workflow: Antigravity turns", function () {
     const result = await run({
       question: "Give me an outline of this paper.",
       mcp: true,
-      createChild: (launch) =>
-        createFakeAcpChild({
-          scenarios: SCENARIOS,
-          store,
-          skipPermissions: launch.skipPermissions,
-          fetch: zoteroHttpFetch,
-        }),
+      createChild: (launch) => fakeAgy(launch, { fetch: zoteroHttpFetch }),
     });
     assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
     const schema = store.get(String(result.storedSessionId))?.mcpToolSchemas
@@ -419,11 +512,9 @@ describe("workflow: Antigravity turns", function () {
         { type: "text", text: "Wrote it." },
       ],
     };
-    const child = (launch: { skipPermissions: boolean }) =>
-      createFakeAcpChild({
+    const child = (launch: Launch) =>
+      fakeAgy(launch, {
         scenarios: [writeNote, ...SCENARIOS],
-        store,
-        skipPermissions: launch.skipPermissions,
         fetch: zoteroHttpFetch,
       });
     const auto = await run({
@@ -445,6 +536,18 @@ describe("workflow: Antigravity turns", function () {
       createChild: child,
     });
     assert.equal(ask.confirmations, 1, "Default asks before a Zotero write");
+  });
+
+  it("asks before a Zotero tool that reaches the computer, even in Auto mode", async function () {
+    const result = await run({
+      question: "Please run a command through zotero.",
+      mcp: true,
+      permissionMode: "auto",
+      approve: false,
+      createChild: (launch) => fakeAgy(launch, { fetch: zoteroHttpFetch }),
+    });
+    assert.equal(result.confirmations, 1, JSON.stringify(result));
+    assert.notInclude(result.deliveredEvents, "codex_tool_activity");
   });
 
   it("applies the turn's model and thinking level to agy's session", async function () {

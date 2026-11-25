@@ -28,8 +28,8 @@ const RUNTIME_PROVIDER_CLEANUP_REQUIRED: Readonly<
   claude_code: (input) =>
     Boolean(input.providerSessionId?.trim()) ||
     Number(input.libraryID || 0) > 0,
-  // ACP has no call that deletes a session; the session stays in the
-  // user's agy history, as a session started in the agy CLI would.
+  // ACP has no call that deletes a session; the session stays in the agy
+  // data folder the plugin runs agy on (src/antigravity/agyProfile.ts).
   antigravity: () => false,
 };
 

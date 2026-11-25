@@ -4,12 +4,19 @@
  * agy runs tools in its own process working directory and ignores the `cwd`
  * a session asks for, so each working directory gets its own process.
  * `--dangerously-skip-permissions` is a process flag, not a session mode, so
- * full access gets its own process too. The pool key names the binary
- * setting, the folder, and the flag; changing any of them starts a fresh
- * process.
+ * full access gets its own process too. agy reads its MCP config once, at
+ * start, from its profile folder, and that config names one conversation's
+ * Zotero server (agyProfile.ts), so each conversation gets its own process
+ * as well. The pool key names the binary setting, the folder, the flag, and
+ * the profile; changing any of them starts a fresh process.
+ *
+ * An agy process holds about 200 MB, so the pool keeps only the processes in
+ * use and the one asked for last: starting or reusing a process stops every
+ * other process that runs no turn.
  */
 
 import { AcpClient } from "./acpClient";
+import type { AgyProfile } from "./agyProfile";
 import {
   buildLoopbackNoProxyEnvironment,
   readRuntimeEnvValue,
@@ -33,6 +40,8 @@ export type AgyLaunchOptions = {
   skipPermissions: boolean;
   /** A configured agy path; empty means look it up. */
   agyPath?: string;
+  /** Where this agy reads its config and keeps its data. */
+  profile: AgyProfile;
 };
 
 export class AgyNotFoundError extends Error {
@@ -154,8 +163,17 @@ export async function resolveAgyBinary(
   throw new AgyNotFoundError();
 }
 
-export function buildAgyArguments(skipPermissions: boolean): string[] {
-  return skipPermissions ? ["acp", AGY_SKIP_PERMISSIONS_FLAG] : ["acp"];
+export function buildAgyArguments(
+  options: Pick<AgyLaunchOptions, "skipPermissions" | "profile">,
+): string[] {
+  return [
+    "acp",
+    "--gemini-dir",
+    options.profile.configDir,
+    "--app-data-dir",
+    options.profile.dataDirFromConfigDir,
+    ...(options.skipPermissions ? [AGY_SKIP_PERMISSIONS_FLAG] : []),
+  ];
 }
 
 /** PATH with agy's own folder and the common folders first; loopback unproxied. */
@@ -182,6 +200,8 @@ export function buildAgyPoolKey(options: AgyLaunchOptions): string {
     `agy=${String(options.agyPath || "").trim()}`,
     `cwd=${options.cwd}`,
     `skip=${options.skipPermissions ? 1 : 0}`,
+    `profile=${options.profile.configDir}`,
+    `config=${options.profile.configSignature}`,
   ].join("\u0000");
 }
 
@@ -193,7 +213,7 @@ export async function startAgyClient(
     throw new AgyWorkingDirectoryError(options.cwd);
   }
   const binary = await resolveAgyBinary(options.agyPath);
-  const args = buildAgyArguments(options.skipPermissions);
+  const args = buildAgyArguments(options);
   const Subprocess = loadGeckoSubprocess();
   let child;
   try {
@@ -219,11 +239,38 @@ export async function startAgyClient(
 
 const agyPool = new KeyedProcessPool<AcpClient>("LLM for Zotero: stop agy");
 
-/** The pooled client for these launch options, starting agy on first use. */
+const turnsByPoolKey = new Map<string, number>();
+
+/**
+ * Marks a turn running on the agy for these launch options, so the pool
+ * keeps its process; call the returned function when the turn ends. Take
+ * the hold before asking for the client.
+ */
+export function holdAgyProcess(options: AgyLaunchOptions): () => void {
+  const key = buildAgyPoolKey(options);
+  turnsByPoolKey.set(key, (turnsByPoolKey.get(key) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (turnsByPoolKey.get(key) ?? 1) - 1;
+    if (left > 0) turnsByPoolKey.set(key, left);
+    else turnsByPoolKey.delete(key);
+  };
+}
+
+/**
+ * The pooled client for these launch options, starting agy on first use.
+ * Every other pooled agy that runs no turn is stopped.
+ */
 export function getOrStartAgyClient(
   options: AgyLaunchOptions,
 ): Promise<AcpClient> {
-  return agyPool.get(buildAgyPoolKey(options), () => startAgyClient(options));
+  const key = buildAgyPoolKey(options);
+  agyPool.destroyWhere(
+    (pooledKey) => pooledKey !== key && !turnsByPoolKey.has(pooledKey),
+  );
+  return agyPool.get(key, () => startAgyClient(options));
 }
 
 /** Stops the pooled agy for these options (only `client`, when given). */

@@ -87,6 +87,19 @@ export class KeyedProcessPool<P extends PooledProcess> {
     }
   }
 
+  /**
+   * Removes and destroys the started processes `shouldDestroy` picks. A
+   * process whose spawn is still in flight stays.
+   */
+  destroyWhere(shouldDestroy: (key: string) => boolean): void {
+    for (const [key, promise] of [...this.entries]) {
+      const proc = this.spawned.get(promise);
+      if (!proc || !shouldDestroy(key)) continue;
+      this.entries.delete(key);
+      proc.destroy();
+    }
+  }
+
   /** Stops every pooled process and waits for them to exit. */
   async destroyAll(): Promise<void> {
     this.unregisterQuitBlocker?.();

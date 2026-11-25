@@ -14,6 +14,13 @@ import {
   resolveAgyBinary,
   startAgyClient,
 } from "../src/antigravity/agyProcess";
+import { buildAgyMcpConfig } from "../src/antigravity/agyProfile";
+import {
+  isAgyOwnFileRead,
+  zoteroToolNameOf,
+} from "../src/antigravity/agyToolCalls";
+import type { AcpToolCall } from "../src/shared/acpProtocol";
+import { KeyedProcessPool } from "../src/utils/keyedProcessPool";
 import type {
   AcpRequestPermissionParams,
   AcpSessionNotification,
@@ -331,21 +338,147 @@ describe("workflow: ACP client", function () {
   });
 
   describe("agy launch rules", function () {
-    it("gives each folder and permission level its own process", function () {
-      const base = { cwd: "/w/a", skipPermissions: false };
+    const profile = {
+      configDir: "/p/sessions/conversation-1",
+      dataDirFromConfigDir: "../../data",
+      dataDir: "/p/data",
+      configSignature: "aaaa0000",
+    };
+
+    it("gives each folder, permission level, and agy config its own process", function () {
+      const base = { cwd: "/w/a", skipPermissions: false, profile };
       const keys = new Set([
         buildAgyPoolKey(base),
         buildAgyPoolKey({ ...base, cwd: "/w/b" }),
         buildAgyPoolKey({ ...base, skipPermissions: true }),
         buildAgyPoolKey({ ...base, agyPath: "/opt/agy" }),
+        // Another conversation's config folder.
+        buildAgyPoolKey({
+          ...base,
+          profile: { ...profile, configDir: "/p/sessions/conversation-2" },
+        }),
+        // The same folder after its config changed: agy reads it at start.
+        buildAgyPoolKey({
+          ...base,
+          profile: { ...profile, configSignature: "bbbb1111" },
+        }),
       ]);
-      assert.equal(keys.size, 4);
+      assert.equal(keys.size, 6);
       assert.equal(buildAgyPoolKey(base), buildAgyPoolKey({ ...base }));
-      assert.deepEqual(buildAgyArguments(false), ["acp"]);
-      assert.deepEqual(buildAgyArguments(true), [
+    });
+
+    it("starts agy on the plugin's config folder and shared data folder", function () {
+      const args = [
         "acp",
+        "--gemini-dir",
+        "/p/sessions/conversation-1",
+        "--app-data-dir",
+        "../../data",
+      ];
+      assert.deepEqual(
+        buildAgyArguments({ skipPermissions: false, profile }),
+        args,
+      );
+      assert.deepEqual(buildAgyArguments({ skipPermissions: true, profile }), [
+        ...args,
         "--dangerously-skip-permissions",
       ]);
+    });
+
+    it("lists the Zotero server in agy's config with the core tools marked eager", function () {
+      assert.deepEqual(
+        buildAgyMcpConfig([
+          {
+            name: "zotero",
+            url: "http://127.0.0.1:23119/mcp",
+            headers: { Authorization: "Bearer t" },
+            eagerTools: ["paper_read", "library_search"],
+          },
+        ]),
+        {
+          mcpServers: {
+            zotero: {
+              url: "http://127.0.0.1:23119/mcp",
+              headers: { Authorization: "Bearer t" },
+              tools: {
+                paper_read: { eager: true },
+                library_search: { eager: true },
+              },
+            },
+          },
+        },
+      );
+      assert.deepEqual(buildAgyMcpConfig([]), { mcpServers: {} });
+    });
+
+    it("keeps a process that runs a turn and stops the idle ones", async function () {
+      const pool = new KeyedProcessPool<{
+        destroyed: boolean;
+        onClose(): () => void;
+        destroy(): void;
+        destroyAndWait(): Promise<boolean>;
+      }>("test: stop fake processes");
+      const spawn = () => {
+        const proc = {
+          destroyed: false,
+          onClose: () => () => undefined,
+          destroy: () => void (proc.destroyed = true),
+          destroyAndWait: async () => (proc.destroyed = true),
+        };
+        return Promise.resolve(proc);
+      };
+      const busy = await pool.get("busy", spawn);
+      const idle = await pool.get("idle", spawn);
+      await settle(0);
+      pool.destroyWhere((key) => key !== "busy");
+      assert.isFalse(busy.destroyed);
+      assert.isTrue(idle.destroyed);
+      assert.deepEqual(pool.keys(), ["busy"]);
+      await pool.destroyAll();
+    });
+
+    it("reads the Zotero tool from a direct call and from agy's call_mcp_tool", function () {
+      assert.equal(
+        zoteroToolNameOf({ name: "mcp_zotero_paper_read" }, "zotero"),
+        "paper_read",
+      );
+      const onDemand = {
+        name: "call_mcp_tool",
+        args: {
+          ServerName: "zotero",
+          ToolName: "annotate_pdf",
+          Arguments: {},
+        },
+      };
+      assert.equal(zoteroToolNameOf(onDemand, "zotero"), "annotate_pdf");
+      assert.isNull(zoteroToolNameOf(onDemand, "other_server"));
+      assert.isNull(zoteroToolNameOf({ name: "run_command" }, "zotero"));
+    });
+
+    it("treats only files in agy's own data folder as agy's own reads", function () {
+      const read = (path: string) =>
+        ({
+          toolCallId: "c",
+          kind: "read",
+          locations: [{ path }],
+        }) as AcpToolCall;
+      const data = "/p/data";
+      assert.isTrue(
+        isAgyOwnFileRead(
+          read("/p/data/brain/abc/.system_generated/steps/2/output.txt"),
+          data,
+        ),
+      );
+      assert.isTrue(
+        isAgyOwnFileRead(read("/p/data/mcp/zotero/annotate_pdf.json"), data),
+      );
+      assert.isFalse(isAgyOwnFileRead(read("/p/data/secrets.txt"), data));
+      assert.isFalse(
+        isAgyOwnFileRead(
+          read("/elsewhere/brain/abc/.system_generated/x.txt"),
+          data,
+        ),
+      );
     });
 
     it("puts agy's folder first on PATH and keeps loopback off any proxy", function () {
@@ -362,6 +495,7 @@ describe("workflow: ACP client", function () {
       await startAgyClient({
         cwd: `/nonexistent-${Date.now()}`,
         skipPermissions: false,
+        profile,
       }).catch((error) => (failure = error));
       assert.instanceOf(failure, AgyWorkingDirectoryError);
 

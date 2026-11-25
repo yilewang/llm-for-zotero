@@ -70,10 +70,13 @@ export type FakeAcpStep =
       /** Absolute paths the tool touches (its `locations`). */
       locations?: string[];
     }
-  /** A tool on an MCP server the client passed in `session/new`. */
+  /**
+   * A tool on an MCP server: one from agy's config (`mcpConfig`), or one the
+   * client passed in `session/new`.
+   */
   | {
       type: "mcpTool";
-      /** The server's name, or "*" for the first server the session has. */
+      /** The server's name, or "*" for the first server the agent has. */
       server: string;
       tool: string;
       args: Record<string, unknown>;
@@ -111,10 +114,16 @@ export type FakeAcpStoredSession = {
   model: string;
   thoughtLevel: string;
   /**
-   * The MCP tools the model could call on the last MCP use: those that fit
-   * agy's tool budget (eagerMcpToolNames).
+   * The MCP tools the model could call on the last MCP use. A server from
+   * agy's config offers them all; one passed in `session/new` only those
+   * that fit agy's tool budget (eagerMcpToolNames).
    */
   callableMcpTools?: string[];
+  /**
+   * Those of `callableMcpTools` the model calls by their own name
+   * (`mcp_<server>_<tool>`); the rest go through `call_mcp_tool`.
+   */
+  directMcpTools?: string[];
   /** The input schema of each MCP tool on the last MCP use. */
   mcpToolSchemas?: Record<string, unknown>;
   /** `_meta.antigravity.systemPrompt.append` from session/new. */
@@ -154,10 +163,58 @@ export type FakeAcpAgentOptions = {
   skipPermissions?: boolean;
   /** HTTP client for `mcpTool` steps; defaults to the global `fetch`. */
   fetch?: typeof fetch;
+  /**
+   * The content of agy's `<gemini dir>/config/mcp_config.json`: the servers
+   * agy itself connects to, with the tools marked `eager`. A function is
+   * called once, on the first MCP use, like agy reading the file.
+   */
+  mcpConfig?: FakeAgyMcpConfig | (() => Promise<FakeAgyMcpConfig>);
+  /**
+   * agy's data folder (`--app-data-dir`); replaces `{{dataDir}}` in a tool
+   * step's `locations`.
+   */
+  dataDir?: string;
   /** Session id factory, for stable ids in tests. */
   newSessionId?: () => string;
   /** Clock for `updatedAt`. */
   now?: () => Date;
+};
+
+export type FakeAgyMcpConfig = {
+  mcpServers?: Record<
+    string,
+    {
+      url: string;
+      headers?: Record<string, string>;
+      tools?: Record<string, { eager?: boolean }>;
+    }
+  >;
+};
+
+/** One MCP server as the fake reaches it, whichever way it was registered. */
+type FakeMcpServer = {
+  name: string;
+  url: string;
+  headers: Record<string, string>;
+  /** Set for a server from agy's config: the tools marked `eager`. */
+  eagerTools?: string[];
+};
+
+type FakeMcpTool = {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+};
+
+type FakeMcpCatalog = {
+  post: (
+    id: number | undefined,
+    method: string,
+    params: unknown,
+  ) => Promise<unknown>;
+  tools: FakeMcpTool[];
+  callable: string[];
+  direct: string[];
 };
 
 type PendingAgentRequest = {
@@ -209,9 +266,11 @@ function estimateTokens(text: string): number {
 
 export class FakeAcpAgent {
   private readonly options: Required<
-    Omit<FakeAcpAgentOptions, "fetch" | "newSessionId" | "now">
+    Omit<FakeAcpAgentOptions, "fetch" | "newSessionId" | "now" | "mcpConfig">
   > &
-    Pick<FakeAcpAgentOptions, "fetch">;
+    Pick<FakeAcpAgentOptions, "fetch" | "mcpConfig">;
+  /** The servers of agy's own config; they serve every session. */
+  private configMcpServers: Promise<FakeMcpServer[]> | null = null;
   private readonly newSessionId: () => string;
   private readonly now: () => Date;
   private readonly outputListeners: Array<(chunk: string) => void> = [];
@@ -235,6 +294,8 @@ export class FakeAcpAgent {
       authPendingRequests: options.authPendingRequests ?? 0,
       skipPermissions: options.skipPermissions ?? false,
       fetch: options.fetch,
+      mcpConfig: options.mcpConfig,
+      dataDir: options.dataDir ?? "",
     };
     this.authPendingRemaining = this.options.authPendingRequests;
     this.newSessionId =
@@ -491,6 +552,22 @@ export class FakeAcpAgent {
     params: AcpNewSessionParams & { sessionId: string },
     replay: boolean,
   ): AcpNewSessionResult {
+    // agy 1.5.17, for a session its data folder does not hold: session/load
+    // says so (-32002); session/resume gives a general error that points to
+    // session/load.
+    if (!this.options.store.get(params.sessionId)) {
+      throw (
+        replay
+          ? {
+              code: -32002,
+              message: `Session not found: ${params.sessionId}`,
+            }
+          : {
+              code: -32603,
+              message: `Failed to read session ${params.sessionId}; retry, or load it with session/load`,
+            }
+      ) satisfies JsonRpcError;
+    }
     const session = this.requireSession(params.sessionId);
     this.sessionMcpServers.set(session.sessionId, params.mcpServers ?? []);
     if (replay) {
@@ -754,12 +831,34 @@ export class FakeAcpAgent {
     const isMcp = step.type === "mcpTool";
     const serverName = isMcp
       ? step.server === "*"
-        ? (this.sessionMcpServers.get(session.sessionId)?.[0]?.name ?? "")
+        ? ((await this.mcpServersOf(session.sessionId))[0]?.name ?? "")
         : step.server
       : "";
-    const name = isMcp ? `mcp_${serverName}_${step.tool}` : step.name;
-    const args = step.args ?? {};
-    const kind = isMcp ? "other" : step.kind;
+    // agy 1.5.17 names a tool it offers directly `mcp_<server>_<tool>`;
+    // any other tool of a config server goes through `call_mcp_tool`.
+    let catalog: FakeMcpCatalog | null = null;
+    if (isMcp) {
+      try {
+        catalog = await this.loadMcpCatalog(session.sessionId, serverName);
+      } catch {
+        catalog = null;
+      }
+    }
+    const viaCallMcpTool =
+      isMcp &&
+      Boolean(catalog) &&
+      catalog!.callable.includes(step.tool) &&
+      !catalog!.direct.includes(step.tool);
+    const name = !isMcp
+      ? step.name
+      : viaCallMcpTool
+        ? "call_mcp_tool"
+        : `mcp_${serverName}_${step.tool}`;
+    const toolArgs = step.args ?? {};
+    const args: Record<string, unknown> = viaCallMcpTool
+      ? { Arguments: toolArgs, ServerName: serverName, ToolName: step.tool }
+      : toolArgs;
+    const kind = !isMcp ? step.kind : viaCallMcpTool ? "execute" : "other";
     const permissionKind = isMcp ? "mcp" : step.kind;
     const call: AcpToolCall = {
       toolCallId,
@@ -767,12 +866,18 @@ export class FakeAcpAgent {
       args,
       rawInput: args,
       kind,
-      title: isMcp ? `${serverName}: ${step.tool}` : (step.title ?? name),
+      title: !isMcp
+        ? (step.title ?? name)
+        : viaCallMcpTool
+          ? `MCP Tool ${step.tool}`
+          : `Run ${name}`,
       locations: isMcp
         ? []
         : step.readsAttachments
           ? attachedFileLocations(prompt)
-          : (step.locations ?? []).map((path) => ({ path })),
+          : (step.locations ?? []).map((path) => ({
+              path: path.replace("{{dataDir}}", this.options.dataDir),
+            })),
       content: [],
     };
     const update = (
@@ -832,7 +937,12 @@ export class FakeAcpAgent {
     let result: string;
     try {
       result = isMcp
-        ? await this.callMcpTool(session.sessionId, serverName, step.tool, args)
+        ? await this.callMcpTool(
+            session.sessionId,
+            serverName,
+            step.tool,
+            toolArgs,
+          )
         : (step.result ?? "");
     } catch (error) {
       update("failed", {
@@ -865,26 +975,64 @@ export class FakeAcpAgent {
     session.history.push({ sessionUpdate: "tool_call", ...call, status });
   }
 
-  /** A minimal MCP-over-HTTP client: initialize, then tools/call. */
-  private async callMcpTool(
+  private loadConfigMcpServers(): Promise<FakeMcpServer[]> {
+    this.configMcpServers ??= (async () => {
+      const source = this.options.mcpConfig;
+      const config = typeof source === "function" ? await source() : source;
+      return Object.entries(config?.mcpServers ?? {}).map(([name, server]) => ({
+        name,
+        url: server.url,
+        headers: server.headers ?? {},
+        eagerTools: Object.entries(server.tools ?? {})
+          .filter(([, tool]) => tool.eager === true)
+          .map(([tool]) => tool),
+      }));
+    })();
+    return this.configMcpServers;
+  }
+
+  /** Every MCP server a session reaches: agy's config first, then its own. */
+  private async mcpServersOf(sessionId: string): Promise<FakeMcpServer[]> {
+    const passed = (this.sessionMcpServers.get(sessionId) ?? []).flatMap(
+      (server): FakeMcpServer[] =>
+        "url" in server
+          ? [
+              {
+                name: server.name,
+                url: server.url,
+                headers: Object.fromEntries(
+                  (server.headers ?? []).map((header) => [
+                    header.name,
+                    header.value,
+                  ]),
+                ),
+              },
+            ]
+          : [],
+    );
+    return [...(await this.loadConfigMcpServers()), ...passed];
+  }
+
+  /**
+   * A minimal MCP-over-HTTP client: initializes, lists the tools, and works
+   * out which of them the model can call and how.
+   */
+  private async loadMcpCatalog(
     sessionId: string,
     serverName: string,
-    tool: string,
-    args: Record<string, unknown>,
-  ): Promise<string> {
-    const server = (this.sessionMcpServers.get(sessionId) ?? []).find(
+  ): Promise<FakeMcpCatalog> {
+    const server = (await this.mcpServersOf(sessionId)).find(
       (candidate) => candidate.name === serverName,
     );
-    if (!server || !("url" in server)) {
+    if (!server) {
       throw new Error(`MCP server not configured: ${serverName}`);
     }
     const fetchImpl = this.options.fetch ?? globalThis.fetch;
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
+      ...server.headers,
     };
-    for (const header of server.headers ?? [])
-      headers[header.name] = header.value;
     const post = async (
       id: number | undefined,
       method: string,
@@ -919,26 +1067,41 @@ export class FakeAcpAgent {
     });
     await post(undefined, "notifications/initialized", {});
     const listed = (await post(3, "tools/list", {})) as {
-      tools?: Array<{
-        name: string;
-        description?: string;
-        inputSchema?: unknown;
-      }>;
+      tools?: FakeMcpTool[];
     };
-    const callable = eagerMcpToolNames(listed?.tools ?? []);
+    const tools = listed?.tools ?? [];
+    // A config server keeps every tool: the ones marked eager (and fitting
+    // the budget) are direct, the rest go through call_mcp_tool. A server
+    // passed in session/new offers only what fits the budget, all direct.
+    const eager = server.eagerTools;
+    const direct = eagerMcpToolNames(
+      eager ? tools.filter((tool) => eager.includes(tool.name)) : tools,
+    );
+    const callable = eager ? tools.map((tool) => tool.name) : direct;
     const session = this.options.store.get(sessionId);
     if (session) {
       session.callableMcpTools = callable;
+      session.directMcpTools = direct;
       session.mcpToolSchemas = Object.fromEntries(
-        (listed?.tools ?? []).map((entry) => [entry.name, entry.inputSchema]),
+        tools.map((entry) => [entry.name, entry.inputSchema]),
       );
       this.options.store.put(session);
     }
-    // agy never offers the model a tool outside its budget.
-    if (!callable.includes(tool)) {
+    return { post, tools, callable, direct };
+  }
+
+  private async callMcpTool(
+    sessionId: string,
+    serverName: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<string> {
+    const catalog = await this.loadMcpCatalog(sessionId, serverName);
+    // agy never offers the model a session server's tool outside its budget.
+    if (!catalog.callable.includes(tool)) {
       throw new Error(`MCP tool not callable in agy: ${tool}`);
     }
-    const result = (await post(2, "tools/call", {
+    const result = (await catalog.post(2, "tools/call", {
       name: tool,
       arguments: args,
     })) as {
@@ -954,13 +1117,15 @@ export class FakeAcpAgent {
 }
 
 /**
- * agy 1.5.10 lets the model call only the MCP tools whose definitions fit
- * about 42 KB per session, filled smallest first, measured as agy stores a
- * tool: `{name, description, parameters}` as JSON (probed 2026-11-18: 20
- * tools of 3,000 bytes gave 14 callable, 20 of 400 bytes gave 20, and a
- * second server got none once the first had filled the budget).
+ * agy offers the model directly only the MCP tools whose definitions fit a
+ * budget, filled smallest first, measured as agy stores a tool:
+ * `{name, description, parameters}` as JSON. The budget is shared with the
+ * profile's skills and plugins: about 58 KB in a profile that has none (the
+ * one the plugin runs agy on), and less as the user installs them (probed
+ * on agy 1.5.10 and 1.5.17: 42 KB, then 37 KB after five plugins, in the
+ * same user profile).
  */
-export const AGY_EAGER_MCP_TOOL_BUDGET_BYTES = 42_000;
+export const AGY_EAGER_MCP_TOOL_BUDGET_BYTES = 58_000;
 
 export function eagerMcpToolNames(
   tools: ReadonlyArray<{

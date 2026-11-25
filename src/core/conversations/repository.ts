@@ -1147,7 +1147,7 @@ const ANTIGRAVITY_STORE = createRuntimeStoreAdapter(
       antigravityConversationStore.preflightDeleteConversationLocalRows,
   },
   // No fork (ACP has none) and no provider cleanup (ACP cannot delete a
-  // session; it stays in the user's agy history).
+  // session; it stays in the agy data folder the plugin runs agy on).
   {},
 );
 

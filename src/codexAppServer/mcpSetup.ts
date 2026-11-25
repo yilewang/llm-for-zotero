@@ -56,7 +56,6 @@ export const REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES = [
 export const REQUIRED_CLAUDE_RAW_PDF_MCP_TOOL_NAMES = [
   "library_search",
 ] as const;
-/** Antigravity sees its own tool set (ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES). */
 export const REQUIRED_ANTIGRAVITY_ZOTERO_MCP_TOOL_NAMES = [
   "library_search",
   "library_read",
@@ -749,46 +748,32 @@ export function buildClaudeZoteroMcpServerConfig(params: {
 }
 
 /**
- * The Zotero MCP server for an ACP agent such as Antigravity's `agy`: one
- * HTTP server in ACP's `mcpServers` shape, carrying the bearer token and the
- * conversation-stable scope header.
+ * The Zotero MCP server for Antigravity's `agy`: one HTTP server, carrying
+ * the bearer token and the conversation-stable scope header. agy reads it
+ * from its own config file (src/antigravity/agyProfile.ts).
  */
-export function buildAcpZoteroMcpServerConfig(params: {
+export function buildAgyZoteroMcpServerConfig(params: {
   profileSignature?: string;
   scopeToken?: string;
   required?: boolean;
   rawPdfMode?: boolean;
 }): {
   serverName: string;
-  mcpServers: Array<{
-    type: "http";
-    name: string;
-    url: string;
-    headers: Array<{ name: string; value: string }>;
-  }>;
+  url: string;
+  headers: Record<string, string>;
 } {
-  const serverName = getZoteroMcpServerName(params.profileSignature);
   const configValue = buildZoteroMcpConfigValue({
     scopeToken: params.scopeToken,
     required: params.required,
     rawPdfMode: params.rawPdfMode,
   });
-  const serverUrl =
-    typeof configValue.url === "string" && configValue.url.trim()
-      ? configValue.url.trim()
-      : getZoteroMcpServerUrl();
   return {
-    serverName,
-    mcpServers: [
-      {
-        type: "http",
-        name: serverName,
-        url: serverUrl,
-        headers: Object.entries(getConfigHeaders(configValue)).map(
-          ([name, value]) => ({ name, value }),
-        ),
-      },
-    ],
+    serverName: getZoteroMcpServerName(params.profileSignature),
+    url:
+      typeof configValue.url === "string" && configValue.url.trim()
+        ? configValue.url.trim()
+        : getZoteroMcpServerUrl(),
+    headers: getConfigHeaders(configValue),
   };
 }
 

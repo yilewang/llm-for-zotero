@@ -219,35 +219,39 @@ describe("workflow: MCP tool result size", function () {
     };
     const whole = await retrieveDirectly(args);
     assert.isNotEmpty(whole.snippets);
-    const antigravity = registerScope("antigravity");
-    try {
-      // A client of no conversation, and Antigravity, which is not offered
-      // context_read, read every row.
-      assert.notInclude(
-        (await listedTools()).map((entry) => entry.name),
-        "context_read",
-      );
-      assert.notInclude(
-        (await listedTools(antigravity.token)).map((entry) => entry.name),
-        "context_read",
-      );
-      for (const token of [undefined, antigravity.token]) {
-        const { payload } = await call("library_retrieve", args, token);
-        const result = payload.result;
-        assert.notProperty(result, "omitted");
-        assert.notProperty(result, "toolResultHandle");
-        assert.sameMembers(
-          (result.snippets as Array<{ snippetId: string }>).map(
-            (snippet) => snippet.snippetId,
-          ),
-          whole.snippets.map((snippet) => snippet.snippetId),
-          "every passage",
+    // A client of no conversation has nowhere to keep a stored result, so
+    // it is not offered context_read and reads every row.
+    assert.notInclude(
+      (await listedTools()).map((entry) => entry.name),
+      "context_read",
+    );
+    const { payload } = await call("library_retrieve", args);
+    const result = payload.result;
+    assert.notProperty(result, "omitted");
+    assert.notProperty(result, "toolResultHandle");
+    assert.sameMembers(
+      (result.snippets as Array<{ snippetId: string }>).map(
+        (snippet) => snippet.snippetId,
+      ),
+      whole.snippets.map((snippet) => snippet.snippetId),
+      "every passage",
+    );
+    assert.lengthOf(result.paperMatches, whole.paperMatches.length);
+    assertShownRowsCitable(payload);
+  });
+
+  it("offers every runtime's conversation the same paging, Antigravity included", async function () {
+    for (const authority of ["claude", "antigravity"] as const) {
+      const scope = registerScope(authority);
+      try {
+        assert.include(
+          (await listedTools(scope.token)).map((entry) => entry.name),
+          "context_read",
+          authority,
         );
-        assert.lengthOf(result.paperMatches, whole.paperMatches.length);
-        assertShownRowsCitable(payload);
+      } finally {
+        api.clearScopedMcpScope(scope.token);
       }
-    } finally {
-      api.clearScopedMcpScope(antigravity.token);
     }
   });
 

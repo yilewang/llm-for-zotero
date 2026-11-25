@@ -14,8 +14,9 @@ declare const PathUtils: any;
  * Antigravity turns against the installed agy (Phase 7), through the real
  * panel, agent engine, turn host, transport, and ACP client.
  *
- * Spends a little Antigravity quota and adds a few sessions to the local
- * agy history, so it runs only when asked for by name:
+ * Spends a little Antigravity quota, so it runs only when asked for by
+ * name. Its sessions go to the test Zotero's own agy data folder, not to the
+ * user's agy history:
  *   LLM_FOR_ZOTERO_TEST_ENTRIES=test-live/runtimes \
  *   LLM_FOR_ZOTERO_LIVE_RUNTIME_TESTS=antigravity \
  *     node scripts/run-workflow-tests.mjs --agent-live
@@ -120,6 +121,40 @@ describe("live: Antigravity on the installed agy", function () {
     assert.equal(result.outcomeKind, "completed", summary(result));
     assert.equal(result.confirmations, 0, summary(result));
     assert.match(result.outcomeText, /lantern harbors/i, summary(result));
+  });
+
+  it("L8 reads the turn's paper with paper_read, a tool agy offers directly", async function () {
+    if (!zoteroServesHttp) this.skip();
+    const result = await run({
+      question:
+        "Use the Zotero paper_read tool to read this paper, then quote its first sentence exactly.",
+      mcp: true,
+    });
+    assert.equal(result.outcomeKind, "completed", summary(result));
+    assert.equal(result.confirmations, 0, summary(result));
+    assert.include(result.deliveredEvents, "codex_tool_activity");
+    assert.match(
+      result.outcomeText,
+      /disposable paper about lantern harbors/i,
+      summary(result),
+    );
+  });
+
+  it("L9 reaches a Zotero tool agy does not offer directly", async function () {
+    if (!zoteroServesHttp) this.skip();
+    const result = await run({
+      question:
+        "Use the Zotero past_chat_search tool to search my past chats for 'lantern'. When the tool has run, reply with exactly SEARCHED and nothing else.",
+      mcp: true,
+    });
+    assert.equal(result.outcomeKind, "completed", summary(result));
+    assert.equal(result.confirmations, 0, summary(result));
+    assert.include(
+      result.deliveredEvents,
+      "codex_tool_activity",
+      summary(result),
+    );
+    assert.match(result.outcomeText, /SEARCHED/, summary(result));
   });
 
   it("L4 runs a picked model with a thinking level", async function () {

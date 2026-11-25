@@ -27,7 +27,7 @@ import {
   type AntigravityModelCatalog,
 } from "../../antigravity/modelCatalog";
 import {
-  buildAgyLaunchOptions,
+  prepareAgyPickerLaunchOptions,
   loadAntigravityPickerModelCatalog,
 } from "../../antigravity/runtime";
 import { getOrStartAgyClient } from "../../antigravity/agyProcess";
@@ -210,10 +210,7 @@ export function registerAntigravityPreferences(
       if (status) status.textContent = t("Starting the Antigravity CLI…");
       testButton.disabled = true;
       try {
-        const launch = buildAgyLaunchOptions(
-          getAntigravityPermissionModePref(),
-        );
-        await ensureDir(launch.cwd);
+        const launch = await prepareAgyPickerLaunchOptions();
         const client = await getOrStartAgyClient(launch);
         const version = client.getInitializeResult().agentInfo?.version;
         catalog = await loadAntigravityPickerModelCatalog(true);
