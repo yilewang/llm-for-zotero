@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { DOCUMENT_CONTEXT_POINTER } from "../src/utils/documentContextMessages";
 import { setModelProviderGroups } from "../src/utils/modelProviders";
 import type { WorkflowTestApi } from "../src/modules/contextPanel/workflowTestTypes";
 
@@ -169,6 +170,258 @@ describe("workflow: provider requests agree across chat, Agent mode and Test", f
           "the joined system message keeps every block",
         );
       }
+    } finally {
+      fake.restore();
+    }
+  });
+
+  // Issue #497: paper text once travelled only in the system channel. A relay
+  // that never passes that channel to the model left it with no paper, and a
+  // chat that already held "I have no paper" answers kept getting them.
+  const CAPTION_CODE = "CONTEXT-CHECK-62481";
+  const QUESTION = "Explain Figure 4.";
+  const PAPER_CONTEXT = [
+    "Full Paper Contexts:",
+    "",
+    "Paper 1",
+    "Title: Workflow context delivery check",
+    "",
+    "Paper Text:",
+    `Figure 4 caption: The experiment code is ${CAPTION_CODE}. The measured result is 73.6 units.`,
+  ].join("\n");
+  // Long enough for a provider cache plan, which needs at least 1024 tokens.
+  const LONG_PAPER_CONTEXT = `${PAPER_CONTEXT}\n${"An invented sentence about the invented result. ".repeat(150)}`;
+  const EARLIER_TURN = [
+    { role: "user" as const, content: "What is this paper about?" },
+    { role: "assistant" as const, content: "It is an invented paper." },
+  ];
+
+  function textOf(content: unknown): string {
+    if (typeof content === "string") return content;
+    return (content as Array<{ text?: string }>)
+      .map((part) => part.text || "")
+      .join("\n");
+  }
+
+  function documentRequest(
+    overrides: Partial<
+      Parameters<WorkflowTestApi["sendDocumentContextRequest"]>[0]
+    >,
+  ): Parameters<WorkflowTestApi["sendDocumentContextRequest"]>[0] {
+    return {
+      conversationKey: -497,
+      apiBase: "https://relay-497.example/v1",
+      apiKey: "workflow-dummy-key",
+      model: "relay-497-model",
+      providerProtocol: "openai_chat_compat",
+      prompt: QUESTION,
+      context: PAPER_CONTEXT,
+      contextMode: "full",
+      ...overrides,
+    };
+  }
+
+  it("delivers paper text to a chat-compatible provider that ignores system messages", async function () {
+    const request = documentRequest({});
+    const fake = installFakeProvider(request.apiBase, ({ body }) => {
+      // Like the reported relay: the model only ever sees the other roles.
+      const delivered = (body.messages || [])
+        .filter((message: { role: string }) => message.role !== "system")
+        .some((message: { content: unknown }) =>
+          textOf(message.content).includes(CAPTION_CODE),
+        );
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: delivered ? "OK" : "NO PAPER",
+              },
+              finish_reason: "stop",
+            },
+          ],
+        },
+      };
+    });
+    try {
+      const api = (Zotero as any).LLMForZotero.api
+        .workflowTest as WorkflowTestApi;
+      const result = await api.sendDocumentContextRequest(request);
+      assert.deepEqual(result, { chat: "OK", stream: "OK" });
+      assert.isAtLeast(fake.requests.length, 2);
+      for (const sent of fake.requests) {
+        const systems = sent.body.messages.filter(
+          (message: { role: string }) => message.role === "system",
+        );
+        assert.lengthOf(systems, 1, "one system message per request");
+        assert.notInclude(
+          systems[0].content,
+          CAPTION_CODE,
+          "paper text stays out of the system message",
+        );
+        const last = sent.body.messages[sent.body.messages.length - 1];
+        assert.equal(last.role, "user");
+        assert.isString(
+          last.content,
+          "a text-only turn stays a plain string for relays that reject parts",
+        );
+        assert.include(last.content, "Document Context:");
+        assert.include(last.content, CAPTION_CODE);
+        assert.include(last.content, QUESTION);
+      }
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("keeps paper text out of the Anthropic system field and the Responses instructions", async function () {
+    const api = (Zotero as any).LLMForZotero.api
+      .workflowTest as WorkflowTestApi;
+    const anthropic = documentRequest({
+      apiBase: "https://anthropic-relay-497.example",
+      model: "relay-497-messages-model",
+      providerProtocol: "anthropic_messages",
+    });
+    const anthropicFake = installFakeProvider(anthropic.apiBase, () => ({
+      ok: true,
+      status: 200,
+      body: {
+        content: [{ type: "text", text: "OK" }],
+        stop_reason: "end_turn",
+      },
+    }));
+    try {
+      await api.sendDocumentContextRequest(anthropic);
+      const sent = anthropicFake.requests.filter(
+        (request) => request.body.messages,
+      );
+      assert.isAtLeast(sent.length, 2);
+      for (const { body } of sent) {
+        assert.notInclude(JSON.stringify(body.system ?? ""), CAPTION_CODE);
+        const last = body.messages[body.messages.length - 1];
+        assert.equal(last.role, "user");
+        assert.include(textOf(last.content), CAPTION_CODE);
+        assert.include(textOf(last.content), QUESTION);
+      }
+    } finally {
+      anthropicFake.restore();
+    }
+
+    const responses = documentRequest({
+      apiBase: "https://responses-relay-497.example/v1",
+      model: "relay-497-responses-model",
+      providerProtocol: "responses_api",
+    });
+    const responsesFake = installFakeProvider(responses.apiBase, () => ({
+      ok: true,
+      status: 200,
+      body: responsesReply,
+    }));
+    try {
+      await api.sendDocumentContextRequest(responses);
+      const sent = responsesFake.requests.filter(
+        (request) => request.body.input,
+      );
+      assert.isAtLeast(sent.length, 2);
+      for (const { body } of sent) {
+        assert.notInclude(String(body.instructions ?? ""), CAPTION_CODE);
+        const last = body.input[body.input.length - 1];
+        assert.equal(last.role, "user");
+        assert.include(textOf(last.content), CAPTION_CODE);
+        assert.include(textOf(last.content), QUESTION);
+      }
+    } finally {
+      responsesFake.restore();
+    }
+  });
+
+  it("sends retrieved snippets with the question they were chosen for", function () {
+    const api = (Zotero as any).LLMForZotero.api
+      .workflowTest as WorkflowTestApi;
+    const prepared = api.prepareDocumentContextRequest(
+      documentRequest({ contextMode: "retrieval", history: EARLIER_TURN }),
+    );
+    const users = prepared.messages.filter(
+      (message) => message.role === "user",
+    );
+    assert.lengthOf(users, 2);
+    assert.equal(textOf(users[0].content), EARLIER_TURN[0].content);
+    const current = textOf(users[1].content);
+    assert.include(current, "Document Context:");
+    assert.include(current, CAPTION_CODE);
+    assert.include(current, QUESTION);
+    assert.isBelow(
+      current.indexOf(CAPTION_CODE),
+      current.indexOf(QUESTION),
+      "the snippets come before the question",
+    );
+  });
+
+  it("anchors a full paper in the first user message and points to it from the question", async function () {
+    const api = (Zotero as any).LLMForZotero.api
+      .workflowTest as WorkflowTestApi;
+    // A full paper is resent on every turn. It has to sit in the same place
+    // each time for a provider's prefix cache, such as DeepSeek's, to reuse it.
+    const request = documentRequest({
+      apiBase: "https://api.deepseek.com/anthropic",
+      model: "deepseek-flash",
+      providerProtocol: "anthropic_messages",
+      context: LONG_PAPER_CONTEXT,
+      history: EARLIER_TURN,
+    });
+    const fake = installFakeProvider(request.apiBase, () => ({
+      ok: true,
+      status: 200,
+      body: {
+        content: [{ type: "text", text: "OK" }],
+        stop_reason: "end_turn",
+      },
+    }));
+    try {
+      await api.sendDocumentContextRequest(request);
+      const sent = fake.requests.filter((entry) => entry.body.messages);
+      assert.isAtLeast(sent.length, 2);
+      for (const { body } of sent) {
+        assert.notInclude(JSON.stringify(body.system ?? ""), CAPTION_CODE);
+        const first = body.messages[0];
+        assert.equal(first.role, "user");
+        assert.match(first.content[0].text, /^Document Context:\n/);
+        assert.include(first.content[0].text, CAPTION_CODE);
+        assert.equal(
+          first.content[first.content.length - 1].text,
+          EARLIER_TURN[0].content,
+          "the first question follows the paper unchanged",
+        );
+        const last = body.messages[body.messages.length - 1];
+        assert.equal(last.role, "user");
+        const current = textOf(last.content);
+        assert.equal(
+          current,
+          `${DOCUMENT_CONTEXT_POINTER}\n\n${QUESTION}`,
+          "the paper is sent once, and the question says where it is",
+        );
+      }
+      // Same paper, next turn: everything up to the paper is byte-identical,
+      // which is what a prefix cache needs.
+      const nextTurn = api.prepareDocumentContextRequest({
+        ...request,
+        prompt: "And Figure 5?",
+        history: [
+          ...EARLIER_TURN,
+          { role: "user", content: QUESTION },
+          { role: "assistant", content: "It reports the experiment code." },
+        ],
+      });
+      const thisTurn = api.prepareDocumentContextRequest(request);
+      const firstUser = (messages: typeof thisTurn.messages) =>
+        messages.find((message) => message.role === "user");
+      assert.deepEqual(
+        firstUser(nextTurn.messages),
+        firstUser(thisTurn.messages),
+      );
     } finally {
       fake.restore();
     }

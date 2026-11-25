@@ -6,6 +6,7 @@
  * failures before sending requests.
  */
 
+import { DOCUMENT_CONTEXT_LABEL } from "./documentContextMessages";
 import { DEFAULT_INPUT_TOKEN_CAP } from "./llmDefaults";
 import {
   normalizeInputTokenCap,
@@ -47,6 +48,11 @@ export type InputCapMessageContent = string | (TextPart | ImagePart)[];
 export type InputCapMessage = {
   role: "user" | "assistant" | "system";
   content: InputCapMessageContent;
+  /**
+   * The request's document context (paper text, retrieved snippets). It is
+   * given up after history and before the question, whichever role it has.
+   */
+  kind?: "document_context";
 };
 
 export type ContextEstimateMessageContent =
@@ -75,7 +81,7 @@ const TOOL_CALL_OVERHEAD_ESTIMATED_TOKENS = 8;
 const TOKEN_SAFETY_RATIO = 0.9;
 const MIN_CONTEXT_CHARS = 256;
 const MIN_PROMPT_CHARS = 64;
-const CONTEXT_PREFIX = "Document Context:\n";
+const CONTEXT_PREFIX = DOCUMENT_CONTEXT_LABEL;
 const CONTEXT_TRUNCATION_NOTICE =
   "[Context truncated to fit model input limit]";
 const PROMPT_TRUNCATION_NOTICE = "[Prompt truncated to fit model input limit]";
@@ -127,28 +133,25 @@ function cloneMessages(messages: InputCapMessage[]): InputCapMessage[] {
   return messages.map((message) => ({
     role: message.role,
     content: cloneMessageContent(message.content),
+    ...(message.kind ? { kind: message.kind } : {}),
   }));
 }
 
+function isDocumentContext(message: InputCapMessage): boolean {
+  return message.kind === "document_context";
+}
+
+/** The question being asked: the last user message that is not the document. */
 function findLastUserIndex(messages: InputCapMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user") return i;
+    if (messages[i].role === "user" && !isDocumentContext(messages[i]))
+      return i;
   }
   return -1;
 }
 
 function findContextMessageIndex(messages: InputCapMessage[]): number {
-  for (let i = 0; i < messages.length; i++) {
-    const content = messages[i].content;
-    if (
-      messages[i].role === "system" &&
-      typeof content === "string" &&
-      content.startsWith(CONTEXT_PREFIX)
-    ) {
-      return i;
-    }
-  }
-  return -1;
+  return messages.findIndex(isDocumentContext);
 }
 
 function estimateToolCallTokens(
@@ -294,7 +297,10 @@ function buildFallbackMessages(
   lastUserIndex: number,
 ): InputCapMessage[] {
   const fallback = messages.filter(
-    (message, index) => message.role === "system" || index === lastUserIndex,
+    (message, index) =>
+      message.role === "system" ||
+      isDocumentContext(message) ||
+      index === lastUserIndex,
   );
   if (fallback.length) return fallback;
   return messages.length ? [messages[messages.length - 1]] : [];
@@ -600,7 +606,11 @@ export function applyModelInputTokenCap(
     let i = 0;
     i < working.length && estimatedAfterTokens > softLimitTokens;
   ) {
-    if (i === lastUserIndex || working[i].role === "system") {
+    if (
+      i === lastUserIndex ||
+      working[i].role === "system" ||
+      isDocumentContext(working[i])
+    ) {
       i++;
       continue;
     }

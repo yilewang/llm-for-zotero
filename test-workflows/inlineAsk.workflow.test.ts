@@ -1,4 +1,5 @@
 import { assert } from "chai";
+import { DOCUMENT_CONTEXT_POINTER } from "../src/utils/documentContextMessages";
 import {
   getModelEntryById,
   setModelProviderGroups,
@@ -586,9 +587,11 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.include(stream.lastUserText, `> ${quote}`);
     assert.include(stream.lastUserText, `> ${quote2}`);
     assert.include(stream.lastUserText, typed);
+    // A follow-up points back to the paper and selection, which stay in the
+    // card's first message.
     assert.equal(
       stream.lastUserText,
-      `About this part of your answer:\n> ${quote}\n\n> ${quote2}\n\n${typed}`,
+      `${DOCUMENT_CONTEXT_POINTER}\n\nAbout this part of your answer:\n> ${quote}\n\n> ${quote2}\n\n${typed}`,
     );
     stream.push("The second answer.");
     stream.finish();
@@ -615,7 +618,7 @@ describe("workflow: Inline Ask in the reader", function () {
     );
     assert.equal(
       stream3.lastUserText,
-      `About this part of your answer:\n> ${only}\n\nExplain this part of your answer.`,
+      `${DOCUMENT_CONTEXT_POINTER}\n\nAbout this part of your answer:\n> ${only}\n\nExplain this part of your answer.`,
     );
     stream3.push("Explained.");
     stream3.finish();

@@ -140,6 +140,10 @@ import {
   resolveModelInputTokenLimit,
   type ModelInputTokenLimitSource,
 } from "../../utils/modelInputCap";
+import {
+  documentContextPlacementFor,
+  type DocumentContextPlacement,
+} from "../../utils/documentContextMessages";
 import { subscribeModelProviderGroups } from "../../utils/modelProviders";
 import { createModelProviderGroupsPanelSync } from "./modelProviderPanelSync";
 import { formatDisplayModelName } from "../../utils/modelDisplayLabel";
@@ -4838,6 +4842,7 @@ export const codexRetrySkillContextForTests = codexRetrySkillContext;
 
 type ContextPlanForRequest = {
   combinedContext: string;
+  contextPlacement: DocumentContextPlacement;
   strategy: ContextAssemblyStrategy;
   assistantInstruction?: string;
   contextCache?: import("../../contextCache/manager").ContextCachePlan;
@@ -4961,6 +4966,7 @@ function buildLightCodexNativeMcpContextPlan(params: {
   params.setStatusSafely("Using Codex native Zotero tools", "sending");
   return {
     combinedContext: "",
+    contextPlacement: "turn",
     strategy: "general-retrieval",
     assistantInstruction: "",
     paperContexts: params.paperContexts,
@@ -5131,6 +5137,7 @@ async function buildContextPlanForRequest(params: {
 
   return {
     combinedContext,
+    contextPlacement: documentContextPlacementFor(plan.mode),
     strategy: plan.strategy,
     assistantInstruction: plan.assistantInstruction,
     contextCache: plan.contextCache,
@@ -7268,6 +7275,7 @@ export async function retryLatestAssistantResponse(
     const requestParams = {
       prompt: dispatchQuestion,
       context: combinedContext,
+      contextPlacement: contextPlan.contextPlacement,
       history: llmHistory,
       signal: getAbortController(conversationKey)?.signal,
       images: allImages.length ? allImages : undefined,
@@ -10221,6 +10229,7 @@ export async function sendQuestion(
     const requestParams = {
       prompt: question,
       context: combinedContext,
+      contextPlacement: contextPlan.contextPlacement,
       history: llmHistory,
       signal: getAbortController(conversationKey)?.signal,
       images: allSendImages.length ? allSendImages : undefined,

@@ -1209,6 +1209,28 @@ export type LibraryRetrieveBenchResult = {
   queryCoverage: LibraryRetrieveResult["resourcePool"]["queryCoverage"];
 };
 
+/** One plain-chat request with document context, built without a panel. */
+export type WorkflowTestDocumentContextRequest = {
+  conversationKey: number;
+  model: string;
+  apiBase: string;
+  apiKey: string;
+  providerProtocol:
+    | "openai_chat_compat"
+    | "anthropic_messages"
+    | "responses_api";
+  prompt: string;
+  context: string;
+  history?: import("../../shared/llm").ChatMessage[];
+  /**
+   * The context planner's assembly mode. The context's placement and the
+   * provider cache plan follow from it exactly as in a paper chat.
+   */
+  contextMode: "full" | "retrieval";
+  inputTokenCap?: number;
+  images?: string[];
+};
+
 export type WorkflowTestApi = {
   /**
    * The plugin's own Antigravity storage (a test bundle cannot import it: its
@@ -1290,6 +1312,21 @@ export type WorkflowTestApi = {
     agent: string;
     continuation: string;
   }>;
+  /**
+   * Sends one plain-chat request that carries document context, the way a
+   * paper chat does, once through callLLM and once through callLLMStream.
+   */
+  sendDocumentContextRequest: (
+    params: WorkflowTestDocumentContextRequest,
+  ) => Promise<{ chat: string; stream: string }>;
+  /** The messages and input-cap result that same request is prepared with. */
+  prepareDocumentContextRequest: (
+    params: WorkflowTestDocumentContextRequest,
+  ) => {
+    messages: import("../../shared/llm").ChatMessage[];
+    capped: boolean;
+    effects: import("../../utils/modelInputCap").InputCapEffects;
+  };
   mountPublicationTrace(
     documentId: string,
     text: string,

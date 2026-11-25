@@ -126,4 +126,104 @@ describe("workflow: user-authoritative model input cap", function () {
       },
     );
   });
+
+  // Issue #497: the paper text travels in the user turn. The cap still has to
+  // give up history first, then paper text, and the question last.
+  const DOCUMENT_MARKER = "CAP-DOCUMENT-START";
+  const TRUNCATION_NOTICE = "[Context truncated to fit model input limit]";
+
+  function textOf(content: unknown): string {
+    if (typeof content === "string") return content;
+    return (content as Array<{ text?: string }>)
+      .map((part) => part.text || "")
+      .join("\n");
+  }
+
+  function documentOf(chars: number): string {
+    return `${DOCUMENT_MARKER}\n${"An invented sentence of paper text. ".repeat(Math.ceil(chars / 36))}`;
+  }
+
+  it("shortens the paper text and leaves the question whole", function () {
+    const question = `Explain Figure 4. ${"Cover every panel in turn. ".repeat(20)}END-OF-QUESTION`;
+    const prepared = api.prepareDocumentContextRequest({
+      conversationKey: -4971,
+      apiBase: "https://relay-497-cap.example/v1",
+      apiKey: "workflow-dummy-key",
+      model: "relay-497-cap-model",
+      providerProtocol: "openai_chat_compat",
+      prompt: question,
+      context: documentOf(60_000),
+      contextMode: "retrieval",
+      inputTokenCap: 6_000,
+    });
+    assert.isTrue(prepared.capped);
+    assert.deepInclude(prepared.effects, {
+      documentContextTrimmed: true,
+      documentContextDropped: false,
+      promptTrimmed: false,
+    });
+    const last = prepared.messages[prepared.messages.length - 1];
+    assert.equal(last.role, "user");
+    const text = textOf(last.content);
+    assert.include(text, DOCUMENT_MARKER, "the paper is in the user turn");
+    assert.include(text, TRUNCATION_NOTICE);
+    assert.include(text, question, "the question is not cut");
+    assert.isBelow(text.indexOf(TRUNCATION_NOTICE), text.indexOf(question));
+    for (const message of prepared.messages) {
+      if (message.role === "system")
+        assert.notInclude(textOf(message.content), DOCUMENT_MARKER);
+    }
+  });
+
+  it("keeps a cached paper when older turns are dropped", function () {
+    const turn = (index: number) => [
+      {
+        role: "user" as const,
+        content: `Question ${index}. ${"Filler question text. ".repeat(280)}`,
+      },
+      {
+        role: "assistant" as const,
+        content: `Answer ${index}. ${"Filler answer text. ".repeat(300)}`,
+      },
+    ];
+    const prepared = api.prepareDocumentContextRequest({
+      conversationKey: -4972,
+      // DeepSeek caches a stable prefix, so the paper is anchored at the head.
+      apiBase: "https://api.deepseek.com/anthropic",
+      apiKey: "workflow-dummy-key",
+      model: "deepseek-flash",
+      providerProtocol: "anthropic_messages",
+      prompt: "Explain Figure 4.",
+      context: documentOf(8_000),
+      history: [1, 2, 3, 4, 5, 6].flatMap(turn),
+      contextMode: "full",
+      inputTokenCap: 8_000,
+    });
+    assert.isTrue(prepared.capped);
+    assert.deepInclude(prepared.effects, {
+      historyDropped: true,
+      documentContextTrimmed: false,
+      documentContextDropped: false,
+    });
+    const holders = prepared.messages.filter((message) =>
+      textOf(message.content).includes(DOCUMENT_MARKER),
+    );
+    assert.lengthOf(holders, 1, "the paper is sent once");
+    const firstUser = prepared.messages.find(
+      (message) => message.role === "user",
+    );
+    assert.strictEqual(
+      holders[0],
+      firstUser,
+      "the paper opens the first user message that is left",
+    );
+    assert.match(textOf(firstUser!.content), /^Document Context:\n/);
+    assert.notInclude(
+      prepared.messages.map((message) => textOf(message.content)).join("\n"),
+      "Question 1.",
+      "the oldest turn went first",
+    );
+    const last = prepared.messages[prepared.messages.length - 1];
+    assert.include(textOf(last.content), "Explain Figure 4.");
+  });
 });

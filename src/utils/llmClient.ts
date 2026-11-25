@@ -112,6 +112,13 @@ import {
   resolveModelInputTokenLimit,
   type InputCapResult,
 } from "./modelInputCap";
+import {
+  documentContextEntry,
+  isDocumentContextPart,
+  placeDocumentContext,
+  type DocumentContextPlacement,
+  type RequestMessage,
+} from "./documentContextMessages";
 import { resolveProviderCapabilities } from "../providers";
 import {
   anthropicPromptTokens,
@@ -166,6 +173,11 @@ export type ChatFileAttachment = {
 export type ChatParams = {
   prompt: string;
   context?: string;
+  /**
+   * Where the context goes in the conversation. Missing means the same
+   * context is sent on every turn ("conversation").
+   */
+  contextPlacement?: DocumentContextPlacement;
   history?: ChatMessage[];
   signal?: AbortSignal;
   /** Base64 data URL of an image to include with the prompt (legacy single-image field) */
@@ -1265,19 +1277,18 @@ export async function uploadFilesForResponses(params: {
   return fileIds;
 }
 
-/** Build messages array from params */
+/**
+ * Build the request's messages. The system channel holds instructions only;
+ * the document context is its own entry until prepareChatRequest places it
+ * in a user message.
+ */
 function buildMessages(
   params: ChatParams,
   systemPrompt: string,
-): ChatMessage[] {
-  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt }];
-
-  if (params.context) {
-    messages.push({
-      role: "system",
-      content: `Document Context:\n${params.context}`,
-    });
-  }
+): RequestMessage[] {
+  const messages: RequestMessage[] = [
+    { role: "system", content: systemPrompt },
+  ];
 
   if (Array.isArray(params.systemMessages)) {
     for (const systemMessage of params.systemMessages) {
@@ -1287,6 +1298,10 @@ function buildMessages(
         content: systemMessage.trim(),
       });
     }
+  }
+
+  if (params.context) {
+    messages.push(documentContextEntry(params.context));
   }
 
   if (params.history?.length) {
@@ -1333,8 +1348,8 @@ function buildMessages(
   return messages;
 }
 
-function stripUnsupportedImageContent(
-  messages: ChatMessage[],
+function stripUnsupportedImageContent<T extends ChatMessage>(
+  messages: T[],
   params: {
     modelName: string;
     apiBase?: string;
@@ -1342,7 +1357,7 @@ function stripUnsupportedImageContent(
     providerProtocol?: ProviderProtocol;
     inputMode?: ModelInputMode;
   },
-): ChatMessage[] {
+): T[] {
   const capabilities = resolveProviderCapabilities({
     model: params.modelName,
     apiBase: params.apiBase,
@@ -1411,7 +1426,10 @@ export function prepareChatRequest(params: ChatParams): PreparedChatRequest {
     authMode,
     model,
     systemPrompt,
-    messages: inputCap.messages as ChatMessage[],
+    messages: placeDocumentContext(
+      inputCap.messages as RequestMessage[],
+      params.contextPlacement ?? "conversation",
+    ),
     inputCap,
     providerProtocol,
     contextCache: params.contextCache,
@@ -2052,6 +2070,39 @@ function mergeSystemMessagesForChatPayload(
   ];
 }
 
+/**
+ * A message that carries the document context, as chat-compatible providers
+ * take it: its text as one string, because some relays reject content parts,
+ * and parts only when it also carries images.
+ */
+function renderDocumentContextForChatPayload(
+  message: ChatMessage,
+): ChatMessage {
+  if (
+    typeof message.content === "string" ||
+    !message.content.some(isDocumentContextPart)
+  ) {
+    return message;
+  }
+  const text = message.content
+    .filter((part): part is TextContent => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n");
+  const images = message.content.filter(
+    (part): part is ImageContent => part.type === "image_url",
+  );
+  return {
+    role: message.role,
+    content: images.length ? [{ type: "text", text }, ...images] : text,
+  };
+}
+
+function buildChatPayloadMessages(messages: ChatMessage[]): ChatMessage[] {
+  return mergeSystemMessagesForChatPayload(messages).map(
+    renderDocumentContextForChatPayload,
+  );
+}
+
 function buildResponsesInput(
   messages: ChatMessage[],
   responseFileIds?: string[],
@@ -2627,12 +2678,28 @@ function buildAnthropicMessagesPayload(params: {
       data: part.base64,
     },
   }));
+  const cacheControl =
+    params.contextCache?.enabled &&
+    params.contextCache.requestHints?.anthropicBlockCacheControl
+      ? params.contextCache.requestHints.anthropicBlockCacheControl
+      : undefined;
+  // The cached prefix ends at the document context: the system text and the
+  // document are what later turns repeat.
+  let documentContextCached = false;
   const nonSystemMessages = nonSystemSourceMessages.map((m, index) => {
-    const content =
+    const content: Array<Record<string, unknown>> =
       typeof m.content === "string"
         ? [{ type: "text", text: m.content }]
         : m.content.map((c) => {
             if (c.type !== "image_url") {
+              if (cacheControl && isDocumentContextPart(c)) {
+                documentContextCached = true;
+                return {
+                  type: "text",
+                  text: c.text,
+                  cache_control: cacheControl,
+                };
+              }
               return { type: "text", text: (c as { text: string }).text };
             }
             const parsed = parseDataUrl(
@@ -2685,14 +2752,10 @@ function buildAnthropicMessagesPayload(params: {
   Object.assign(payload, reasoningPayload.extra);
   if (systemParts.length > 0) {
     const systemText = systemParts.join("\n\n");
-    const cacheControl =
-      params.contextCache?.enabled &&
-      params.contextCache.requestHints?.anthropicBlockCacheControl
-        ? params.contextCache.requestHints.anthropicBlockCacheControl
-        : undefined;
-    payload.system = cacheControl
-      ? [{ type: "text", text: systemText, cache_control: cacheControl }]
-      : systemText;
+    payload.system =
+      cacheControl && !documentContextCached
+        ? [{ type: "text", text: systemText, cache_control: cacheControl }]
+        : systemText;
   }
   if (!reasoningPayload.omitTemperature) {
     payload.temperature = params.effectiveTemperature;
@@ -3373,7 +3436,7 @@ function createChatPayloadBuilder(params: {
       : null;
     const chatMessages = useResponses
       ? messages
-      : mergeSystemMessagesForChatPayload(messages);
+      : buildChatPayloadMessages(messages);
     if (useResponses && isCodexAuth && responsesInput) {
       const codexReasoningEffort = sanitizeCodexDirectReasoningConfig(
         model,

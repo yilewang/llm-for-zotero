@@ -5,7 +5,14 @@ import {
   clearStandaloneSurfaceChoices,
   getSelectedModelEntryForSurface,
 } from "./surfaceChoices";
-import { callLLM, callLLMStream } from "../../utils/llmClient";
+import {
+  callLLM,
+  callLLMStream,
+  prepareChatRequest,
+  type ChatParams,
+} from "../../utils/llmClient";
+import { planContextCacheReuse } from "../../contextCache/manager";
+import { documentContextPlacementFor } from "../../utils/documentContextMessages";
 import { appLogger } from "../../core/logging";
 import { resolveRetrievalQueryPlan } from "../../services/retrieval/retrievalQueryPlan";
 import { getRecentRetrievalTimings } from "../../services/retrieval/retrievalTiming";
@@ -162,6 +169,7 @@ import type {
   WorkflowTestReaderInlineAskModelMenu,
   WorkflowTestReaderInlineAskPromptEdit,
   WorkflowTestReaderInlineAskPromptMenu,
+  WorkflowTestDocumentContextRequest,
   WorkflowTestPanelChatMessages,
   WorkflowTestReaderSelectionDraft,
   WorkflowTestReaderPopupActionRow,
@@ -354,6 +362,32 @@ let codexModelCatalogRequests: string[] = [];
 let codexDirectCatalogRequests: string[] = [];
 let modelCatalogRequests: string[] = [];
 let modelCatalogRequestHeaders: Record<string, string>[] = [];
+
+/**
+ * The request a paper chat sends for one turn: the document context plus the
+ * cache plan its context planner resolves for that context.
+ */
+function documentContextRequestParams(
+  input: WorkflowTestDocumentContextRequest,
+): ChatParams {
+  const { conversationKey, contextMode, ...request } = input;
+  return {
+    ...request,
+    contextPlacement: documentContextPlacementFor(contextMode),
+    contextCache: planContextCacheReuse({
+      model: input.model,
+      apiBase: input.apiBase,
+      protocol: input.providerProtocol,
+      mode: contextMode,
+      strategy:
+        contextMode === "full"
+          ? "paper-cache-full"
+          : "paper-followup-retrieval",
+      contextText: input.context,
+    }),
+    requestScope: createProviderRequestScope(conversationKey),
+  };
+}
 
 function configureModelCatalogFetch(input: {
   status: number;
@@ -11928,6 +11962,20 @@ export function installWorkflowTestHarness(targetAddon: {
         stream: stream.text,
         agent: agent.text,
         continuation: continuation.text,
+      };
+    },
+    async sendDocumentContextRequest(input) {
+      const params = documentContextRequestParams(input);
+      const chat = await callLLM(params);
+      const stream = await callLLMStream(params, () => undefined);
+      return { chat: chat.text, stream: stream.text };
+    },
+    prepareDocumentContextRequest(input) {
+      const prepared = prepareChatRequest(documentContextRequestParams(input));
+      return {
+        messages: prepared.messages,
+        capped: prepared.inputCap.capped,
+        effects: prepared.inputCap.effects,
       };
     },
     mountAgentActivityTrace: (message) => {
