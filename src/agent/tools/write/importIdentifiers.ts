@@ -21,6 +21,7 @@ import {
 } from "../shared";
 import {
   executeAndRecordUndo,
+  importedItemCount,
   normalizeChecklistSelectionFromResolution,
   planLibraryMutations,
 } from "./mutateLibraryShared";
@@ -76,17 +77,7 @@ export function createImportIdentifiersTool(
         onApproved: "Importing papers",
         onDenied: "Paper import cancelled",
         onSuccess: ({ content }) => {
-          const result =
-            content && typeof content === "object"
-              ? (content as Record<string, unknown>)
-              : {};
-          const resultInner =
-            result.result && typeof result.result === "object"
-              ? (result.result as Record<string, unknown>)
-              : {};
-          const count = Number(
-            resultInner.importedCount || result.importedCount || 0,
-          );
+          const count = importedItemCount(content);
           return count > 0
             ? `Imported ${count} paper${count === 1 ? "" : "s"}`
             : "Papers imported";

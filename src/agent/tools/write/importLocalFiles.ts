@@ -20,6 +20,7 @@ import {
 } from "../shared";
 import {
   executeAndRecordUndo,
+  importedItemCount,
   normalizeChecklistSelectionFromResolution,
   planLibraryMutations,
 } from "./mutateLibraryShared";
@@ -96,15 +97,7 @@ export function createImportLocalFilesTool(
         onApproved: "Importing files",
         onDenied: "Import cancelled",
         onSuccess: ({ content }) => {
-          const r =
-            content && typeof content === "object"
-              ? (content as Record<string, unknown>)
-              : {};
-          const inner =
-            r.result && typeof r.result === "object"
-              ? (r.result as Record<string, unknown>)
-              : {};
-          const count = Number(inner.succeeded || r.succeeded || 0);
+          const count = importedItemCount(content);
           return count > 0
             ? `Imported ${count} file${count === 1 ? "" : "s"}`
             : "Import completed";

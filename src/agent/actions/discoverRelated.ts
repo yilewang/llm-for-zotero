@@ -2,6 +2,7 @@ import { buildActionCallDigest } from "../authorization/proposal";
 import { callTool } from "./executor";
 import { getMetadataField } from "./metadataSnapshot";
 import { HOST_ACTION_SEARCH_NEED } from "../tools/read/outsideSearchNeed";
+import { importedItemCount } from "../tools/write/mutateLibraryShared";
 import type { PaperScopedActionProfile } from "./paperScope";
 import type {
   ActionExecutionContext,
@@ -535,14 +536,9 @@ export const discoverRelatedAction: AgentAction<
       },
     );
 
-    const importContent = importResult.content as Record<string, unknown>;
-    const resultObj = importContent.result as
-      | Record<string, unknown>
-      | undefined;
-    const importedCount =
-      importResult.ok && resultObj
-        ? Number(resultObj.succeeded || resultObj.importedCount || 0)
-        : 0;
+    const importedCount = importResult.ok
+      ? importedItemCount(importResult.content)
+      : 0;
 
     ctx.onProgress({
       type: "step_done",

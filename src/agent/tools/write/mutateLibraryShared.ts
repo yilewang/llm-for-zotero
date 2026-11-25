@@ -729,6 +729,19 @@ export async function executeAndRecordUndo(
 }
 
 /**
+ * How many items an import saved, read from the content executeAndRecordUndo
+ * returns for an import operation: { result: { result: { succeeded } } }.
+ */
+export function importedItemCount(content: unknown): number {
+  const record = (value: unknown) =>
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const count = Number(record(record(record(content).result).result).succeeded);
+  return Number.isFinite(count) && count > 0 ? count : 0;
+}
+
+/**
  * The result of a checkpointed batch: its counts and the sentence that names
  * what was done and what remains, instead of one row per item.
  */
