@@ -51,6 +51,8 @@ jobs:
         run: npm run check:architecture
       - name: Check import cycles
         run: npm run check:cycles
+      - name: Check for unused code
+        run: npm run check:unused-code
 
   build:
     name: Build
