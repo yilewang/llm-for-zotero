@@ -37,6 +37,7 @@ import {
   acquireMineruServerJob,
 } from "./mineruServerManager";
 import { lowerTrimmedString } from "../core/values";
+import { getIOUtils, getOSFile } from "./geckoFs";
 
 const MINERU_DIRECT_API_BASE = "https://mineru.net/api/v4";
 
@@ -195,23 +196,6 @@ function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   });
 }
 
-type IOUtilsLike = {
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  write?: (path: string, data: Uint8Array) => Promise<unknown>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<unknown>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<unknown>;
-};
-
-type OSFileLike = {
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-};
-
 type DownloadTransport = "fetch" | "zotero-http" | "curl";
 
 type BinaryDownloadAttempt = {
@@ -264,14 +248,6 @@ type MineruZipBytesExtractionResult =
       message: string;
       zipInspection: MinerUZipInspectionResult;
     };
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
-function getOSFile(): OSFileLike | undefined {
-  return (globalThis as { OS?: { File?: OSFileLike } }).OS?.File;
-}
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

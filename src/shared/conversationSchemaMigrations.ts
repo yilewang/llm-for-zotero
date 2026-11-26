@@ -1,8 +1,5 @@
 import { rekeyScopedConversationKey } from "./conversationScopedKey";
-
-type ZoteroDb = {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
+import { getZoteroDb } from "../core/zoteroDb";
 
 export const CONVERSATION_SCHEMA_MIGRATIONS_TABLE =
   "llm_for_zotero_conversation_schema_migrations";
@@ -20,13 +17,6 @@ export const CONVERSATION_KEY_LEDGER_MIGRATION_ID =
 
 const CONVERSATION_ID_TRANSITION_DESCRIPTION =
   "Conversation history stores use canonical conversation_id with legacy numeric keys as compatibility aliases.";
-
-function getZoteroDb(): ZoteroDb | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { DB?: ZoteroDb } }).Zotero
-      ?.DB || null
-  );
-}
 
 function normalizeMigrationID(value: unknown): string {
   return typeof value === "string" ? value.trim().slice(0, 160) : "";

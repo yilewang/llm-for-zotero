@@ -12,11 +12,7 @@ import {
 } from "../../shared/conversationWriteFence";
 import { positiveIntOrUndefined } from "../../core/values";
 import { stableJson } from "./stableJson";
-
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction: <T>(task: () => Promise<T>) => Promise<T>;
-};
+import { getZoteroDb } from "../../core/zoteroDb";
 
 export type AgentTranscriptSegment = {
   conversationKey: number;
@@ -39,15 +35,6 @@ const TRANSCRIPT_INDEX = "llm_for_zotero_agent_transcript_key_idx";
 const transcriptByKey = new Map<string, AgentTranscriptSegment>();
 const hydratedKeys = new Set<string>();
 let initPromise: Promise<boolean> | null = null;
-
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
 
 function logTranscriptStoreError(message: string, error: unknown): void {
   const toolkit = (
@@ -209,7 +196,7 @@ function normalizeMessages(
 }
 
 async function ensureAgentTranscriptStore(): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return false;
   if (initPromise) return initPromise;
   initPromise = (async () => {
@@ -257,7 +244,7 @@ async function hydrateTranscriptSegment(params: {
   const key = segmentKey(conversationKey, params.compatibilityKey);
   if (hydratedKeys.has(key)) return;
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     const rows = (await db.queryAsync(
@@ -337,7 +324,7 @@ export async function loadLatestAgentTranscriptSegment(
   const conversationKey = positiveIntOrUndefined(conversationKeyValue);
   if (!conversationKey) return null;
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db)
     return (
       [...transcriptByKey.values()]
@@ -403,7 +390,7 @@ async function persistTranscriptSegment(
   // A temporary side chat's key (reserved band) is never persisted.
   if (isEphemeralConversationKey(segment.conversationKey)) return "unavailable";
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return "unavailable";
   try {
     await db.executeTransaction(async () => {
@@ -518,7 +505,7 @@ export async function clearAgentTranscript(
     }
   }
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     if (conversationKeyValue === undefined) {

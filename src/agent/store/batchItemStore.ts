@@ -15,6 +15,7 @@
 import type { MaterialRef } from "../documents/materialRef";
 import { BATCH_JOBS_TABLE } from "./batchJobStore";
 import { isAgentChangeJournalAvailable } from "./changeJournal";
+import { getZoteroDb, type ZoteroDb } from "../../core/zoteroDb";
 
 export const BATCH_ITEMS_TABLE = "llm_for_zotero_agent_batch_items";
 
@@ -82,18 +83,7 @@ type ItemRow = {
   updated_at: number;
 };
 
-type DbLike = { queryAsync: (sql: string, params?: unknown[]) => unknown };
-
-let initializedDb: DbLike | null = null;
-
-function getDb(): DbLike | null {
-  try {
-    const db = (Zotero as unknown as { DB?: DbLike }).DB;
-    return typeof db?.queryAsync === "function" ? db : null;
-  } catch {
-    return null;
-  }
-}
+let initializedDb: ZoteroDb | null = null;
 
 function normalizeStatus(value: unknown): BatchItemStatus {
   return value === "saved" || value === "failed" ? value : "pending";
@@ -126,7 +116,7 @@ function toRecord(row: ItemRow): BatchItemRecord {
 }
 
 export async function initAgentBatchItemStore(): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   initializedDb = null;
   if (!db) return;
   await Zotero.DB.executeTransaction(async () => {

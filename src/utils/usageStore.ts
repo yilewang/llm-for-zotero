@@ -23,6 +23,7 @@ import {
 } from "../shared/conversationKeySpace";
 import { getRegisteredConversationScope } from "../shared/conversationRegistry";
 import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
+import { getZoteroDb, type ZoteroDb } from "../core/zoteroDb";
 
 export const USAGE_EVENTS_TABLE = "llm_for_zotero_usage_events";
 
@@ -106,10 +107,6 @@ export type StoredUsageEvent = {
   cacheWriteTokens: number;
   countsAsQuestion: boolean;
   tokenSource: UsageTokenSource;
-};
-
-type UsageDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
 };
 
 const USAGE_COLUMNS: Array<{ name: string; definition: string }> = [
@@ -212,12 +209,6 @@ const USAGE_INDEXES: Array<{ name: string; columns: string }> = [
 
 let initPromise: Promise<void> | null = null;
 
-export function getUsageDb(): UsageDb | null {
-  const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
-    .Zotero?.DB;
-  return typeof db?.queryAsync === "function" ? (db as UsageDb) : null;
-}
-
 function logUsageStoreWarning(message: string, error?: unknown): void {
   appLogger.warn(`LLM: ${message}`, error);
 }
@@ -252,7 +243,7 @@ export function resolveUsageModeForConversationKey(
   return kind === "paper" ? "paper" : "library";
 }
 
-async function createUsageSchema(db: UsageDb): Promise<void> {
+async function createUsageSchema(db: ZoteroDb): Promise<void> {
   await db.queryAsync(
     `CREATE TABLE IF NOT EXISTS ${USAGE_EVENTS_TABLE} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,7 +306,7 @@ async function createUsageSchema(db: UsageDb): Promise<void> {
  */
 export async function initUsageStore(): Promise<void> {
   if (initPromise) return initPromise;
-  const db = getUsageDb();
+  const db = getZoteroDb();
   if (!db) return;
   initPromise = createUsageSchema(db);
   try {
@@ -335,7 +326,7 @@ export async function recordUsageEvent(
   input: UsageEventInput,
 ): Promise<boolean> {
   try {
-    const db = getUsageDb();
+    const db = getZoteroDb();
     if (!db) return false;
     const conversationKey = normalizePositiveInt(input.conversationKey);
     if (!conversationKey) return false;
@@ -436,7 +427,7 @@ function isMissingUsageTableError(error: unknown): boolean {
 export async function deleteUsageEventsForConversationInTransaction(
   conversationKey: number,
 ): Promise<void> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   const key = normalizePositiveInt(conversationKey);
   if (!db || !key) return;
   try {
@@ -471,7 +462,7 @@ export async function deleteUsageEventsForConversation(
 export async function loadUsageEventsForConversation(
   conversationKey: number,
 ): Promise<StoredUsageEvent[]> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   const key = normalizePositiveInt(conversationKey);
   if (!db || !key) return [];
   await initUsageStore();
@@ -532,7 +523,7 @@ export async function loadUsageEventsForConversation(
  * that was never created has nothing reconstructed in it.
  */
 export async function countHistoryEstimateUsageEvents(): Promise<number> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   if (!db) return 0;
   try {
     const rows = (await db.queryAsync(
@@ -557,7 +548,7 @@ export async function countHistoryEstimateUsageEvents(): Promise<number> {
  * not a failure.
  */
 export async function clearAllUsageEvents(): Promise<boolean> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   if (!db) return false;
   try {
     await db.queryAsync(`DELETE FROM ${USAGE_EVENTS_TABLE}`);

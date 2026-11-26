@@ -13,6 +13,7 @@ import {
 } from "../store/inTransactionDelete";
 import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
 import { stabilizeForJson } from "../store/stableJson";
+import { getZoteroDb } from "../../core/zoteroDb";
 
 export type AgentCoverageSourceKind =
   | "zotero_metadata"
@@ -66,10 +67,6 @@ export type AgentCoverageEntry = {
   updatedAt: number;
 };
 
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
 const COVERAGE_TABLE = "llm_for_zotero_agent_coverage";
 const COVERAGE_SCOPE_INDEX = "llm_for_zotero_agent_coverage_scope_idx";
 const COVERAGE_RESOURCE_INDEX = "llm_for_zotero_agent_coverage_resource_idx";
@@ -81,15 +78,6 @@ const hydratedScopes = new Set<string>();
 let coverageHydrationEpoch = 0;
 let initPromise: Promise<boolean> | null = null;
 
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
-
 function logCoverageStoreError(message: string, error: unknown): void {
   const toolkit = (
     globalThis as typeof globalThis & {
@@ -100,7 +88,7 @@ function logCoverageStoreError(message: string, error: unknown): void {
 }
 
 async function ensureAgentCoverageStore(): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return false;
   if (initPromise) return initPromise;
   initPromise = (async () => {
@@ -365,7 +353,7 @@ async function persistCoverageScope(
   ledger: Map<string, AgentCoverageEntry>,
 ): Promise<void> {
   const dbReady = await ensureAgentCoverageStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   const entries = Array.from(ledger.values())
     .sort((left, right) => right.updatedAt - left.updatedAt)
@@ -417,7 +405,7 @@ async function hydrateCoverageScope(scopeKey: string): Promise<void> {
   if (hydratedScopes.has(scopeKey)) return;
   const hydrationEpoch = coverageHydrationEpoch;
   const dbReady = await ensureAgentCoverageStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     const rows = (await db.queryAsync(
@@ -1201,7 +1189,7 @@ export async function clearPersistedAgentCoverage(
     }
   }
   const dbReady = await ensureAgentCoverageStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     if (conversationKeyValue === undefined) {

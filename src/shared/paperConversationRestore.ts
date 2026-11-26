@@ -18,6 +18,7 @@ import {
   isConversationSystem,
 } from "../core/conversations/conversationSystems";
 import { positiveIntOrNull, trimmedString } from "../core/values";
+import { getZoteroDb } from "../core/zoteroDb";
 
 /** Only upstream paper conversations live in a catalog of their own. */
 const UPSTREAM_PAPER_CATALOG_TABLE =
@@ -134,13 +135,6 @@ function logRestoreError(message: string, error?: unknown): void {
       ? ""
       : `: ${error instanceof Error ? error.message : String(error)}`;
   Zotero?.debug?.(`[llm-for-zotero] ${message}${suffix}`);
-}
-
-function getDb(): {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction?: <T>(task: () => Promise<T>) => Promise<T>;
-} | null {
-  return Zotero?.DB || null;
 }
 
 function preferenceKey(system: ConversationSystem): string | null {
@@ -396,7 +390,7 @@ async function initializeRuntime(
   system: ConversationSystem,
   profileSignature: string,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync || !db.executeTransaction) {
     initializedSystems.add(system);
     logRestoreError(
@@ -643,7 +637,7 @@ async function persistScopeSelection(
   scope: Required<PaperRestoreScope>,
   conversationKey: number | null,
 ): Promise<RestoreEntry | null> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync || !db.executeTransaction) {
     throw new Error("Zotero DB is unavailable");
   }
@@ -877,7 +871,7 @@ export function forgetPaperRestoreTargetsForItems(itemIDs: number[]): void {
   enqueueWrite(
     "Could not clear paper restore selections for removed Zotero items",
     async () => {
-      const db = getDb();
+      const db = getZoteroDb();
       if (!db?.queryAsync || !db.executeTransaction) {
         throw new Error("Zotero DB is unavailable");
       }
@@ -907,7 +901,7 @@ export async function clearPaperRestoreTargetsForWorkflowTests(): Promise<void> 
     committedRestoreCache.delete(scopeKey);
     scopeGenerations.delete(scopeKey);
   }
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync || !db.executeTransaction) return;
   await db.executeTransaction(async () => {
     await db.queryAsync?.(

@@ -17,12 +17,9 @@ import {
 } from "../core/conversations/conversationSystems";
 import { CONVERSATION_STORE_TABLES_BY_SYSTEM } from "./conversationStore/storeTables";
 import { positiveIntOrZero } from "../core/values";
+import { getZoteroDb, tableExists, type ZoteroDb } from "../core/zoteroDb";
 
 const UPSTREAM_TABLES = CONVERSATION_STORE_TABLES_BY_SYSTEM.upstream;
-
-type ZoteroDb = {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
 
 export const CONVERSATION_SEARCH_INDEX_TABLE =
   "llm_for_zotero_conversation_search_index";
@@ -73,13 +70,6 @@ export type ConversationSearchIndexResult = {
   staleIndexedRowCount: number;
   truncatedRowCount: number;
 };
-
-function getZoteroDb(): ZoteroDb | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { DB?: ZoteroDb } }).Zotero
-      ?.DB || null
-  );
-}
 
 function normalizeText(value: unknown, maxLength = 2_000_000): string {
   if (typeof value !== "string") return "";
@@ -180,18 +170,6 @@ function canonicalConversationIDConflictsWithScope(params: {
       (params.kind === "paper" ? params.paperItemID || 0 : 0) ||
     parsed.conversationKey !== params.conversationKey
   );
-}
-
-async function tableExists(db: ZoteroDb, tableName: string): Promise<boolean> {
-  const rows = (await db.queryAsync?.(
-    `SELECT name
-     FROM sqlite_master
-     WHERE type = 'table'
-       AND name = ?
-     LIMIT 1`,
-    [tableName],
-  )) as Array<{ name?: unknown }> | undefined;
-  return Boolean(rows?.length);
 }
 
 async function getTableInfo(

@@ -12,7 +12,7 @@ import {
   isRuntimeConversationSystem,
   type RuntimeConversationSystem,
 } from "./conversationSystems";
-import { isAlreadyExistingColumnError } from "./conversationCleanupJobs";
+import { getZoteroDb, isAlreadyExistingColumnError } from "../zoteroDb";
 
 /**
  * Whether deleting a runtime conversation leaves provider-side state to clean
@@ -167,15 +167,6 @@ export type PendingDeletionStoreEnv = {
   log?: (message: string, ...args: unknown[]) => void;
   warn?: (message: string, ...args: unknown[]) => void;
 };
-
-type ZoteroDbLike = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
-function getZoteroDb(): ZoteroDbLike | null {
-  const db = (globalThis as { Zotero?: { DB?: ZoteroDbLike } }).Zotero?.DB;
-  return db?.queryAsync ? db : null;
-}
 
 function getMainWindow(): Window | null {
   return (
