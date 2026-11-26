@@ -1763,6 +1763,31 @@
      hints, statuses, and messages can be selected and copied. */
   -moz-user-select: text;
   user-select: text;
+  /*
+   * Alignment grid for every chat in this window (the main column and the
+   * side panel's chats). Each chat lines up on two pairs of vertical lines,
+   * measured from the edges of its container (the content wrapper, or the
+   * side panel column):
+   *   B = --llm-standalone-box-edge: the edge of every box (chips, composer,
+   *       the chat panel's padding edge).
+   *   L/R = --llm-standalone-text-edge: where every first letter and last
+   *       action sits (title row, answer text, message actions, composer
+   *       text, status line).
+   * The strip between B and L (--llm-standalone-text-inset) is the gutter
+   * the turn navigator lives in. Indents inside an answer (quotes, lists)
+   * all use one step, --llm-standalone-content-indent. cqw and em resolve
+   * where a descendant reads the value, so each chat measures from its own
+   * container and font size.
+   */
+  --llm-standalone-chat-max-width: clamp(820px, 82vw, 1280px);
+  --llm-standalone-box-edge: calc(
+    12px + (100cqw - min(100cqw, var(--llm-standalone-chat-max-width))) / 2
+  );
+  --llm-standalone-text-inset: 25px;
+  --llm-standalone-text-edge: calc(
+    var(--llm-standalone-box-edge) + var(--llm-standalone-text-inset)
+  );
+  --llm-standalone-content-indent: 1.25em;
   --llm-font-scale: 1;
   --llm-fs-10: calc(10px * var(--llm-font-scale));
   --llm-fs-11: calc(11px * var(--llm-font-scale));
@@ -5234,19 +5259,107 @@
 
 /* Centered responsive width for standalone chat content */
 [data-standalone="true"].llm-panel {
-  --llm-standalone-chat-max-width: clamp(820px, 82vw, 1280px);
   width: min(100%, var(--llm-standalone-chat-max-width));
   max-width: min(100%, var(--llm-standalone-chat-max-width));
   margin: 0 auto;
-  /* 6px at the bottom leaves room for the composer corner arc. */
+  /* 6px at the bottom leaves room for the composer corner arc. The 12px
+     sides put the panel's padding edge on the grid's box edge (B). */
   padding: 5px 12px;
   /* The chat box reaches past the right padding and the centring space to
      the window's edge (the content wrapper is the cqw container). The
      wrapper clips, so the panel need not. */
-  --llm-shell-overhang: calc(
-    12px + (100cqw - min(100cqw, var(--llm-standalone-chat-max-width))) / 2
-  );
+  --llm-shell-overhang: var(--llm-standalone-box-edge);
   overflow: visible;
+}
+
+/* Title row: the chat's title starts on L and its last action ends on R. */
+.llm-standalone-content-wrapper > .llm-standalone-content-title {
+  padding-inline: var(--llm-standalone-text-edge);
+}
+
+/* The answer column always keeps the B–L gutter on the left, whether or
+   not the turn navigator shows, so text never moves when it appears. The
+   right side mirrors it (plus the overhang to the window edge). The extra
+   bottom space separates the last message from the chips and composer. */
+[data-standalone="true"].llm-panel .llm-messages {
+  padding-left: var(--llm-standalone-text-inset);
+  padding-right: calc(
+    var(--llm-standalone-text-inset) + var(--llm-shell-overhang)
+  );
+  padding-bottom: calc(16px + var(--llm-chat-floor, 0px));
+}
+
+[data-standalone="true"] .llm-message-wrapper.assistant .llm-message-meta {
+  padding-inline: 0;
+}
+
+/* Composer: the box stays on B; its padding plus the 1px border and the
+   text box's own 10px left inset (.llm-input) put the text on L. */
+[data-standalone="true"].llm-panel > .llm-input-section {
+  padding-inline: calc(var(--llm-standalone-text-inset) - 11px);
+}
+
+[data-standalone="true"] .llm-status-bar {
+  padding-inline: var(--llm-standalone-text-inset);
+}
+
+/* The navigator fills the B–L gutter and draws a track behind its marks,
+   so the marks read as one control rather than loose dashes. */
+[data-standalone="true"] .llm-turn-navigator,
+[data-standalone="true"] .llm-turn-navigator-marker {
+  width: var(--llm-standalone-text-inset);
+  min-width: var(--llm-standalone-text-inset);
+}
+
+[data-standalone="true"] .llm-turn-navigator-list {
+  position: relative;
+}
+
+[data-standalone="true"] .llm-turn-navigator-list::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  bottom: 9px;
+  left: 50%;
+  width: 1px;
+  background: var(--stroke-secondary);
+  pointer-events: none;
+}
+
+/* One indent step inside an answer. A quote's rail sits on L and its text
+   one step in; list markers hang between L and the text. */
+[data-standalone="true"] .llm-rendered-markdown :is(ul, ol) {
+  padding-left: var(--llm-standalone-content-indent);
+}
+
+[data-standalone="true"] .llm-rendered-markdown blockquote {
+  padding-left: calc(var(--llm-standalone-content-indent) - 3px);
+}
+
+/* The quote card's box hangs into the gutter by its 10px content padding,
+   so its rail lands on L like a plain quote. Its citation sits under the
+   quote, on the quote text's indent, instead of at the far right. */
+[data-standalone="true"] .llm-quote-card {
+  margin-inline: -10px;
+}
+
+[data-standalone="true"] .llm-quote-card-preview,
+[data-standalone="true"] .llm-quote-card-body {
+  padding-left: calc(var(--llm-standalone-content-indent) - 3px);
+}
+
+[data-standalone="true"] .llm-quote-card-citation {
+  justify-content: flex-start;
+  padding-left: calc(10px + var(--llm-standalone-content-indent));
+}
+
+/* Comfortable reading measure for answer text; tables, code and images
+   keep the full column. */
+[data-standalone="true"]
+  .llm-message-wrapper.assistant
+  .llm-rendered-markdown
+  :is(p, li, h1, h2, h3, h4, h5, h6, blockquote, .llm-quote-card) {
+  max-width: 70ch;
 }
 
 /* ---- Chat start page (shared layout for all modes) ---- */
