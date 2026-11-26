@@ -1,14 +1,5 @@
 import type { AgentRuntime } from "../agent/runtime";
-import type {
-  AgentEvent,
-  AgentRuntimeOutcome,
-  AgentRuntimeRequestInput as AgentRuntimeRequest,
-} from "../agent/types";
-import type {
-  ClaudeConversationKind,
-  ClaudeConversationSummary,
-  ConversationSystem,
-} from "../shared/types";
+import type { ClaudeConversationKind } from "../shared/types";
 import {
   createExternalBackendBridgeRuntime,
   fetchExternalBridgeSessionInfo,
@@ -26,11 +17,7 @@ import {
 import {
   appendClaudeMessage,
   clearClaudeConversationSessionMetadata,
-  deleteClaudeTurnMessages as deleteClaudeConversationTurnMessagesStore,
   getClaudeConversationSummary,
-  listClaudeGlobalConversations,
-  listClaudePaperConversations,
-  loadClaudeConversation,
   pruneClaudeConversation,
   updateLatestClaudeAssistantMessage,
   updateLatestClaudeUserMessage,
@@ -38,25 +25,12 @@ import {
 } from "./store";
 import type { StoredChatMessage } from "../utils/chatStore";
 import {
-  getConversationSystemPref,
-  setConversationSystemPref,
-} from "../shared/conversationSystemPrefs";
-import {
   getClaudeBridgeUrl,
-  getClaudePermissionModePref,
-  getClaudeReasoningModePref,
   getClaudeRuntimeModelPref,
   getLastUsedClaudeGlobalConversationKey,
   getLastUsedClaudePaperConversationKey,
-  setLastUsedClaudeGlobalConversationKey,
-  setLastUsedClaudePaperConversationKey,
 } from "./prefs";
 import type { RuntimeModelEntry } from "../utils/modelProviders";
-import {
-  CLAUDE_REASONING_OPTIONS,
-  type ClaudeReasoningMode,
-  type ClaudeRuntimeModel,
-} from "./constants";
 import {
   areConversationWritesFrozen,
   getConversationWriteGeneration,
@@ -70,28 +44,11 @@ import {
   type ClaudeModelCatalogRequestContext,
 } from "./modelCatalog";
 
-export type ClaudeBridgeActionDescriptor = {
-  name: string;
-  description: string;
-  inputSchema: object;
-  source: "backend";
-  backendToolName: string;
-  riskLevel: "low" | "medium" | "high";
-  requiresConfirmation: boolean;
-  mutability: "read" | "write";
-};
-
 export type ClaudeSlashCommandDescriptor = {
   name: string;
   description: string;
   argumentHint?: string;
   source: "sdk" | "fallback";
-};
-
-export type ClaudeEffortFallback = {
-  requested: string;
-  resolved: string;
-  supported: string[];
 };
 
 export type ClaudeBridgeSessionInfo = ExternalBridgeSessionInfo;
@@ -109,51 +66,11 @@ function getBridgeUrl(): string {
   return getClaudeBridgeUrl();
 }
 
-export function isClaudeConversationSystemActive(): boolean {
-  return getConversationSystemPref() === "claude_code";
-}
-
-export function setClaudeConversationSystemActive(active: boolean): void {
-  setConversationSystemPref(active ? "claude_code" : "upstream");
-}
-
-export function getClaudeConversationSystem(): ConversationSystem {
-  return getConversationSystemPref();
-}
-
 export function getClaudeRuntimeModelEntries(): RuntimeModelEntry[] {
   return buildClaudeRuntimeModelEntries({
     models: [],
     selectedModel: getClaudeRuntimeModelPref(),
   });
-}
-
-export function getSelectedClaudeRuntimeEntry(): RuntimeModelEntry {
-  const selectedModel = getClaudeRuntimeModelPref();
-  return (
-    getClaudeRuntimeModelEntries().find(
-      (entry) => entry.model === selectedModel,
-    ) || getClaudeRuntimeModelEntries()[0]
-  );
-}
-
-export function getSelectedClaudeReasoningMode(): ClaudeReasoningMode {
-  return getClaudeReasoningModePref();
-}
-
-export function getClaudePermissionMode(): import("../shared/claudePermissionMode").ClaudePermissionMode {
-  return getClaudePermissionModePref();
-}
-
-export function buildClaudeReasoningConfig():
-  | { provider: "anthropic"; level: "low" | "medium" | "high" | "xhigh" }
-  | undefined {
-  const mode = getClaudeReasoningModePref();
-  if (mode === "auto") return undefined;
-  return {
-    provider: "anthropic",
-    level: mode === "max" ? "xhigh" : mode,
-  };
 }
 
 export function buildClaudeScope(params: {
@@ -235,18 +152,6 @@ export async function listClaudeModels(
     context,
     options,
   );
-}
-
-export async function runClaudeTurn(
-  coreRuntime: AgentRuntime,
-  params: {
-    request: AgentRuntimeRequest;
-    onStart?: (runId: string) => void | Promise<void>;
-    onEvent?: (event: AgentEvent) => void | Promise<void>;
-    signal?: AbortSignal;
-  },
-): Promise<AgentRuntimeOutcome> {
-  return getClaudeBridgeRuntime(coreRuntime).runTurn(params);
 }
 
 export async function updateClaudeRuntimeRetention(
@@ -365,41 +270,6 @@ export async function fetchClaudeSessionInfo(
   });
 }
 
-export async function listClaudeConversationsForScope(params: {
-  libraryID: number;
-  kind: ClaudeConversationKind;
-  paperItemID?: number;
-  limit?: number;
-}): Promise<ClaudeConversationSummary[]> {
-  return params.kind === "paper"
-    ? listClaudePaperConversations(
-        params.libraryID,
-        params.paperItemID || 0,
-        params.limit,
-      )
-    : listClaudeGlobalConversations(params.libraryID, params.limit);
-}
-
-export async function loadClaudeConversationMessages(
-  conversationKey: number,
-): Promise<StoredChatMessage[]> {
-  return loadClaudeConversation(conversationKey);
-}
-
-export async function appendClaudeConversationMessage(
-  conversationKey: number,
-  message: StoredChatMessage,
-  instanceID?: string,
-): Promise<void> {
-  await withConversationWriteLock(conversationKey, () =>
-    appendClaudeConversationMessageWithinWriteLock(
-      conversationKey,
-      message,
-      instanceID,
-    ),
-  );
-}
-
 /** Caller must already hold the conversation write lock. */
 export async function appendClaudeConversationMessageWithinWriteLock(
   conversationKey: number,
@@ -413,18 +283,6 @@ export async function appendClaudeConversationMessageWithinWriteLock(
     model: message.modelName,
     instanceID,
   });
-}
-
-export async function updateLatestClaudeConversationUserMessage(
-  conversationKey: number,
-  message: Parameters<typeof updateLatestClaudeUserMessage>[1],
-): Promise<void> {
-  await withConversationWriteLock(conversationKey, () =>
-    updateLatestClaudeConversationUserMessageWithinWriteLock(
-      conversationKey,
-      message,
-    ),
-  );
 }
 
 /**
@@ -450,18 +308,6 @@ export async function updateLatestClaudeConversationUserMessageWithinWriteLock(
   return true;
 }
 
-export async function updateLatestClaudeConversationAssistantMessage(
-  conversationKey: number,
-  message: Parameters<typeof updateLatestClaudeAssistantMessage>[1],
-): Promise<void> {
-  await withConversationWriteLock(conversationKey, () =>
-    updateLatestClaudeConversationAssistantMessageWithinWriteLock(
-      conversationKey,
-      message,
-    ),
-  );
-}
-
 /**
  * Caller must already hold the conversation write lock. With
  * `options.expectedTimestamp` the write targets that assistant row only; when
@@ -484,23 +330,6 @@ export async function updateLatestClaudeConversationAssistantMessageWithinWriteL
     model: message.modelName,
   });
   return written;
-}
-
-export async function deleteClaudeConversationTurnMessages(
-  conversationKey: number,
-  userTimestamp: number,
-  assistantTimestamp: number,
-): Promise<void> {
-  await withConversationWriteLock(conversationKey, async () => {
-    await deleteClaudeConversationTurnMessagesStore(
-      conversationKey,
-      userTimestamp,
-      assistantTimestamp,
-    );
-    await touchClaudeConversationWithinWriteLock(conversationKey, {
-      updatedAt: Date.now(),
-    });
-  });
 }
 
 type ClaudeConversationTouchUpdates = {
@@ -617,36 +446,6 @@ export async function captureClaudeSessionInfo(
   return session;
 }
 
-export function rememberClaudeConversationSelection(
-  summary: Pick<
-    ClaudeConversationSummary,
-    "libraryID" | "kind" | "paperItemID" | "conversationKey"
-  >,
-): void {
-  if (summary.kind === "paper" && summary.paperItemID) {
-    const paperKey = buildClaudePaperStateKey(
-      summary.libraryID,
-      summary.paperItemID,
-    );
-    activeClaudePaperConversationByPaper.set(paperKey, summary.conversationKey);
-    setLastUsedClaudePaperConversationKey(
-      summary.libraryID,
-      summary.paperItemID,
-      summary.conversationKey,
-    );
-    return;
-  }
-  const libraryKey = buildClaudeLibraryStateKey(summary.libraryID);
-  activeClaudeGlobalConversationByLibrary.set(
-    libraryKey,
-    summary.conversationKey,
-  );
-  setLastUsedClaudeGlobalConversationKey(
-    summary.libraryID,
-    summary.conversationKey,
-  );
-}
-
 export function resolveRememberedClaudeConversationKey(params: {
   libraryID: number;
   kind: ClaudeConversationKind;
@@ -672,20 +471,4 @@ export function resolveRememberedClaudeConversationKey(params: {
     getLastUsedClaudeGlobalConversationKey(params.libraryID) ||
     null
   );
-}
-
-export function resolveClaudeSystemLabel(): string {
-  return "Claude Code";
-}
-
-export function isClaudeRuntimeModel(
-  model: string,
-): model is ClaudeRuntimeModel {
-  return Boolean(model.trim());
-}
-
-export function isClaudeReasoningMode(
-  mode: string,
-): mode is ClaudeReasoningMode {
-  return CLAUDE_REASONING_OPTIONS.includes(mode as ClaudeReasoningMode);
 }

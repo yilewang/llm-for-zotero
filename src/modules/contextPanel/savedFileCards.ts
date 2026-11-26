@@ -539,14 +539,6 @@ export async function resolveTurnSavedFiles(params: {
   }
 }
 
-/** "~/Desktop/x.html" for a path in the home folder. */
-export function displayLocalPath(path: string, homeDir?: string): string {
-  if (homeDir && isInside(path, homeDir)) {
-    return `~${path.slice(homeDir.replace(/[\\/]+$/, "").length)}`;
-  }
-  return path;
-}
-
 export type SavedFileCardOptions = {
   homeDir?: string;
   /** Opens an HTML page in the full-window viewer (the sidebar's full view). */

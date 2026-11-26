@@ -2,8 +2,6 @@ import { appLogger } from "../../core/logging";
 import { conversationRepository } from "../../core/conversations/repository";
 import { findWebchatSessionPaperConversationKey } from "../../utils/chatStore";
 
-declare const ztoolkit: any;
-
 export type WebChatSessionConversationResult = {
   conversationKey: number;
   sessionVersion?: number;

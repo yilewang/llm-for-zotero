@@ -108,13 +108,6 @@ export function recordOutsideSearch(
   if (label && !ledger.queries.includes(label)) ledger.queries.push(label);
 }
 
-export function outsideSearchCount(
-  runId: string,
-  family: OutsideSearchFamily,
-): number {
-  return readState(runId)?.families[family].count || 0;
-}
-
 function queryList(queries: readonly string[]): string {
   if (!queries.length) return "none";
   const shown = queries.slice(0, OUTSIDE_SEARCH_LISTED_QUERIES).join("; ");

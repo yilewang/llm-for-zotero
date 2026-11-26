@@ -29,11 +29,9 @@ import {
   getVectorShardPath,
   LibraryVectorMatrix,
   quantizeVector,
-  readVectorShard,
   removeVectorNamespace,
   vectorNamespace,
   writeVectorShard,
-  type VectorMatrixEntry,
 } from "./vectorStore";
 
 export type EmbedTexts = (texts: string[]) => Promise<number[][]>;
@@ -219,56 +217,6 @@ export async function embedDocumentVectors(params: {
 }
 
 /**
- * Reads every shard listed for `namespace` into one matrix (bulk load). A
- * missing, truncated or mismatched shard drops its row, so the vector stage
- * re-embeds that document. Null when the namespace has no usable vectors.
- */
-export function loadVectorMatrix(
-  store: LibraryTextIndexStore,
-  namespace: string,
-): Promise<LibraryVectorMatrix | null> {
-  const pending = loading.get(namespace);
-  if (pending) return pending;
-  const load = (async () => {
-    const rows = await store.listVectorDocuments(namespace);
-    if (!rows.length) return null;
-    const dims = namespaceDims(namespace) ?? rows[0].dims;
-    const entries: VectorMatrixEntry[] = [];
-    for (const row of rows) {
-      const shard = await readVectorShard(row.path);
-      if (
-        !shard ||
-        shard.dims !== dims ||
-        shard.vectors.length !== row.chunkCount
-      ) {
-        await store.deleteVectorDocument(row.attachmentId, namespace);
-        continue;
-      }
-      entries.push({
-        attachmentId: row.attachmentId,
-        chunkCount: shard.vectors.length,
-        vectors: shard.vectors,
-      });
-    }
-    if (!entries.length) return null;
-    const matrix = new LibraryVectorMatrix(dims);
-    matrix.addDocuments(entries);
-    matrices.set(namespace, matrix);
-    return matrix;
-  })();
-  loading.set(namespace, load);
-  return load.finally(() => {
-    if (loading.get(namespace) === load) loading.delete(namespace);
-  });
-}
-
-export function getLoadedVectorMatrix(
-  namespace: string,
-): LibraryVectorMatrix | null {
-  return matrices.get(namespace) || null;
-}
-
-/**
  * Removes the shard directories, rows and loaded matrices of every namespace
  * other than `keep`. A namespace's rows go only after its directory is gone,
  * so a failed removal (file lock, permissions) is retried at the next
@@ -356,9 +304,4 @@ export function clearLoadedVectorState(): void {
   matrices.clear();
   loading.clear();
   knownDims.clear();
-}
-
-export function resetVectorIndexerForTests(): void {
-  clearLoadedVectorState();
-  pruneFailureLogged = false;
 }

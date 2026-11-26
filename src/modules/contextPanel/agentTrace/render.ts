@@ -452,16 +452,6 @@ function resolveTracePlanPhase(
   return null;
 }
 
-export function buildAgentTraceMarkdownForRender(
-  text: string,
-  message?: Pick<
-    Message,
-    "text" | "quoteCitations" | "quoteDisplayOverride" | "streaming"
-  > | null,
-): string {
-  return planAgentTraceMarkdownForRender(text, message).markdown;
-}
-
 /**
  * Trace text's markdown and the quote occurrences its tokens name. Text that
  * is not the answer's own numbers its occurrences under a scope, so its cards
@@ -4685,19 +4675,6 @@ const agentTraceProjectionCounters = {
   liveResets: 0,
 };
 
-export function readAgentTraceProjectionCountersForTests(): Readonly<
-  typeof agentTraceProjectionCounters
-> {
-  return { ...agentTraceProjectionCounters };
-}
-
-export function resetAgentTraceProjectionCountersForTests(): void {
-  for (const key of Object.keys(agentTraceProjectionCounters))
-    agentTraceProjectionCounters[
-      key as keyof typeof agentTraceProjectionCounters
-    ] = 0;
-}
-
 /*
  * What the trace reads from one event payload, remembered by that payload.
  * Stored events are never rewritten in place (a changed event is a new
@@ -6246,8 +6223,6 @@ function renderAgentTraceDetailsBody(
   }
   return body;
 }
-
-export const renderAgentTraceDetailsBodyForTests = renderAgentTraceDetailsBody;
 
 function createPlanningDriveIcon(doc: Document): HTMLSpanElement {
   const loader = doc.createElement("span") as HTMLSpanElement;

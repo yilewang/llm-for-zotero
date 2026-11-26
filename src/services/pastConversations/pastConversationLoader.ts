@@ -439,7 +439,3 @@ export async function renderAgentPastChatMessageText(params: {
       )
     : buildPastChatMessageText(renderParams);
 }
-
-export function clearPastChatRenderMemoForTests(): void {
-  renderMemo.clear();
-}

@@ -165,12 +165,6 @@ function upgradeManagedInstructionBlock(content: string): string {
   return `${normalized}\n\n${replacement}`;
 }
 
-export function upgradeManagedInstructionBlockForTests(
-  content: string,
-): string {
-  return upgradeManagedInstructionBlock(content);
-}
-
 async function writeIfMissing(path: string, content: string): Promise<void> {
   const io = getIOUtils();
   if (!io?.exists || !io?.write) return;

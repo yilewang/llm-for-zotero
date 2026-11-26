@@ -5,8 +5,6 @@ import type {
   PaperContextRef,
 } from "../../shared/types";
 
-export type NoteSaveTarget = "item" | "standalone";
-
 export function validateObject<T extends Record<string, unknown>>(
   value: unknown,
 ): value is T {

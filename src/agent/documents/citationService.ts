@@ -749,6 +749,3 @@ export async function formatDocumentCitations(params: {
     repairs,
   };
 }
-
-/** Compatibility alias for the original Plan-only API. */
-export const formatPlanDocumentCitations = formatDocumentCitations;

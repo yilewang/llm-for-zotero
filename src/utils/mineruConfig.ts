@@ -7,7 +7,6 @@ const MINERU_CLOUD_MODEL_KEY = `${config.prefsPrefix}.mineruCloudModel`;
 const MINERU_LOCAL_API_BASE_KEY = `${config.prefsPrefix}.mineruLocalApiBase`;
 const MINERU_LOCAL_BACKEND_KEY = `${config.prefsPrefix}.mineruLocalBackend`;
 const MINERU_FORCE_OCR_KEY = `${config.prefsPrefix}.mineruForceOcr`;
-const MINERU_AUTO_WATCH_KEY = `${config.prefsPrefix}.mineruAutoWatchCollections`;
 const MINERU_GLOBAL_AUTO_PARSE_KEY = `${config.prefsPrefix}.mineruGlobalAutoParse`;
 const MINERU_SYNC_ENABLED_KEY = `${config.prefsPrefix}.mineruSyncEnabled`;
 const MINERU_MAX_AUTO_PAGES_KEY = `${config.prefsPrefix}.mineruMaxAutoPages`;
@@ -326,38 +325,6 @@ export function setMineruSyncEnabled(value: boolean): void {
 
 // ── Auto-Watch Collections Configuration ─────────────────────────────────────
 
-export function getAutoWatchCollectionIds(): Set<number> {
-  const value = Zotero.Prefs.get(MINERU_AUTO_WATCH_KEY, true);
-  const str = typeof value === "string" ? value : "";
-  if (!str) return new Set();
-  const ids = str
-    .split(",")
-    .map((s) => parseInt(s.trim(), 10))
-    .filter((id) => Number.isFinite(id) && id > 0);
-  return new Set(ids);
-}
-
-export function setAutoWatchCollectionIds(ids: Set<number>): void {
-  const str = Array.from(ids).join(",");
-  Zotero.Prefs.set(MINERU_AUTO_WATCH_KEY, str, true);
-}
-
-export function addAutoWatchCollection(collectionId: number): void {
-  const ids = getAutoWatchCollectionIds();
-  ids.add(collectionId);
-  setAutoWatchCollectionIds(ids);
-}
-
-export function removeAutoWatchCollection(collectionId: number): void {
-  const ids = getAutoWatchCollectionIds();
-  ids.delete(collectionId);
-  setAutoWatchCollectionIds(ids);
-}
-
-export function isAutoWatchCollection(collectionId: number): boolean {
-  return getAutoWatchCollectionIds().has(collectionId);
-}
-
 // ── Filename Exclusion Patterns ─────────────────────────────────────────────
 
 export function getMineruExcludePatterns(): string[] {
@@ -419,8 +386,4 @@ export function buildMineruFilenameMatcher(
       return false;
     },
   };
-}
-
-export function isFilenameExcluded(filename: string): boolean {
-  return buildMineruFilenameMatcher().matches(filename);
 }

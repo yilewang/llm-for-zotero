@@ -120,15 +120,6 @@ export function getConversationStoreTables(
   return CONVERSATION_STORE_TABLES.find((store) => store.system === system);
 }
 
-/** The store's catalogs, in order (upstream: global then paper). */
-export function getConversationCatalogTables(
-  system: ConversationSystem,
-): ConversationCatalogTable[] {
-  return CONVERSATION_CATALOG_TABLES.filter(
-    (catalog) => catalog.system === system,
-  );
-}
-
 /**
  * The catalog a conversation of this store and kind sits in, or undefined for
  * a value that names no store or no kind.

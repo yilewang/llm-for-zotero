@@ -122,14 +122,6 @@ export function isAntigravityPaperPortalItem(
   );
 }
 
-export function isAntigravityPortalItem(
-  item: unknown,
-): item is AntigravityGlobalPortalItem | AntigravityPaperPortalItem {
-  return (
-    isAntigravityGlobalPortalItem(item) || isAntigravityPaperPortalItem(item)
-  );
-}
-
 export function getAntigravityPaperPortalBaseItemID(
   item: unknown,
 ): number | null {

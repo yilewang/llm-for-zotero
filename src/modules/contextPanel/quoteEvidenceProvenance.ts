@@ -197,10 +197,6 @@ async function loadRunEvidencePassages(
   return bounded;
 }
 
-export function clearQuoteEvidenceProvenanceCacheForTests(): void {
-  runEvidenceCache.clear();
-}
-
 /**
  * Every paper whose recorded passages account for the quote, best first.
  *

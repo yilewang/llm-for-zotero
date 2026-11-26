@@ -5,9 +5,6 @@ export type TextAttachmentSourceMode = Extract<
   "markdown" | "html" | "txt" | "docx"
 >;
 
-export type SupportedContextAttachmentType = "pdf" | TextAttachmentSourceMode;
-export type ContextAttachmentReadableVia = "paper_read" | "read_attachment";
-
 export type ContextAttachmentSupport =
   | {
       kind: "pdf";

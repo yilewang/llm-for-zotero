@@ -970,8 +970,3 @@ export async function backfillUsageHistory(): Promise<UsageHistoryBackfillResult
   })();
   return backfillTask;
 }
-
-export function resetUsageHistoryBackfillForTests(): void {
-  backfillTask = null;
-  outputBackfillTask = null;
-}

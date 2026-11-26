@@ -2,7 +2,6 @@ import type {
   Message,
   ReasoningProviderKind,
   ReasoningLevelSelection,
-  CustomShortcut,
   ChatAttachment,
   SelectedTextContext,
   PaperContextRef,
@@ -28,19 +27,14 @@ import type { ConversationForkLink } from "../../shared/conversationForkLinks";
 import type { WebSourceAnchor } from "../../webAccess/types";
 export {
   areConversationWritesFrozen,
-  bumpConversationWriteGeneration,
-  freezeConversationWrites,
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
-  unfreezeConversationWrites,
 } from "../../shared/conversationWriteFence";
 import {
   areConversationWritesFrozen,
   bumpConversationWriteGeneration,
-  freezeConversationWrites,
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
-  unfreezeConversationWrites,
 } from "../../shared/conversationWriteFence";
 // =============================================================================
 // Module State
@@ -189,14 +183,6 @@ export function consumeWebChatConversationForceNewChat(
   const shouldForce = webChatForceNewChatConversationKeys.has(key);
   webChatForceNewChatConversationKeys.delete(key);
   return shouldForce;
-}
-
-export function resetWebChatConversationSessionState(
-  conversationKey: number,
-): void {
-  const key = normalizeConversationKey(conversationKey);
-  if (!key) return;
-  webChatForceNewChatConversationKeys.delete(key);
 }
 
 export function getPendingRequestId(conversationKey: number): number {

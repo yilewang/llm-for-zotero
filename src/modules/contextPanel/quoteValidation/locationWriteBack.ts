@@ -59,10 +59,6 @@ export function configureQuoteLocationWriter(
   return writerBridge.configure(writer);
 }
 
-type QuoteSourceFileStateReader = (
-  contextItemId: number,
-) => Promise<QuoteSourceFileState | null>;
-
 async function readQuoteSourceFileState(
   contextItemId: number,
 ): Promise<QuoteSourceFileState | null> {
@@ -77,15 +73,6 @@ async function readQuoteSourceFileState(
   return { size: state.size, mtime: state.mtime };
 }
 
-let fileStateReader: QuoteSourceFileStateReader = readQuoteSourceFileState;
-
-/** Test-only: replace the attachment stat; null restores the real one. */
-export function setQuoteSourceFileStateReaderForTests(
-  reader: QuoteSourceFileStateReader | null,
-): void {
-  fileStateReader = reader || readQuoteSourceFileState;
-}
-
 async function readFileStates(
   contextItemIds: Iterable<number>,
 ): Promise<Map<number, QuoteSourceFileState | null>> {
@@ -95,7 +82,7 @@ async function readFileStates(
   const results = await Promise.all(
     uniqueIds.map(async (contextItemId) => {
       try {
-        return await fileStateReader(contextItemId);
+        return await readQuoteSourceFileState(contextItemId);
       } catch {
         return null;
       }

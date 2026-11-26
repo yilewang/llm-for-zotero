@@ -44,11 +44,6 @@ function isCodexAuthRequest(request: AgentRuntimeRequest): boolean {
   );
 }
 
-export {
-  normalizeResponsesStepFromPayload as normalizeStepFromPayload,
-  parseResponsesStepStream,
-} from "./responsesShared";
-
 export class CodexResponsesAgentAdapter implements AgentModelAdapter {
   private conversationItems: unknown[] | null = null;
 

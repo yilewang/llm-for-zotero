@@ -112,12 +112,6 @@ export function readContextLength(
   return undefined;
 }
 
-export function readArchitecture(
-  modelInfo: Record<string, unknown> | undefined,
-): string {
-  return asString(modelInfo?.["general.architecture"]);
-}
-
 /** Map one `/api/show` payload onto the shared discovered-model shape. */
 export function buildDiscoveredModelFromShow(params: {
   id: string;

@@ -928,12 +928,6 @@ export function expandQuoteRenderPlanToMarkdown(
   return expanded;
 }
 
-export function buildQuoteDisplayMarkdown(
-  input: BuildQuoteRenderPlanInput,
-): string {
-  return buildQuoteRenderPlan(input).displayMarkdown;
-}
-
 export function buildQuoteExpandedMarkdown(
   input: BuildQuoteRenderPlanInput,
   options: ExpandQuoteRenderPlanOptions = {},

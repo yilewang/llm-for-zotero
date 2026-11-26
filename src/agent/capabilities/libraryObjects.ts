@@ -48,32 +48,6 @@ export type LibraryOperation =
   | "relate"
   | "reparent";
 
-export const LIBRARY_OBJECT_KINDS: readonly LibraryObjectKind[] = [
-  "regularItem",
-  "standaloneNote",
-  "childNote",
-  "standaloneAttachment",
-  "childAttachment",
-  "annotation",
-  "collection",
-  "savedSearch",
-  "tag",
-  "library",
-];
-
-export const LIBRARY_OPERATIONS: readonly LibraryOperation[] = [
-  "create",
-  "read",
-  "update",
-  "trash",
-  "restore",
-  "delete",
-  "addToCollection",
-  "removeFromCollection",
-  "relate",
-  "reparent",
-];
-
 export type CapabilityVerdict =
   | { status: "allowed" }
   | { status: "refused"; reason: string }
@@ -83,8 +57,7 @@ export type CapabilityVerdict =
    * Previously such cells were marked `allowed`, which made the table a
    * statement of intent rather than of fact — 82 of 100 cells were never
    * consulted at runtime, so nothing caught the difference. Splitting this
-   * out is what lets `allowed` be checkable: every allowed cell must name
-   * the tool that implements it (see `IMPLEMENTED_BY`).
+   * out keeps `allowed` for the cells a typed tool performs today.
    */
   | { status: "unimplemented"; reason: string }
   /** Declared nowhere. Not a refusal — a gap, routed to the escape hatch. */
@@ -94,11 +67,6 @@ export type CapabilityVerdict =
 const A: CapabilityVerdict = { status: "allowed" };
 const no = (reason: string): CapabilityVerdict => ({
   status: "refused",
-  reason,
-});
-/** Zotero can do it; the agent has no typed path yet. */
-const todo = (reason: string): CapabilityVerdict => ({
-  status: "unimplemented",
   reason,
 });
 
@@ -252,100 +220,6 @@ const MATRIX: Record<LibraryObjectKind, Row> = {
   },
 };
 
-/**
- * The tool that performs each allowed operation.
- *
- * This exists so `allowed` is a checkable claim rather than an aspiration.
- * The matrix previously marked capabilities allowed that no tool implemented
- * — note reparent, item relations, saved-search CRUD, collection rename, tag
- * rename — and nothing noticed, because `refusalFor` has one call site
- * reached with three operations, so 82 of 100 cells were never consulted at
- * runtime. The completeness test certified the table was *total* while
- * checking nothing about whether the cells were true.
- *
- * The accompanying test asserts that every `allowed` cell appears here and
- * names a tool the registry actually exposes, so flipping a cell to `A`
- * without wiring it up fails.
- */
-export const IMPLEMENTED_BY: Partial<
-  Record<`${LibraryObjectKind}:${LibraryOperation}`, string>
-> = {
-  "regularItem:create": "library_import",
-  "regularItem:read": "library_read",
-  "regularItem:update": "library_update",
-  "regularItem:trash": "library_delete",
-  "regularItem:restore": "library_delete",
-  "regularItem:addToCollection": "library_update",
-  "regularItem:removeFromCollection": "library_update",
-  "regularItem:relate": "library_update",
-
-  "standaloneNote:create": "note_write",
-  "standaloneNote:read": "library_read",
-  "standaloneNote:update": "note_write",
-  "standaloneNote:trash": "library_delete",
-  "standaloneNote:restore": "library_delete",
-  "standaloneNote:addToCollection": "library_update",
-  "standaloneNote:removeFromCollection": "library_update",
-  "standaloneNote:relate": "library_update",
-  "standaloneNote:reparent": "library_update",
-
-  "childNote:create": "note_write",
-  "childNote:read": "library_read",
-  "childNote:update": "note_write",
-  "childNote:trash": "library_delete",
-  "childNote:restore": "library_delete",
-  "childNote:relate": "library_update",
-  "childNote:reparent": "library_update",
-
-  "standaloneAttachment:create": "library_import",
-  "standaloneAttachment:read": "library_read",
-  "standaloneAttachment:update": "library_update",
-  "standaloneAttachment:trash": "library_delete",
-  "standaloneAttachment:restore": "library_delete",
-  "standaloneAttachment:addToCollection": "library_update",
-  "standaloneAttachment:removeFromCollection": "library_update",
-  "standaloneAttachment:relate": "library_update",
-  "standaloneAttachment:reparent": "library_update",
-
-  // library_update kind:'attachment' attaches a file or a web page to an
-  // item, or finds its PDF; library_import creates top-level items only.
-  "childAttachment:create": "library_update",
-  "childAttachment:read": "library_read",
-  "childAttachment:update": "library_update",
-  "childAttachment:trash": "library_delete",
-  "childAttachment:restore": "library_delete",
-  "childAttachment:relate": "library_update",
-  "childAttachment:reparent": "library_update",
-
-  "annotation:create": "annotate_pdf",
-  "annotation:read": "library_read",
-  "annotation:update": "library_update",
-  "annotation:trash": "library_delete",
-  "annotation:restore": "library_delete",
-
-  "collection:create": "library_update",
-  "collection:update": "library_update",
-  "collection:reparent": "library_update",
-  "collection:read": "library_search",
-  "collection:trash": "library_update",
-  "collection:restore": "library_delete",
-  "collection:delete": "library_update",
-
-  "savedSearch:create": "library_update",
-  "savedSearch:read": "library_search",
-  "savedSearch:update": "library_update",
-  "savedSearch:trash": "library_update",
-  "savedSearch:restore": "library_delete",
-  "savedSearch:delete": "library_update",
-
-  "tag:create": "library_update",
-  "tag:read": "library_search",
-  "tag:update": "library_update",
-  "tag:delete": "library_update",
-
-  "library:read": "library_search",
-};
-
 export function checkCapability(
   operation: LibraryOperation,
   kind: LibraryObjectKind,
@@ -356,13 +230,6 @@ export function checkCapability(
     status: "unmodelled",
     reason: `"${operation}" on ${kind} is not declared in the capability matrix. Use zotero_script if the Zotero API supports it.`,
   };
-}
-
-export function isAllowed(
-  operation: LibraryOperation,
-  kind: LibraryObjectKind,
-): boolean {
-  return checkCapability(operation, kind).status === "allowed";
 }
 
 /**

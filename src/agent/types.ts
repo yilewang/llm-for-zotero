@@ -73,7 +73,6 @@ export type {
   AgentPostImageState,
   AgentActionOperation,
   AgentActionParameters,
-  AgentActionProofDomain,
   AgentActionProposal,
   AgentActionReceipt,
   AgentToolActionDescriptor,
@@ -81,12 +80,7 @@ export type {
 
 export type {
   ExecutionCheckpoint,
-  ExecutionCheckpointDelta,
   ExecutionCheckpointTask,
-  ExecutionTaskStatus,
-  MaterialOutcomeEntry,
-  MaterialOutcomeLedger,
-  MaterialOutcomeStatus,
 } from "./execution/types";
 
 export type AgentRequest = {

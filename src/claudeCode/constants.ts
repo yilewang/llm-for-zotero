@@ -1,24 +1,11 @@
 import { getClaudeProfileSignature } from "./projectSkills";
 import {
   buildDefaultConversationKey,
-  CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
-  CLAUDE_PAPER_CONVERSATION_KEY_BASE,
   getConversationKeyRange,
   getRuntimeAllocatedConversationKeyRange,
-  getRuntimeDefaultConversationKeyRange,
-  getProfileKeyOffset,
-  getProfileKeySlot,
   isConversationKeyFor,
-  RUNTIME_PROFILE_KEY_MULTIPLIER,
-  RUNTIME_PROFILE_SLOT_MOD,
 } from "../shared/conversationKeySpace";
 
-export {
-  CLAUDE_GLOBAL_CONVERSATION_KEY_BASE,
-  CLAUDE_PAPER_CONVERSATION_KEY_BASE,
-};
-export const CLAUDE_PROFILE_KEY_MULTIPLIER = RUNTIME_PROFILE_KEY_MULTIPLIER;
-export const CLAUDE_PROFILE_SLOT_MOD = RUNTIME_PROFILE_SLOT_MOD;
 export const CLAUDE_HISTORY_LIMIT = 200;
 export const CLAUDE_RUNTIME_RELEASE_GRACE_MS = 30_000;
 
@@ -34,14 +21,6 @@ export const CLAUDE_REASONING_OPTIONS = [
   "max",
 ] as const;
 export type ClaudeReasoningMode = (typeof CLAUDE_REASONING_OPTIONS)[number];
-
-export function getClaudeProfileKeySlot(): number {
-  return getProfileKeySlot(getClaudeProfileSignature());
-}
-
-export function getClaudeProfileKeyOffset(): number {
-  return getProfileKeyOffset(getClaudeProfileSignature());
-}
 
 export function getClaudeGlobalConversationKeyRange(): {
   start: number;
@@ -61,19 +40,6 @@ export function getClaudePaperConversationKeyRange(): {
   return getConversationKeyRange(
     "claude_code",
     "paper",
-    getClaudeProfileSignature(),
-  );
-}
-
-export function getClaudeDefaultConversationKeyRange(
-  kind: "global" | "paper",
-): {
-  start: number;
-  endExclusive: number;
-} {
-  return getRuntimeDefaultConversationKeyRange(
-    "claude_code",
-    kind,
     getClaudeProfileSignature(),
   );
 }

@@ -68,7 +68,6 @@ import { isPdfContextAttachment } from "../../services/paperContent/contextAttac
 import {
   buildCitationQuoteHash,
   citationPageDisplayLabel,
-  clearCitationPageCache,
   lookupCitationPage,
 } from "../../services/pdf/citationNavigationCache";
 import {
@@ -394,15 +393,7 @@ function isYearOnlyCitationLabel(value: string): boolean {
 
 // The verified page cache lives with the navigator that fills it; note saving
 // and the citation tests read it through this module.
-export {
-  lookupCachedCitationPage,
-  lookupCachedCitationPageLocation,
-  rememberCachedCitationPage,
-} from "./quoteNavigator";
-
-export function clearCachedCitationPagesForTests(): void {
-  clearCitationPageCache();
-}
+export { lookupCachedCitationPageLocation } from "./quoteNavigator";
 
 export function formatSourceLabelWithPage(
   baseSourceLabel: string,
@@ -516,16 +507,6 @@ function lookupCachedCitationPageForContextIds(
   return null;
 }
 
-export function lookupCachedCitationPageForContextIdsForTests(
-  contextItemIds: string,
-  quoteText: string,
-): string | null {
-  return lookupCachedCitationPageForContextIds(
-    parseCitationContextItemIds(contextItemIds),
-    quoteText,
-  );
-}
-
 function citationButtonsShareContext(
   left: HTMLButtonElement,
   right: HTMLButtonElement,
@@ -612,9 +593,6 @@ function isPdfBackedCitationCandidate(
     return false;
   }
 }
-
-export const isPdfBackedCitationCandidateForTests =
-  isPdfBackedCitationCandidate;
 
 function buildCitationCandidateKey(
   candidate: AssistantCitationPaperCandidate,
@@ -1373,27 +1351,6 @@ export function matchAssistantCitationCandidates(
   );
 }
 
-function sortCandidatesForActiveReader(
-  candidates: AssistantCitationPaperCandidate[],
-): AssistantCitationPaperCandidate[] {
-  const activeReaderItemId = getReaderItemId(getActiveReaderForSelectedTab());
-  if (!activeReaderItemId) return candidates.slice();
-  return candidates.slice().sort((left, right) => {
-    const leftProvenance = getEffectiveCitationCandidateProvenance(left);
-    const rightProvenance = getEffectiveCitationCandidateProvenance(right);
-    if (leftProvenance !== rightProvenance) {
-      return (
-        rankCitationCandidateProvenance(rightProvenance) -
-        rankCitationCandidateProvenance(leftProvenance)
-      );
-    }
-    return (
-      Number(right.contextItemId === activeReaderItemId) -
-      Number(left.contextItemId === activeReaderItemId)
-    );
-  });
-}
-
 const HAS_PARAGRAPH_CITATION_TOKEN = new RegExp(
   PARAGRAPH_CITATION_TOKEN_PATTERN.source,
 );
@@ -1863,9 +1820,6 @@ function shouldSearchLibraryForCitation(params: {
   );
 }
 
-export const shouldSearchLibraryForCitationForTests =
-  shouldSearchLibraryForCitation;
-
 function buildAutoNavigableCitationCandidateKeys(params: {
   extractedCitation: ExtractedCitationLabel | null;
   orderedCandidates: AssistantCitationPaperCandidate[];
@@ -1921,17 +1875,6 @@ function isAutoNavigableCitationCandidate(
   autoNavigableCandidateKeys: Set<string>,
 ): boolean {
   return autoNavigableCandidateKeys.has(buildCitationCandidateKey(candidate));
-}
-
-export function resolveAutoNavigableCitationCandidatesForTests(input: {
-  extractedCitation: ExtractedCitationLabel | null;
-  orderedCandidates: AssistantCitationPaperCandidate[];
-  staticCandidates: AssistantCitationPaperCandidate[];
-}): AssistantCitationPaperCandidate[] {
-  const keys = buildAutoNavigableCitationCandidateKeys(input);
-  return input.orderedCandidates.filter((candidate) =>
-    isAutoNavigableCitationCandidate(candidate, keys),
-  );
 }
 
 function mergeCitationCandidates(
@@ -2198,9 +2141,6 @@ function resolveAuthoritativeNonPdfCitationCandidate(input: {
     ? topCandidate
     : null;
 }
-
-export const resolveAuthoritativeNonPdfCitationCandidateForTests =
-  resolveAuthoritativeNonPdfCitationCandidate;
 
 /**
  * Papers the conversation itself carries are settled before — and judged more
@@ -3072,9 +3012,6 @@ function refreshAllCitationButtonPages(
   }
 }
 
-export const refreshAllCitationButtonPagesForTests =
-  refreshAllCitationButtonPages;
-
 function resolveMatchingCandidatesForExtractedCitation(
   extractedCitation: ExtractedCitationLabel,
   candidates: AssistantCitationPaperCandidate[],
@@ -3312,16 +3249,6 @@ function createCitationButton(params: {
   return container;
 }
 
-/**
- * Test-only: the production button builder and the click navigator, so the
- * citation-navigation characterization tests can drive a real button through
- * every navigation path. Not used by production code.
- */
-export const citationNavigationForTests = {
-  createCitationButton,
-  resolveAndNavigateAssistantCitation,
-};
-
 function resolveQuoteCitationCandidates(
   citation: QuoteCitation,
   extractedCitation: ExtractedCitationLabel | null,
@@ -3364,9 +3291,6 @@ function resolveQuoteCitationCandidates(
       )
     : [];
 }
-
-export const resolveQuoteCitationCandidatesForTests =
-  resolveQuoteCitationCandidates;
 
 function resolveStoredQuoteCitationCandidates(
   citation: QuoteCitation,
@@ -3414,9 +3338,6 @@ function resolveStoredQuoteCitationCandidates(
 
   return out;
 }
-
-export const getQuoteCitationLookupTextForTests =
-  resolveQuoteCitationLookupText;
 
 function getQuoteCitationDisplayText(citation: QuoteCitation): string {
   const displayText = stripQuoteCitationAnchorsFromDisplayText(
@@ -3508,8 +3429,6 @@ function renderQuoteCardBodyMarkdown(
 ): void {
   renderQuoteCardMarkdownInto(body, quoteText, ownerDoc, scopeSource);
 }
-
-export const appendQuoteCardBodyContentForTests = appendQuoteCardBodyContent;
 
 /**
  * Expanded/collapsed is reader state, not message state. When an answer is

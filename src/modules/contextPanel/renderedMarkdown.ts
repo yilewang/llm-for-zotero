@@ -794,24 +794,6 @@ function isSafeRenderedMarkdownAttribute(
   return false;
 }
 
-export function isSafeRenderedMarkdownElementForTests(
-  element: Element,
-): boolean {
-  return isSafeRenderedMarkdownElement(element);
-}
-
-export function isSafeRenderedMarkdownAttributeForTests(
-  element: Element,
-  attrName: string,
-  attrValue: string,
-): boolean {
-  return isSafeRenderedMarkdownAttribute(
-    element,
-    attrName.toLowerCase(),
-    attrValue,
-  );
-}
-
 export function sanitizeRenderedMarkdownFragment(
   fragment: ParentNode,
   doc: Document,
@@ -1892,13 +1874,6 @@ function syncPreviewThemes(root: ParentNode, doc: Document): boolean {
     preview.dataset.llmPreviewTheme = theme;
   }
   return drawings.length > 0 || pages.length > 0;
-}
-
-export function syncPreviewThemesForTests(
-  root: ParentNode,
-  doc: Document,
-): boolean {
-  return syncPreviewThemes(root, doc);
 }
 
 /**

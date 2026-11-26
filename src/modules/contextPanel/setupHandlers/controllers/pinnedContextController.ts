@@ -226,13 +226,6 @@ export const removePinnedFile = filePins.remove;
 export const retainPinnedFiles = filePins.retain;
 export const prunePinnedFileKeys = filePins.prune;
 
-const paperPins = createPinnedKeySet(buildPinnedPaperKey);
-export const isPinnedPaper = paperPins.isPinned;
-export const togglePinnedPaper = paperPins.toggle;
-export const removePinnedPaper = paperPins.remove;
-export const retainPinnedPapers = paperPins.retain;
-export const prunePinnedPaperKeys = paperPins.prune;
-
 export function clearPinnedContextOwner(
   pinnedKeysByOwner: Map<number, Set<string>>,
   ownerId: number,

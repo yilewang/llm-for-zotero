@@ -86,10 +86,3 @@ export function getConversationWriteLockTailForTests(
 ): Promise<void> | undefined {
   return locks.get(normalizeKey(conversationKey));
 }
-
-/** Test-only reset for isolated store/workflow fixtures. */
-export function resetConversationWriteFenceForTests(): void {
-  generations.clear();
-  frozen.clear();
-  locks.clear();
-}

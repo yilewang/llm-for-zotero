@@ -141,19 +141,6 @@ export type ConversationCatalogIdentityWitness = {
   conversationID: string;
 };
 
-/** Immutable, scope-bound identity used by destructive conversation flows. */
-export type ConversationInstanceRef = {
-  instanceId: string;
-  conversationID: string;
-  conversationKey: number;
-  catalogCreatedAt: number;
-  system: ConversationSystem;
-  kind: ConversationCatalogKind;
-  profileSignature: string;
-  libraryID: number;
-  paperItemID?: number;
-};
-
 export type ConversationCatalogScope = {
   system: ConversationSystem;
   kind: ConversationCatalogKind;

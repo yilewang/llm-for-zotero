@@ -565,25 +565,3 @@ export function recordContextCacheTelemetry(
   });
   persistTelemetry();
 }
-
-export function getContextCacheTelemetry(
-  cacheKey: string | undefined,
-): ContextCacheTelemetryRecord | undefined {
-  loadPersistedTelemetry();
-  return cacheKey ? telemetryByCacheKey.get(cacheKey) : undefined;
-}
-
-export function listContextCacheTelemetry(
-  limit = 10,
-): ContextCacheTelemetryRecord[] {
-  loadPersistedTelemetry();
-  return [...telemetryByCacheKey.values()]
-    .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
-    .slice(0, Math.max(0, Math.floor(limit)));
-}
-
-export function clearContextCacheTelemetry(): void {
-  loadPersistedTelemetry();
-  telemetryByCacheKey.clear();
-  persistTelemetry();
-}

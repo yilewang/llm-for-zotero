@@ -226,14 +226,6 @@ export function sanitizeRenderedMermaidSvgWithReason(
   return { ok: true, svg: safeSvg };
 }
 
-export function sanitizeRenderedMermaidSvg(
-  svg: string,
-  maxChars: number,
-): string | null {
-  const result = sanitizeRenderedMermaidSvgWithReason(svg, maxChars);
-  return result.ok ? result.svg : null;
-}
-
 export function createInlineSvgElement(
   doc: Document,
   svgMarkup: string,

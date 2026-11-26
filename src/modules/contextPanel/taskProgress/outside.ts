@@ -97,13 +97,6 @@ const WEB_TOOLS = new Set(["web_search", "web_read"]);
 const PAPER_TOOLS = new Set(["literature_search", "literature_read"]);
 const LIBRARY_SEARCH_TOOLS = new Set(["library_search", "library_retrieve"]);
 
-/** Event kinds a turn's outside sources are folded from. */
-export const TASK_OUTSIDE_EVENT_TYPES = [
-  "tool_call",
-  "tool_result",
-  "final",
-] as const;
-
 /** Whether a tool's results can hold outside sources. */
 export function isOutsideSourceTool(name: string): boolean {
   return WEB_TOOLS.has(name) || PAPER_TOOLS.has(name);

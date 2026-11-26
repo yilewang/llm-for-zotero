@@ -1,5 +1,3 @@
-declare const Zotero: any;
-
 import { isEphemeralConversationKey } from "./conversationKeySpace";
 import { fnv1a32Raw } from "../utils/fnv1a";
 import type { ConversationSystem } from "./types";
@@ -615,12 +613,6 @@ export function initConversationRegistryStore(): Promise<void> {
   return registryInitTask;
 }
 
-/** Test-only reset so fixtures can swap the database between cases. */
-export function resetConversationRegistryStoreInitForTests(): void {
-  registryInitTask = null;
-  registryInitDbRef = null;
-}
-
 async function initConversationRegistryStoreUncached(): Promise<void> {
   const db = getZoteroDb();
   if (!db?.queryAsync) return;
@@ -843,113 +835,6 @@ export async function registerConversationScope(
   return true;
 }
 
-export async function invalidateRegisteredConversationScope(
-  conversationKey: number,
-  reason: string,
-): Promise<void> {
-  const normalizedKey = normalizePositiveInt(conversationKey);
-  if (!normalizedKey) return;
-  const db = getZoteroDb();
-  if (!db?.queryAsync) return;
-  await initConversationRegistryStore();
-  const selectedRows = (await db.queryAsync(
-    `SELECT instance_id AS instanceID,
-            legacy_conversation_key AS conversationKey,
-            system,
-            profile_signature AS profileSignature,
-            library_id AS libraryID,
-            paper_item_id AS paperItemID
-     FROM ${CONVERSATION_REGISTRY_TABLE}
-     WHERE legacy_conversation_key = ?
-       AND is_paper_restore_target = 1`,
-    [normalizedKey],
-  )) as Array<Record<string, unknown>> | undefined;
-  await db.queryAsync(
-    `UPDATE ${CONVERSATION_REGISTRY_TABLE}
-     SET valid = 0,
-         invalid_reason = ?,
-         is_paper_restore_target = 0
-     WHERE legacy_conversation_key = ?`,
-    [normalizeText(reason, 256) || "invalid scope", normalizedKey],
-  );
-  for (const row of selectedRows || []) {
-    const system = normalizeSystem(row.system);
-    const libraryID = normalizePositiveInt(row.libraryID);
-    const paperItemID = normalizePositiveInt(row.paperItemID);
-    if (!system || !libraryID || !paperItemID) continue;
-    paperRestoreTargetInvalidationListener?.({
-      instanceID: normalizeInstanceID(row.instanceID),
-      conversationKey: normalizedKey,
-      system,
-      profileSignature:
-        normalizeText(row.profileSignature, 128) ||
-        getCurrentProfileSignature(),
-      libraryID,
-      paperItemID,
-    });
-  }
-}
-
-export async function getRegisteredConversationScopeByInstanceID(
-  instanceID: string,
-): Promise<ConversationRegistryRow | null> {
-  const normalizedInstanceID = normalizeInstanceID(instanceID);
-  if (!normalizedInstanceID) return null;
-  const db = getZoteroDb();
-  if (!db?.queryAsync) return null;
-  await initConversationRegistryStore();
-  const rows = (await db.queryAsync(
-    `SELECT instance_id AS instanceID,
-            conversation_id AS conversationID,
-            legacy_conversation_key AS conversationKey,
-            system,
-            kind,
-            profile_signature AS profileSignature,
-            library_id AS libraryID,
-            paper_item_id AS paperItemID,
-            valid,
-            invalid_reason AS invalidReason
-     FROM ${CONVERSATION_REGISTRY_TABLE}
-     WHERE instance_id = ?
-     LIMIT 1`,
-    [normalizedInstanceID],
-  )) as Array<Record<string, unknown>> | undefined;
-  const row = rows?.[0];
-  if (!row) return null;
-  const system = normalizeSystem(row.system);
-  const kind = normalizeKind(row.kind);
-  const libraryID = normalizePositiveInt(row.libraryID);
-  const conversationKey = normalizePositiveInt(row.conversationKey);
-  if (!system || !kind || !libraryID || !conversationKey) return null;
-  return {
-    instanceID: normalizedInstanceID,
-    conversationID: normalizeConversationID(row.conversationID),
-    conversationKey,
-    system,
-    kind,
-    profileSignature: normalizeText(row.profileSignature, 128),
-    libraryID,
-    paperItemID: normalizePositiveInt(row.paperItemID),
-    valid: Number(row.valid) !== 0,
-    invalidReason: normalizeText(row.invalidReason, 256) || undefined,
-  };
-}
-
-export async function deleteRegisteredConversationScope(
-  instanceID: string,
-  conversationKey?: number,
-): Promise<void> {
-  const normalizedInstanceID = normalizeInstanceID(instanceID);
-  if (!normalizedInstanceID) return;
-  const db = getZoteroDb();
-  if (!db?.queryAsync) return;
-  await initConversationRegistryStore();
-  await deleteRegisteredConversationScopeInTransaction(
-    normalizedInstanceID,
-    conversationKey,
-  );
-}
-
 /** Delete a registry row without opening a nested transaction. */
 export async function deleteRegisteredConversationScopeInTransaction(
   instanceID: string,
@@ -1167,12 +1052,6 @@ export async function repairRegisteredConversationScope(
   return true;
 }
 
-export async function validateConversationScope(
-  params: ConversationRegistryScope,
-): Promise<boolean> {
-  return (await getConversationScopeValidationDetails(params)).valid;
-}
-
 export async function getConversationScopeValidationDetails(
   params: ConversationRegistryScope,
 ): Promise<ConversationScopeValidationDetails> {
@@ -1296,15 +1175,6 @@ function collectPaperIdsFromValue(value: unknown, out: Set<number>): void {
   } catch {
     // Ignore malformed legacy JSON. It cannot safely prove ownership.
   }
-}
-
-export function inferSinglePaperItemIdFromContextRows(
-  rows: PaperContextJsonColumns[],
-): number | "ambiguous" | null {
-  const evidence = getPaperContextOwnershipEvidenceFromRows(rows);
-  if (evidence.paperItemIDs.length === 0) return null;
-  if (evidence.paperItemIDs.length > 1) return "ambiguous";
-  return evidence.singlePaperItemID;
 }
 
 export function getPaperContextOwnershipEvidenceFromRows(

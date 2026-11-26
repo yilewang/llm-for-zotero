@@ -112,12 +112,6 @@ export function isCodexPaperPortalItem(
   );
 }
 
-export function isCodexPortalItem(
-  item: unknown,
-): item is CodexGlobalPortalItem | CodexPaperPortalItem {
-  return isCodexGlobalPortalItem(item) || isCodexPaperPortalItem(item);
-}
-
 export function getCodexPaperPortalBaseItemID(item: unknown): number | null {
   if (!isCodexPaperPortalItem(item)) return null;
   const value = Number(item.__llmCodexPaperPortalBaseItemID);

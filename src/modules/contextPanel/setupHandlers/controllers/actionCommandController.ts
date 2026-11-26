@@ -38,10 +38,6 @@ import {
   isPagedLibraryActionForMode,
   buildCommandDefaultInput,
 } from "./actionCommandParams";
-export {
-  isPagedLibraryActionForMode,
-  shouldExecuteAgentActionImmediatelyFromSlash,
-} from "./actionCommandParams";
 import {
   activateCommandRowState,
   clearCommandRowState,
@@ -49,13 +45,6 @@ import {
 import {
   createActionCommandLifecycle,
   type ActionCommandLifecycle,
-} from "./actionCommandLifecycle";
-export {
-  attachActionCompletionEscapeDismissal,
-  getPagedReviewTransitionText,
-  isPagedReviewNavigationResolution,
-  renderActionCompletionCard,
-  renderActionTransitionCard,
 } from "./actionCommandLifecycle";
 import { runAgentActionWithLifecycle } from "./actionExecutionRunner";
 import {

@@ -86,15 +86,6 @@ function nestedOperationResult(
   return Object.keys(result).length ? result : null;
 }
 
-export function normalizePath(value: string | undefined): string {
-  return (value || "")
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/\s*\/\s*/g, "/")
-    .replace(/\s+/g, " ")
-    .toLowerCase();
-}
-
 export function uniqueNumbers(values: number[]): number[] {
   return [
     ...new Set(values.filter((value) => Number.isInteger(value) && value > 0)),

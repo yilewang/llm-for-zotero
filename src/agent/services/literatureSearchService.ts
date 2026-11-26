@@ -87,21 +87,10 @@ type FetchJsonResponse = {
   json: () => Promise<unknown>;
 };
 
-type FetchTextResponse = {
-  ok: boolean;
-  status: number;
-  text: () => Promise<string>;
-};
-
 type FetchLike = (
   url: string,
   init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<FetchJsonResponse>;
-
-type FetchTextLike = (
-  url: string,
-  init?: { headers?: Record<string, string> },
-) => Promise<FetchTextResponse>;
 
 interface XmlElement {
   querySelector(selector: string): XmlElement | null;

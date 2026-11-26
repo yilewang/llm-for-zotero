@@ -38,7 +38,3 @@ export function resolveMineruHint(paper: {
   cache.set(key, pending);
   return pending;
 }
-
-export function clearMineruHintCache(): void {
-  cache.clear();
-}

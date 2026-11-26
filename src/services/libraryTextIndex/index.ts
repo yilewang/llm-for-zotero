@@ -35,21 +35,8 @@ import { getLibraryTextIndexStore, resetLibraryTextIndexStore } from "./store";
 import { clearLoadedVectorState, isVectorsPrefOn } from "./vectorIndexer";
 import { removeAllVectorNamespaces } from "./vectorStore";
 
-export {
-  libraryTextIndexScheduler,
-  beginRetrievalActivity,
-  isLibraryTextIndexEnabled,
-  getLibraryTextIndexBudgetBytes,
-} from "./scheduler";
-export type { LibraryTextIndexStatus } from "./scheduler";
-export { searchLibraryTextIndex } from "./search";
-export type {
-  IndexCoverage,
-  IndexedChunkHit,
-  IndexedPaperHit,
-  LibraryTextIndexSearchParams,
-  LibraryTextIndexSearchResult,
-} from "./search";
+export { libraryTextIndexScheduler, beginRetrievalActivity } from "./scheduler";
+export type { IndexedChunkHit, IndexedPaperHit } from "./search";
 
 export type LibraryTextIndexFacade = {
   isEnabled(): boolean;

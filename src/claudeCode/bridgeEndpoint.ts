@@ -51,8 +51,3 @@ export function matchManagedClaudeBridgeBase(url: string): string {
   }
   return "";
 }
-
-export function resetManagedClaudeBridgeEndpointForTests(): void {
-  currentBaseUrl = "";
-  earlierBaseUrls.clear();
-}

@@ -96,7 +96,6 @@ import {
   ensureConversationLoaded,
   getConversationKey,
   refreshChat,
-  resetSessionTokens,
 } from "./chat";
 import { renderShortcuts } from "./shortcuts";
 import { bindTaskProgressToggle } from "./taskProgress/panel";

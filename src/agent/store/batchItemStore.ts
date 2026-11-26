@@ -413,8 +413,3 @@ export async function listResumableBatches(
       (batch) => live.has(batch.batchId) && batch.pending + batch.failed > 0,
     );
 }
-
-export async function clearAgentBatchItems(): Promise<void> {
-  if (!hasDb()) return;
-  await Zotero.DB.queryAsync(`DELETE FROM ${BATCH_ITEMS_TABLE}`);
-}

@@ -42,14 +42,10 @@ import type { RevertedStep } from "../services/changeReverter";
 import { innermostToolResult, toolResultString } from "./toolResultEnvelope";
 import { readFlatMaterialRef } from "../documents/materialRef";
 
-export type {
-  ActionContractGateway,
-  PreparedActionExecution,
-} from "./actionOperationEvidence";
+export type { PreparedActionExecution } from "./actionOperationEvidence";
 export {
   describeLibraryMutationActions,
   describeLibraryMutationInput,
-  extractLibraryMutationOperations,
 } from "./actionOperationEvidence";
 
 /**

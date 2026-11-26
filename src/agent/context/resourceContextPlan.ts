@@ -12,7 +12,6 @@ import {
 import type { ContextCachePlan } from "../../contextCache/manager";
 import {
   buildAgentEvidenceContextBlock,
-  clearAgentEvidenceCache,
   commitAgentCacheEvidenceActivities,
   hydrateAgentEvidenceCache,
   planAgentContextCache,
@@ -42,13 +41,6 @@ export type AgentResourceRecord = {
 export type AgentResourceSnapshot = {
   baseScope: Record<string, unknown>;
   resources: Record<AgentResourceGroup, AgentResourceRecord[]>;
-};
-
-export type AgentResourceDelta = {
-  added: AgentResourceRecord[];
-  removed: AgentResourceRecord[];
-  changed: AgentResourceRecord[];
-  unchanged: number;
 };
 
 export type AgentResourceContextPlan = {
@@ -495,62 +487,6 @@ export function buildAgentResourceSignatureFromSnapshot(
   return stableJson(snapshot);
 }
 
-function flattenAgentResourceSnapshot(
-  snapshot: AgentResourceSnapshot,
-): AgentResourceRecord[] {
-  const records: AgentResourceRecord[] = [];
-  for (const group of Object.keys(snapshot.resources) as AgentResourceGroup[]) {
-    for (const record of snapshot.resources[group]) {
-      records.push({
-        ...record,
-        key: `${group}:${record.key}`,
-      });
-    }
-  }
-  return sortResourceRecords(records);
-}
-
-export function diffAgentResourceSnapshots(params: {
-  previous: AgentResourceSnapshot;
-  current: AgentResourceSnapshot;
-}): AgentResourceDelta {
-  const previousRecords = new Map(
-    flattenAgentResourceSnapshot(params.previous).map((record) => [
-      record.key,
-      record,
-    ]),
-  );
-  const currentRecords = new Map(
-    flattenAgentResourceSnapshot(params.current).map((record) => [
-      record.key,
-      record,
-    ]),
-  );
-  const added: AgentResourceRecord[] = [];
-  const removed: AgentResourceRecord[] = [];
-  const changed: AgentResourceRecord[] = [];
-  let unchanged = 0;
-  for (const [key, current] of currentRecords) {
-    const previous = previousRecords.get(key);
-    if (!previous) {
-      added.push(current);
-    } else if (previous.signature !== current.signature) {
-      changed.push(current);
-    } else {
-      unchanged += 1;
-    }
-  }
-  for (const [key, previous] of previousRecords) {
-    if (!currentRecords.has(key)) removed.push(previous);
-  }
-  return {
-    added: sortResourceRecords(added),
-    removed: sortResourceRecords(removed),
-    changed: sortResourceRecords(changed),
-    unchanged,
-  };
-}
-
 export function buildAgentResourceContextPlan(
   request: AgentRuntimeRequest,
 ): AgentResourceContextPlan {
@@ -697,16 +633,4 @@ export function commitAgentReadActivities(params: {
   resourceSignature?: string;
 }): Promise<void> {
   return commitAgentCacheEvidenceActivities(params);
-}
-
-export function clearAgentReadLedger(): void {
-  clearAgentEvidenceCache();
-}
-
-export function buildAgentPriorReadContextBlock(params: {
-  conversationKey: number;
-  request?: AgentRuntimeRequest;
-  resourceSignature?: string;
-}): string {
-  return buildAgentEvidenceContextBlock(params);
 }

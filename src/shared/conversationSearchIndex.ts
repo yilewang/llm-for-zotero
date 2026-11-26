@@ -877,16 +877,6 @@ async function normalizeMatches(
   return matches;
 }
 
-export async function searchConversationIndex(params: {
-  system: ConversationSystem;
-  libraryID: number;
-  query: string;
-  limit?: number;
-  refresh?: boolean;
-}): Promise<ConversationSearchIndexMatch[]> {
-  return (await searchConversationIndexWithStatus(params)).matches;
-}
-
 export async function searchConversationIndexWithStatus(params: {
   system: ConversationSystem;
   libraryID: number;

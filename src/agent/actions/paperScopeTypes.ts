@@ -42,14 +42,3 @@ export type PaperScopedActionProfile = {
     all?: PaperScopedActionPromptOption;
   };
 };
-
-export type PaperScopedActionCollectionCandidate = {
-  collectionId: number;
-  name: string;
-  path?: string;
-};
-
-export type PaperScopedActionTagCandidate = {
-  name: string;
-  type?: number;
-};

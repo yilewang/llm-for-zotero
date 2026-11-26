@@ -83,7 +83,3 @@ export function getRecentRetrievalTimings(
 ): RetrievalTimingReport[] {
   return recent.slice(0, Math.max(0, Math.floor(limit)));
 }
-
-export function clearRetrievalTimingsForTests(): void {
-  recent.length = 0;
-}

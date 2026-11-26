@@ -13,10 +13,6 @@ export function setUserIdleForTests(idle: boolean | null): void {
   testOverride = idle;
 }
 
-export function isUserIdleOverridden(): boolean {
-  return testOverride !== null;
-}
-
 type IdleObserver = {
   observe(subject: unknown, topic: string, data?: unknown): void;
 };

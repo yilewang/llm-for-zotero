@@ -24,7 +24,7 @@ import type {
   OutsidePaperSnapshot,
 } from "./types";
 
-export { normalizedDoi, type OutsidePaperMetadataLookup };
+export { type OutsidePaperMetadataLookup };
 
 /**
  * The most time every lookup of one submission takes together. The run's

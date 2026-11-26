@@ -54,8 +54,6 @@ import type { TaskPaperScopeEntry } from "../../../agent/context/taskPaperScopeL
 import type { RunEndState } from "../../../agent/execution/types";
 import { t } from "../../../utils/i18n";
 import {
-  canOpenTaskPaperPassage,
-  taskPaperPassagePageLabel,
   taskPaperReadReach,
   type TaskPaperPassageTarget,
 } from "./passageSource";
@@ -199,10 +197,6 @@ export function findCurrentTaskProgressSteps(
       !node.hidden && !node.closest(".llm-task-progress-question-section"),
   );
   return top || null;
-}
-
-export function getRememberedTaskProgressDrawerHeight(): number | null {
-  return rememberedDrawerHeight;
 }
 
 export function resetTaskProgressDrawerHeight(): void {
@@ -1157,40 +1151,6 @@ export function formatTaskPaperChatCounts(
     question.answerCitations?.length ??
     (record ? questionCitationIds(record, question.turn).length : 0);
   return count ? format("{count} cited", { count }) : "";
-}
-
-/** An earlier question's counts: "2/2 steps · 8 papers", a zero left out. */
-export function formatTaskQuestionCounts(
-  section: TaskProgressSection,
-  /** The question's scholarly papers and web pages. */
-  outside: { papers: number; pages: number } = { papers: 0, pages: 0 },
-): string {
-  const parts: string[] = [];
-  const checklist = section.checklist;
-  if (checklist && checklist.total > 0) {
-    parts.push(
-      format("{done}/{total} steps", {
-        done: checklist.done,
-        total: checklist.total,
-      }),
-    );
-  }
-  const papers = section.rows.length + outside.papers;
-  if (papers) {
-    parts.push(
-      format(papers === 1 ? "{count} paper" : "{count} papers", {
-        count: papers,
-      }),
-    );
-  }
-  if (outside.pages) {
-    parts.push(
-      format(outside.pages === 1 ? "{count} web page" : "{count} web pages", {
-        count: outside.pages,
-      }),
-    );
-  }
-  return parts.join(" · ");
 }
 
 /**

@@ -1,9 +1,4 @@
-import type {
-  AgentModelContentPart,
-  AgentModelMessage,
-  AgentToolCall,
-  ToolSpec,
-} from "../types";
+import type { AgentModelMessage, ToolSpec } from "../types";
 import { createMalformedToolArgumentsDiagnostic } from "../toolArgumentDiagnostics";
 export { parseDataUrl } from "../../shared/dataUrl";
 
@@ -81,38 +76,6 @@ export function groupToolContinuationMessages(messages: AgentModelMessage[]): {
     toolMessages,
     followupUserMessages,
   };
-}
-
-export function stringifyMessageContentParts(
-  parts: AgentModelContentPart[],
-): string {
-  return parts
-    .map((part) => {
-      if (part.type === "text") return part.text;
-      if (part.type === "image_url") return "[image]";
-      return `[Prepared file: ${part.file_ref.name}]`;
-    })
-    .join("\n");
-}
-
-export function isAssistantToolCallMessage(
-  message: AgentModelMessage,
-): message is Extract<AgentModelMessage, { role: "assistant" }> {
-  return (
-    message.role === "assistant" &&
-    Array.isArray(message.tool_calls) &&
-    message.tool_calls.length > 0
-  );
-}
-
-export function normalizeAssistantToolCalls(
-  toolCalls: Array<{ id: string; name: string; arguments: unknown }>,
-): AgentToolCall[] {
-  return toolCalls.map((call) => ({
-    id: call.id,
-    name: call.name,
-    arguments: call.arguments,
-  }));
 }
 
 export function encodeBytesBase64(bytes: Uint8Array): string {

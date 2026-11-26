@@ -187,17 +187,3 @@ async function prepareStandaloneContextTarget(
   if (prepared === false) return null;
   return getConnectedContextSurfaceTarget("standalone") || target;
 }
-
-export async function drainPendingStandaloneContextItemsForTests(
-  addItemsAsDefaultContext: AddItemsAsDefaultContext,
-): Promise<void> {
-  await drainPendingStandaloneContextItems({
-    surfaceKind: "standalone",
-    addItemsAsDefaultContext,
-  });
-}
-
-export function clearContextSurfaceActionTargetsForTests(): void {
-  activeContextSurfaceTargets.clear();
-  pendingStandaloneContextItems.length = 0;
-}

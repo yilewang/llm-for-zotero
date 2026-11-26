@@ -14,11 +14,7 @@ import type {
   AgentPendingAction,
   AgentPendingField,
 } from "../agent/types";
-import type {
-  CodexConversationKind,
-  NoteContextRef,
-  PaperContextRef,
-} from "../shared/types";
+import type { CodexConversationKind, PaperContextRef } from "../shared/types";
 import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../shared/quoteGuidance";
 import {
   AGENT_ACTION_CONTRACT,
@@ -120,10 +116,6 @@ import {
   CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
   resolveCodexNativeRuntimeCwd,
 } from "./runtimeCwd";
-export {
-  CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
-  resolveCodexNativeRuntimeCwd,
-} from "./runtimeCwd";
 import { getCanonicalSkillFilePath } from "../agent/skills/nativeSkillPaths";
 import {
   prepareCodexSkillProjections,
@@ -133,7 +125,6 @@ import { loadLatestDocumentForRun } from "../agent/documents/store";
 import { areEquivalentLocalPaths } from "../utils/localPath";
 import {
   acquireLocalDocumentPathLease,
-  clearRememberedLocalDocumentPaths,
   LocalDocumentPathStreamRedactor,
 } from "../agent/privacy/localDocumentPathRedaction";
 import { validateLocalPdfDocumentBatch } from "../agent/context/localDocumentBatch";
@@ -189,12 +180,6 @@ type StoredCodexProviderSession = Readonly<{
   /** The Zotero write approval mode the stored thread was created with. */
   appliedMcpWriteApproval: "writes" | "auto";
 }>;
-
-export function resetCodexNativePathSafetyStateForTests(
-  conversationKey?: number,
-): void {
-  if (conversationKey) clearRememberedLocalDocumentPaths(conversationKey);
-}
 
 export type CodexNativeTurnResult = {
   agentRunId?: string;
@@ -310,10 +295,6 @@ function createNativeClientAbortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
   return error;
-}
-
-export function clearCodexNativeHistoryVerificationState(): void {
-  nativeHistoryVerificationState.clear();
 }
 
 function normalizeRecord(value: unknown): Record<string, unknown> {
@@ -712,9 +693,6 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
     },
   };
 }
-
-export const createCodexNativeMcpCallCorrelatorForTests =
-  createCodexNativeMcpCallCorrelator;
 
 let codexNativeApprovalEffectSequence = 0;
 
@@ -1245,12 +1223,6 @@ function applyNativeSkillInputs(params: {
   return [...params.resolution.skillInputs, ...withFallback];
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function isCodexAppServerApprovalRequestMethod(method: string): boolean {
   return (
     CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS as readonly string[]
@@ -1574,13 +1546,6 @@ function isDeniedTrustedZoteroMcpGuardianReview(rawParams: unknown): boolean {
   return Boolean(extractTrustedZoteroMcpApprovalPayload(action));
 }
 
-export const isDeniedTrustedZoteroMcpGuardianReviewForTests =
-  isDeniedTrustedZoteroMcpGuardianReview;
-
-export const registerNativeGuardianReviewHandlersForTests = (
-  ...args: Parameters<typeof registerNativeGuardianReviewHandlers>
-) => registerNativeGuardianReviewHandlers(...args);
-
 function registerNativeGuardianReviewHandlers(params: {
   proc: CodexAppServerProcess;
   threadId: string;
@@ -1661,20 +1626,6 @@ function extractSystemText(messages: ChatMessage[]): string {
     .join("\n\n");
 }
 
-function extractLatestUserText(messages: ChatMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "user") continue;
-    if (typeof message.content === "string") return message.content.trim();
-    return message.content
-      .filter((part): part is TextContent => part.type === "text")
-      .map((part) => part.text || "")
-      .join("\n")
-      .trim();
-  }
-  return "";
-}
-
 function formatScopeLine(label: string, value: unknown): string | null {
   if (value === undefined || value === null || value === "") return null;
   return `- ${label}: ${value}`;
@@ -1749,14 +1700,6 @@ function buildCodexNativeVisibleTurnContextBlock(params: {
   return [visibleContext, anchorContext].filter(Boolean).join("\n\n");
 }
 
-export function buildCodexNativeVisibleTurnContextBlockForTests(params: {
-  scope: CodexNativeConversationScope;
-  skillContext?: CodexNativeSkillContext;
-  rawPdfMode?: boolean;
-}): string {
-  return buildCodexNativeVisibleTurnContextBlock(params);
-}
-
 function buildCodexNativeScopedMcpScope(params: {
   preparedRequest?: import("../agent/types").AgentRuntimeRequest;
   executionContext?: import("../agent/types").AgentExecutionContext;
@@ -1809,21 +1752,6 @@ function buildCodexNativeScopedMcpScope(params: {
     turnPaperScope: resolvedRequest.turnPaperScope,
     turnPaperScopeWarnings: resolvedRequest.turnPaperScopeWarnings,
   };
-}
-
-export function buildCodexNativeScopedMcpScopeForTests(params: {
-  preparedRequest?: import("../agent/types").AgentRuntimeRequest;
-  executionContext?: import("../agent/types").AgentExecutionContext;
-  scope: CodexNativeConversationScope;
-  profileSignature: string;
-  userText: string;
-  model?: string;
-  codexPath?: string;
-  reasoning?: ReasoningConfig;
-  sourceMessageTimestamp?: number;
-  skillContext?: CodexNativeSkillContext;
-}): ZoteroMcpActiveScope {
-  return buildCodexNativeScopedMcpScope(params);
 }
 
 /**
@@ -2883,10 +2811,6 @@ function registerNativeApprovalRequestHandlers(params: {
   };
 }
 
-export const registerNativeApprovalRequestHandlersForTests = (
-  ...args: Parameters<typeof registerNativeApprovalRequestHandlers>
-) => registerNativeApprovalRequestHandlers(...args);
-
 export async function listCodexAppServerModels(
   params: {
     codexPath?: string;
@@ -3062,25 +2986,6 @@ export async function archiveCodexAppServerThread(params: {
     { codexPath },
   );
   await proc.sendRequest("thread/archive", { threadId: params.threadId });
-}
-
-export async function setCodexAppServerThreadName(params: {
-  threadId: string;
-  name: string;
-  codexPath?: string;
-  processKey?: string;
-}): Promise<void> {
-  const name = params.name.trim();
-  if (!name) return;
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
-  const proc = await getOrCreateCodexAppServerProcess(
-    params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
-    { codexPath },
-  );
-  await proc.sendRequest("thread/name/set", {
-    threadId: params.threadId,
-    name: name.slice(0, 120),
-  });
 }
 
 export async function compactCodexAppServerThread(params: {

@@ -65,7 +65,6 @@ import {
   inlineAskAnswerToPlainText,
   renderInlineAskAnswer,
 } from "./inlineAskAnswerRender";
-import type { InlineAskModelMenuGroup } from "./inlineAskModel";
 import type { QuickPrompt } from "./quickPromptStore";
 import {
   applyQuickPromptMenuAction,
@@ -95,20 +94,15 @@ import {
   releaseReaderOverlay,
   type ReaderOverlayAnchor,
   type ReaderOverlayHandle,
-  type ReaderOverlayPalette,
 } from "./readerOverlayShared";
 import { classifySelectionPromptKey } from "./selectionPromptKeys";
-import {
-  inlineAskButtonCss,
-  inlineAskPalette,
-  type InlineAskPalette,
-} from "./inlineAskPalette";
+import { inlineAskButtonCss, inlineAskPalette } from "./inlineAskPalette";
 import { createInlineCardCloseButton } from "./inlineCardCloseButton";
 import type {
   InlineAskModelLine,
   InlineAskModelPicker,
 } from "./inlineAskModelMenu";
-export { inlineAskPalette, type InlineAskPalette } from "./inlineAskPalette";
+export { inlineAskPalette } from "./inlineAskPalette";
 export type {
   InlineAskModelLine,
   InlineAskModelPicker,

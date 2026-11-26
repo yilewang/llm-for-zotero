@@ -145,7 +145,6 @@ import { type RuntimeConversationSystem } from "../../core/conversations/convers
  * templated, so persisted names (tables, indexes, triggers) never change.
  */
 
-export type { RuntimeConversationSystem };
 export type RuntimeConversationKind = "global" | "paper";
 /** The Codex summary is the superset; Claude never sets the extra field. */
 export type RuntimeConversationSummary = CodexConversationSummary;
@@ -2968,7 +2967,3 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     getLatestForkableAssistantTimestamp,
   };
 }
-
-export type RuntimeConversationStore = ReturnType<
-  typeof createRuntimeConversationStore
->;

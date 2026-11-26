@@ -56,14 +56,6 @@ export function quantizeVector(vector: number[]): QuantizedVector {
   return { q, scale };
 }
 
-/** Dot product of two quantized unit vectors; approximates their cosine. */
-export function dotQuantized(a: QuantizedVector, b: QuantizedVector): number {
-  let sum = 0;
-  const n = Math.min(a.q.length, b.q.length);
-  for (let i = 0; i < n; i += 1) sum += a.q[i] * b.q[i];
-  return sum * a.scale * b.scale;
-}
-
 // ── Paths ────────────────────────────────────────────────────────────────────
 
 export function vectorNamespace(cacheKey: string, dims: number): string {
@@ -144,34 +136,6 @@ export async function writeVectorShard(
   await ensureDir(getNamespaceDir(namespace));
   await writeFileBytes(path, bytes);
   return { path, bytes: bytes.length };
-}
-
-/** Reads a shard; returns null when it is missing, corrupt or truncated. */
-export async function readVectorShard(
-  path: string,
-): Promise<{ dims: number; vectors: QuantizedVector[] } | null> {
-  const bytes = await readFileBytes(path);
-  if (!bytes || bytes.length < HEADER_BYTES) return null;
-  for (let i = 0; i < MAGIC.length; i += 1) {
-    if (bytes[i] !== MAGIC[i]) return null;
-  }
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const dims = view.getUint32(8, true);
-  const count = view.getUint32(12, true);
-  if (bytes.length !== HEADER_BYTES + count * 4 + count * dims) return null;
-  const vectors: QuantizedVector[] = [];
-  let scaleOffset = HEADER_BYTES;
-  let dataOffset = HEADER_BYTES + count * 4;
-  for (let i = 0; i < count; i += 1) {
-    const scale = view.getFloat32(scaleOffset, true);
-    scaleOffset += 4;
-    vectors.push({
-      q: new Int8Array(bytes.slice(dataOffset, dataOffset + dims).buffer),
-      scale,
-    });
-    dataOffset += dims;
-  }
-  return { dims, vectors };
 }
 
 export async function removeVectorNamespace(namespace: string): Promise<void> {

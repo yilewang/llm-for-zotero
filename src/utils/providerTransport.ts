@@ -3,7 +3,6 @@ import {
   RESPONSES_ENDPOINT,
   buildHeaders,
   resolveEndpoint,
-  resolveOllamaNativeApiRoot,
   resolveOllamaNativeEndpoint,
 } from "./apiHelpers";
 import {
@@ -76,7 +75,7 @@ function rewriteApiBasePath(parsed: ParsedApiBase, pathname: string): string {
   return `${parsed.origin}${pathname}`;
 }
 
-export { resolveOllamaNativeApiRoot, resolveOllamaNativeEndpoint };
+export { resolveOllamaNativeEndpoint };
 
 export function normalizeOpenAICompatibleBase(apiBase: string): string {
   const cleaned = trimTrailingSlash(apiBase);

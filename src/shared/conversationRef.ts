@@ -1,7 +1,6 @@
 import {
   getRegisteredConversationScope,
   type ConversationRegistryRow,
-  type ConversationRegistryScope,
   type RegistryConversationKind,
 } from "./conversationRegistry";
 import type { ConversationSystem } from "./types";
@@ -61,22 +60,4 @@ export async function resolveConversationRefForKey(
   return normalizeConversationRefFromRegistry(
     await getRegisteredConversationScope(normalizedKey),
   );
-}
-
-export function conversationRefToRegistryScope(
-  ref: ConversationRef,
-): ConversationRegistryScope {
-  return {
-    conversationID: ref.conversationID,
-    conversationKey: ref.legacyConversationKey,
-    system: ref.system,
-    kind: ref.kind,
-    libraryID: ref.libraryID,
-    paperItemID: ref.paperItemID,
-    profileSignature: ref.profileSignature,
-  };
-}
-
-export function conversationRefCacheKey(ref: ConversationRef): string {
-  return ref.conversationID;
 }

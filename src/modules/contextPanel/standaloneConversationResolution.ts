@@ -10,8 +10,6 @@ export type ConversationDraftSummary = {
   isDraft?: boolean | null;
 };
 
-export type StandaloneDraftSummary = ConversationDraftSummary;
-
 function normalizePositiveInt(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -105,50 +103,6 @@ export function isReusableConversationDraft(params: {
     hasNoProviderThreadState(summary) &&
     !hasMeaningfulConversationTitle(summary)
   );
-}
-
-export function findReusableConversationDraft<
-  T extends ConversationDraftSummary,
->(params: {
-  forceFresh?: boolean;
-  summaries: readonly T[];
-  kind?: "global" | "paper";
-  libraryID?: number | null;
-  paperItemID?: number | null;
-}): T | null {
-  return (
-    params.summaries.find((summary) =>
-      isReusableConversationDraft({
-        forceFresh: params.forceFresh,
-        summary,
-        kind: params.kind,
-        libraryID: params.libraryID,
-        paperItemID: params.paperItemID,
-      }),
-    ) || null
-  );
-}
-
-export function isReusableStandaloneDraft(params: {
-  forceFresh?: boolean;
-  summary: StandaloneDraftSummary | null | undefined;
-  kind: "global" | "paper";
-  libraryID?: number | null;
-  paperItemID?: number | null;
-}): boolean {
-  return isReusableConversationDraft(params);
-}
-
-export function findReusableStandaloneDraft<
-  T extends StandaloneDraftSummary,
->(params: {
-  forceFresh?: boolean;
-  summaries: readonly T[];
-  kind?: "global" | "paper";
-  libraryID?: number | null;
-  paperItemID?: number | null;
-}): T | null {
-  return findReusableConversationDraft(params);
 }
 
 export function collapseDuplicateReusableConversationDrafts<

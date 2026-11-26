@@ -20,25 +20,19 @@ import {
   getOpenAIReasoningProfileForModel,
   getQwenReasoningProfileForModel,
   getReasoningDefaultLevelForModel,
-  getRuntimeReasoningOptionsForModel,
   getThinkingSwitchProfileForModel,
   supportsReasoningForModel,
   withGeminiThoughtSummaries,
 } from "./reasoningProfiles";
 import type {
-  ReasoningProvider,
   ReasoningLevel,
   OpenAIReasoningEffort,
-  OpenAIReasoningProfile,
-  GeminiThinkingParam,
-  GeminiThinkingValue,
   GeminiReasoningOption,
   GeminiReasoningProfile,
   AnthropicAdaptiveEffort,
   AnthropicThinkingMode,
   AnthropicReasoningProfile,
   QwenReasoningProfile,
-  RuntimeReasoningOption,
 } from "./reasoningProfiles";
 import type {
   ChatMessage,
@@ -53,11 +47,8 @@ import type {
 } from "../shared/llm";
 export type {
   ChatMessage,
-  ImageContent,
-  MessageContent,
   ReasoningConfig,
   ReasoningEvent,
-  TextContent,
   UsageStats,
   ModelTurnCompletion,
   ModelTurnOutcome,
@@ -632,21 +623,6 @@ export function getResolvedEmbeddingConfig(): ResolvedEmbeddingConfig {
     cacheKey,
     attemptKey: `${cacheKey}:auth=${fingerprintEmbeddingSecret(apiKey)}`,
   };
-}
-
-/**
- * Returns the currently configured embedding model name.
- */
-export function getEmbeddingModelName(): string {
-  const explicit = (getPref("embeddingModel") || "").toString().trim();
-  if (explicit) return explicit as string;
-
-  try {
-    return getResolvedEmbeddingConfig().model;
-  } catch {
-    // No embedding provider configured
-  }
-  return DEFAULT_EMBEDDING_MODEL;
 }
 
 type IOUtilsLike = {
@@ -1808,30 +1784,9 @@ function getReasoningLevelAlias(level: ReasoningLevel): ReasoningLevel | null {
 
 // Re-export reasoning profile helpers so consumers can import from llmClient
 // without coupling directly to reasoningProfiles.
-export type {
-  ReasoningProvider,
-  ReasoningLevel,
-  OpenAIReasoningEffort,
-  OpenAIReasoningProfile,
-  GeminiThinkingParam,
-  GeminiThinkingValue,
-  GeminiReasoningOption,
-  GeminiReasoningProfile,
-  AnthropicAdaptiveEffort,
-  AnthropicThinkingMode,
-  AnthropicReasoningProfile,
-  QwenReasoningProfile,
-  RuntimeReasoningOption,
-} from "./reasoningProfiles";
+export type { ReasoningLevel } from "./reasoningProfiles";
 
-export {
-  getRuntimeReasoningOptionsForModel as getRuntimeReasoningOptions,
-  getOpenAIReasoningProfileForModel as getOpenAIReasoningProfile,
-  getGrokReasoningProfileForModel as getGrokReasoningProfile,
-  getGeminiReasoningProfileForModel as getGeminiReasoningProfile,
-  getAnthropicReasoningProfileForModel as getAnthropicReasoningProfile,
-  getQwenReasoningProfileForModel as getQwenReasoningProfile,
-} from "./reasoningProfiles";
+export { getGeminiReasoningProfileForModel as getGeminiReasoningProfile } from "./reasoningProfiles";
 
 // Local aliases for internal use (re-exports above don't create local bindings)
 const getOpenAIReasoningProfile = getOpenAIReasoningProfileForModel;

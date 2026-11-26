@@ -1,9 +1,6 @@
 import type { ChatParams } from "../../utils/llmClient";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
-import {
-  callLLMWithTimeout,
-  type LLMCallWithTimeoutParams,
-} from "../../utils/llmCallTimeout";
+import { type LLMCallWithTimeoutParams } from "../../utils/llmCallTimeout";
 import {
   callUtilityLLM,
   describeUtilityLLMFailure,
@@ -32,8 +29,6 @@ export type RetrievalQueryPlan = {
   quoteAnchorPolicy?: "none" | "verified";
   fullReadTargets?: import("../../shared/fullReadTargetResolver").FullReadTargetSelection;
 };
-
-export type DocumentQueryPlan = RetrievalQueryPlan;
 
 export const RETRIEVAL_QUERY_VARIANT_DEFAULT_LIMIT = 6;
 export const RETRIEVAL_QUERY_VARIANT_HARD_LIMIT = 8;
@@ -203,11 +198,6 @@ export function shouldAutoGenerateQueryVariants(params: {
   if (!params.hasRetrievalContext || query.length < 4) return false;
   return !/^10\.\d{4,9}\/\S+$/i.test(query);
 }
-
-// Kept as a compatibility export for retrieval and focused runtime tests;
-// the implementation lives in the dependency-neutral utility layer.
-export { callLLMWithTimeout };
-export type { LLMCallWithTimeoutParams };
 
 const RETRIEVAL_PROBE_REFORMULATION_TIMEOUT_MS = 6000;
 

@@ -1,11 +1,8 @@
 import {
   prime,
-  type ConversationSelectionMode,
   type SelectionPrimeParams,
   type SelectionPrimeSnapshot,
 } from "./conversationSelection";
-
-export type HistoryNavigationMode = ConversationSelectionMode;
 
 export type HistoryNavigationModeSnapshot = SelectionPrimeSnapshot;
 

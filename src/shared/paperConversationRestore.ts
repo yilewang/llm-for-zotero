@@ -907,14 +907,6 @@ export function forgetPaperRestoreTargetsForItems(itemIDs: number[]): void {
   );
 }
 
-export function forgetPaperRestoreTargetsForItem(
-  _libraryID: number,
-  paperItemID: number,
-): void {
-  const normalized = normalizePositiveInt(paperItemID);
-  if (normalized) forgetPaperRestoreTargetsForItems([normalized]);
-}
-
 export async function clearPaperRestoreTargetsForWorkflowTests(): Promise<void> {
   await flushPaperRestoreSelectionWrites();
   const profileSignature = getCurrentProfileSignature();
@@ -962,22 +954,4 @@ export async function shutdownPaperRestoreSelections(): Promise<void> {
   stagedStartupCandidates.clear();
   writableSystems.clear();
   initializedSystems.clear();
-}
-
-export function resetPaperRestoreSelectionStateForTests(): void {
-  if (shutdownBlocker && shutdownPhase?.removeBlocker) {
-    shutdownPhase.removeBlocker(shutdownBlocker);
-  }
-  shutdownBlocker = null;
-  shutdownPhase = null;
-  unregisterRegistryInvalidation?.();
-  unregisterRegistryInvalidation = null;
-  restoreCache.clear();
-  committedRestoreCache.clear();
-  scopeGenerations.clear();
-  stagedStartupCandidates.clear();
-  writableSystems.clear();
-  initializedSystems.clear();
-  writeQueue = Promise.resolve();
-  acceptingWrites = true;
 }

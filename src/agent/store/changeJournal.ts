@@ -1181,30 +1181,6 @@ export async function finalizeRevertedJournalAction(input: {
   return true;
 }
 
-/**
- * Drop heavy recovery material from historical reverted actions while
- * retaining the lightweight action and step metadata used by audit surfaces.
- */
-export async function compactRevertedJournalAction(
-  actionId: string,
-): Promise<boolean> {
-  const db = getDb();
-  if (!db || !actionId) return false;
-  const state = await journalActionState(actionId);
-  if (!state || state.status !== "reverted") return false;
-  const now = Date.now();
-  await inTransaction(async () => {
-    await compactJournalActionPayloadsInTransaction({
-      db,
-      actionId,
-      conversationKey: state.conversationKey,
-      now,
-    });
-  });
-  await sweepActionBlobCleanupBestEffort(actionId, state.conversationKey);
-  return true;
-}
-
 export async function listJournalActions(input: {
   actionId?: string;
   actionIds?: readonly string[];
@@ -1399,24 +1375,6 @@ export async function deleteConversationJournal(
         `DELETE FROM ${LEGACY_JOURNAL_TABLE} WHERE conversation_key = ?`,
         [conversationKey],
       );
-    } catch (error) {
-      if (!/no such table|no table/i.test(String(error))) throw error;
-    }
-  });
-  await removeRecoveryBlobPaths(blobPaths);
-}
-
-export async function clearAgentChangeJournal(): Promise<void> {
-  const db = getDb();
-  if (!db) return;
-  const blobPaths = await listRecoveryBlobPaths();
-  await inTransaction(async () => {
-    await db.queryAsync(`DELETE FROM ${JOURNAL_OBSERVATIONS_TABLE}`);
-    await db.queryAsync(`DELETE FROM ${JOURNAL_PAYLOADS_TABLE}`);
-    await db.queryAsync(`DELETE FROM ${JOURNAL_STEPS_TABLE}`);
-    await db.queryAsync(`DELETE FROM ${JOURNAL_ACTIONS_TABLE}`);
-    try {
-      await db.queryAsync(`DELETE FROM ${LEGACY_JOURNAL_TABLE}`);
     } catch (error) {
       if (!/no such table|no table/i.test(String(error))) throw error;
     }

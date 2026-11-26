@@ -3413,21 +3413,6 @@ function toPaperConversationSummary(
   };
 }
 
-async function resolveNextPaperConversationKey(): Promise<number> {
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT MAX(conversation_key) AS maxConversationKey
-     FROM ${PAPER_CONVERSATIONS_TABLE}
-     WHERE conversation_key >= ?
-       AND conversation_key < ?`,
-    [PAPER_CONVERSATION_KEY_BASE, GLOBAL_CONVERSATION_KEY_BASE],
-  )) as Array<{ maxConversationKey?: unknown }> | undefined;
-  const maxConversationKey = Number(rows?.[0]?.maxConversationKey);
-  const next = Number.isFinite(maxConversationKey)
-    ? Math.max(PAPER_CONVERSATION_KEY_BASE, Math.floor(maxConversationKey) + 1)
-    : PAPER_CONVERSATION_KEY_BASE;
-  return next;
-}
-
 async function findLowestMissingPaperSessionVersion(
   paperItemID: number,
   minimumVersion = 1,
@@ -3992,23 +3977,6 @@ export async function listGlobalConversations(
   return out;
 }
 
-export async function getGlobalConversationUserTurnCount(
-  conversationKey: number,
-): Promise<number> {
-  const normalizedKey = normalizeConversationKey(conversationKey);
-  if (!normalizedKey || !isUpstreamGlobalConversationKey(normalizedKey))
-    return 0;
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT COALESCE(user_turn_count, 0) AS userTurnCount
-     FROM ${GLOBAL_CONVERSATIONS_TABLE}
-     WHERE conversation_key = ?
-     LIMIT 1`,
-    [normalizedKey],
-  )) as Array<{ userTurnCount?: unknown }> | undefined;
-  const count = Number(rows?.[0]?.userTurnCount);
-  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
-}
-
 export async function touchEmptyGlobalConversation(
   conversationKey: number,
   timestamp = Date.now(),
@@ -4044,38 +4012,6 @@ export async function touchEmptyGlobalConversation(
   );
   await refreshUpstreamConversationSearchIndex(normalizedKey);
   notifyConversationCatalogChanged("turns", normalizedKey);
-}
-
-export async function getLatestEmptyGlobalConversation(
-  libraryID: number,
-): Promise<GlobalConversationSummary | null> {
-  const normalizedLibraryID = normalizeLibraryID(libraryID);
-  if (!normalizedLibraryID) return null;
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT gc.conversation_id AS conversationID,
-            gc.conversation_key AS conversationKey,
-            gc.library_id AS libraryID,
-            gc.created_at AS createdAt,
-            COALESCE(NULLIF(TRIM(gc.title), ''), NULLIF(TRIM(gc.first_user_title), '')) AS title,
-            COALESCE(gc.last_activity_at, gc.created_at) AS lastActivityAt,
-            COALESCE(gc.user_turn_count, 0) AS userTurnCount,
-            COALESCE(gc.webchat_session, 0) AS webchatSession
-     FROM ${GLOBAL_CONVERSATIONS_TABLE} gc
-     WHERE gc.library_id = ?
-       AND gc.conversation_key >= ?
-       AND gc.conversation_key < ?
-       AND COALESCE(gc.webchat_session, 0) = 0
-       AND COALESCE(gc.user_turn_count, 0) = 0
-     ORDER BY gc.created_at DESC, gc.conversation_key DESC
-     LIMIT 1`,
-    [
-      normalizedLibraryID,
-      GLOBAL_CONVERSATION_KEY_BASE,
-      UPSTREAM_RUNTIME_CONVERSATION_KEY_END,
-    ],
-  )) as GlobalConversationSummaryRow[] | undefined;
-  if (!rows?.length) return null;
-  return toGlobalConversationSummary(rows[0]);
 }
 
 export async function getGlobalConversation(

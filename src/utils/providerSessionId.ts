@@ -57,11 +57,6 @@ function resolveSalt(): string {
 
 const sessionIdCache = new Map<string, string>();
 
-/** Test seam: the cache and the salt both survive a single run otherwise. */
-export function resetProviderSessionIdCacheForTests(): void {
-  sessionIdCache.clear();
-}
-
 async function digest(value: string): Promise<string> {
   const cryptoObject = (globalThis as { crypto?: Crypto }).crypto;
   if (!cryptoObject?.subtle) {

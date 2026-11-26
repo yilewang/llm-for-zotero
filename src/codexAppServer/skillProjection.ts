@@ -152,10 +152,3 @@ export function withCodexSkillDisableRules(
   next["skills.config"] = merge(undefined);
   return next;
 }
-
-/** Forget every process registration and logged warning (tests). */
-export function resetCodexSkillProjectionStateForTests(): void {
-  projectionGeneration = 0;
-  loggedUnsupported = false;
-  loggedSyncFailure = false;
-}

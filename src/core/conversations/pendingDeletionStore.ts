@@ -6,7 +6,6 @@ import {
 import {
   bumpConversationWriteGeneration,
   freezeConversationWrites,
-  resetConversationWriteFenceForTests,
   unfreezeConversationWrites,
 } from "../../shared/conversationWriteFence";
 import {
@@ -244,7 +243,7 @@ function defaultEnv(): Required<PendingDeletionStoreEnv> {
 }
 
 let finalizers: PendingDeletionFinalizers | null = null;
-let env: Required<PendingDeletionStoreEnv> = defaultEnv();
+const env: Required<PendingDeletionStoreEnv> = defaultEnv();
 
 const entries = new Map<string, PendingDeletionEntry>();
 const timers = new Map<string, unknown>();
@@ -263,10 +262,6 @@ type RestoreRequest = { committed: boolean };
 const conversationOpChains = new Map<number, Promise<unknown>>();
 const scheduledFinalizations = new Map<string, Promise<boolean>>();
 
-// Restores are user actions that must not wait behind an unrelated provider
-// finalizer. They have their own per-conversation lane, while the global chain
-// continues to serialize operations that intentionally span conversations.
-const restoreOpChains = new Map<number, Promise<unknown>>();
 const pendingRestoreRequests = new Map<number, Set<RestoreRequest>>();
 const activeFinalizationIds = new Set<string>();
 const destructivelyFinalizedIds = new Set<string>();
@@ -339,24 +334,6 @@ function hasConversationEntriesForConversation(
   return false;
 }
 
-function registerRestoreRequest(conversationKey: number): RestoreRequest {
-  const request: RestoreRequest = { committed: false };
-  const requests = pendingRestoreRequests.get(conversationKey) || new Set();
-  requests.add(request);
-  pendingRestoreRequests.set(conversationKey, requests);
-  return request;
-}
-
-function unregisterRestoreRequest(
-  conversationKey: number,
-  request: RestoreRequest,
-): void {
-  const requests = pendingRestoreRequests.get(conversationKey);
-  if (!requests) return;
-  requests.delete(request);
-  if (requests.size === 0) pendingRestoreRequests.delete(conversationKey);
-}
-
 function hasPendingRestoreRequest(conversationKey: number): boolean {
   return (pendingRestoreRequests.get(conversationKey)?.size || 0) > 0;
 }
@@ -367,39 +344,10 @@ function markRestoreRequestsCommitted(conversationKey: number): void {
   }
 }
 
-function enqueueRestoreOp<T>(
-  conversationKey: number,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const previous = restoreOpChains.get(conversationKey) || Promise.resolve();
-  const run = previous.then(fn, fn);
-  const settled = run.catch(() => undefined);
-  restoreOpChains.set(conversationKey, settled);
-  void settled.then(() => {
-    if (restoreOpChains.get(conversationKey) === settled) {
-      restoreOpChains.delete(conversationKey);
-    }
-  });
-  return run;
-}
-
 export function configurePendingDeletionFinalizers(
   next: PendingDeletionFinalizers,
 ): void {
   finalizers = next;
-}
-
-export function configurePendingDeletionStoreEnv(
-  next: PendingDeletionStoreEnv,
-): void {
-  const defaults = defaultEnv();
-  env = {
-    now: next.now || defaults.now,
-    setTimer: next.setTimer || defaults.setTimer,
-    clearTimer: next.clearTimer || defaults.clearTimer,
-    log: next.log || defaults.log,
-    warn: next.warn || next.log || defaults.warn,
-  };
 }
 
 // Production wires only the logger: the plugin runtime must keep the default
@@ -412,30 +360,6 @@ export function setPendingDeletionStoreLogger(
 ): void {
   env.log = log;
   env.warn = warn;
-}
-
-export function resetPendingDeletionStoreForTests(): void {
-  for (const handle of timers.values()) env.clearTimer(handle);
-  timers.clear();
-  retryNotBefore.clear();
-  entries.clear();
-  listeners.clear();
-  queueOrder = [];
-  initialized = false;
-  finalizers = null;
-  opChain = Promise.resolve();
-  conversationOpChains.clear();
-  scheduledFinalizations.clear();
-  restoreOpChains.clear();
-  pendingRestoreRequests.clear();
-  activeFinalizationIds.clear();
-  destructivelyFinalizedIds.clear();
-  quarantinedConversationKeys.clear();
-  persistedFenceLoaded = false;
-  unrecordedQueueIntents.clear();
-  unrecordedConversationQueueIntents.clear();
-  resetConversationWriteFenceForTests();
-  env = defaultEnv();
 }
 
 function enqueueOp<T>(fn: () => Promise<T>): Promise<T> {
@@ -630,18 +554,6 @@ async function insertRow(entry: PendingDeletionEntry): Promise<void> {
   );
 }
 
-async function deleteRow(id: string): Promise<void> {
-  const db = getZoteroDb();
-  if (!db) return;
-  try {
-    await db.queryAsync(`DELETE FROM ${PENDING_DELETIONS_TABLE} WHERE id = ?`, [
-      id,
-    ]);
-  } catch (err) {
-    env.warn("LLM: failed to delete pending-deletion row", { id, err });
-  }
-}
-
 // Undo must never LOOK successful while the write-ahead row survives — the
 // next startup sweep would finalize the row and destroy the "restored" chat.
 async function deleteRowStrict(id: string): Promise<void> {
@@ -724,23 +636,6 @@ function hasTurnEntriesForConversation(conversationKey: number): boolean {
     }
   }
   return false;
-}
-
-// Supersede is deliberately KIND-SCOPED. A second conversation deletion commits
-// the first (one conversation undo slot), and a second turn deletion commits the
-// first, but a turn deletion must never commit a pending CONVERSATION deletion:
-// they are independent user intents over disjoint data, and the conversation is
-// still inside its undo window. Same rule as finalizeTurnsForConversation.
-async function supersedeOthers(
-  kind: PendingDeletionEntry["kind"],
-  keepId: string | null,
-): Promise<void> {
-  const others = queueOrder.filter(
-    (id) => id !== keepId && entries.get(id)?.kind === kind,
-  );
-  for (const id of others) {
-    await finalizeInternal(id, "superseded");
-  }
 }
 
 async function undoInternal(id: string): Promise<PendingDeletionEntry | null> {

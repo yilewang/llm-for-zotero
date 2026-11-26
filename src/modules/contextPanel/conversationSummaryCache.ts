@@ -154,29 +154,11 @@ function summaryAttemptsExhausted(key: number, configKey: string): boolean {
 
 // --- public API ---
 
-export function getConversationSummaryEntry(
-  conversationKey: number,
-): SummaryEntry | undefined {
-  return summaryCache.get(Math.floor(conversationKey));
-}
-
 export function clearConversationSummary(conversationKey: number): void {
   summaryCache.delete(Math.floor(conversationKey));
   pendingSummaries.delete(Math.floor(conversationKey));
   // A new conversation can reuse a numeric key, and must not inherit a latch.
   summaryFailures.delete(Math.floor(conversationKey));
-}
-
-/** Test seam: awaits every in-flight background summary. */
-export async function flushPendingSummaries(): Promise<void> {
-  await Promise.all([...pendingSummaries.values()]);
-}
-
-/** Test seam: module state outlives a single mocha file otherwise. */
-export function resetConversationSummaryStateForTests(): void {
-  summaryCache.clear();
-  pendingSummaries.clear();
-  summaryFailures.clear();
 }
 
 /**

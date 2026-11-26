@@ -564,22 +564,6 @@ export function buildReferenceSelectorTagViewModel(
   };
 }
 
-export function referenceSelectorCollectionMatchesFilter(
-  collection: PaperBrowseCollectionCandidate,
-  normalizedQuery: string,
-  unfiledLabel: string,
-): boolean {
-  const label = collection.collectionId === 0 ? unfiledLabel : collection.name;
-  if (label.toLowerCase().includes(normalizedQuery)) return true;
-  return collection.childCollections.some((child) =>
-    referenceSelectorCollectionMatchesFilter(
-      child,
-      normalizedQuery,
-      unfiledLabel,
-    ),
-  );
-}
-
 export function buildReferenceSelectorTagContextKey(
   ref: TagContextRef,
 ): string {
@@ -733,26 +717,6 @@ export function resolveReferenceSelectorAttachmentSelectionState(params: {
   }
   if (selectedNoteContextItemIds.has(attachment.contextItemId)) {
     return "noteText";
-  }
-  return "none";
-}
-
-export function resolveReferenceSelectorGroupSelectionState(params: {
-  state: ReferenceSelectorState;
-  group: PaperSearchGroupCandidate;
-  selectedCollections?: readonly CollectionContextRef[];
-  selectedTags?: readonly TagContextRef[];
-  autoLoadedPaperContext?: PaperContextRef | null;
-  selectedPapers?: readonly PaperContextRef[];
-  selectedOtherRefs?: readonly OtherContextRef[];
-  selectedNoteContextItemIds?: ReadonlySet<number>;
-}): ReferenceSelectionState {
-  for (const attachment of params.group.attachments) {
-    const state = resolveReferenceSelectorAttachmentSelectionState({
-      ...params,
-      attachment,
-    });
-    if (state !== "none") return state;
   }
   return "none";
 }

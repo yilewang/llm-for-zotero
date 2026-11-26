@@ -73,7 +73,6 @@ import {
 } from "./protocol";
 import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
-import { extractVerifiedReadSources } from "../context/readEvidence";
 import { buildPagedModelView } from "../execution/modelView";
 import {
   createAgentToolResultHandleRecord,
@@ -207,33 +206,18 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "note_write_batch",
 ] as const;
 
-/**
- * Registered tools deliberately NOT exposed over MCP, and why: the single
- * owner of every plugin-only reason.
- *
- * This list exists so a missing tool reads as a decision rather than drift —
- * the registry and these curated arrays are maintained by hand and have
- * silently diverged before. test/mcpSurfaceDrift.test.ts derives the expected
- * list from the registry and fails for a tool that is neither exposed, named
- * here, nor `localAgentOnly`.
- *
- * Not listed here, by design: the tools the registry marks `localAgentOnly`.
- * `registry.listTools()` never lists them to an external client, and the
- * spec flag is their one owner. They are web_search and web_read (the MCP
- * client has its own web tools) and workflow_script (it also needs the
- * in-plugin `context.invokeRegisteredOperation`, which an MCP call lacks).
- */
-export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
-  literature_review:
-    "Ranked discovery review uses the Original Agent's conversation-scoped candidate store and interactive review channel; external MCP clients receive scholarly search results directly.",
-  // Runs unattended for minutes and reports only at the end. The MCP
-  // transport has no progress channel and no way to drive the per-page
-  // review the in-plugin surface offers, so an external backend would see a
-  // single opaque call that either succeeds or times out. Revisit when the
-  // paged result contract ({done, nextOffset, remaining}) lands.
-  library_batch:
-    "library_batch runs unattended with no progress channel over MCP; use the in-plugin agent or the slash-command surface.",
-};
+// Registered tools deliberately not exposed over MCP, and why:
+// - literature_review: ranked discovery review uses the Original Agent's
+//   conversation-scoped candidate store and interactive review channel;
+//   external MCP clients receive scholarly search results directly.
+// - library_batch: runs unattended for minutes and reports only at the end.
+//   MCP has no progress channel and no way to drive the per-page review, so
+//   an external backend would see one opaque call that succeeds or times
+//   out. Revisit when the paged result contract ({done, nextOffset,
+//   remaining}) lands.
+// - web_search, web_read and workflow_script: the registry marks them
+//   `localAgentOnly` and never lists them to an external client.
+
 /** The tools that read or attach past chats, pinned to the scope's library. */
 const PAST_CHAT_TOOL_NAMES = new Set<string>([
   PAST_CHAT_READ_TOOL_NAME,
@@ -266,7 +250,7 @@ const MCP_GUIDANCE_TOOL_NAMES = new Set<string>([
 const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
 /**
  * MCP-only descriptions for tools whose in-plugin description routes through
- * a tool the MCP catalog excludes (see ZOTERO_MCP_EXCLUDED_TOOL_NAMES), or
+ * a tool the MCP catalog excludes (see the note above), or
  * promises a review MCP has no channel for (MCP_REFUSED_TOOL_ARGUMENTS).
  */
 const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
@@ -617,18 +601,6 @@ function emitZoteroMcpToolActivity(event: ZoteroMcpToolActivityEvent): void {
   }
 }
 
-function logZoteroMcp(message: string, details?: unknown): void {
-  try {
-    (
-      globalThis as typeof globalThis & {
-        ztoolkit?: { log?: (...args: unknown[]) => void };
-      }
-    ).ztoolkit?.log?.(message, details);
-  } catch {
-    /* diagnostics must not affect MCP execution */
-  }
-}
-
 function getZoteroPrefs(): {
   get?: (key: string, global?: boolean) => unknown;
   set?: (key: string, value: unknown, global?: boolean) => void;
@@ -670,12 +642,6 @@ export function getOrCreateZoteroMcpBearerToken(): string {
   }
   const token = generateToken();
   prefs?.set?.(ZOTERO_MCP_TOKEN_PREF_KEY, token, true);
-  return token;
-}
-
-export function resetZoteroMcpBearerToken(): string {
-  const token = generateToken();
-  getZoteroPrefs()?.set?.(ZOTERO_MCP_TOKEN_PREF_KEY, token, true);
   return token;
 }
 

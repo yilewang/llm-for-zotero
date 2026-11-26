@@ -64,7 +64,6 @@ import type {
   ModelCapabilityRefreshOptions,
   ModelCatalogIdentity,
   ModelCatalogStatus,
-  ModelControlPatch,
   ModelReasoningCapability,
   ModelReasoningSelection,
   ModelSamplingCapability,
@@ -920,22 +919,6 @@ export function getModelReasoningChoices(
   ];
 }
 
-export function getRuntimeReasoningOptions(
-  identity: ModelCapabilityIdentity,
-): Array<{ level: string; label: string; enabled: boolean }> {
-  const reasoning = getModelCapabilities(identity).reasoning;
-  const options = [...reasoning.options].sort((left, right) => {
-    if (left.id === reasoning.defaultOptionId) return -1;
-    if (right.id === reasoning.defaultOptionId) return 1;
-    return 0;
-  });
-  return options.map((option) => ({
-    level: option.id,
-    label: option.label,
-    enabled: option.enabled !== false,
-  }));
-}
-
 export function getModelOutputTokenLimit(
   model: string,
   identity?: Omit<ModelCapabilityIdentity, "model">,
@@ -1475,15 +1458,6 @@ export function invalidateModelCatalog(identity: ModelCatalogIdentity): void {
   }
 }
 
-export function getDiscoveredModels(
-  identity: ModelCatalogIdentity,
-): DiscoveredModel[] {
-  const snapshot =
-    catalogSnapshots.get(buildCatalogKey(identity)) ??
-    getCatalogSnapshot(identity);
-  return clone(snapshot?.models || []);
-}
-
 export function getModelCatalogStatus(
   identity: ModelCatalogIdentity,
 ): CatalogSnapshot | null {
@@ -1524,17 +1498,4 @@ export function resetModelCapabilityStateForTests(): void {
   catalogSnapshots.clear();
   catalogAttemptedAt.clear();
   runtime = {};
-}
-
-export function setModelCapabilityRegistryForTests(value: unknown): boolean {
-  const parsed = validateRegistry(value);
-  if (!parsed) return false;
-  activeRegistry = parsed;
-  activeRegistrySource = "remote";
-  notify();
-  return true;
-}
-
-export function getActiveModelCapabilityRegistryForTests(): typeof activeRegistry {
-  return clone(activeRegistry);
 }

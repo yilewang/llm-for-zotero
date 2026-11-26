@@ -1,4 +1,4 @@
-import { canonicalNoteHtml, noteHtmlMatches } from "../../utils/noteHtml";
+import { noteHtmlMatches } from "../../utils/noteHtml";
 import { readNativeNoteHtml } from "../../services/notePersistence";
 import type {
   LibraryMutationOperation,
@@ -12,7 +12,6 @@ import {
   claimJournalStep,
   finalizeRevertedJournalAction,
   inJournalTransaction,
-  listJournalActions,
   updateJournalAction,
   updateJournalStep,
   type JournalActionWithSteps,
@@ -22,7 +21,6 @@ import {
   readRecoveryText,
   readRecoveryBytes,
   sha256Bytes,
-  sha256Text,
   type RecoveryPayload,
 } from "../store/journalRecoveryBlobStore";
 import { withActiveJournalAction } from "./externalMutationCoordinator";
@@ -58,10 +56,8 @@ function postImageReader(
       service.captureOperationState(operation, context, result),
   };
 }
-export { isMutationOperation } from "./recordedPostImage";
 import {
   atomizeMutationOperationFromHandler,
-  isRegisteredLibraryMutationOperation,
   mutationPostconditionIsSatisfied,
 } from "./libraryMutation/handlerOperations";
 import { canonicalJson } from "./libraryMutation/canonicalJson";
@@ -697,18 +693,6 @@ async function executeLibraryInverseWithProgress(params: {
     await checkpoint();
   }
   return "matched";
-}
-
-async function readFile(path: string): Promise<string | null> {
-  const io = (globalThis as { IOUtils?: any }).IOUtils;
-  try {
-    if (!(await io?.exists?.(path))) return null;
-    if (typeof io.readUTF8 === "function") return await io.readUTF8(path);
-    const bytes = await io.read(path);
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
 }
 
 async function writeFileBytes(path: string, bytes: Uint8Array): Promise<void> {
@@ -2261,17 +2245,4 @@ export async function verifyJournalStepPostcondition(params: {
       params.context,
     ),
   });
-}
-
-export async function revertRun(params: {
-  runId: string;
-  zoteroGateway: ZoteroGateway;
-  context: AgentToolContext;
-  now?: () => number;
-}): Promise<RevertOutcome> {
-  const actions = await listJournalActions({
-    runId: params.runId,
-    limit: 10000,
-  });
-  return revertActions({ ...params, actions });
 }

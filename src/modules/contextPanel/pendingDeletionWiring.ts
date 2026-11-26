@@ -55,7 +55,7 @@ type PendingDeletionMaintenanceEnv = {
   sweepTraces: () => Promise<void>;
 };
 
-const defaultMaintenanceEnv: PendingDeletionMaintenanceEnv = {
+const maintenanceEnv: PendingDeletionMaintenanceEnv = {
   now: Date.now,
   setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimer: (timer) => clearTimeout(timer),
@@ -72,7 +72,6 @@ const defaultMaintenanceEnv: PendingDeletionMaintenanceEnv = {
   sweepTraces: sweepOrphanedAgentTraceExports,
 };
 
-let maintenanceEnv = defaultMaintenanceEnv;
 let lifecycleGeneration = 0;
 let providerTimer: MaintenanceTimer | null = null;
 let providerLoop: Promise<void> | null = null;
@@ -277,17 +276,6 @@ function scheduleSlowMaintenance(delayMs = EVENT_MAINTENANCE_DELAY_MS): void {
     Math.min(MAX_TIMER_DELAY_MS, normalizedDelay),
   );
   unrefTimer(slowTimer);
-}
-
-export function configurePendingDeletionMaintenanceEnvForTests(
-  overrides: Partial<PendingDeletionMaintenanceEnv>,
-): void {
-  maintenanceEnv = { ...defaultMaintenanceEnv, ...overrides };
-}
-
-export async function flushPendingDeletionMaintenanceForTests(): Promise<void> {
-  await providerLoop;
-  await slowSweep;
 }
 
 /**
@@ -505,11 +493,4 @@ export function disposePendingDeletionSubsystem(): void {
   unsubscribeProviderChanges = null;
   unsubscribeBackgroundCleanup?.();
   unsubscribeBackgroundCleanup = null;
-}
-
-export function resetPendingDeletionSubsystemForTests(): void {
-  disposePendingDeletionSubsystem();
-  forcedTurnFinalizeFailures = 0;
-  providerFailureDelayMs = PROVIDER_DISCOVERY_RETRY_MIN_MS;
-  maintenanceEnv = defaultMaintenanceEnv;
 }

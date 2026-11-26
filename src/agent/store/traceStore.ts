@@ -40,11 +40,7 @@ import {
   type TruncatedToolResultContent,
 } from "./truncatedToolResult";
 
-export {
-  isTruncatedToolResultContent,
-  PERSISTED_TOOL_RESULT_MAX_BYTES,
-  type TruncatedToolResultContent,
-};
+export { isTruncatedToolResultContent };
 
 const AGENT_RUNS_TABLE = "llm_for_zotero_agent_runs";
 const AGENT_RUN_EVENTS_TABLE = "llm_for_zotero_agent_run_events";

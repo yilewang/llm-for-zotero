@@ -3,9 +3,7 @@ import {
   copyGeneratedImageToClipboard,
   copyRenderedMarkdownToClipboard,
   copyTextToClipboard,
-  resolveAssistantResponseMenuContent,
 } from "../../chat";
-import { getMessageCitationPaperContexts } from "../../citationContexts";
 import {
   buildChatHistoryNotePayload,
   createAssistantResponseNote,
@@ -16,7 +14,6 @@ import { isGlobalPortalItem } from "../../../../services/context/portalItems";
 import { isClaudeGlobalPortalItem } from "../../../../claudeCode/portal";
 import { positionMenuBelowButton } from "../../menuPositioning";
 import { renderMermaidSourceToSvg } from "../../renderedMarkdown";
-import { getMessageQuoteDisplay } from "../../quoteRenderPlan";
 import { setStatus } from "../../textUtils";
 import type { ConversationSystem } from "../../../../shared/types";
 import type { ChatRuntimeMode, Message } from "../../types";
@@ -171,37 +168,6 @@ function findResponseTurnPair(
     }
   }
   return null;
-}
-
-export function buildResponseActionTargetFromHistory(params: {
-  item: Zotero.Item;
-  history: Message[];
-  conversationKey: number;
-  userTimestamp: number;
-  assistantTimestamp: number;
-}): ResponseMenuTarget {
-  const reference = normalizeResponseTurnReference(params);
-  if (!reference) return null;
-  const pair = findResponseTurnPair(params.history, reference);
-  if (!pair) return null;
-  const quoteDisplay = getMessageQuoteDisplay(pair.assistantMessage);
-  const menuContent = resolveAssistantResponseMenuContent({
-    text: quoteDisplay.markdown,
-    generatedImages: pair.assistantMessage.generatedImages,
-  });
-  if (!menuContent) return null;
-  return {
-    item: params.item,
-    contentText: menuContent.contentText,
-    queryText: pair.userMessage.text || "",
-    modelName: pair.assistantMessage.modelName?.trim() || "unknown",
-    conversationKey: reference.conversationKey,
-    userTimestamp: reference.userTimestamp,
-    assistantTimestamp: reference.assistantTimestamp,
-    paperContexts: getMessageCitationPaperContexts(pair.userMessage),
-    quoteCitations: quoteDisplay.quoteCitations || undefined,
-    generatedImages: menuContent.generatedImages,
-  };
 }
 
 async function copyResponseTarget(

@@ -68,7 +68,6 @@ const LLM_BATCH_SIZE = 10;
  */
 const LLM_BATCH_TIMEOUT_MS = 30_000;
 const DEFAULT_TAGS_PER_ITEM = 5;
-const MAX_TAGS_PER_ITEM = 6;
 
 const autoTagPaperScopeProfile: PaperScopedActionProfile = {
   targetMode: "multi",
