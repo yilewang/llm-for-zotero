@@ -1,7 +1,9 @@
 /**
  * Inline writing in the note editor: selecting text in a note opens a small
- * popup under the selection (noteInlinePopup.ts) with Rewrite, Expand,
- * Proofread, Ask in sidebar, and a composer for the user's own instruction.
+ * popup under the selection (noteInlinePopup.ts) with the user's writing
+ * shortcuts (Rewrite, Expand and Proofread to start with; editable from the
+ * popup's right-click menu, see noteInlinePrompts.ts), Ask in sidebar, and a
+ * composer for the user's own instruction.
  *
  * The popup opens on every selection and does not take the keyboard, so the
  * user keeps typing in the note until they click it. Until the user asks
@@ -46,6 +48,10 @@ import {
   type NoteInlinePopupHandle,
   type NoteInlinePopupRect,
 } from "./noteInlinePopup";
+import {
+  createNoteInlinePromptEditing,
+  getNoteInlinePrompts,
+} from "./noteInlinePrompts";
 import { buildNoteEditingSelectedTextContext } from "./selectionController";
 
 export const NOTE_INLINE_WRITING_SYSTEM_MESSAGE = [
@@ -70,27 +76,6 @@ export function describeSelectionShape(selectedMarkdown: string): string {
     .filter((line) => /^(?:[-*]|\d+\.) /.test(line)).length;
   if (!items) return "";
   return ` The selection is ${items} list item${items === 1 ? "" : "s"}: reply with exactly ${items} Markdown list item${items === 1 ? "" : "s"}, numbered or bulleted as in the selection, and nothing from the items around it.`;
-}
-
-function writingActions(selectedMarkdown: string) {
-  const shape = describeSelectionShape(selectedMarkdown);
-  return [
-    {
-      id: "rewrite",
-      label: t("Rewrite"),
-      instruction: `Rewrite the selected text so it reads clearly and concisely. Reply with only the rewritten text.${shape}`,
-    },
-    {
-      id: "expand",
-      label: t("Expand"),
-      instruction: `Expand the selected text with more detail, using the paper where it helps. Reply with only the expanded text.${shape}`,
-    },
-    {
-      id: "proofread",
-      label: t("Proofread"),
-      instruction: `Proofread the selected text: fix spelling, grammar and punctuation without changing its meaning or style. Reply with only the corrected text.${shape}`,
-    },
-  ];
 }
 
 function readField(item: Zotero.Item | null, field: string): string {
@@ -449,7 +434,23 @@ function openPopup(params: {
   const handle = openNoteInlinePopup({
     hostDoc,
     readAnchor,
-    actions: writingActions(selectedMarkdown),
+    prompts: getNoteInlinePrompts(),
+    // A shortcut's answer replaces the selection, so it keeps its shape.
+    instructionFor: (prompt) =>
+      `${prompt.prompt}${describeSelectionShape(selectedMarkdown)}`,
+    promptEditing: {
+      api: createNoteInlinePromptEditing(),
+      labels: {
+        edit: t("Edit"),
+        delete: t("Delete"),
+        add: t("Add"),
+        reset: t("Reset"),
+        label: t("Label"),
+        prompt: t("Prompt, sent with the selected text"),
+        cancel: t("Cancel"),
+        save: t("Save"),
+      },
+    },
     modelPicker: createInlineAskModelPicker(reasoningItemId, modelState),
     labels: {
       askInSidebar: t("Ask in sidebar"),

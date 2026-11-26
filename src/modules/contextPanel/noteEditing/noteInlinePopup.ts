@@ -7,8 +7,10 @@
  * stays the text the popup works on.
  *
  * Two views:
- * - menu: one row of actions (Rewrite, Expand, Proofread, Ask in sidebar)
- *   and a composer for the user's own instruction;
+ * - menu: one row of actions (the user's writing shortcuts, then Ask in
+ *   sidebar) and a composer for the user's own instruction. Right-clicking
+ *   a shortcut opens Edit, Delete, Add and Reset (Add and Reset on the
+ *   rest of the row), as on Inline Ask's pills;
  * - result: the streamed answer with Replace, Insert below and Discard.
  */
 
@@ -18,6 +20,14 @@ import {
   type InlineAskModelPicker,
 } from "../selectionPrompt/inlineAskOverlay";
 import { buildInlineAskModelMenu } from "../selectionPrompt/inlineAskModelMenu";
+import {
+  applyQuickPromptMenuAction,
+  buildQuickPromptMenu,
+  createQuickPromptEditorPanel,
+  type QuickPromptEditingSetup,
+  type QuickPromptMenuAction,
+} from "../selectionPrompt/quickPromptEditingUi";
+import type { QuickPrompt } from "../selectionPrompt/quickPromptStore";
 import { isDarkReaderDocument } from "../selectionPrompt/readerOverlayShared";
 
 export type NoteInlinePopupRect = {
@@ -34,8 +44,12 @@ export type NoteInlinePopupInput = {
   hostDoc: Document;
   /** The selection's box in the host document's viewport, or null. */
   readAnchor: () => NoteInlinePopupRect | null;
-  /** The writing actions; each one asks the model with its instruction. */
-  actions: Array<{ id: string; label: string; instruction: string }>;
+  /** The writing shortcuts; each one asks the model with its prompt. */
+  prompts: QuickPrompt[];
+  /** What a shortcut asks the model. */
+  instructionFor: (prompt: QuickPrompt) => string;
+  /** Right-click editing of the shortcuts. */
+  promptEditing: QuickPromptEditingSetup;
   labels: {
     askInSidebar: string;
     composerPlaceholder: string;
@@ -156,15 +170,31 @@ export function openNoteInlinePopup(
     "gap:2px",
     "margin-left:-4px",
   ]);
-  for (const action of input.actions) {
-    const node = button(action.label, action.id);
-    node.addEventListener("click", () =>
-      ask(action.label, action.instruction, true),
-    );
-    actionRow.append(node);
-  }
   const sidebarBtn = button(input.labels.askInSidebar, "ask-in-sidebar");
-  actionRow.append(sidebarBtn);
+  let shownPrompts = input.prompts.slice();
+  /** The shortcut the editor is open for; id null for Add. */
+  let editingPrompt: { id: string | null } | null = null;
+  const renderPrompts = () => {
+    for (let child = actionRow.firstChild; child; child = actionRow.firstChild)
+      actionRow.removeChild(child);
+    for (const prompt of shownPrompts) {
+      const node = button(prompt.label, prompt.id);
+      node.setAttribute("data-llm-note-inline-prompt", prompt.id);
+      // The tooltip is the prompt the shortcut sends.
+      node.setAttribute("title", prompt.prompt);
+      if (editingPrompt?.id === prompt.id) {
+        node.setAttribute("data-editing", "true");
+        node.style.background = palette.hover;
+      }
+      node.addEventListener("click", () => {
+        if (editingPrompt || promptMenu) return;
+        ask(prompt.label, input.instructionFor(prompt), true);
+      });
+      actionRow.append(node);
+    }
+    actionRow.append(sidebarBtn);
+  };
+  renderPrompts();
   // The Inline Ask card's field: the text, then a bar with the model, the
   // effort and the send circle.
   const composerRow = el("div", [
@@ -416,7 +446,177 @@ export function openNoteInlinePopup(
     resultActions,
   );
 
-  root.append(menu, result);
+  // ── Shortcut editing: the right-click menu and the floating editor ─────
+  const promptSetup = input.promptEditing;
+  let promptMenu: HTMLElement | null = null;
+  const closePromptMenu = () => {
+    promptMenu?.remove();
+    promptMenu = null;
+  };
+  const promptPanel = createQuickPromptEditorPanel({
+    doc,
+    palette,
+    labels: promptSetup.labels,
+    width: 286,
+    onCancel: () => closePromptEditor(),
+    onSave: () => savePrompt(),
+  });
+  const refreshPrompts = () => {
+    try {
+      shownPrompts = promptSetup.api.list();
+    } catch {
+      // Keep the shortcuts shown; the prefs could not be read.
+    }
+    renderPrompts();
+    reposition();
+  };
+  const placePromptEditor = (anchorX: number) => {
+    const rootRect = root.getBoundingClientRect();
+    const rowRect = actionRow.getBoundingClientRect();
+    const width = Math.min(286, (rootRect.width || 300) - 16);
+    promptPanel.node.style.width = `${Math.round(width)}px`;
+    const maxLeft = Math.max(6, (rootRect.width || 300) - width - 8);
+    promptPanel.node.style.left = `${Math.round(
+      Math.min(Math.max(6, anchorX - 14), maxLeft),
+    )}px`;
+    promptPanel.node.style.top = `${Math.round(
+      rowRect.bottom - rootRect.top + 6,
+    )}px`;
+  };
+  let editAnchorX = 0;
+  /** Where the focus was before the editor took it: usually the note. */
+  let focusBeforeEdit: HTMLElement | null = null;
+  const openPromptEditor = (prompt: QuickPrompt | null) => {
+    closePromptMenu();
+    const active = doc.activeElement as HTMLElement | null;
+    if (!editingPrompt)
+      focusBeforeEdit = active && !root.contains(active) ? active : null;
+    editingPrompt = { id: prompt?.id ?? null };
+    promptPanel.fill(prompt);
+    renderPrompts();
+    promptPanel.node.style.display = "flex";
+    placePromptEditor(editAnchorX);
+    promptPanel.labelInput.focus({ preventScroll: true });
+  };
+  const closePromptEditor = () => {
+    if (!editingPrompt) return;
+    editingPrompt = null;
+    promptPanel.node.style.display = "none";
+    renderPrompts();
+    // Give the focus back (to the note, which keeps its selection), so the
+    // popup follows the note's selection again as before the edit.
+    const previous = focusBeforeEdit;
+    focusBeforeEdit = null;
+    if (previous?.isConnected) previous.focus({ preventScroll: true });
+    else if (root.contains(doc.activeElement))
+      (doc.activeElement as HTMLElement).blur();
+  };
+  const savePrompt = () => {
+    if (!editingPrompt) return;
+    const value = promptPanel.read();
+    if (!value) return;
+    try {
+      if (editingPrompt.id) promptSetup.api.edit(editingPrompt.id, value);
+      else promptSetup.api.add(value);
+    } catch {
+      // The prefs refused the write; the row shows what is stored.
+    }
+    closePromptEditor();
+    refreshPrompts();
+  };
+  const runPromptMenuAction = (
+    action: QuickPromptMenuAction,
+    promptId: string | null,
+  ) => {
+    closePromptMenu();
+    const prompt = shownPrompts.find((entry) => entry.id === promptId) || null;
+    if (
+      !applyQuickPromptMenuAction(
+        promptSetup.api,
+        action,
+        prompt,
+        openPromptEditor,
+      )
+    )
+      return;
+    if (action === "reset" || editingPrompt?.id === promptId)
+      closePromptEditor();
+    refreshPrompts();
+  };
+  const findPrompt = (target: unknown): HTMLElement | null => {
+    for (
+      let node = target as HTMLElement | null;
+      node && node !== actionRow;
+      node = node.parentNode as HTMLElement | null
+    ) {
+      if (node.getAttribute?.("data-llm-note-inline-prompt") != null)
+        return node;
+    }
+    return null;
+  };
+  actionRow.addEventListener("contextmenu", (event) => {
+    if (engaged) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closePromptMenu();
+    const pill = findPrompt(event.target);
+    const promptId = pill?.getAttribute("data-llm-note-inline-prompt") || null;
+    const rootRect = root.getBoundingClientRect();
+    editAnchorX = pill
+      ? pill.getBoundingClientRect().left - rootRect.left
+      : event.clientX - rootRect.left;
+    const menuNode = buildQuickPromptMenu({
+      doc,
+      palette,
+      setup: promptSetup,
+      promptId,
+      onAction: (action) => runPromptMenuAction(action, promptId),
+    });
+    // Picking an item keeps the focus (and the note's selection) put.
+    menuNode.addEventListener("mousedown", (e) => e.preventDefault());
+    root.append(menuNode);
+    menuNode.style.left = `${Math.round(
+      Math.max(
+        0,
+        Math.min(event.clientX - rootRect.left, rootRect.width - 130),
+      ),
+    )}px`;
+    menuNode.style.top = `${Math.round(event.clientY - rootRect.top)}px`;
+    promptMenu = menuNode;
+  });
+  // A press elsewhere in the popup closes the menu and cancels the editor.
+  root.addEventListener("mousedown", (event) => {
+    const target = event.target as Node | null;
+    if (promptMenu && target && !promptMenu.contains(target)) closePromptMenu();
+    if (
+      editingPrompt &&
+      target &&
+      !promptPanel.node.contains(target) &&
+      !(promptMenu && promptMenu.contains(target))
+    )
+      closePromptEditor();
+  });
+  promptPanel.labelInput.addEventListener("keydown", (event) => {
+    // Enter in Label saves.
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      savePrompt();
+    }
+  });
+  promptPanel.promptBox.editor.addEventListener("keydown", (event) => {
+    // Mod+Enter in Prompt saves; Enter is a new line.
+    if (
+      event.key === "Enter" &&
+      (event.metaKey || event.ctrlKey) &&
+      !event.isComposing
+    ) {
+      event.preventDefault();
+      savePrompt();
+    }
+  });
+  promptPanel.attach();
+
+  root.append(menu, result, promptPanel.node);
   (doc.documentElement || doc.body)!.appendChild(root);
 
   let closed = false;
@@ -463,6 +663,7 @@ export function openNoteInlinePopup(
     if (closed) return;
     closed = true;
     abort?.abort();
+    promptPanel.detach();
     doc.removeEventListener("keydown", onKeyDown, true);
     root.remove();
     input.onClose();
@@ -471,6 +672,7 @@ export function openNoteInlinePopup(
   const ask = (title: string, instruction: string, showChange: boolean) => {
     if (closed || engaged || !instruction.trim()) return;
     engaged = true;
+    closePromptMenu();
     streaming = true;
     answer = "";
     root.setAttribute("data-view", "result");
@@ -580,7 +782,10 @@ export function openNoteInlinePopup(
     if (event.key === "Escape" && !closed) {
       event.preventDefault();
       event.stopPropagation();
-      close();
+      // Escape closes the shortcut menu or editor first, then the popup.
+      if (promptMenu) closePromptMenu();
+      else if (editingPrompt) closePromptEditor();
+      else close();
     }
   };
   doc.addEventListener("keydown", onKeyDown, true);

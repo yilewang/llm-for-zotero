@@ -16,6 +16,8 @@ import {
  * streams a replacement that Replace writes into the note (keeping typing
  * elsewhere), Insert below adds it after the paragraph, and Ask in sidebar
  * hands the selection and the composer's text to the paper's chat.
+ * Right-clicking a shortcut edits, deletes, adds or resets the shortcuts,
+ * kept in the popup's own prefs.
  *
  * Only the network is scripted (a held fake provider).
  */
@@ -33,6 +35,15 @@ const SAVED_PREF_KEYS = [
   "enableCodexAppServerMode",
   "enableClaudeCodeMode",
   "inlineAskModelEntryId",
+  "inlineAskPrompts",
+  "noteInlinePrompts",
+  "noteInlineDeletedPrompts",
+];
+/** The shortcut prefs each case starts without. */
+const PROMPT_PREF_KEYS = [
+  "inlineAskPrompts",
+  "noteInlinePrompts",
+  "noteInlineDeletedPrompts",
 ];
 
 const SOURCE = "The decoder was fitted on session one.";
@@ -166,6 +177,80 @@ describe("workflow: inline writing popup in the note editor", function () {
     };
   }
 
+  function readJsonPref(key: string): unknown {
+    const raw = Zotero.Prefs.get(PREF_PREFIX + key, true);
+    return typeof raw === "string" && raw ? JSON.parse(raw) : null;
+  }
+
+  /** The shortcut ids the popup shows, in order. */
+  function shortcutIds(card: HTMLElement): string[] {
+    return (
+      Array.from(
+        card.querySelectorAll("[data-llm-note-inline-prompt]"),
+      ) as Element[]
+    ).map((node) => node.getAttribute("data-llm-note-inline-prompt") || "");
+  }
+
+  /** Right-clicks `target` in the popup; returns the menu's actions. */
+  function openShortcutMenu(card: HTMLElement, target: Element) {
+    const win = Zotero.getMainWindow();
+    const rect = target.getBoundingClientRect();
+    // A real right-click: Zotero's window takes a button-0 contextmenu as
+    // the keyboard's menu key, before the popup sees it.
+    const event = new win.MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      buttons: 2,
+      clientX: rect.left + 4,
+      clientY: rect.top + 4,
+    });
+    target.dispatchEvent(event);
+    assert.isTrue(event.defaultPrevented, "the popup takes the right-click");
+    return (
+      Array.from(
+        card.querySelectorAll("[data-llm-inline-ask-prompt-menu-item]"),
+      ) as HTMLButtonElement[]
+    ).map((item) => ({
+      action: item.getAttribute("data-llm-inline-ask-prompt-menu-item"),
+      disabled: item.disabled,
+      item,
+    }));
+  }
+
+  /** Fills the open shortcut editor and saves it. */
+  function fillShortcutEditor(
+    card: HTMLElement,
+    value: { label: string; prompt: string },
+    via: "enter-in-label" | "save-button",
+  ) {
+    const win = Zotero.getMainWindow();
+    const label = card.querySelector(
+      "[data-llm-inline-ask-prompt-label]",
+    ) as HTMLInputElement;
+    const prompt = card.querySelector(
+      "[data-llm-inline-ask-prompt-text]",
+    ) as HTMLElement;
+    label.value = value.label;
+    prompt.textContent = value.prompt;
+    prompt.dispatchEvent(new win.Event("input", { bubbles: true }));
+    if (via === "enter-in-label") {
+      label.dispatchEvent(
+        new win.KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    } else {
+      (
+        card.querySelector(
+          "[data-llm-inline-ask-prompt-action='save']",
+        ) as HTMLElement
+      ).click();
+    }
+  }
+
   async function storedNote(): Promise<string> {
     const note = Zotero.Items.get(fixture.noteItemId);
     await note.reload(["note"], true);
@@ -242,6 +327,8 @@ describe("workflow: inline writing popup in the note editor", function () {
 
   beforeEach(async function () {
     await api().reset();
+    for (const key of PROMPT_PREF_KEYS)
+      Zotero.Prefs.clear(PREF_PREFIX + key, true);
     fixture = await api().createItemNoteFixture({
       title: "Inline writing parent",
       pdfTitle: "Inline writing PDF",
@@ -495,6 +582,146 @@ describe("workflow: inline writing popup in the note editor", function () {
       await api().cleanupFixture(standalone);
     }
   });
+  it("edits a shortcut from its right-click menu, and the shortcut sends its new prompt", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    const card = (await until(() => editor.card(), "the popup"))!;
+    const rewrite = card.querySelector(
+      "[data-llm-note-inline-prompt='rewrite']",
+    )!;
+    const menu = openShortcutMenu(card, rewrite);
+    assert.deepEqual(
+      menu.map((entry) => [entry.action, entry.disabled]),
+
+      [
+        ["edit", false],
+        ["delete", false],
+        ["add", false],
+        ["reset", false],
+      ],
+    );
+    menu[0].item.click();
+    const panel = card.querySelector(
+      "[data-llm-inline-ask-prompt-editor]",
+    ) as HTMLElement;
+    assert.equal(panel.style.display, "flex", "Edit opens the editor");
+    const label = card.querySelector(
+      "[data-llm-inline-ask-prompt-label]",
+    ) as HTMLInputElement;
+    assert.equal(label.value, "Rewrite");
+    assert.include(
+      card.querySelector("[data-llm-inline-ask-prompt-text]")!.textContent ||
+        "",
+      "Rewrite the selected text",
+    );
+
+    const PROMPT = "WF_NOTE_EDITED_PROMPT Make the selected text formal.";
+    fillShortcutEditor(
+      card,
+      { label: "Formalize", prompt: PROMPT },
+      "enter-in-label",
+    );
+    assert.equal(panel.style.display, "none", "saving closes the editor");
+    assert.isFalse(
+      card.contains(Zotero.getMainWindow().document.activeElement),
+      "saving gives the keyboard back, so the popup follows the selection again",
+    );
+    assert.deepEqual(readJsonPref("noteInlinePrompts"), [
+      { id: "rewrite", label: "Formalize", prompt: PROMPT },
+    ]);
+    assert.isNull(
+      readJsonPref("inlineAskPrompts"),
+      "the reader's Inline Ask prompts stay as they were",
+    );
+    const edited = card.querySelector(
+      "[data-llm-note-inline-prompt='rewrite']",
+    ) as HTMLElement;
+    assert.equal(edited.textContent, "Formalize");
+    assert.equal(
+      editor.doc.defaultView!.getSelection()!.toString(),
+      SOURCE,
+      "the note keeps its selection while the shortcut is edited",
+    );
+
+    edited.click();
+    const stream = await provider.waitForStream("WF_NOTE_EDITED_PROMPT");
+    assert.include(stream.requestBody, SOURCE, "the model sees the selection");
+    stream.push("The decoder was formally fitted on session one.");
+    stream.finish();
+    await until(
+      () => editor.card()?.getAttribute("data-phase") === "answered",
+      "the answer",
+    );
+    assert.ok(
+      editor.card()!.querySelector("[data-llm-note-inline-change]"),
+      "an edited shortcut's answer shows as a change to the selection",
+    );
+  });
+
+  it("adds a shortcut from the row, deletes a built-in, and Reset restores the three", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    const card = (await until(() => editor.card(), "the popup"))!;
+    const rowMenu = openShortcutMenu(
+      card,
+      card.querySelector("[data-llm-note-inline-action='ask-in-sidebar']")!,
+    );
+    assert.deepEqual(
+      rowMenu.map((entry) => entry.action),
+      ["add", "reset"],
+    );
+    rowMenu[0].item.click();
+    fillShortcutEditor(
+      card,
+      {
+        label: "WF Simplify",
+        prompt: "WF_NOTE_ADDED_PROMPT Simplify the selected text.",
+      },
+      "save-button",
+    );
+    const ids = shortcutIds(card);
+    assert.deepEqual(ids.slice(0, 3), ["rewrite", "expand", "proofread"]);
+    assert.lengthOf(ids, 4);
+    const customId = ids[3];
+    assert.match(customId, /^note-inline-custom-/);
+    assert.deepEqual(readJsonPref("noteInlinePrompts"), [
+      {
+        id: customId,
+        label: "WF Simplify",
+        prompt: "WF_NOTE_ADDED_PROMPT Simplify the selected text.",
+      },
+    ]);
+
+    const deleteMenu = openShortcutMenu(
+      card,
+      card.querySelector("[data-llm-note-inline-prompt='proofread']")!,
+    );
+    deleteMenu.find((entry) => entry.action === "delete")!.item.click();
+    assert.deepEqual(shortcutIds(card), ["rewrite", "expand", customId]);
+    assert.deepEqual(readJsonPref("noteInlineDeletedPrompts"), ["proofread"]);
+
+    // The popup follows the selection again after the edits: it closes with
+    // it, and a new popup shows the changes; Reset there restores the
+    // built-ins.
+    editor.collapse();
+    await until(() => !editor.card(), "the popup to close");
+    editor.select("Keep this paragraph.");
+    const reopened = (await until(() => editor.card(), "the popup again"))!;
+    assert.deepEqual(shortcutIds(reopened), ["rewrite", "expand", customId]);
+    const resetMenu = openShortcutMenu(
+      reopened,
+      reopened.querySelector(`[data-llm-note-inline-prompt='${customId}']`)!,
+    );
+    resetMenu.find((entry) => entry.action === "reset")!.item.click();
+    assert.deepEqual(shortcutIds(reopened), ["rewrite", "expand", "proofread"]);
+    assert.isNull(readJsonPref("noteInlinePrompts"), "Reset clears the list");
+    assert.isNull(
+      readJsonPref("noteInlineDeletedPrompts"),
+      "and the deletions",
+    );
+    assert.ok(editor.card(), "the popup stays open through the edits");
+  });
+
   it("keeps list items when two items of a list are rewritten and replaced", async function () {
     const editor = await openEditor(fixture.noteItemId);
     editor.selectAcross("First item text.", "Second item text.");

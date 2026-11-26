@@ -64,10 +64,14 @@ import {
   renderInlineAskAnswer,
 } from "./inlineAskAnswerRender";
 import type { InlineAskModelMenuGroup } from "./inlineAskModel";
-import type {
-  InlineAskPromptEditing,
-  InlineAskQuickPrompt,
-} from "./inlineAskPrompts";
+import type { QuickPrompt } from "./quickPromptStore";
+import {
+  applyQuickPromptMenuAction,
+  buildQuickPromptMenu,
+  createQuickPromptEditorPanel,
+  type QuickPromptEditingSetup,
+  type QuickPromptMenuAction,
+} from "./quickPromptEditingUi";
 import {
   createInlineAskSession,
   finishedInlineAskTurns,
@@ -87,13 +91,16 @@ import {
   readerOverlayScheduler,
   registerReaderOverlay,
   releaseReaderOverlay,
-  XHTML_NS,
   type ReaderOverlayAnchor,
   type ReaderOverlayHandle,
   type ReaderOverlayPalette,
 } from "./readerOverlayShared";
 import { classifySelectionPromptKey } from "./selectionPromptKeys";
-import { inlineAskPalette, type InlineAskPalette } from "./inlineAskPalette";
+import {
+  inlineAskButtonCss,
+  inlineAskPalette,
+  type InlineAskPalette,
+} from "./inlineAskPalette";
 import type {
   InlineAskModelLine,
   InlineAskModelPicker,
@@ -130,22 +137,6 @@ export type InlineAskOverlayLabels = {
   resetTextSize: string;
   /** Shown when no model can answer. */
   modelUnavailable: string;
-};
-
-export type InlineAskPromptEditingSetup = {
-  api: InlineAskPromptEditing;
-  labels: {
-    edit: string;
-    delete: string;
-    add: string;
-    reset: string;
-    /** Placeholder of the Label field. */
-    label: string;
-    /** Placeholder of the Prompt field. */
-    prompt: string;
-    cancel: string;
-    save: string;
-  };
 };
 
 export type InlineAskSavePayload = { color: string; comment: string };
@@ -190,13 +181,13 @@ export type InlineAskOverlayInput = {
   selectedText: string;
   /** "Ratzon et al., 2024": the passage's source; empty shows no label. */
   sourceLabel?: string;
-  prompts: InlineAskQuickPrompt[];
+  prompts: QuickPrompt[];
   /** Null when no usable model exists; picker.line() replaces it. */
   model: InlineAskModelLine | null;
   /** Without it, the model line is display only. */
   modelPicker?: InlineAskModelPicker;
   /** Without it, right-clicking a pill does nothing of the card's own. */
-  promptEditing?: InlineAskPromptEditingSetup;
+  promptEditing?: QuickPromptEditingSetup;
   labels: InlineAskOverlayLabels;
   runTurn: InlineAskTurnRunner;
   createAbortController?: () => { signal?: AbortSignal; abort(): void } | null;
@@ -351,44 +342,6 @@ export function createInlineAskSparkIcon(doc: Document): Element {
       },
     },
   ]);
-}
-
-function buttonCss(
-  palette: InlineAskPalette,
-  variant: "plain" | "ghost" | "primary",
-  extra: string[] = [],
-): string[] {
-  const base = [
-    "display:inline-flex",
-    "align-items:center",
-    "justify-content:center",
-    "gap:5px",
-    "padding:4px 9px",
-    `border:1px solid ${palette.border}`,
-    "border-radius:6px",
-    `background:${palette.fieldBg}`,
-    `color:${palette.fg}`,
-    "white-space:nowrap",
-    "font:inherit",
-    "font-size:12px",
-    "line-height:1.35",
-    "cursor:pointer",
-  ];
-  if (variant === "ghost") {
-    base.push(
-      "background:transparent",
-      "border-color:transparent",
-      `color:${palette.labelFg}`,
-    );
-  }
-  if (variant === "primary") {
-    base.push(
-      `background:${palette.accent}`,
-      `border-color:${palette.accent}`,
-      `color:${palette.accentFg}`,
-    );
-  }
-  return [...base, ...extra];
 }
 
 function setButtonDisabled(button: HTMLButtonElement, disabled: boolean) {
@@ -984,7 +937,7 @@ export function openInlineAskOverlay(
   ]);
   pills.setAttribute("data-llm-inline-ask-pills", "true");
   const promptSetup = input.promptEditing;
-  let shownPrompts: InlineAskQuickPrompt[] = input.prompts.slice();
+  let shownPrompts: QuickPrompt[] = input.prompts.slice();
   /** The prompt the editor is open for; id null for Add. */
   let editingPrompt: { id: string | null } | null = null;
   const pillCss = (editing: boolean) => [
@@ -1040,98 +993,25 @@ export function openInlineAskOverlay(
       FLOATING_EDITOR_WIDTH,
       (root.getBoundingClientRect().width || cardWidth) - 16,
     );
-  const promptEditor = el("div", [
-    "display:none",
-    "position:absolute",
-    "z-index:5",
-    "flex-direction:column",
-    "gap:6px",
-    `width:${editorWidth}px`,
-    "box-sizing:border-box",
-    "padding:10px",
-    `background:${bg}`,
-    `border:1px solid ${palette.menuBorder}`,
-    "border-radius:12px",
-    `box-shadow:${palette.floatShadow}`,
-    "min-width:0",
-  ]);
-  promptEditor.setAttribute("data-llm-inline-ask-prompt-editor", "true");
-  const inputCss = [
-    "width:100%",
-    "min-width:0",
-    "box-sizing:border-box",
-    "padding:5px 8px",
-    "border:1px solid transparent",
-    "border-radius:6px",
-    `background:${palette.fieldBg}`,
-    `color:${fg}`,
-    "font:inherit",
-    "font-size:12px",
-    "line-height:1.35",
-    "outline:none",
-  ];
-  // <input type=text>: the reader's key handlers skip it (see
-  // createReaderOverlayEditor), so letters and digits type.
-  const labelInput = doc.createElementNS(XHTML_NS, "input") as HTMLInputElement;
-  labelInput.style.cssText = inputCss.join(";");
-  labelInput.setAttribute("type", "text");
-  labelInput.setAttribute("data-llm-inline-ask-prompt-label", "true");
-  labelInput.setAttribute("placeholder", promptSetup?.labels.label || "");
-  labelInput.setAttribute("aria-label", promptSetup?.labels.label || "");
-  const promptBox = createReaderOverlayEditor({
+  const promptPanel = createQuickPromptEditorPanel({
     doc,
-    placeholder: promptSetup?.labels.prompt || "",
-    fieldCss: ["position:relative", "min-width:0"],
-    editorCss: [
-      ...inputCss,
-      "min-height:58px",
-      "max-height:120px",
-      "overflow-y:auto",
-      "white-space:pre-wrap",
-      "overflow-wrap:anywhere",
-      "cursor:text",
-    ],
-    placeholderCss: [
-      "position:absolute",
-      "left:9px",
-      "top:6px",
-      "right:9px",
-      "overflow:hidden",
-      "white-space:nowrap",
-      "text-overflow:ellipsis",
-      "pointer-events:none",
-      `color:${palette.tertiary}`,
-      "font-size:12px",
-      "line-height:1.35",
-    ],
-    editorAttribute: "data-llm-inline-ask-prompt-text",
-    placeholderAttribute: "data-llm-inline-ask-prompt-placeholder",
+    palette,
+    labels: promptSetup?.labels || {
+      edit: "",
+      delete: "",
+      add: "",
+      reset: "",
+      label: "",
+      prompt: "",
+      cancel: "",
+      save: "",
+    },
+    width: editorWidth,
+    onCancel: () => closePromptEditor(true),
+    onSave: () => savePrompt(),
   });
-  const promptFooter = el("div", [
-    "display:flex",
-    "gap:6px",
-    "align-items:center",
-  ]);
-  const cancelPromptBtn = el(
-    "button",
-    buttonCss(palette, "ghost"),
-  ) as HTMLButtonElement;
-  cancelPromptBtn.setAttribute("type", "button");
-  cancelPromptBtn.setAttribute("data-llm-inline-ask-prompt-action", "cancel");
-  cancelPromptBtn.textContent = promptSetup?.labels.cancel || "";
-  const savePromptBtn = el(
-    "button",
-    buttonCss(palette, "primary"),
-  ) as HTMLButtonElement;
-  savePromptBtn.setAttribute("type", "button");
-  savePromptBtn.setAttribute("data-llm-inline-ask-prompt-action", "save");
-  savePromptBtn.textContent = promptSetup?.labels.save || "";
-  promptFooter.append(
-    el("span", ["flex:1 1 auto"]),
-    cancelPromptBtn,
-    savePromptBtn,
-  );
-  promptEditor.append(labelInput, promptBox.field, promptFooter);
+  const promptEditor = promptPanel.node;
+  const { labelInput, promptBox } = promptPanel;
 
   // ── Menus: the pill menu, and the model and effort menus ───────────────
   type OpenMenu = {
@@ -1150,26 +1030,6 @@ export function openInlineAskOverlay(
   /** A pointerdown that only closed the pill menu also swallows its click. */
   let swallowPillClick = false;
 
-  const menuItemCss = [
-    "display:flex",
-    "align-items:center",
-    "justify-content:flex-start",
-    "box-sizing:border-box",
-    "width:100%",
-    "min-height:24px",
-    "margin:0",
-    "background:none",
-    "border:none",
-    `color:${fg}`,
-    "padding:4px 8px",
-    "font:inherit",
-    "font-size:11px",
-    "line-height:1.2",
-    "text-align:left",
-    "cursor:pointer",
-    "border-radius:4px",
-    "white-space:nowrap",
-  ];
   const addHover = (
     node: HTMLElement,
     on: () => void,
@@ -1218,61 +1078,13 @@ export function openInlineAskOverlay(
   const openPromptMenu = (promptId: string | null, x: number, y: number) => {
     if (!promptSetup) return;
     closeMenus();
-    const menu = el("div", [
-      "position:absolute",
-      "z-index:3",
-      "display:flex",
-      "flex-direction:column",
-      "gap:2px",
-      "min-width:64px",
-      "padding:4px",
-      "box-sizing:border-box",
-      `background:${bg}`,
-      `border:1px solid ${palette.menuBorder}`,
-      "border-radius:6px",
-      `box-shadow:${palette.menuShadow}`,
-    ]);
-    menu.setAttribute("data-llm-inline-ask-prompt-menu", promptId || "");
-    menu.setAttribute("role", "menu");
-    const items: Array<[string, string, boolean]> = promptId
-      ? [
-          ["edit", promptSetup.labels.edit, true],
-          ["delete", promptSetup.labels.delete, true],
-          ["add", promptSetup.labels.add, promptSetup.api.canAdd()],
-          ["reset", promptSetup.labels.reset, true],
-        ]
-      : [
-          ["add", promptSetup.labels.add, promptSetup.api.canAdd()],
-          ["reset", promptSetup.labels.reset, true],
-        ];
-    for (const [action, text, enabled] of items) {
-      const item = el("button", menuItemCss) as HTMLButtonElement;
-      item.setAttribute("type", "button");
-      item.setAttribute("role", "menuitem");
-      item.setAttribute("data-llm-inline-ask-prompt-menu-item", action);
-      item.textContent = text;
-      if (!enabled) {
-        item.disabled = true;
-        item.style.opacity = "0.45";
-        item.style.cursor = "not-allowed";
-      }
-      addHover(
-        item,
-        () => {
-          if (!item.disabled) item.style.background = palette.hover;
-        },
-        () => {
-          item.style.background = "none";
-        },
-      );
-      item.addEventListener("click", (e: Event) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (item.disabled) return;
-        runPromptMenuAction(action, promptId);
-      });
-      menu.append(item);
-    }
+    const menu = buildQuickPromptMenu({
+      doc,
+      palette,
+      setup: promptSetup,
+      promptId,
+      onAction: (action) => runPromptMenuAction(action, promptId),
+    });
     const width = root.getBoundingClientRect().width || cardWidth;
     mountMenu("prompt", menu, Math.min(x, width - 130), y);
   };
@@ -1391,12 +1203,11 @@ export function openInlineAskOverlay(
     show(promptEditor, visible, "flex");
     if (visible) placePromptEditor();
   };
-  const openPromptEditor = (prompt: InlineAskQuickPrompt | null) => {
+  const openPromptEditor = (prompt: QuickPrompt | null) => {
     if (!promptSetup) return;
     closeMenus();
     editingPrompt = { id: prompt?.id ?? null };
-    labelInput.value = prompt?.label || "";
-    promptBox.setText(prompt?.prompt || "");
+    promptPanel.fill(prompt);
     renderPills();
     syncPromptEditor();
     schedule(() => {
@@ -1417,18 +1228,8 @@ export function openInlineAskOverlay(
   };
   const savePrompt = () => {
     if (!promptSetup || !editingPrompt) return;
-    const value = {
-      label: (labelInput.value || "").trim(),
-      prompt: promptBox.readText().trim(),
-    };
-    if (!value.label) {
-      labelInput.focus({ preventScroll: true });
-      return;
-    }
-    if (!value.prompt) {
-      promptBox.editor.focus({ preventScroll: true });
-      return;
-    }
+    const value = promptPanel.read();
+    if (!value) return;
     try {
       if (editingPrompt.id) promptSetup.api.edit(editingPrompt.id, value);
       else promptSetup.api.add(value);
@@ -1443,25 +1244,20 @@ export function openInlineAskOverlay(
       editor.focus({ preventScroll: true });
     }, 0);
   };
-  function runPromptMenuAction(action: string, promptId: string | null) {
+  function runPromptMenuAction(
+    action: QuickPromptMenuAction,
+    promptId: string | null,
+  ) {
     closeMenus();
     if (!promptSetup) return;
     const prompt = shownPrompts.find((entry) => entry.id === promptId) || null;
-    if (action === "edit" && prompt) {
-      openPromptEditor(prompt);
-      return;
-    }
-    if (action === "add") {
-      if (promptSetup.api.canAdd()) openPromptEditor(null);
-      return;
-    }
-    try {
-      if (action === "delete" && promptId) promptSetup.api.remove(promptId);
-      else if (action === "reset") promptSetup.api.reset();
-      else return;
-    } catch {
-      // The prefs refused the write; the pills show what is stored.
-    }
+    const changed = applyQuickPromptMenuAction(
+      promptSetup.api,
+      action,
+      prompt,
+      openPromptEditor,
+    );
+    if (!changed) return;
     if (action === "reset" || editingPrompt?.id === promptId) {
       editingPrompt = null;
       syncPromptEditor();
@@ -1584,7 +1380,7 @@ export function openInlineAskOverlay(
   const saveHeaderSpacer = el("span", ["flex:1 1 auto"]);
   const backBtn = el(
     "button",
-    buttonCss(palette, "ghost", ["padding:4px 6px"]),
+    inlineAskButtonCss(palette, "ghost", ["padding:4px 6px"]),
   ) as HTMLButtonElement;
   backBtn.setAttribute("type", "button");
   backBtn.setAttribute("data-llm-inline-ask-save-action", "back");
@@ -1693,14 +1489,14 @@ export function openInlineAskOverlay(
     "align-items:center",
   ]);
   const cancelSaveBtn = scaleText(
-    el("button", buttonCss(palette, "ghost")) as HTMLButtonElement,
+    el("button", inlineAskButtonCss(palette, "ghost")) as HTMLButtonElement,
     12,
   );
   cancelSaveBtn.setAttribute("type", "button");
   cancelSaveBtn.setAttribute("data-llm-inline-ask-save-action", "cancel");
   cancelSaveBtn.textContent = saveSetup?.labels.cancel || "";
   const confirmSaveBtn = scaleText(
-    el("button", buttonCss(palette, "primary")) as HTMLButtonElement,
+    el("button", inlineAskButtonCss(palette, "primary")) as HTMLButtonElement,
     12,
   );
   confirmSaveBtn.setAttribute("type", "button");
@@ -2842,26 +2638,6 @@ export function openInlineAskOverlay(
     e.stopPropagation();
     toggleMoreMenu();
   };
-  const onCancelPromptClick = (e: Event) => {
-    e.preventDefault();
-    e.stopPropagation();
-    closePromptEditor(true);
-  };
-  const onSavePromptClick = (e: Event) => {
-    e.preventDefault();
-    e.stopPropagation();
-    savePrompt();
-  };
-  const focusBorder = (node: HTMLElement) => ({
-    focus: () => {
-      node.style.borderColor = palette.accent;
-    },
-    blur: () => {
-      node.style.borderColor = "transparent";
-    },
-  });
-  const labelFocus = focusBorder(labelInput);
-  const promptFocus = focusBorder(promptBox.editor);
   // A click on the empty space of the composer box focuses the field.
   const onFieldMouseDown = (e: Event) => {
     const target = e.target as Node | null;
@@ -3138,13 +2914,7 @@ export function openInlineAskOverlay(
       modelLabel.removeEventListener("click", onModelClick);
       effortLabel.removeEventListener("click", onEffortClick);
     }
-    cancelPromptBtn.removeEventListener("click", onCancelPromptClick);
-    savePromptBtn.removeEventListener("click", onSavePromptClick);
-    labelInput.removeEventListener("focus", labelFocus.focus);
-    labelInput.removeEventListener("blur", labelFocus.blur);
-    promptBox.editor.removeEventListener("focus", promptFocus.focus);
-    promptBox.editor.removeEventListener("blur", promptFocus.blur);
-    promptBox.detach();
+    promptPanel.detach();
     input.onClose?.();
   }
 
@@ -3202,13 +2972,7 @@ export function openInlineAskOverlay(
     modelLabel.addEventListener("click", onModelClick);
     effortLabel.addEventListener("click", onEffortClick);
   }
-  cancelPromptBtn.addEventListener("click", onCancelPromptClick);
-  savePromptBtn.addEventListener("click", onSavePromptClick);
-  labelInput.addEventListener("focus", labelFocus.focus);
-  labelInput.addEventListener("blur", labelFocus.blur);
-  promptBox.editor.addEventListener("focus", promptFocus.focus);
-  promptBox.editor.addEventListener("blur", promptFocus.blur);
-  promptBox.attach();
+  promptPanel.attach();
   // Deferred so focus lands after the popup's pointerdown handler finishes.
   schedule(() => {
     if (closed) return;
