@@ -843,17 +843,22 @@ describe("workflow: Inline Ask in the reader", function () {
       dy: 60,
     });
 
-    // Top-left: the left edge moves, the right edge stays.
-    const topLeft = await api.dragReaderInlineAsk({
+    // The top-left corner holds the close button, not a grip.
+    assert.deepEqual(
+      start.resizeCorners.map((grip) => grip.corner),
+      ["top-right", "bottom-left", "bottom-right"],
+    );
+
+    // Bottom-left: the left edge moves, the right edge stays.
+    const widened = await api.dragReaderInlineAsk({
       part: "resize",
-      corner: "top-left",
+      corner: "bottom-left",
       dx: -30,
       dy: 0,
     });
-    near(topLeft.rect.left - start.rect.left, -30, "top-left moved left");
-    near(topLeft.rect.width - start.rect.width, 30, "top-left widened");
-    near(right(topLeft), right(start), "top-left keeps the right edge");
-    near(topLeft.rect.top, start.rect.top, "no answer area: top stays");
+    near(widened.rect.left - start.rect.left, -30, "bottom-left moved left");
+    near(widened.rect.width - start.rect.width, 30, "bottom-left widened");
+    near(right(widened), right(start), "bottom-left keeps the right edge");
 
     // Top-right: the left edge stays; the width follows the pointer.
     const topRight = await api.dragReaderInlineAsk({
@@ -862,8 +867,9 @@ describe("workflow: Inline Ask in the reader", function () {
       dx: 25,
       dy: 0,
     });
-    near(topRight.rect.left, topLeft.rect.left, "top-right keeps the left");
-    near(topRight.rect.width - topLeft.rect.width, 25, "top-right widened");
+    near(topRight.rect.left, widened.rect.left, "top-right keeps the left");
+    near(topRight.rect.width - widened.rect.width, 25, "top-right widened");
+    near(topRight.rect.top, widened.rect.top, "no answer area: top stays");
 
     // Bottom-left: the right edge stays.
     const bottomLeft = await api.dragReaderInlineAsk({
@@ -890,11 +896,11 @@ describe("workflow: Inline Ask in the reader", function () {
     assert.isAbove(answered.rect.top, 60, "there is room above the card");
     const grown = await api.dragReaderInlineAsk({
       part: "resize",
-      corner: "top-left",
+      corner: "top-right",
       dx: 0,
       dy: -40,
     });
-    near(bottom(grown), bottom(answered), "top-left keeps the bottom edge");
+    near(bottom(grown), bottom(answered), "top-right keeps the bottom edge");
     assert.isBelow(grown.rect.top, answered.rect.top - 20, "the top moved up");
     near(grown.rect.left, answered.rect.left, "dy only: left stays");
     const lower = await api.dragReaderInlineAsk({
@@ -907,6 +913,53 @@ describe("workflow: Inline Ask in the reader", function () {
 
     const closed = await api.endReaderInlineAsk({ via: "discard" });
     assert.isTrue(closed.cardRemoved);
+  });
+
+  it("shows the close button only near the top-left corner, and closes the card from it", async function () {
+    const fixture = await createFixture("Inline Ask close button");
+    const opened = await api.openReaderInlineAsk({
+      attachmentItemId: fixture.pdfAttachmentId,
+      pageIndex: 0,
+      selectedText: SELECTED_TEXT,
+    });
+    assert.isTrue(opened.mounted, JSON.stringify(opened));
+    const rest = api.readReaderInlineAsk().closeButton;
+    assert.ok(rest, "the card has a close button");
+    assert.isFalse(rest!.shown, "hidden at rest");
+    assert.equal(rest!.label, "Close");
+
+    // Elsewhere on the card it stays hidden; near the corner it shows.
+    assert.isFalse(
+      (await api.hoverReaderInlineAskCloseCorner(80)).closeButton!.shown,
+      "hidden away from the corner",
+    );
+    const near = (await api.hoverReaderInlineAskCloseCorner(10)).closeButton!;
+    assert.isTrue(near.shown, "shown near the top-left corner");
+    assert.isFalse(near.disabled);
+    // Centered on the rounded corner, about half of it outside the card.
+    assert.isAtMost(Math.abs(near.offsetX - 3), 2, "on the left edge");
+    assert.isAtMost(Math.abs(near.offsetY - 3), 2, "on the top edge");
+    assert.isFalse(
+      (await api.hoverReaderInlineAskCloseCorner(null)).closeButton!.shown,
+      "hidden again when the pointer leaves the card",
+    );
+
+    // With a conversation, a page click keeps the card; the button closes it.
+    const Q = "inline-ask-close-button-question-marker";
+    await api.sendReaderInlineAsk({ text: Q });
+    const stream = await provider.waitForStream(Q);
+    stream.push("An answer.");
+    stream.finish();
+    await waitForCard(
+      (state) => state.phase === "answered" && state.answers.length > 0,
+      "the answer completes",
+    );
+    assert.isTrue(
+      (await api.hoverReaderInlineAskCloseCorner(10)).closeButton!.shown,
+      "shown near the corner with an answer",
+    );
+    const closed = await api.endReaderInlineAsk({ via: "close" });
+    assert.isTrue(closed.cardRemoved, "the close button closes the card");
   });
 
   it("closes a card without a conversation on a page click", async function () {

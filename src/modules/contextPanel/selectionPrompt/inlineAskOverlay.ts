@@ -47,7 +47,9 @@
  *
  * Close policy: before the first question an outside pointerdown closes the
  * card, as the Add Text prompt does. Once a question exists, only Escape,
- * Discard, or another overlay on the same document closes it; a new text
+ * Discard, the close button (shown while the pointer is near the card's
+ * top-left corner), or
+ * another overlay on the same document closes it; a new text
  * selection popup leaves it open (keepsOpenOnNewSelection).
  *
  * Width: DEFAULT_CARD_WIDTH, a reading measure. When the card replaces the
@@ -101,6 +103,7 @@ import {
   inlineAskPalette,
   type InlineAskPalette,
 } from "./inlineAskPalette";
+import { createInlineCardCloseButton } from "./inlineCardCloseButton";
 import type {
   InlineAskModelLine,
   InlineAskModelPicker,
@@ -128,6 +131,8 @@ export type InlineAskOverlayLabels = {
   /** Shown while the first chunk of an answer is on its way. */
   reading: string;
   discard: string;
+  /** The floating close button's tooltip. */
+  close: string;
   continueInSidebar: string;
   saveAsAnnotation: string;
   reasoningEffort: string;
@@ -1522,12 +1527,8 @@ export function openInlineAskOverlay(
   // The corner grips: drag a corner to resize the card. Each grip is an
   // invisible hit area that straddles its corner. While the pointer is over
   // it (or a drag from it runs), an arc shows just outside the card's corner.
-  const RESIZE_CORNERS = [
-    "top-left",
-    "top-right",
-    "bottom-left",
-    "bottom-right",
-  ] as const;
+  // The top-left corner holds the floating close button instead.
+  const RESIZE_CORNERS = ["top-right", "bottom-left", "bottom-right"] as const;
   type ResizeCorner = (typeof RESIZE_CORNERS)[number];
   const resizeGrips = new Map<ResizeCorner, HTMLElement>();
   const resizeArcs = new Map<ResizeCorner, HTMLElement>();
@@ -1600,6 +1601,17 @@ export function openInlineAskOverlay(
     resizeArcs.set(corner, arc);
   }
 
+  // The floating close button on the top-left corner, shown while the
+  // pointer is near it: closes like Discard.
+  const closeControl = createInlineCardCloseButton(
+    doc,
+    root,
+    palette,
+    labels.close,
+  );
+  const closeBtn = closeControl.button;
+  closeBtn.setAttribute("data-llm-inline-ask-close", "true");
+
   root.append(
     quoteSection,
     thread,
@@ -1611,6 +1623,7 @@ export function openInlineAskOverlay(
     selectionBar,
     saveView,
     ...resizeGrips.values(),
+    closeBtn,
   );
 
   // ── Rendering ──────────────────────────────────────────────────────────
@@ -1806,6 +1819,7 @@ export function openInlineAskOverlay(
     // A move in flight cannot be discarded: the sidebar would still show
     // the chat the user threw away.
     setButtonDisabled(discardBtn, continuing);
+    closeControl.setDisabled(continuing);
     sidebarError.textContent = sidebarErrorText;
     show(
       sidebarError,
@@ -2879,6 +2893,8 @@ export function openInlineAskOverlay(
     root.removeEventListener("keypress", stop);
     sendBtn.removeEventListener("click", onSendClick);
     discardBtn.removeEventListener("click", onDiscardClick);
+    closeBtn.removeEventListener("click", onDiscardClick);
+    closeControl.detach();
     saveBtn.removeEventListener("click", onSaveClick);
     sidebarBtn.removeEventListener("click", onSidebarClick);
     for (const [node, listener] of saveViewListeners)
@@ -2943,6 +2959,8 @@ export function openInlineAskOverlay(
   root.addEventListener("keypress", stop);
   sendBtn.addEventListener("click", onSendClick);
   discardBtn.addEventListener("click", onDiscardClick);
+  closeBtn.addEventListener("click", onDiscardClick);
+  closeControl.attach();
   saveBtn.addEventListener("click", onSaveClick);
   sidebarBtn.addEventListener("click", onSidebarClick);
   for (const [node, listener] of saveViewListeners)

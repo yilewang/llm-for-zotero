@@ -12,6 +12,9 @@
  *   a shortcut opens Edit, Delete, Add and Reset (Add and Reset on the
  *   rest of the row), as on Inline Ask's pills;
  * - result: the streamed answer with Replace, Insert below and Discard.
+ *
+ * In both views a floating close button shows on the top-left corner while
+ * the pointer is near it.
  */
 
 import {
@@ -29,6 +32,7 @@ import {
 } from "../selectionPrompt/quickPromptEditingUi";
 import type { QuickPrompt } from "../selectionPrompt/quickPromptStore";
 import { isDarkReaderDocument } from "../selectionPrompt/readerOverlayShared";
+import { createInlineCardCloseButton } from "../selectionPrompt/inlineCardCloseButton";
 
 export type NoteInlinePopupRect = {
   left: number;
@@ -58,6 +62,8 @@ export type NoteInlinePopupInput = {
     replace: string;
     insertBelow: string;
     discard: string;
+    /** The floating close button's tooltip. */
+    close: string;
     working: string;
   };
   /** The model and effort the answer uses, shown and picked in the field. */
@@ -83,7 +89,8 @@ export type NoteInlinePopupInput = {
 
 export type NoteInlinePopupHandle = {
   /** True once the user asked something: the popup no longer follows the
-   *  note's selection and closes only on Discard, an action, or Escape. */
+   *  note's selection and closes only on Discard, the close button, an
+   *  action, or Escape. */
   isEngaged(): boolean;
   /** True while focus or the pointer works inside the popup. */
   contains(node: Node | null | undefined): boolean;
@@ -616,8 +623,18 @@ export function openNoteInlinePopup(
   });
   promptPanel.attach();
 
-  root.append(menu, result, promptPanel.node);
+  const closeControl = createInlineCardCloseButton(
+    doc,
+    root,
+    palette,
+    input.labels.close,
+  );
+  const closeBtn = closeControl.button;
+  closeBtn.setAttribute("data-llm-note-inline-close", "true");
+
+  root.append(menu, result, promptPanel.node, closeBtn);
   (doc.documentElement || doc.body)!.appendChild(root);
+  closeControl.attach();
 
   let closed = false;
   let engaged = false;
@@ -638,6 +655,7 @@ export function openNoteInlinePopup(
       node.style.cursor = ready ? "pointer" : "default";
     }
     discardBtn.disabled = acting;
+    closeControl.setDisabled(acting);
   };
 
   const reposition = () => {
@@ -664,6 +682,7 @@ export function openNoteInlinePopup(
     closed = true;
     abort?.abort();
     promptPanel.detach();
+    closeControl.detach();
     doc.removeEventListener("keydown", onKeyDown, true);
     root.remove();
     input.onClose();
@@ -778,6 +797,9 @@ export function openNoteInlinePopup(
     runAction(() => input.insertBelow(answer), setError),
   );
   discardBtn.addEventListener("click", () => close());
+  closeBtn.addEventListener("click", () => {
+    if (!acting) close();
+  });
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape" && !closed) {
       event.preventDefault();

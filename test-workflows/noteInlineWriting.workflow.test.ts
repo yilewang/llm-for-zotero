@@ -414,6 +414,75 @@ describe("workflow: inline writing popup in the note editor", function () {
     assert.isNull(editor.card(), "Escape dismisses the same selection");
   });
 
+  it("shows the close button only near the top-left corner, and closes from it before and after an answer", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    let card = (await until(() => editor.card(), "the popup"))!;
+    const win = card.ownerDocument.defaultView!;
+    const closeButton = () =>
+      editor
+        .card()
+        ?.querySelector("[data-llm-note-inline-close]") as HTMLButtonElement;
+    const shown = () => {
+      const style = win.getComputedStyle(closeButton())!;
+      return Number(style.opacity) > 0 && style.pointerEvents !== "none";
+    };
+    const hover = async (distance: number | null) => {
+      const target = editor.card()!;
+      const rect = target.getBoundingClientRect();
+      const at = distance ?? -40;
+      target.dispatchEvent(
+        new win.PointerEvent(
+          distance === null ? "pointerleave" : "pointermove",
+          {
+            bubbles: true,
+            clientX: rect.left + at,
+            clientY: rect.top + at,
+          },
+        ),
+      );
+      await delay(300);
+    };
+    assert.ok(closeButton(), "the popup has a close button");
+    assert.equal(closeButton().getAttribute("aria-label"), "Close");
+    assert.isFalse(shown(), "hidden at rest");
+    await hover(80);
+    assert.isFalse(shown(), "hidden away from the corner");
+    await hover(10);
+    assert.isTrue(shown(), "shown near the top-left corner");
+    // It floats on the top-left corner, half outside the popup.
+    const box = closeButton().getBoundingClientRect();
+    const cardBox = card.getBoundingClientRect();
+    assert.isBelow(box.left, cardBox.left, "out past the left edge");
+    assert.isBelow(box.top, cardBox.top, "out past the top edge");
+    assert.isAbove(box.right, cardBox.left, "over the left edge");
+    assert.isAbove(box.bottom, cardBox.top, "over the top edge");
+    await hover(null);
+    assert.isFalse(shown(), "hidden again when the pointer leaves");
+    await hover(10);
+    closeButton().click();
+    await until(() => !editor.card(), "the popup to close");
+    // Like Escape, it dismisses this selection.
+    editor.select(SOURCE);
+    await delay(400);
+    assert.isNull(editor.card(), "the same selection stays closed");
+
+    editor.collapse();
+    await delay(200);
+    editor.select(SOURCE);
+    card = await rewriteTo(editor, "The decoder was fitted once.");
+    await hover(10);
+    assert.isTrue(shown(), "shown near the corner with an answer");
+    assert.isFalse(closeButton().disabled, "enabled with an answer");
+    closeButton().click();
+    await until(() => !editor.card(), "the popup to close with an answer");
+    assert.notInclude(
+      await storedNote(),
+      "fitted once",
+      "closing writes nothing",
+    );
+  });
+
   it("keeps the popup and the selection while the user types an instruction", async function () {
     const editor = await openEditor(fixture.noteItemId);
     editor.select(SOURCE);
