@@ -32,6 +32,7 @@ import type {
 import { CODEX_DIRECT_RESPONSES_URL } from "../codexAuth/auth";
 import { getCodexDirectCatalogSnapshot } from "../codexAuth/modelCatalog";
 import { WEBCHAT_TARGETS } from "../webchat/types";
+import { trimmedString } from "../core/values";
 
 export type LegacyModelSlotKey =
   | "primary"
@@ -211,12 +212,8 @@ function createId(prefix: "provider" | "model"): string {
   return `${prefix}-${Date.now()}-${token}`;
 }
 
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function normalizeApiBase(apiBase: string): string {
-  return normalizeString(apiBase).replace(/\/+$/, "");
+  return trimmedString(apiBase).replace(/\/+$/, "");
 }
 
 function normalizeProviderAuthMode(value: unknown): ModelProviderAuthMode {
@@ -356,7 +353,7 @@ function normalizeCodexDirectModelRow(
       typeof rawModel.id === "string" && rawModel.id.trim()
         ? rawModel.id.trim()
         : createId("model"),
-    model: normalizeString(rawModel.model),
+    model: trimmedString(rawModel.model),
   };
 }
 
@@ -398,9 +395,9 @@ function normalizeWebChatTargetRows(models: unknown): WebChatTargetRow[] {
   for (const value of rawRows) {
     if (!value || typeof value !== "object") continue;
     const raw = value as { id?: unknown; model?: unknown };
-    const rawId = normalizeString(raw.id);
+    const rawId = trimmedString(raw.id);
     firstRowId ||= rawId;
-    const model = supportedByName.get(normalizeString(raw.model).toLowerCase());
+    const model = supportedByName.get(trimmedString(raw.model).toLowerCase());
     if (!model || seenTargets.has(model)) continue;
     const id = rawId && !seenIds.has(rawId) ? rawId : createId("model");
     seenIds.add(id);
@@ -434,8 +431,8 @@ function normalizeGroup(
         : [],
     );
     const selectedModel =
-      normalizeString(rawGroup.selectedModel) ||
-      normalizeString(rawGroup.codexDirectModel);
+      trimmedString(rawGroup.selectedModel) ||
+      trimmedString(rawGroup.codexDirectModel);
     if (
       selectedModel &&
       !models.some(
@@ -471,11 +468,11 @@ function normalizeGroup(
         )
         .filter((entry): entry is ModelProviderModel => Boolean(entry))
     : [];
-  const apiBase = normalizeApiBase(normalizeString(rawGroup.apiBase));
+  const apiBase = normalizeApiBase(trimmedString(rawGroup.apiBase));
   return {
     id,
     apiBase,
-    apiKey: normalizeString(rawGroup.apiKey),
+    apiKey: trimmedString(rawGroup.apiKey),
     authMode,
     providerProtocol: normalizeProviderProtocolForAuthMode({
       protocol: rawGroup.providerProtocol,
@@ -499,15 +496,15 @@ function resolveLegacyCodexDirectSelection(raw: unknown[]): {
     if (!value || typeof value !== "object") continue;
     const group = value as RawProviderGroup;
     if (normalizeProviderAuthMode(group.authMode) !== "codex_auth") continue;
-    const groupId = normalizeString(group.id);
+    const groupId = trimmedString(group.id);
     const rows = Array.isArray(group.models)
       ? group.models
           .map(normalizeCodexDirectModelRow)
           .filter((row): row is CodexDirectModelRow => Boolean(row))
       : [];
     const selected =
-      normalizeString(group.selectedModel) ||
-      normalizeString(group.codexDirectModel);
+      trimmedString(group.selectedModel) ||
+      trimmedString(group.codexDirectModel);
     firstSavedSelection ||= selected;
     firstMigratedRow ||= rows.find((row) => row.model)?.model || "";
 
@@ -622,7 +619,7 @@ function normalizeGroupModel(
     providerProtocol?: unknown;
     profileOverride?: unknown;
   };
-  const modelName = normalizeString(rawModel.model);
+  const modelName = trimmedString(rawModel.model);
   const advanced = normalizeAdvancedModelConfig(
     {
       temperature: Number(rawModel.temperature),
@@ -1225,7 +1222,7 @@ export async function refreshConfiguredProviderModelCatalogs(options?: {
 export function getModelEntryById(
   entryId: string | undefined | null,
 ): RuntimeModelEntry | null {
-  const normalizedId = normalizeString(entryId);
+  const normalizedId = trimmedString(entryId);
   if (!normalizedId) return null;
   return (
     getRuntimeModelEntries().find((entry) => entry.entryId === normalizedId) ||

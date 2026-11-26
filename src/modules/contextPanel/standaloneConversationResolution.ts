@@ -1,3 +1,4 @@
+import { positiveIntOrNull } from "../../core/values";
 export type ConversationDraftSummary = {
   conversationKey?: number | null;
   kind?: "global" | "paper" | string | null;
@@ -9,12 +10,6 @@ export type ConversationDraftSummary = {
   title?: string | null;
   isDraft?: boolean | null;
 };
-
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
 
 function hasNoUserTurns(summary: ConversationDraftSummary): boolean {
   if (summary.isDraft === false) return false;
@@ -47,11 +42,11 @@ function hasMeaningfulConversationTitle(
 function getDraftScopeKey(summary: ConversationDraftSummary): string | null {
   if (summary.kind !== "global" && summary.kind !== "paper") return null;
   if (summary.kind === "global") {
-    const libraryID = normalizePositiveInt(summary.libraryID);
+    const libraryID = positiveIntOrNull(summary.libraryID);
     return libraryID ? `global:${libraryID}` : null;
   }
-  const paperItemID = normalizePositiveInt(summary.paperItemID);
-  const libraryID = normalizePositiveInt(summary.libraryID);
+  const paperItemID = positiveIntOrNull(summary.paperItemID);
+  const libraryID = positiveIntOrNull(summary.libraryID);
   return paperItemID
     ? libraryID
       ? `paper:${libraryID}:${paperItemID}`
@@ -85,15 +80,15 @@ export function isReusableConversationDraft(params: {
   if (!summary) return false;
   if (params.kind && summary.kind !== params.kind) return false;
   if (params.kind === "global") {
-    const expectedLibraryID = normalizePositiveInt(params.libraryID);
-    const summaryLibraryID = normalizePositiveInt(summary.libraryID);
+    const expectedLibraryID = positiveIntOrNull(params.libraryID);
+    const summaryLibraryID = positiveIntOrNull(summary.libraryID);
     if (!expectedLibraryID || summaryLibraryID !== expectedLibraryID) {
       return false;
     }
   }
   if (params.kind === "paper") {
-    const expectedPaperItemID = normalizePositiveInt(params.paperItemID);
-    const summaryPaperItemID = normalizePositiveInt(summary.paperItemID);
+    const expectedPaperItemID = positiveIntOrNull(params.paperItemID);
+    const summaryPaperItemID = positiveIntOrNull(summary.paperItemID);
     if (!expectedPaperItemID || summaryPaperItemID !== expectedPaperItemID) {
       return false;
     }
@@ -116,9 +111,7 @@ export function collapseDuplicateReusableConversationDrafts<
   entries: readonly T[];
   activeConversationKey?: number | null;
 }): T[] {
-  const activeConversationKey = normalizePositiveInt(
-    params.activeConversationKey,
-  );
+  const activeConversationKey = positiveIntOrNull(params.activeConversationKey);
   const selectedByScope = new Map<string, T>();
   const reusableScopeByEntry = new Map<T, string>();
 
@@ -146,8 +139,8 @@ export function collapseDuplicateReusableConversationDrafts<
       selectedByScope.set(scopeKey, entry);
       continue;
     }
-    const entryKey = normalizePositiveInt(entry.conversationKey);
-    const selectedKey = normalizePositiveInt(selected.conversationKey);
+    const entryKey = positiveIntOrNull(entry.conversationKey);
+    const selectedKey = positiveIntOrNull(selected.conversationKey);
     const entryIsActive = Boolean(
       activeConversationKey && entryKey === activeConversationKey,
     );

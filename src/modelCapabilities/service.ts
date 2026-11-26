@@ -70,6 +70,7 @@ import type {
   RegistryModelEntry,
   ResolvedModelCapabilities,
 } from "./types";
+import { lowerTrimmedString, trimmedString } from "../core/values";
 
 const REGISTRY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const PROVIDER_CATALOG_TTL_MS = 60 * 1000;
@@ -118,12 +119,8 @@ function now(): number {
   return runtime.now?.() || Date.now();
 }
 
-function normalize(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
 function normalizeApiBase(value: unknown): string {
-  return normalize(value).replace(/\/+$/, "");
+  return lowerTrimmedString(value).replace(/\/+$/, "");
 }
 
 function getFetch(): typeof fetch | undefined {
@@ -158,7 +155,7 @@ function notify(): void {
 function providerFromIdentity(
   identity: ModelCapabilityIdentity,
 ): ModelCapabilityProvider {
-  const explicit = normalize(identity.provider);
+  const explicit = lowerTrimmedString(identity.provider);
   if (
     explicit &&
     explicit !== "customized" &&
@@ -168,16 +165,16 @@ function providerFromIdentity(
     return explicit as ModelCapabilityProvider;
   }
   if (
-    normalize(identity.authMode) === "codex_auth" &&
-    normalize(identity.protocol) === "codex_responses"
+    lowerTrimmedString(identity.authMode) === "codex_auth" &&
+    lowerTrimmedString(identity.protocol) === "codex_responses"
   ) {
     return "openai";
   }
   return (
-    inferProviderFromApiBase(normalize(identity.apiBase)) ??
+    inferProviderFromApiBase(lowerTrimmedString(identity.apiBase)) ??
     // Relays and unrecognized hosts still serve recognizable models; the
     // model name keeps its provider family (and thus its reasoning profile).
-    inferProviderFromModelName(normalize(identity.model)) ??
+    inferProviderFromModelName(lowerTrimmedString(identity.model)) ??
     // Last resort only, so a recognized family is never shadowed by its host.
     // Must mirror detectReasoningProvider's ordering: the two derive the same
     // provider for the same model, and a mismatch would key the live catalog
@@ -284,18 +281,14 @@ function legacyReasoningProfiles(
   if (provider === "mimo") getMimoReasoningProfileForModel(model);
 }
 
-function normalizeApiKey(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function buildCatalogKey(identity: ModelCatalogIdentity): string {
   return [
     catalogProviderFromIdentity(identity),
     normalizeApiBase(identity.apiBase),
-    normalize(identity.protocol),
-    normalize(identity.authMode),
-    normalize(identity.scope),
-    normalizeApiKey(identity.apiKey),
+    lowerTrimmedString(identity.protocol),
+    lowerTrimmedString(identity.authMode),
+    lowerTrimmedString(identity.scope),
+    trimmedString(identity.apiKey),
   ].join("\u0000");
 }
 
@@ -303,8 +296,8 @@ function buildCatalogBaseKey(identity: ModelCapabilityIdentity): string {
   return [
     catalogProviderFromIdentity(identity),
     normalizeApiBase(identity.apiBase),
-    normalize(identity.protocol),
-    normalize(identity.authMode),
+    lowerTrimmedString(identity.protocol),
+    lowerTrimmedString(identity.authMode),
   ].join("\u0000");
 }
 
@@ -313,7 +306,7 @@ function isSameCatalogConfiguration(
   identity: ModelCatalogIdentity,
 ): boolean {
   const parts = existingKey.split("\u0000");
-  const reqScope = normalize(identity.scope);
+  const reqScope = lowerTrimmedString(identity.scope);
   const existingScope = parts[4] || "";
   if (existingScope !== reqScope) {
     return false;
@@ -326,8 +319,8 @@ function isSameCatalogConfiguration(
   const endpointTail = normalizedBase
     ? [
         normalizedBase,
-        normalize(identity.protocol),
-        normalize(identity.authMode),
+        lowerTrimmedString(identity.protocol),
+        lowerTrimmedString(identity.authMode),
       ].join("\u0000")
     : "";
   const existingBaseKey = parts.slice(0, 4).join("\u0000");
@@ -387,11 +380,11 @@ function getCatalogSnapshot(
 ): CatalogSnapshot | undefined {
   const exact = catalogSnapshots.get(buildCatalogKey(identity));
   if (exact) return exact;
-  const reqProtocol = normalize(identity.protocol);
-  const reqAuthMode = normalize(identity.authMode);
-  const reqScope = normalize(identity.scope);
+  const reqProtocol = lowerTrimmedString(identity.protocol);
+  const reqAuthMode = lowerTrimmedString(identity.authMode);
+  const reqScope = lowerTrimmedString(identity.scope);
   const hasExplicitApiKey = identity.apiKey !== undefined;
-  const reqApiKey = normalizeApiKey(identity.apiKey);
+  const reqApiKey = trimmedString(identity.apiKey);
   const matchesSnapshotKey = (snapshotKey: string): boolean => {
     const parts = snapshotKey.split("\u0000");
     const snapshotProtocol = parts[2] || "";
@@ -628,7 +621,9 @@ function canRunCapabilityPreflight(identity: ModelCatalogIdentity): boolean {
     return false;
   }
   if (!identity.model.trim() || !identity.apiBase?.trim()) return false;
-  return !CATALOG_EXCLUDED_AUTH_MODES.has(normalize(identity.authMode));
+  return !CATALOG_EXCLUDED_AUTH_MODES.has(
+    lowerTrimmedString(identity.authMode),
+  );
 }
 
 /**
@@ -812,7 +807,7 @@ export function compileReasoningControls(
         capabilities.provider === "openai",
     };
   }
-  const requested = normalize(option.id);
+  const requested = lowerTrimmedString(option.id);
   const disabledOption =
     requested === "none" || requested === "off" || requested === "disabled";
   // A disabled selection may only emit controls its own option authored.
@@ -843,11 +838,12 @@ export function resolveModelReasoningSelection(
   capabilities: ResolvedModelCapabilities,
   selection?: { level?: string; effort?: string },
 ): ModelReasoningSelection {
-  const requested = normalize(selection?.effort || selection?.level);
+  const requested = lowerTrimmedString(selection?.effort || selection?.level);
   if (!requested || requested === "auto") return { kind: "auto" };
   const exact = capabilities.reasoning.options.find(
     (candidate) =>
-      candidate.enabled !== false && normalize(candidate.id) === requested,
+      candidate.enabled !== false &&
+      lowerTrimmedString(candidate.id) === requested,
   );
   const option =
     exact ||
@@ -1043,7 +1039,7 @@ function getAnthropicCompatCatalogEndpoint(
   const override =
     ANTHROPIC_COMPAT_CATALOG_ENDPOINTS[providerFromIdentity(identity)];
   if (!override) return null;
-  const base = normalize(identity.apiBase);
+  const base = lowerTrimmedString(identity.apiBase);
   return base.includes("anthropic") ? override : null;
 }
 
@@ -1285,7 +1281,7 @@ async function fetchModelCatalog(
     }
   }
   const discoveryAdapter = getModelDiscoveryAdapter(identity);
-  if (discoveryAdapter && !normalizeApiKey(identity.apiKey)) {
+  if (discoveryAdapter && !trimmedString(identity.apiKey)) {
     const snapshot: CatalogSnapshot = {
       models: cached?.models || [],
       fetchedAt: cached?.fetchedAt || 0,

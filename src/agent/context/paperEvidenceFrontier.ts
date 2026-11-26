@@ -6,6 +6,7 @@ import {
   type ReadStopPolicy,
   type ReadStopRecommendation,
 } from "./evidencePolicy";
+import { recordOrNull } from "../../core/values";
 
 export type PaperEvidenceProgress = {
   frontier: "advanced" | "unchanged" | "unavailable";
@@ -81,12 +82,6 @@ type CacheLookupParams = {
   resourceSignature?: string;
 };
 
-function objectRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function normalizedString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -113,7 +108,7 @@ function normalizedStringArray(value: unknown): string[] {
 
 function paperReadMode(input: unknown): string {
   return (
-    normalizedString(objectRecord(input)?.mode)?.toLowerCase() || "overview"
+    normalizedString(recordOrNull(input)?.mode)?.toLowerCase() || "overview"
   );
 }
 
@@ -123,9 +118,9 @@ export function isPaperEvidenceFrontierEligible(input: unknown): boolean {
 }
 
 function normalizeTarget(value: unknown): unknown {
-  const target = objectRecord(value);
+  const target = recordOrNull(value);
   if (!target) return value;
-  const paperContext = objectRecord(target.paperContext);
+  const paperContext = recordOrNull(target.paperContext);
   const source = paperContext ? { ...target, ...paperContext } : target;
   return {
     libraryID: normalizedInteger(source.libraryID),
@@ -139,7 +134,7 @@ function normalizeTarget(value: unknown): unknown {
 }
 
 function normalizeCallInput(input: unknown): unknown {
-  const record = objectRecord(input);
+  const record = recordOrNull(input);
   if (!record) return input;
   const targets = Array.isArray(record.targets)
     ? record.targets
@@ -192,7 +187,7 @@ function paperIdentity(
   inheritedPaperContext?: Record<string, unknown>,
 ): Record<string, unknown> | null {
   const paperContext =
-    objectRecord(entry.paperContext) || inheritedPaperContext;
+    recordOrNull(entry.paperContext) || inheritedPaperContext;
   if (!paperContext) return null;
   const identity = {
     libraryID: normalizedInteger(paperContext.libraryID),
@@ -279,12 +274,12 @@ async function collectOccurrences(params: {
     : [];
   let groupedPassageCount = 0;
   for (const paperValue of papers) {
-    const paper = objectRecord(paperValue);
+    const paper = recordOrNull(paperValue);
     if (!paper || !Array.isArray(paper.passages)) continue;
-    const inheritedPaperContext = objectRecord(paper.paperContext) || undefined;
+    const inheritedPaperContext = recordOrNull(paper.paperContext) || undefined;
     const inheritedSourceKind = normalizedString(paper.sourceKind);
     for (const passageValue of paper.passages) {
-      const passage = objectRecord(passageValue);
+      const passage = recordOrNull(passageValue);
       if (!passage) continue;
       groupedPassageCount += 1;
       occurrences.push(
@@ -303,7 +298,7 @@ async function collectOccurrences(params: {
     ? params.content.results
     : [];
   for (const resultValue of results) {
-    const result = objectRecord(resultValue);
+    const result = recordOrNull(resultValue);
     if (!result) continue;
     occurrences.push(
       await buildOccurrence({
@@ -318,14 +313,14 @@ async function collectOccurrences(params: {
 
 function hasTextualEvidence(content: Record<string, unknown>): boolean {
   const hasText = (value: unknown) =>
-    Boolean(normalizedString(objectRecord(value)?.text));
+    Boolean(normalizedString(recordOrNull(value)?.text));
   if (Array.isArray(content.results) && content.results.some(hasText)) {
     return true;
   }
   return (
     Array.isArray(content.papers) &&
     content.papers.some((paperValue) => {
-      const paper = objectRecord(paperValue);
+      const paper = recordOrNull(paperValue);
       return Array.isArray(paper?.passages) && paper.passages.some(hasText);
     })
   );
@@ -337,7 +332,7 @@ function resolveCoverage(
 ): PaperEvidenceProgress["coverage"] {
   const results = Array.isArray(content.results) ? content.results : [];
   const textualSources = results
-    .map(objectRecord)
+    .map(recordOrNull)
     .filter((entry): entry is Record<string, unknown> => Boolean(entry));
   if (
     textualSources.length > 0 &&
@@ -382,7 +377,7 @@ async function suppressRepeatedOccurrences(params: {
   if (Array.isArray(params.content.results)) {
     const results = [];
     for (const value of params.content.results) {
-      const entry = objectRecord(value);
+      const entry = recordOrNull(value);
       if (!entry) {
         results.push(value);
         continue;
@@ -399,17 +394,17 @@ async function suppressRepeatedOccurrences(params: {
   if (Array.isArray(params.content.papers)) {
     const papers = [];
     for (const paperValue of params.content.papers) {
-      const paper = objectRecord(paperValue);
+      const paper = recordOrNull(paperValue);
       if (!paper || !Array.isArray(paper.passages)) {
         papers.push(paperValue);
         continue;
       }
       const passages = [];
       const inheritedPaperContext =
-        objectRecord(paper.paperContext) || undefined;
+        recordOrNull(paper.paperContext) || undefined;
       const inheritedSourceKind = normalizedString(paper.sourceKind);
       for (const passageValue of paper.passages) {
-        const passage = objectRecord(passageValue);
+        const passage = recordOrNull(passageValue);
         if (!passage) {
           passages.push(passageValue);
           continue;
@@ -433,7 +428,7 @@ async function suppressRepeatedOccurrences(params: {
   }
   if (Array.isArray(params.content.quoteCitations)) {
     output.quoteCitations = params.content.quoteCitations.filter((value) => {
-      const id = normalizedString(objectRecord(value)?.id);
+      const id = normalizedString(recordOrNull(value)?.id);
       if (!id) return true;
       return (
         !params.repeatedQuoteCitationIds.has(id) ||
@@ -535,7 +530,7 @@ export class PaperEvidenceFrontier {
     if (!isPaperEvidenceFrontierEligible(params.input)) {
       return { content: params.content, frontier: "advanced" };
     }
-    const content = objectRecord(params.content);
+    const content = recordOrNull(params.content);
     if (!content) {
       return { content: params.content, frontier: "unavailable" };
     }

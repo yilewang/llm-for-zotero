@@ -50,6 +50,7 @@ import {
   exclusionPaperDecisions,
   type PaperDecisionLookup,
 } from "./recordPaperDecisions";
+import { trimmedStringOrUndefined } from "../../../core/values";
 
 type ExpectedEffect = "read" | "artifact" | "mutation" | "reasoning" | "digest";
 
@@ -337,10 +338,6 @@ function answerPart(
   };
 }
 
-function optionalText(value: unknown): string | undefined {
-  return typeof value === "string" ? value.trim() || undefined : undefined;
-}
-
 function parseDeclaration(
   raw: unknown,
   label: string,
@@ -360,11 +357,11 @@ function parseDeclaration(
   if (raw.scope !== undefined && typeof raw.scope !== "boolean") {
     return fail(`${label}.scope must be true or false`);
   }
-  if (raw.replaces !== undefined && !optionalText(raw.replaces)) {
+  if (raw.replaces !== undefined && !trimmedStringOrUndefined(raw.replaces)) {
     return fail(`${label}.replaces must be the taskId of the part it replaces`);
   }
-  const replaces = optionalText(raw.replaces);
-  const reason = optionalText(raw.reason);
+  const replaces = trimmedStringOrUndefined(raw.replaces);
+  const reason = trimmedStringOrUndefined(raw.reason);
   if (replaces && !reason) {
     return fail(
       `${label} needs a reason with replaces: why it replaces that part`,
@@ -401,9 +398,9 @@ function parseDeclaration(
   }
   return ok({
     taskId,
-    description: optionalText(raw.description),
+    description: trimmedStringOrUndefined(raw.description),
     expectedEffect: raw.expectedEffect as ExpectedEffect | undefined,
-    expectedCapability: optionalText(raw.expectedCapability),
+    expectedCapability: trimmedStringOrUndefined(raw.expectedCapability),
     targetIds: Array.isArray(raw.targetIds)
       ? raw.targetIds.map(String).filter(Boolean)
       : undefined,
@@ -430,7 +427,7 @@ function parseExclusion(
   if (!targetIds.length) {
     return fail(`${label} needs targetIds: the papers the part leaves out`);
   }
-  const reason = optionalText(raw.reason);
+  const reason = trimmedStringOrUndefined(raw.reason);
   if (!reason) {
     return fail(`${label} needs a reason: why the part leaves them out`);
   }
@@ -446,7 +443,7 @@ function parseException(
   }
   const taskId = typeof raw.taskId === "string" ? raw.taskId.trim() : "";
   if (!taskId) return fail(`${label} needs a taskId`);
-  return ok({ taskId, reason: optionalText(raw.reason) || "" });
+  return ok({ taskId, reason: trimmedStringOrUndefined(raw.reason) || "" });
 }
 
 function parseList<T>(

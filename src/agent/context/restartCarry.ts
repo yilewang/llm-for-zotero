@@ -16,6 +16,7 @@
  */
 import type { AgentUserMessage, ExecutionCheckpoint } from "../types";
 import type { TaskPaperScopeSet } from "./taskPaperScopeListing";
+import { recordOrEmpty, trimmedString } from "../../core/values";
 
 /** The turn's tool records the carry reads (`ToolExecutionRecord`). */
 export type CarriedToolRecord = Readonly<{
@@ -28,16 +29,6 @@ export type CarriedToolRecord = Readonly<{
 export const CARRIED_ITEM_KEYS_MAX = 200;
 
 const LOAD_SKILL_TOOL_NAME = "load_skill";
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
 
 /**
  * The skills the turn loaded with load_skill, as each load returned them,
@@ -55,13 +46,13 @@ export function buildCarriedSkillsMessage(
   >();
   for (const entry of records) {
     if (entry.name !== LOAD_SKILL_TOOL_NAME || !entry.ok) continue;
-    const content = record(entry.content);
+    const content = recordOrEmpty(entry.content);
     if (content.found !== true) continue;
-    const id = text(record(content.skill).id);
-    const instructions = text(content.instructions);
+    const id = trimmedString(recordOrEmpty(content.skill).id);
+    const instructions = trimmedString(content.instructions);
     if (!id || !instructions || rendered.includes(id)) continue;
     const earlier = skills.get(id);
-    const guidance = text(content.toolGuidance);
+    const guidance = trimmedString(content.toolGuidance);
     skills.delete(id);
     skills.set(id, {
       instructions,
@@ -71,7 +62,8 @@ export function buildCarriedSkillsMessage(
           ? [guidance]
           : []),
       ],
-      scopeGuard: text(content.scopeGuard) || earlier?.scopeGuard || "",
+      scopeGuard:
+        trimmedString(content.scopeGuard) || earlier?.scopeGuard || "",
     });
   }
   if (!skills.size) return null;
@@ -117,7 +109,7 @@ export function buildScopeItemKeysMessage(
   );
   const keyed = [...new Set([...named, ...(scope.itemIds || [])])].flatMap(
     (itemId) => {
-      const key = text(papers[itemId]?.itemKey);
+      const key = trimmedString(papers[itemId]?.itemKey);
       return key ? [`${itemId}=${key}`] : [];
     },
   );

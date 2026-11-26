@@ -1,5 +1,6 @@
 import { quoteKeyHash } from "../quotes/quoteKey";
 import { sanitizeText } from "../../utils/textSanitization";
+import { positiveIntOrNull } from "../../core/values";
 
 export type CitationPageCacheEntry = {
   contextItemId: number;
@@ -26,12 +27,6 @@ function buildCitationPageCacheKey(
   quoteHash: string,
 ): string {
   return `${Math.floor(contextItemId)}\u241f${quoteHash}`;
-}
-
-function normalizeContextItemId(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
 }
 
 function normalizePageIndex(value: unknown): number | null {
@@ -81,7 +76,7 @@ export function rememberCitationPage(input: {
   /** The reader's printed label; never one guessed from the page index. */
   pageLabel?: string;
 }): string | null {
-  const contextItemId = normalizeContextItemId(input.contextItemId);
+  const contextItemId = positiveIntOrNull(input.contextItemId);
   if (contextItemId === null) return null;
   const pageIndex = normalizePageIndex(input.pageIndex);
   if (pageIndex === null) return null;
@@ -109,7 +104,7 @@ export function lookupCitationPage(input: {
   contextItemId: number;
   quoteText: string;
 }): CitationPageCacheEntry | null {
-  const contextItemId = normalizeContextItemId(input.contextItemId);
+  const contextItemId = positiveIntOrNull(input.contextItemId);
   if (contextItemId === null) return null;
   const quoteHash = buildCitationQuoteHash(input.quoteText);
   if (!quoteHash) return null;

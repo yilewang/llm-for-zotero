@@ -95,6 +95,7 @@ import {
   callEmbeddings,
   resolveSemanticSearchState,
 } from "../../utils/llmClient";
+import { collapseWhitespace } from "../../core/values";
 
 export type LibraryRetrieveDepth = "pool" | "metadata" | "evidence" | "verify";
 export type LibraryRetrieveIntent = "enumerate" | "verify" | "summarize";
@@ -866,12 +867,8 @@ function normalizeInput(
   };
 }
 
-function normalizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
-
 function normalizeForSearch(value: unknown): string {
-  return normalizeText(value).toLowerCase();
+  return collapseWhitespace(value).toLowerCase();
 }
 
 function creatorLabel(creator: {
@@ -880,8 +877,11 @@ function creatorLabel(creator: {
   lastName?: string;
 }): string {
   return (
-    normalizeText(creator.name) ||
-    [normalizeText(creator.firstName), normalizeText(creator.lastName)]
+    collapseWhitespace(creator.name) ||
+    [
+      collapseWhitespace(creator.firstName),
+      collapseWhitespace(creator.lastName),
+    ]
       .filter(Boolean)
       .join(" ")
       .trim()
@@ -1062,7 +1062,7 @@ function indexSnippetText(text: string, terms: string[]): string {
 }
 
 function truncateText(text: string, maxChars: number): string {
-  const normalized = normalizeText(text);
+  const normalized = collapseWhitespace(text);
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 3)).trim()}...`;
 }
@@ -1455,9 +1455,9 @@ function buildAbstractSnippet(
 
 function lastNameOf(creator: EditableArticleCreator | undefined): string {
   if (!creator) return "";
-  const lastName = normalizeText(creator.lastName);
+  const lastName = collapseWhitespace(creator.lastName);
   if (lastName) return lastName;
-  return normalizeText(creator.name).split(" ").pop() || "";
+  return collapseWhitespace(creator.name).split(" ").pop() || "";
 }
 
 /** Work group ids for the shortlisted records that share a work. */
@@ -3038,8 +3038,8 @@ export class LibraryRetrieveService {
     for (const target of scope.items.slice(0, 20)) {
       if (withAbstract.length >= 3) break;
       const indexed = snapshot?.itemById.get(target.itemId);
-      const abstract = normalizeText(indexed?.abstractNote).slice(0, 240);
-      const sample = [normalizeText(target.title), abstract]
+      const abstract = collapseWhitespace(indexed?.abstractNote).slice(0, 240);
+      const sample = [collapseWhitespace(target.title), abstract]
         .filter(Boolean)
         .join("\n");
       if (!sample) continue;
@@ -3094,13 +3094,13 @@ export class LibraryRetrieveService {
     const includeAutomatic = explicitScope.includeAutomaticTags === true;
     const seenExplicitTags = new Set<string>();
     for (const name of explicitScope.tagNames || []) {
-      const normalizedName = normalizeText(name).toLowerCase();
+      const normalizedName = collapseWhitespace(name).toLowerCase();
       if (!normalizedName || seenExplicitTags.has(`tag:${normalizedName}`)) {
         continue;
       }
       seenExplicitTags.add(`tag:${normalizedName}`);
       explicitTagContexts.push({
-        name: normalizeText(name),
+        name: collapseWhitespace(name),
         normalizedName,
         libraryID,
         includeAutomatic,
@@ -3234,8 +3234,8 @@ export class LibraryRetrieveService {
         this.zoteroGateway.getItem(target.itemId),
       );
       const abstractText =
-        normalizeText(metadata?.fields.abstractNote) ||
-        normalizeText(
+        collapseWhitespace(metadata?.fields.abstractNote) ||
+        collapseWhitespace(
           (metadata?.fields as Record<string, string> | undefined)
             ?.abstractNote,
         );

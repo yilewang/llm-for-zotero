@@ -5,6 +5,7 @@ import {
   isConversationWriteGenerationCurrent,
 } from "../shared/conversationWriteFence";
 import { SINGLE_PAPER_READ_TOOL_NAMES } from "../agent/context/toolNames";
+import { positiveIntOrUndefined, recordOrEmpty } from "../core/values";
 
 const MAX_LEDGER_ENTRIES = 12;
 const MAX_RENDERED_LEDGER_ENTRIES = 8;
@@ -50,18 +51,6 @@ function normalizeText(value: unknown, maxLength = 160): string {
     .slice(0, maxLength);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function ledgerKey(params: {
   profileSignature?: string;
   conversationKey: number;
@@ -70,7 +59,7 @@ function ledgerKey(params: {
 }): string {
   return [
     normalizeText(params.profileSignature, 128) || "default-profile",
-    normalizePositiveInt(params.conversationKey) || 0,
+    positiveIntOrUndefined(params.conversationKey) || 0,
     normalizeText(params.instanceID, 128),
     normalizeText(params.threadId, 256),
   ].join(":");
@@ -93,9 +82,9 @@ function formatTargetLabel(target: {
 function normalizePaperContext(
   value: unknown,
 ): NormalizedPaperContext | undefined {
-  const record = normalizeRecord(value);
-  const itemId = normalizePositiveInt(record.itemId);
-  const contextItemId = normalizePositiveInt(record.contextItemId);
+  const record = recordOrEmpty(value);
+  const itemId = positiveIntOrUndefined(record.itemId);
+  const contextItemId = positiveIntOrUndefined(record.contextItemId);
   const title = normalizeText(record.title, 120);
   if (!itemId && !contextItemId) return undefined;
   return {
@@ -115,13 +104,13 @@ function targetFromRecord(value: unknown): {
   contextItemId?: number;
   title?: string;
 } {
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   const paperContext = normalizePaperContext(record.paperContext);
   return {
-    itemId: normalizePositiveInt(record.itemId) || paperContext?.itemId,
+    itemId: positiveIntOrUndefined(record.itemId) || paperContext?.itemId,
     contextItemId:
-      normalizePositiveInt(record.contextItemId) ||
-      normalizePositiveInt(record.attachmentId) ||
+      positiveIntOrUndefined(record.contextItemId) ||
+      positiveIntOrUndefined(record.attachmentId) ||
       paperContext?.contextItemId,
     title:
       normalizeText(record.title, 120) ||
@@ -148,7 +137,7 @@ function extractTargets(
   args: unknown,
   scope: NativeContextLedgerScope,
 ): Array<{ itemId?: number; contextItemId?: number; title?: string }> {
-  const record = normalizeRecord(args);
+  const record = recordOrEmpty(args);
   const rawTargets = Array.isArray(record.targets) ? record.targets : [];
   const targets = rawTargets
     .map(targetFromRecord)
@@ -179,7 +168,7 @@ function isLikelyMineruReadPath(filePath: string): boolean {
 }
 
 function buildReadDetail(toolName: string, args: unknown): string | undefined {
-  const record = normalizeRecord(args);
+  const record = recordOrEmpty(args);
   if (toolName === "paper_read") {
     const mode = normalizeText(record.mode, 40) || "overview";
     const pieces = [`mode=${mode}`];
@@ -201,13 +190,13 @@ function buildFileIoEntry(params: {
   scope: NativeContextLedgerScope;
   timestamp: number;
 }): NativeReadLedgerEntry | null {
-  const record = normalizeRecord(params.args);
+  const record = recordOrEmpty(params.args);
   if (record.action !== "read") return null;
   const filePath = normalizeText(record.filePath, 1024);
   if (!filePath || !isLikelyMineruReadPath(filePath)) return null;
   const target = defaultScopeTarget(params.scope);
-  const offset = normalizePositiveInt(record.offset);
-  const length = normalizePositiveInt(record.length);
+  const offset = positiveIntOrUndefined(record.offset);
+  const length = positiveIntOrUndefined(record.length);
   const fileName = fileNameForPath(filePath);
   const detail =
     offset !== undefined || length !== undefined
@@ -312,7 +301,7 @@ export function clearCodexNativeReadLedgerForConversation(params: {
   instanceID?: string;
   profileSignature?: string;
 }): void {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey) return;
   const profile = normalizeText(params.profileSignature, 128);
   const instanceID = normalizeText(params.instanceID, 128);
@@ -337,7 +326,7 @@ export function recordCodexNativeReadActivity(params: {
   if (params.event.phase !== "completed" || params.event.ok !== true) return;
   const threadId = normalizeText(params.threadId, 256);
   if (!threadId) return;
-  const conversationKey = normalizePositiveInt(params.scope.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.scope.conversationKey);
   if (!conversationKey) return;
   if (
     areConversationWritesFrozen(conversationKey) ||

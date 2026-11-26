@@ -20,6 +20,7 @@ import {
   shownPartName,
   userPartNames,
 } from "../digests/readScope";
+import { trimmedStringOrUndefined } from "../../core/values";
 
 /** Monotone reading state of one paper, weakest first. */
 export type TaskPaperState =
@@ -478,20 +479,18 @@ function pageIndexOf(value: unknown): number | undefined {
     : nonNegative(value);
 }
 
-function text(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function hasText(value: unknown, keys: readonly string[]): boolean {
   const input = record(value);
-  return Boolean(input && keys.some((key) => text(input[key])));
+  return Boolean(
+    input && keys.some((key) => trimmedStringOrUndefined(input[key])),
+  );
 }
 
 function firstText(value: unknown, keys: readonly string[]): string {
   const input = record(value);
   if (!input) return "";
   for (const key of keys) {
-    const found = text(input[key]);
+    const found = trimmedStringOrUndefined(input[key]);
     if (found) return found;
   }
   return "";
@@ -665,18 +664,25 @@ function paperRef(value: unknown): PaperRef | null {
       paper?.contextItemId ?? input.contextItemId ?? input.contextItemID,
     ),
     libraryID: positive(paper?.libraryID ?? input.libraryID),
-    title: text(paper?.title) || text(input.title) || text(parent?.title),
+    title:
+      trimmedStringOrUndefined(paper?.title) ||
+      trimmedStringOrUndefined(input.title) ||
+      trimmedStringOrUndefined(parent?.title),
     year:
-      text(String(paper?.year ?? "")) ||
-      text(String(input.year ?? "")) ||
-      text(String(parent?.year ?? "")),
+      trimmedStringOrUndefined(String(paper?.year ?? "")) ||
+      trimmedStringOrUndefined(String(input.year ?? "")) ||
+      trimmedStringOrUndefined(String(parent?.year ?? "")),
     creator:
-      text(paper?.firstCreator) ||
-      text(input.firstCreator) ||
-      text(parent?.firstCreator) ||
-      (Array.isArray(input.creators) ? text(input.creators[0]) : undefined),
+      trimmedStringOrUndefined(paper?.firstCreator) ||
+      trimmedStringOrUndefined(input.firstCreator) ||
+      trimmedStringOrUndefined(parent?.firstCreator) ||
+      (Array.isArray(input.creators)
+        ? trimmedStringOrUndefined(input.creators[0])
+        : undefined),
   };
-  const itemKey = text(paper?.itemKey) || text(input.itemKey);
+  const itemKey =
+    trimmedStringOrUndefined(paper?.itemKey) ||
+    trimmedStringOrUndefined(input.itemKey);
   if (itemKey) ref.itemKey = itemKey;
   return ref.itemId || ref.contextItemId ? ref : null;
 }
@@ -739,7 +745,7 @@ function readSeed(fields: {
 }
 
 function pageLabelFor(row: Row): string | undefined {
-  const label = text(row.pageLabel);
+  const label = trimmedStringOrUndefined(row.pageLabel);
   if (label) return `p. ${label}`;
   const index = nonNegative(row.pageIndex);
   return index === undefined ? undefined : `p. ${index + 1}`;
@@ -747,8 +753,8 @@ function pageLabelFor(row: Row): string | undefined {
 
 /** Granularity and label of one retrieved passage. */
 function passageReadSeed(row: Row, method: string): ReadSeed {
-  const chunkKind = text(row.chunkKind);
-  const sectionLabel = text(row.sectionLabel);
+  const chunkKind = trimmedStringOrUndefined(row.chunkKind);
+  const sectionLabel = trimmedStringOrUndefined(row.sectionLabel);
   if (chunkKind === "page") {
     return readSeed({
       granularity: "page",
@@ -844,7 +850,7 @@ function libraryRetrieveSeeds(result: unknown): Seed[] {
     if (!value || !ref) continue;
     if (!hasText(value, ["snippet", "surroundingText", "text"])) continue;
     const sourceKind = String(value.sourceKind || "").toLowerCase();
-    const method = text(value.matchMethod) || "retrieve";
+    const method = trimmedStringOrUndefined(value.matchMethod) || "retrieve";
     if (sourceKind === "abstract") {
       seeds.push({
         ref,
@@ -882,7 +888,7 @@ function libraryRetrieveSeeds(result: unknown): Seed[] {
 }
 
 function metadataListSeeds(input: unknown, result: unknown): Seed[] {
-  const mode = text(record(input)?.mode) || "search";
+  const mode = trimmedStringOrUndefined(record(input)?.mode) || "search";
   return directRows(result).flatMap((row) => {
     const ref = paperRef(row);
     return ref
@@ -1008,7 +1014,10 @@ function paperReadOverviewSeed(row: Row, ref: PaperRef): Seed | null {
 function paperReadSeeds(input: unknown, result: unknown): Seed[] {
   const args = record(input) || {};
   const output = record(result) || {};
-  const mode = text(args.mode) || text(output.mode) || "overview";
+  const mode =
+    trimmedStringOrUndefined(args.mode) ||
+    trimmedStringOrUndefined(output.mode) ||
+    "overview";
   if (mode === "figures" && Array.isArray(output.figures)) {
     return rowsAt(result, "figures").flatMap((row): Seed[] => {
       const value = record(row);
@@ -1021,7 +1030,7 @@ function paperReadSeeds(input: unknown, result: unknown): Seed[] {
           read: readSeed({
             granularity: "figure",
             method: "figures",
-            label: [text(value.label), pageLabelFor(value)]
+            label: [trimmedStringOrUndefined(value.label), pageLabelFor(value)]
               .filter(Boolean)
               .join(" · "),
             snippet: value.caption,
@@ -1061,7 +1070,9 @@ function paperReadSeeds(input: unknown, result: unknown): Seed[] {
             granularity: "outline",
             method: "outline",
             label: sections
-              .map((section) => text(record(section)?.title))
+              .map((section) =>
+                trimmedStringOrUndefined(record(section)?.title),
+              )
               .filter(Boolean)
               .slice(0, 6)
               .join(" · "),
@@ -1129,7 +1140,7 @@ function wholeSectionSeeds(result: unknown): Seed[] {
     const passages = rowsAt(value, "passages")
       .map(record)
       .filter((entry): entry is Row => Boolean(entry));
-    const backend = text(value.backend);
+    const backend = trimmedStringOrUndefined(value.backend);
     // Part names in document order, each with the sections that read it.
     const parts = new Map<
       string,
@@ -1137,7 +1148,7 @@ function wholeSectionSeeds(result: unknown): Seed[] {
     >();
     for (const entry of rowsAt(value, "sections")) {
       const section = record(entry);
-      const label = text(section?.section);
+      const label = trimmedStringOrUndefined(section?.section);
       // A section the read budget left out entirely was not read.
       if (!section || !label || !(Number(section.characters) > 0)) continue;
       // The parts the user asked for, not the pages, headings or places
@@ -1161,7 +1172,7 @@ function wholeSectionSeeds(result: unknown): Seed[] {
     const used = new Set<Row>();
     return [...parts.values()].map(({ name, sections }): Seed => {
       const { section, names } = sections[0];
-      const label = text(section.section);
+      const label = trimmedStringOrUndefined(section.section);
       // A passage carries the section's own label, or the parts asked for
       // that a plain PDF run is shown under.
       const first = passages.find(
@@ -1189,7 +1200,9 @@ function wholeSectionSeeds(result: unknown): Seed[] {
               : "section",
           method: "sections",
           label: name,
-          snippet: first ? firstBodyParagraph(text(first.text) || "") : "",
+          snippet: first
+            ? firstBodyParagraph(trimmedStringOrUndefined(first.text) || "")
+            : "",
         }),
       };
     });
@@ -1216,7 +1229,7 @@ function bodyRowSeeds(row: Row, ref: PaperRef, mode: string): Seed[] {
     const total = Number(row.totalChunks) || 0;
     // A read that stopped short is a skim of the chunks it reached, not a
     // read of the whole paper.
-    const status = text(row.status);
+    const status = trimmedStringOrUndefined(row.status);
     const complete = status
       ? status === "complete"
       : total > 0 && processed >= total;
@@ -1287,7 +1300,7 @@ function pageSeed(ref: PaperRef, container: Row): Seed | null {
       granularity: "page",
       method: "view_pages",
       label: labels.slice(0, 8).join(", "),
-      snippet: text(container.pageText),
+      snippet: trimmedStringOrUndefined(container.pageText),
       // The page the label names first.
       pageIndex:
         pageIndexes[0] ??
@@ -1351,7 +1364,9 @@ function readAttachmentSeeds(input: unknown, result: unknown): Seed[] {
       read: readSeed({
         granularity: "full",
         method: "attachment",
-        label: text(output.attachmentTitle) || text(output.title),
+        label:
+          trimmedStringOrUndefined(output.attachmentTitle) ||
+          trimmedStringOrUndefined(output.title),
         snippet: firstBodyParagraph(body),
       }),
     },
@@ -1659,13 +1674,13 @@ function digestPaper(
   // Only defined values: the delta is persisted as JSON.
   const context = positive(contextItemId) || positive(paper.contextItemId);
   if (context) row.contextItemId = context;
-  const title = text(paper.title);
+  const title = trimmedStringOrUndefined(paper.title);
   if (title) row.title = title;
-  const year = text(paper.year);
+  const year = trimmedStringOrUndefined(paper.year);
   if (year) row.year = year;
-  const creator = text(paper.creator);
+  const creator = trimmedStringOrUndefined(paper.creator);
   if (creator) row.creator = creator;
-  const itemKey = text(paper.itemKey);
+  const itemKey = trimmedStringOrUndefined(paper.itemKey);
   if (itemKey) row.itemKey = itemKey;
   return row;
 }
@@ -1684,7 +1699,7 @@ function digestRead(
   };
   if (delta.runId) read.runId = delta.runId;
   if (delta.turnIndex !== undefined) read.turnIndex = delta.turnIndex;
-  const part = text(partId);
+  const part = trimmedStringOrUndefined(partId);
   if (part) read.partId = part;
   return read;
 }
@@ -1901,7 +1916,7 @@ function digestTextSource(
  */
 function paperDigestSeeds(result: unknown): Seed[] {
   const output = record(result) || {};
-  const label = text(output.label);
+  const label = trimmedStringOrUndefined(output.label);
   const rows = Array.isArray(output.papers) ? output.papers : [];
   const seeds: Seed[] = [];
   for (const row of rows) {
@@ -2484,7 +2499,7 @@ function documentCitationEntry(
   ) => TaskPaperResolvedRef | null | undefined,
 ): TaskPaperLedgerEntry | null {
   const libraryID = positive(citation.libraryID);
-  const itemKey = text(citation.itemKey);
+  const itemKey = trimmedStringOrUndefined(citation.itemKey);
   const entries = Object.values(ledger.papers);
   if (libraryID && itemKey) {
     const known = entries.find(
@@ -2517,11 +2532,11 @@ function documentCitationEntry(
     entry.contextItemIds.push(ownId);
   }
   if (created || !entry.title) {
-    const title = text(citation.title);
+    const title = trimmedStringOrUndefined(citation.title);
     if (title && !entry.title) entry.title = title;
-    const creator = text(citation.firstCreator);
+    const creator = trimmedStringOrUndefined(citation.firstCreator);
     if (creator && !entry.creator) entry.creator = creator;
-    const year = text(citation.year);
+    const year = trimmedStringOrUndefined(citation.year);
     if (year && !entry.year) entry.year = year;
   }
   return entry;

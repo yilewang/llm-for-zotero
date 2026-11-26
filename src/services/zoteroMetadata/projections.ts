@@ -7,16 +7,13 @@ import type {
   ZoteroCreator,
   ZoteroTurnMetadataContext,
 } from "./types";
-
-function normalizeText(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
+import { trimmedString } from "../../core/values";
 
 function creatorName(creator: ZoteroCreator): string {
   return (
-    normalizeText(creator.name) ||
+    trimmedString(creator.name) ||
     [creator.firstName, creator.lastName]
-      .map(normalizeText)
+      .map(trimmedString)
       .filter(Boolean)
       .join(" ")
   );
@@ -26,11 +23,11 @@ function projectStoredPaperFallback(
   ref: PaperContextRef,
   warnings: ProjectedPaperMetadata["warnings"],
 ): ProjectedPaperMetadata {
-  const title = normalizeText(ref.title);
-  const firstCreator = normalizeText(ref.firstCreator);
-  const year = normalizeText(ref.year);
-  const citationKey = normalizeText(ref.citationKey);
-  const attachmentTitle = normalizeText(ref.attachmentTitle);
+  const title = trimmedString(ref.title);
+  const firstCreator = trimmedString(ref.firstCreator);
+  const year = trimmedString(ref.year);
+  const citationKey = trimmedString(ref.citationKey);
+  const attachmentTitle = trimmedString(ref.attachmentTitle);
   return {
     source: "stored_fallback",
     itemId: Math.floor(ref.itemId),

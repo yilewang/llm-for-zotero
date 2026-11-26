@@ -750,6 +750,7 @@ import {
   removeLastUsedUpstreamConversationMode,
   removeLastUsedUpstreamGlobalConversationKey,
 } from "./prefHelpers";
+import { positiveIntOrUndefined } from "../../core/values";
 
 async function appendWorkflowStoredMessage(
   system: ConversationSystem,
@@ -3617,11 +3618,6 @@ async function probeTargetedRerenderScrollStability(params: {
   };
 }
 
-function parsePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value || 0);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
-}
-
 function getStandaloneWindowReferenceForTest(): Window | null {
   return (
     (addon as unknown as { data?: { standaloneWindow?: Window } }).data
@@ -3862,12 +3858,12 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
             titleTextCenterDeltaPx,
           },
     conversationKey: mountedItem ? getConversationKey(mountedItem) : undefined,
-    activeItemId: parsePositiveInt(mountedItem?.id),
+    activeItemId: positiveIntOrUndefined(mountedItem?.id),
     rawContextItemId:
-      parsePositiveInt(rawItem?.id) ||
-      parsePositiveInt(panelRoot?.dataset.rawContextItemId),
-    basePaperItemId: parsePositiveInt(panelRoot?.dataset.basePaperItemId),
-    contextItemId: parsePositiveInt(panelRoot?.dataset.contextItemId),
+      positiveIntOrUndefined(rawItem?.id) ||
+      positiveIntOrUndefined(panelRoot?.dataset.rawContextItemId),
+    basePaperItemId: positiveIntOrUndefined(panelRoot?.dataset.basePaperItemId),
+    contextItemId: positiveIntOrUndefined(panelRoot?.dataset.contextItemId),
     conversationKind: panelRoot?.dataset.conversationKind || undefined,
     runtimeMode: panelRoot?.dataset.runtimeMode || undefined,
     conversationSystem: panelRoot?.dataset.conversationSystem || undefined,
@@ -5787,15 +5783,17 @@ async function getDiagnostics(
       : null;
   return {
     panelId,
-    activeItemId: parsePositiveInt(mountedItem?.id),
+    activeItemId: positiveIntOrUndefined(mountedItem?.id),
     conversationKey: mountedItem ? getConversationKey(mountedItem) : undefined,
-    panelConversationKey: parsePositiveInt(panelRoot?.dataset.itemId),
+    panelConversationKey: positiveIntOrUndefined(panelRoot?.dataset.itemId),
     conversationKind: panelRoot?.dataset.conversationKind || undefined,
     runtimeMode: panelRoot?.dataset.runtimeMode || undefined,
     conversationSystem: panelRoot?.dataset.conversationSystem || undefined,
-    noteId: parsePositiveInt(panelRoot?.dataset.noteId),
+    noteId: positiveIntOrUndefined(panelRoot?.dataset.noteId),
     noteKind: panelRoot?.dataset.noteKind || undefined,
-    noteParentItemId: parsePositiveInt(panelRoot?.dataset.noteParentItemId),
+    noteParentItemId: positiveIntOrUndefined(
+      panelRoot?.dataset.noteParentItemId,
+    ),
     contextSnapshot: panel?.contextSnapshot,
     chipText: Array.from(
       body?.querySelectorAll(

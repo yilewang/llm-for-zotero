@@ -1,4 +1,5 @@
 import type { AgentToolPresentation } from "../../../agent/types";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * How the tools Claude Code and Codex run themselves present in the trace.
@@ -11,12 +12,6 @@ import type { AgentToolPresentation } from "../../../agent/types";
  * looked up only when the registry knows no tool of that name, so a
  * registered tool always speaks for itself.
  */
-
-function readArgs(args: unknown): Record<string, unknown> {
-  return args && typeof args === "object" && !Array.isArray(args)
-    ? (args as Record<string, unknown>)
-    : {};
-}
 
 function readText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
@@ -52,7 +47,7 @@ function presentation(
   extra: Partial<AgentToolPresentation> = {},
 ): AgentToolPresentation {
   const words = ({ args }: { args?: unknown }): string | null =>
-    build(readArgs(args)) || null;
+    build(recordOrEmpty(args)) || null;
   return {
     summaries: { onCall: words },
     buildTraceSummary: words,
@@ -82,7 +77,7 @@ const CLAUDE_CODE_TOOL_PRESENTATIONS: Readonly<
       (readText(args.command) ? `Ran ${shorten(readText(args.command))}` : ""),
     {
       buildTraceCodeBlock: ({ args }) => {
-        const command = readArgs(args).command;
+        const command = recordOrEmpty(args).command;
         return typeof command === "string" && command.trim()
           ? { code: command }
           : null;

@@ -10,6 +10,7 @@ import type {
   PaperSearchGroupCandidate,
   PaperSearchTagCandidate,
 } from "../../services/libraryIndexDtos";
+import { trimmedStringOrNull } from "../../core/values";
 export type {
   PaperBrowseCollectionCandidate,
   PaperSearchAttachmentCandidate,
@@ -114,11 +115,6 @@ function compareByAddedNewestFirst(
   const modifiedDelta = b.modifiedAt - a.modifiedAt;
   if (modifiedDelta !== 0) return modifiedDelta;
   return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
-}
-
-function normalizePaperSearchTagName(value: unknown): string | null {
-  const name = typeof value === "string" ? value.trim() : "";
-  return name ? name : null;
 }
 
 function resolveLibraryDisplayName(libraryID: number): string {
@@ -823,7 +819,7 @@ export async function searchTagCandidates(
     rawName: string,
     isAutomatic: boolean,
   ): void => {
-    const name = normalizePaperSearchTagName(rawName);
+    const name = trimmedStringOrNull(rawName);
     if (!name) return;
     const normalizedName = normalizePaperSearchText(name);
     if (!normalizedName) return;

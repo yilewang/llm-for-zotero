@@ -17,6 +17,7 @@ import type {
 } from "../../../webAccess/types";
 import { collectRunWebSources, webSourceKey } from "../webSourcesData";
 import { quoteAroundOffset } from "../../../services/quotes/answerSentence";
+import { recordOrNull, trimmedString } from "../../../core/values";
 
 export { quoteAroundOffset };
 
@@ -119,16 +120,6 @@ export function outsideSourceKey(source: {
 }): string {
   if (source.kind === "paper" && source.sourceId) return source.sourceId;
   return `web:${webSourceKey(source.url)}`;
-}
-
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function readText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
 }
 
 function oneLine(text: string, max: number): string {
@@ -332,42 +323,45 @@ function paperSources(
   };
   for (const { payload } of events) {
     if (payload.type !== "tool_result" || !payload.ok) continue;
-    const content = asObject(payload.content);
+    const content = recordOrNull(payload.content);
     if (!content) continue;
     if (
       payload.name === "literature_search" &&
       Array.isArray(content.results)
     ) {
       for (const entry of content.results) {
-        const raw = asObject(entry);
+        const raw = recordOrNull(entry);
         if (!raw) continue;
         add(describePaperSource(raw), {
-          snippet: readText(raw.abstract) || readText(raw.snippet),
+          snippet: trimmedString(raw.abstract) || trimmedString(raw.snippet),
         });
       }
     } else if (payload.name === "literature_read") {
-      const paper = asObject(content.paper);
+      const paper = recordOrNull(content.paper);
       if (!paper) continue;
-      const fullText = asObject(content.fullText);
+      const fullText = recordOrNull(content.fullText);
       const reads: TaskOutsideRead[] = [];
-      const abstract = readText(content.abstract);
+      const abstract = trimmedString(content.abstract);
       if (abstract)
         reads.push({ label: "Abstract", text: oneLine(abstract, 600) });
       if (Array.isArray(content.passages)) {
         for (const entry of content.passages) {
-          const passage = asObject(entry);
-          const text = readText(passage?.text);
+          const passage = recordOrNull(entry);
+          const text = trimmedString(passage?.text);
           if (text)
             reads.push({
-              label: readText(passage?.section) || "Passage",
+              label: trimmedString(passage?.section) || "Passage",
               text: oneLine(text, 600),
             });
         }
       }
-      const section = asObject(content.section);
-      const sectionText = readText(content.text);
+      const section = recordOrNull(content.section);
+      const sectionText = trimmedString(content.text);
       if (sectionText) {
-        const label = [readText(section?.number), readText(section?.title)]
+        const label = [
+          trimmedString(section?.number),
+          trimmedString(section?.title),
+        ]
           .filter(Boolean)
           .join(" ");
         reads.push({

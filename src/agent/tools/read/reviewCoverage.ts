@@ -24,6 +24,7 @@ import {
   defaultPastConversationSource,
 } from "../../../services/pastConversations/pastConversationLoader";
 import { listAgentRunEventsForRuns } from "../../store/traceStore";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * review_coverage: this conversation's reads and decisions so far, as one
@@ -186,12 +187,6 @@ async function executeReviewCoverage(
   }
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 export function createReviewCoverageTool(
   source: ReviewCoverageSource = defaultReviewCoverageSource,
 ): AgentToolDefinition<ReviewCoverageInput, ReviewCoverageResult> {
@@ -241,9 +236,9 @@ export function createReviewCoverageTool(
       summaries: {
         onCall: "Reviewing coverage",
         onSuccess: ({ content }) => {
-          const result = record(content);
+          const result = recordOrEmpty(content);
           if (result.ok !== true) return "Could not review coverage";
-          const total = Number(record(result.counts).total) || 0;
+          const total = Number(recordOrEmpty(result.counts).total) || 0;
           return total === 1
             ? "Coverage so far: 1 paper"
             : `Coverage so far: ${total} papers`;

@@ -30,6 +30,7 @@ import {
   type StoredUsageEvent,
   type UsageTokenSource,
 } from "./usageStore";
+import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
 
 /** Catalog tables a library conversation's title can live in. */
 const CONVERSATION_CATALOG_TABLES = [
@@ -216,17 +217,6 @@ async function readRows(sql: string, params: unknown[] = []): Promise<Row[]> {
   }
 }
 
-function toCount(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
-function toText(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 /** Local calendar day `offset` days before the day `timestamp` falls in. */
 function localDayKey(timestamp: number, offset: number): string {
   const date = new Date(timestamp);
@@ -337,12 +327,12 @@ export async function loadUsageModeTotals(
     const mode = row.mode === "paper" ? "paper" : "library";
     totals[mode] = {
       mode,
-      questions: toCount(row.questions),
-      promptTokens: toCount(row.promptTokens),
-      completionTokens: toCount(row.completionTokens),
-      totalTokens: toCount(row.totalTokens),
-      distinctPapers: toCount(row.distinctPapers),
-      distinctConversations: toCount(row.distinctConversations),
+      questions: positiveIntOrZero(row.questions),
+      promptTokens: positiveIntOrZero(row.promptTokens),
+      completionTokens: positiveIntOrZero(row.completionTokens),
+      totalTokens: positiveIntOrZero(row.totalTokens),
+      distinctPapers: positiveIntOrZero(row.distinctPapers),
+      distinctConversations: positiveIntOrZero(row.distinctConversations),
     };
   }
   return totals;
@@ -369,13 +359,13 @@ export async function loadUsageDailyTokens(
   );
   const byDate = new Map<string, Row>();
   for (const row of rows) {
-    const key = toText(row.localDate);
+    const key = trimmedStringOrNull(row.localDate);
     if (key) byDate.set(key, row);
   }
   return keys.map((localDate) => {
     const row = byDate.get(localDate);
-    const paperTokens = toCount(row?.paperTokens);
-    const libraryTokens = toCount(row?.libraryTokens);
+    const paperTokens = positiveIntOrZero(row?.paperTokens);
+    const libraryTokens = positiveIntOrZero(row?.libraryTokens);
     return {
       localDate,
       paperTokens,
@@ -429,7 +419,7 @@ export async function loadUsageHeatmap(
   );
   const byDate = new Map<string, Row>();
   for (const row of dayRows) {
-    const key = toText(row.localDate);
+    const key = trimmedStringOrNull(row.localDate);
     if (key) byDate.set(key, row);
   }
   const summary = summaryRows[0];
@@ -440,17 +430,17 @@ export async function loadUsageHeatmap(
       const row = byDate.get(localDate);
       return {
         localDate,
-        questions: toCount(row?.questions),
-        distinctPapers: toCount(row?.distinctPapers),
-        totalTokens: toCount(row?.totalTokens),
-        providerRows: toCount(row?.providerRows),
-        unreportedRows: toCount(row?.unreportedRows),
-        estimateRows: toCount(row?.estimateRows),
+        questions: positiveIntOrZero(row?.questions),
+        distinctPapers: positiveIntOrZero(row?.distinctPapers),
+        totalTokens: positiveIntOrZero(row?.totalTokens),
+        providerRows: positiveIntOrZero(row?.providerRows),
+        unreportedRows: positiveIntOrZero(row?.unreportedRows),
+        estimateRows: positiveIntOrZero(row?.estimateRows),
       };
     }),
-    totalQuestions: toCount(summary?.totalQuestions),
-    activeDays: toCount(summary?.activeDays),
-    distinctPapers: toCount(summary?.distinctPapers),
+    totalQuestions: positiveIntOrZero(summary?.totalQuestions),
+    activeDays: positiveIntOrZero(summary?.activeDays),
+    distinctPapers: positiveIntOrZero(summary?.distinctPapers),
   };
 }
 
@@ -493,9 +483,9 @@ export async function loadUsageModelBreakdown(
   const byModel = new Map<string, UsageModelUsage>();
   const runtimesByModel = new Map<string, Set<string>>();
   for (const row of rows) {
-    const model = toText(row.model);
-    const provider = toText(row.provider);
-    const runtime = toText(row.runtime);
+    const model = trimmedStringOrNull(row.model);
+    const provider = trimmedStringOrNull(row.provider);
+    const runtime = trimmedStringOrNull(row.runtime);
     const key = `${model ?? ""}${MODEL_KEY_SEPARATOR}${provider ?? ""}`;
     let entry = byModel.get(key);
     if (!entry) {
@@ -516,11 +506,11 @@ export async function loadUsageModelBreakdown(
       byModel.set(key, entry);
       runtimesByModel.set(key, new Set<string>());
     }
-    const questions = toCount(row.questions);
-    const promptTokens = toCount(row.promptTokens);
-    const completionTokens = toCount(row.completionTokens);
-    const totalTokens = toCount(row.totalTokens);
-    const cacheReadTokens = toCount(row.cacheReadTokens);
+    const questions = positiveIntOrZero(row.questions);
+    const promptTokens = positiveIntOrZero(row.promptTokens);
+    const completionTokens = positiveIntOrZero(row.completionTokens);
+    const totalTokens = positiveIntOrZero(row.totalTokens);
+    const cacheReadTokens = positiveIntOrZero(row.cacheReadTokens);
     if (row.mode === "paper") entry.paperQuestions += questions;
     else entry.libraryQuestions += questions;
     entry.questions += questions;
@@ -528,8 +518,8 @@ export async function loadUsageModelBreakdown(
     entry.completionTokens += completionTokens;
     entry.totalTokens += totalTokens;
     entry.cacheReadTokens += cacheReadTokens;
-    entry.unreportedTurns += toCount(row.unreportedTurns);
-    entry.estimatedTurns += toCount(row.estimatedTurns);
+    entry.unreportedTurns += positiveIntOrZero(row.unreportedTurns);
+    entry.estimatedTurns += positiveIntOrZero(row.estimatedTurns);
     if (runtime) runtimesByModel.get(key)!.add(runtime);
   }
   for (const [key, entry] of byModel) {
@@ -607,9 +597,9 @@ export async function loadTopUsagePapers(
   );
   const ranked = rows
     .map((row) => ({
-      paperItemID: toCount(row.paperItemID),
-      questions: toCount(row.questions),
-      totalTokens: toCount(row.totalTokens),
+      paperItemID: positiveIntOrZero(row.paperItemID),
+      questions: positiveIntOrZero(row.questions),
+      totalTokens: positiveIntOrZero(row.totalTokens),
     }))
     .filter((row) => row.paperItemID > 0);
   const metadata = new Map<number, PaperDisplayMetadata | null>(
@@ -655,8 +645,8 @@ async function loadConversationTitles(
       [...conversationKeys],
     );
     for (const row of rows) {
-      const key = toCount(row.conversationKey);
-      const title = toText(row.title);
+      const key = positiveIntOrZero(row.conversationKey);
+      const title = trimmedStringOrNull(row.title);
       if (key && title && !titles.has(key)) titles.set(key, title);
     }
   }
@@ -687,9 +677,9 @@ export async function loadHeaviestUsageConversations(
   );
   const ranked = rows
     .map((row) => ({
-      conversationKey: toCount(row.conversationKey),
-      questions: toCount(row.questions),
-      totalTokens: toCount(row.totalTokens),
+      conversationKey: positiveIntOrZero(row.conversationKey),
+      questions: positiveIntOrZero(row.questions),
+      totalTokens: positiveIntOrZero(row.totalTokens),
     }))
     .filter((row) => row.conversationKey > 0);
   const titles = await loadConversationTitles(
@@ -726,9 +716,9 @@ export async function loadUsageHistoryBounds(): Promise<UsageHistoryBounds> {
   );
   const row = rows[0];
   return {
-    firstDate: toText(row?.firstDate),
-    lastDate: toText(row?.lastDate),
-    events: toCount(row?.events),
+    firstDate: trimmedStringOrNull(row?.firstDate),
+    lastDate: trimmedStringOrNull(row?.lastDate),
+    events: positiveIntOrZero(row?.events),
   };
 }
 
@@ -774,25 +764,25 @@ export async function loadUsageEventsForExport(
     params,
   );
   return rows.map((row) => ({
-    id: toCount(row.id),
+    id: positiveIntOrZero(row.id),
     timestamp: Math.floor(Number(row.timestamp)) || 0,
-    localDate: toText(row.localDate) || "",
+    localDate: trimmedStringOrNull(row.localDate) || "",
     mode: row.mode === "paper" ? "paper" : "library",
-    conversationKey: toCount(row.conversationKey),
-    conversationInstanceID: toText(row.conversationInstanceID),
+    conversationKey: positiveIntOrZero(row.conversationKey),
+    conversationInstanceID: trimmedStringOrNull(row.conversationInstanceID),
     libraryID: toOptionalId(row.libraryID),
     paperItemID: toOptionalId(row.paperItemID),
-    model: toText(row.model),
-    provider: toText(row.provider),
-    runtime: toText(row.runtime),
-    promptTokens: toCount(row.promptTokens),
-    completionTokens: toCount(row.completionTokens),
-    totalTokens: toCount(row.totalTokens),
-    cacheReadTokens: toCount(row.cacheReadTokens),
-    cacheWriteTokens: toCount(row.cacheWriteTokens),
+    model: trimmedStringOrNull(row.model),
+    provider: trimmedStringOrNull(row.provider),
+    runtime: trimmedStringOrNull(row.runtime),
+    promptTokens: positiveIntOrZero(row.promptTokens),
+    completionTokens: positiveIntOrZero(row.completionTokens),
+    totalTokens: positiveIntOrZero(row.totalTokens),
+    cacheReadTokens: positiveIntOrZero(row.cacheReadTokens),
+    cacheWriteTokens: positiveIntOrZero(row.cacheWriteTokens),
     countsAsQuestion: Number(row.countsAsQuestion) !== 0,
     tokenSource:
-      (toText(row.tokenSource) as UsageTokenSource | null) ??
+      (trimmedStringOrNull(row.tokenSource) as UsageTokenSource | null) ??
       DEFAULT_USAGE_TOKEN_SOURCE,
   }));
 }

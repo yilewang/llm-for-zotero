@@ -7,24 +7,15 @@ import {
   isRuntimeConversationSystem,
   type RuntimeConversationSystem,
 } from "../../core/conversations/conversationSystems";
+import { positiveIntOrNull, trimmedString } from "../../core/values";
 
 export type NoteEditingScope = ActiveNoteSession;
-
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
-function normalizeTitle(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
 
 function resolveActiveTabTitleForNote(
   item: Zotero.Item | null | undefined,
 ): string {
   item = getNoteConversation(item)?.note || item;
-  const noteId = normalizePositiveInt(item?.id);
+  const noteId = positiveIntOrNull(item?.id);
   if (!noteId) return "";
   const tabsCandidates = [
     (Zotero as unknown as { Tabs?: unknown }).Tabs,
@@ -53,7 +44,7 @@ function resolveActiveTabTitleForNote(
       : null;
     if (!activeTab) continue;
     const data = (activeTab.data || {}) as Record<string, unknown>;
-    const candidateItemId = normalizePositiveInt(
+    const candidateItemId = positiveIntOrNull(
       data.itemID || data.itemId || data.id,
     );
     if (candidateItemId && candidateItemId !== noteId) continue;
@@ -68,7 +59,7 @@ function resolveActiveTabTitleForNote(
       data.itemTitle,
     ];
     for (const raw of titleCandidates) {
-      const title = normalizeTitle(raw);
+      const title = trimmedString(raw);
       if (title) return title;
     }
   }
@@ -80,7 +71,7 @@ export function resolveNoteEditingParentItem(
 ): Zotero.Item | null {
   item = getNoteConversation(item)?.note || item;
   if (!(item as any)?.isNote?.()) return null;
-  const parentID = normalizePositiveInt(item?.parentID);
+  const parentID = positiveIntOrNull(item?.parentID);
   if (!parentID) return null;
   const parentItem = Zotero.Items.get(parentID) || null;
   return parentItem?.isRegularItem?.() ? parentItem : null;
@@ -108,10 +99,10 @@ export function resolveOpenedNotePaper(
  * of its notes. Anything else is its own family.
  */
 export function resolveChatFamilyItemID(itemID: unknown): number {
-  const id = normalizePositiveInt(itemID);
+  const id = positiveIntOrNull(itemID);
   if (!id) return 0;
   const item = Zotero.Items.get(id) || null;
-  return normalizePositiveInt(resolveNoteEditingParentItem(item)?.id) || id;
+  return positiveIntOrNull(resolveNoteEditingParentItem(item)?.id) || id;
 }
 
 /** The family's own item first, then the notes of a regular item. */
@@ -133,19 +124,19 @@ export function resolveNoteEditingTitle(
   const activeTabTitle = resolveActiveTabTitleForNote(item);
   if (activeTabTitle) return activeTabTitle;
   try {
-    const raw = normalizeTitle((item as any).getDisplayTitle?.());
+    const raw = trimmedString((item as any).getDisplayTitle?.());
     if (raw) return raw;
   } catch (_err) {
     void _err;
   }
   try {
-    const raw = normalizeTitle((item as any).getField?.("title"));
+    const raw = trimmedString((item as any).getField?.("title"));
     if (raw) return raw;
   } catch (_err) {
     void _err;
   }
   try {
-    const raw = normalizeTitle((item as any).getNoteTitle?.());
+    const raw = trimmedString((item as any).getNoteTitle?.());
     if (raw) return raw;
   } catch (_err) {
     void _err;
@@ -158,8 +149,8 @@ export function resolveNoteEditingScope(
 ): NoteEditingScope | null {
   item = getNoteConversation(item)?.note || item;
   if (!(item as any)?.isNote?.()) return null;
-  const noteId = normalizePositiveInt(item?.id);
-  const libraryID = normalizePositiveInt(item?.libraryID);
+  const noteId = positiveIntOrNull(item?.id);
+  const libraryID = positiveIntOrNull(item?.libraryID);
   if (!noteId || !libraryID) return null;
   const parentItem = resolveNoteEditingParentItem(item);
   const title = resolveNoteEditingTitle(item);

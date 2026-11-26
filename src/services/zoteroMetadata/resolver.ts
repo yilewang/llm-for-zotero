@@ -15,6 +15,7 @@ import type {
   ZoteroMetadataResolver,
   ZoteroSemanticValue,
 } from "./types";
+import { positiveIntOrUndefined } from "../../core/values";
 
 type ZoteroItemFieldsApi = {
   getID?: (fieldName: string) => number | false;
@@ -43,12 +44,6 @@ const SYSTEM_FIELD_NAMES = new Set([
 
 function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-}
-
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
 }
 
 function getItemFieldsApi(): ZoteroItemFieldsApi | undefined {
@@ -249,7 +244,7 @@ function readAttachment(item: Zotero.Item): ResolvedAttachmentMetadata {
     normalizeText(attachment.attachmentFilename) ||
     normalizeText(attachment.getFilename?.());
   const contentType = normalizeText(attachment.attachmentContentType);
-  const parentItemId = normalizePositiveInt(item.parentID);
+  const parentItemId = positiveIntOrUndefined(item.parentID);
   return {
     identity: getIdentity(item),
     ...(parentItemId ? { parentItemId } : {}),
@@ -302,7 +297,7 @@ function readSystemMetadata(item: Zotero.Item): ResolvedZoteroSystemMetadata {
     normalizeText(
       (item as Zotero.Item & { dateModified?: unknown }).dateModified,
     );
-  const version = normalizePositiveInt(
+  const version = positiveIntOrUndefined(
     (item as Zotero.Item & { version?: unknown }).version,
   );
   return {
@@ -353,7 +348,7 @@ function readItemMetadata(
   }
 
   if ((item as Zotero.Item & { isNote?: () => boolean }).isNote?.()) {
-    const parentItemId = normalizePositiveInt(item.parentID);
+    const parentItemId = positiveIntOrUndefined(item.parentID);
     const noteTitle = normalizeText(
       (item as Zotero.Item & { getNoteTitle?: () => string }).getNoteTitle?.(),
     );
@@ -384,7 +379,7 @@ export function createZoteroMetadataResolver(
   const itemCache = new Map<number, Zotero.Item | null>();
 
   const getItem = (itemId: number): Zotero.Item | null => {
-    const normalizedItemId = normalizePositiveInt(itemId);
+    const normalizedItemId = positiveIntOrUndefined(itemId);
     if (!normalizedItemId) return null;
     if (itemCache.has(normalizedItemId)) {
       return itemCache.get(normalizedItemId) || null;
@@ -414,7 +409,7 @@ export function createZoteroMetadataResolver(
       includeSystemMetadata?: boolean;
     },
   ): ResolvedItemMetadataResolution => {
-    const normalizedItemId = normalizePositiveInt(itemId);
+    const normalizedItemId = positiveIntOrUndefined(itemId);
     if (!normalizedItemId) {
       return {
         status: "unavailable",
@@ -436,7 +431,7 @@ export function createZoteroMetadataResolver(
   const resolvePaperMetadata = (
     ref: PaperContextRef,
   ): ResolvedPaperMetadataResolution => {
-    const itemId = normalizePositiveInt(ref.itemId);
+    const itemId = positiveIntOrUndefined(ref.itemId);
     if (!itemId) {
       return {
         status: "unavailable",
@@ -475,7 +470,7 @@ export function createZoteroMetadataResolver(
     }
 
     const bibliographicItem = readBibliographicItem(primaryItem);
-    const contextItemId = normalizePositiveInt(ref.contextItemId);
+    const contextItemId = positiveIntOrUndefined(ref.contextItemId);
     if (!contextItemId || contextItemId === itemId) {
       return {
         status: "resolved",
@@ -498,7 +493,7 @@ export function createZoteroMetadataResolver(
     }
     if (
       !contentItem.isAttachment?.() ||
-      normalizePositiveInt(contentItem.parentID) !== itemId
+      positiveIntOrUndefined(contentItem.parentID) !== itemId
     ) {
       return {
         status: "resolved",

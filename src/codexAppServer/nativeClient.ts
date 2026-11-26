@@ -138,6 +138,7 @@ import {
 import { enqueueConversationCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import { settleExternalTurn } from "../agent/execution/externalTurnSettlement";
 import { isCodexNativeItemType } from "./nativeActivityStages";
+import { recordOrEmpty, trimmedString } from "../core/values";
 
 const CODEX_APP_SERVER_SERVICE_NAME = "llm_for_zotero";
 export const NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE =
@@ -287,20 +288,10 @@ const CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD =
   "item/autoApprovalReview/completed";
 const nativeHistoryVerificationState = new Map<string, number>();
 
-function normalizeNonEmptyString(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
 function createNativeClientAbortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
   return error;
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 function prettyJson(value: unknown): string {
@@ -316,7 +307,7 @@ function firstNonEmptyString(
   keys: ReadonlyArray<string>,
 ): string {
   for (const key of keys) {
-    const value = normalizeNonEmptyString(record[key]);
+    const value = trimmedString(record[key]);
     if (value) return value;
   }
   return "";
@@ -325,7 +316,7 @@ function firstNonEmptyString(
 function collectNestedRecords(value: unknown): Record<string, unknown>[] {
   const records: Record<string, unknown>[] = [];
   const visit = (entry: unknown): void => {
-    const record = normalizeRecord(entry);
+    const record = recordOrEmpty(entry);
     if (!Object.keys(record).length) return;
     records.push(record);
     for (const nested of Object.values(record)) {
@@ -356,9 +347,7 @@ function findCommandPreview(params: unknown): string {
   for (const record of collectNestedRecords(params)) {
     const argv = record.argv || record.args;
     if (Array.isArray(argv)) {
-      const pieces = argv
-        .map((entry) => normalizeNonEmptyString(entry))
-        .filter(Boolean);
+      const pieces = argv.map((entry) => trimmedString(entry)).filter(Boolean);
       if (pieces.length) return pieces.join(" ");
     }
   }
@@ -398,11 +387,11 @@ function buildCodexNativeApprovalSummary(
     return path ? `File change: ${path}` : "File-change approval";
   }
   if (request.method === "item/permissions/requestApproval") {
-    const permissions = normalizeRecord(
-      normalizeRecord(request.params).permissions,
+    const permissions = recordOrEmpty(
+      recordOrEmpty(request.params).permissions,
     );
-    const fileSystem = normalizeRecord(permissions.fileSystem);
-    const network = normalizeRecord(permissions.network);
+    const fileSystem = recordOrEmpty(permissions.fileSystem);
+    const network = recordOrEmpty(permissions.network);
     const pieces = [
       fileSystem.read ? "filesystem read" : "",
       fileSystem.write ? "filesystem write" : "",
@@ -440,7 +429,7 @@ const CODEX_APPROVAL_FILE_PATH_KEYS = [
 function collectCodexApprovalFilePaths(params: unknown): string[] {
   const paths: string[] = [];
   const add = (value: unknown): void => {
-    const path = normalizeNonEmptyString(value);
+    const path = trimmedString(value);
     if (path && !paths.includes(path)) paths.push(path);
   };
   for (const record of collectNestedRecords(params)) {
@@ -594,7 +583,7 @@ export type CodexNativeItemEvent = CodexAppServerItemEvent & {
  * smaller lie than one wrong row for two calls.
  */
 export function createCodexNativeMcpCallCorrelator(serverName?: string) {
-  const expectedServer = normalizeNonEmptyString(serverName);
+  const expectedServer = trimmedString(serverName);
   type OpenPair = { key: string; hasRequest: boolean; hasItem: boolean };
   const openPairsByTool = new Map<string, OpenPair[]>();
   // `null` records a side this turn refused to pair, so asking again answers
@@ -658,11 +647,11 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
       toolName?: string;
     }): string | undefined {
       if (!expectedServer) return undefined;
-      const requestId = normalizeNonEmptyString(event.requestId);
+      const requestId = trimmedString(event.requestId);
       if (requestId && keyByRequestId.has(requestId)) {
         return keyByRequestId.get(requestId) || undefined;
       }
-      const toolName = normalizeNonEmptyString(event.toolName);
+      const toolName = trimmedString(event.toolName);
       if (!toolName) return undefined;
       const key = claim(toolName, "request");
       if (requestId) keyByRequestId.set(requestId, key ?? null);
@@ -678,14 +667,14 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
     }): string | undefined {
       if (!expectedServer) return undefined;
       if (!isCodexNativeItemType(item, ["mcptool"])) return undefined;
-      if (normalizeNonEmptyString(item.serverName) !== expectedServer) {
+      if (trimmedString(item.serverName) !== expectedServer) {
         return undefined;
       }
-      const itemId = normalizeNonEmptyString(item.id);
+      const itemId = trimmedString(item.id);
       if (itemId && keyByItemId.has(itemId)) {
         return keyByItemId.get(itemId) || undefined;
       }
-      const toolName = normalizeNonEmptyString(item.toolName || item.name);
+      const toolName = trimmedString(item.toolName || item.name);
       if (!toolName) return undefined;
       const key = claim(toolName, "item");
       if (itemId) keyByItemId.set(itemId, key ?? null);
@@ -701,7 +690,7 @@ function codexNativeApprovalCallId(
   request: CodexNativeApprovalRequest,
 ): string {
   return (
-    firstNonEmptyString(normalizeRecord(request.params), [
+    firstNonEmptyString(recordOrEmpty(request.params), [
       "itemId",
       "approvalId",
       "callId",
@@ -712,7 +701,7 @@ function codexNativeApprovalCallId(
 
 /** Whether an app-server approval response granted the request. */
 function codexNativeApprovalResponseGranted(response: unknown): boolean {
-  const record = normalizeRecord(response);
+  const record = recordOrEmpty(response);
   return Boolean(
     record.approved ||
     record.decision === "accept" ||
@@ -732,7 +721,7 @@ export function isCodexNativeBuiltInApprovalRequest(
 export function buildCodexNativeApprovalPendingAction(
   request: CodexNativeApprovalRequest,
 ): AgentPendingAction {
-  const params = normalizeRecord(request.params);
+  const params = recordOrEmpty(request.params);
   const fields: AgentPendingField[] = [
     {
       type: "text",
@@ -824,14 +813,14 @@ export function readZoteroMcpToolApproval(
   request: CodexNativeApprovalRequest,
 ): ZoteroMcpToolApproval | null {
   if (request.method !== "mcpServer/elicitation/request") return null;
-  const params = normalizeRecord(request.params);
-  const meta = normalizeRecord(params._meta);
+  const params = recordOrEmpty(request.params);
+  const meta = recordOrEmpty(params._meta);
   if (meta.codex_approval_kind !== "mcp_tool_call") return null;
-  const serverName = normalizeNonEmptyString(params.serverName);
+  const serverName = trimmedString(params.serverName);
   // Only this turn's own Zotero server: another server that merely starts
   // with the plugin's name gets no card.
   if (!serverName || serverName !== request.zoteroMcpServerName) return null;
-  const message = normalizeNonEmptyString(params.message);
+  const message = trimmedString(params.message);
   return {
     serverName,
     toolName: /\brun tool "([^"]+)"/.exec(message)?.[1] || "",
@@ -903,8 +892,8 @@ function buildApprovedPermissionsResponse(params: unknown): {
   permissions: Record<string, unknown>;
   scope: "turn";
 } {
-  const requestParams = normalizeRecord(params);
-  const requestedPermissions = normalizeRecord(requestParams.permissions);
+  const requestParams = recordOrEmpty(params);
+  const requestedPermissions = recordOrEmpty(requestParams.permissions);
   const permissions: Record<string, unknown> = {};
   if (
     requestedPermissions.fileSystem &&
@@ -1011,11 +1000,11 @@ function collectNativeSkillMetadata(
     for (const entry of value) collectNativeSkillMetadata(entry, entries, seen);
     return entries;
   }
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   if (!Object.keys(record).length) return entries;
 
-  const name = normalizeNonEmptyString(record.name);
-  const path = normalizeNonEmptyString(record.path);
+  const name = trimmedString(record.name);
+  const path = trimmedString(record.path);
   if (name && path && record.enabled !== false) {
     const key = `${name}\n${path}`;
     if (!seen.has(key)) {
@@ -1301,14 +1290,14 @@ function getApprovalRequestTarget(params: unknown): string {
     "itemId",
     "approvalId",
   ]
-    .map((key) => normalizeNonEmptyString(record[key]))
+    .map((key) => trimmedString(record[key]))
     .filter(Boolean);
   if (direct.length) return direct.join("/");
   const questions = Array.isArray(record.questions) ? record.questions : [];
   const questionText = questions
     .map((entry) =>
       entry && typeof entry === "object"
-        ? normalizeNonEmptyString((entry as Record<string, unknown>).question)
+        ? trimmedString((entry as Record<string, unknown>).question)
         : "",
     )
     .filter(Boolean)
@@ -1324,9 +1313,9 @@ function chooseToolUserInputAnswer(question: unknown): string[] | null {
     .map((entry) => {
       if (!entry || typeof entry !== "object") return null;
       const option = entry as Record<string, unknown>;
-      const label = normalizeNonEmptyString(option.label);
-      const value = normalizeNonEmptyString(option.value);
-      const id = normalizeNonEmptyString(option.id);
+      const label = trimmedString(option.label);
+      const value = trimmedString(option.value);
+      const id = trimmedString(option.id);
       const answer = label || value || id;
       const searchable = [label, value, id].filter(Boolean).join(" ");
       return answer ? { answer, searchable } : null;
@@ -1366,7 +1355,7 @@ function buildToolRequestUserInputResponse(params: unknown): {
   for (const [index, question] of questions.entries()) {
     const id =
       question && typeof question === "object"
-        ? normalizeNonEmptyString((question as Record<string, unknown>).id)
+        ? trimmedString((question as Record<string, unknown>).id)
         : "";
     if (!id) return null;
     const questionAnswers = chooseToolUserInputAnswer(question);
@@ -1494,21 +1483,17 @@ function logCodexNativeApprovalDecision(params: {
 function buildGuardianAssessmentAction(
   action: Record<string, unknown>,
 ): unknown {
-  const type = normalizeNonEmptyString(action.type);
+  const type = trimmedString(action.type);
   if (type === "mcpToolCall" || type === "mcp_tool_call") {
     return {
       type: "mcp_tool_call",
-      server: normalizeNonEmptyString(action.server),
-      tool_name: normalizeNonEmptyString(action.toolName || action.tool_name),
+      server: trimmedString(action.server),
+      tool_name: trimmedString(action.toolName || action.tool_name),
       connector_id:
-        normalizeNonEmptyString(action.connectorId || action.connector_id) ||
-        null,
+        trimmedString(action.connectorId || action.connector_id) || null,
       connector_name:
-        normalizeNonEmptyString(
-          action.connectorName || action.connector_name,
-        ) || null,
-      tool_title:
-        normalizeNonEmptyString(action.toolTitle || action.tool_title) || null,
+        trimmedString(action.connectorName || action.connector_name) || null,
+      tool_title: trimmedString(action.toolTitle || action.tool_title) || null,
     };
   }
   return action;
@@ -1517,13 +1502,12 @@ function buildGuardianAssessmentAction(
 function buildGuardianAssessmentEvent(
   rawParams: unknown,
 ): Record<string, unknown> {
-  const params = normalizeRecord(rawParams);
-  const review = normalizeRecord(params.review);
-  const action = normalizeRecord(params.action);
+  const params = recordOrEmpty(rawParams);
+  const review = recordOrEmpty(params.review);
+  const action = recordOrEmpty(params.action);
   return {
     target_item_id:
-      normalizeNonEmptyString(params.targetItemId || params.target_item_id) ||
-      null,
+      trimmedString(params.targetItemId || params.target_item_id) || null,
     risk_level: review.riskLevel ?? review.risk_level ?? null,
     user_authorization:
       review.userAuthorization ?? review.user_authorization ?? null,
@@ -1534,11 +1518,11 @@ function buildGuardianAssessmentEvent(
 }
 
 function isDeniedTrustedZoteroMcpGuardianReview(rawParams: unknown): boolean {
-  const params = normalizeRecord(rawParams);
-  const review = normalizeRecord(params.review);
-  const action = normalizeRecord(params.action);
-  const status = normalizeNonEmptyString(review.status).toLowerCase();
-  const actionType = normalizeNonEmptyString(action.type);
+  const params = recordOrEmpty(rawParams);
+  const review = recordOrEmpty(params.review);
+  const action = recordOrEmpty(params.action);
+  const status = trimmedString(review.status).toLowerCase();
+  const actionType = trimmedString(action.type);
   if (status !== "denied") return false;
   if (actionType !== "mcpToolCall" && actionType !== "mcp_tool_call") {
     return false;
@@ -1558,7 +1542,7 @@ function registerNativeGuardianReviewHandlers(params: {
     (rawParams) => {
       // Another conversation's turn can share this process; its reviews are
       // not this turn's to override.
-      if (normalizeRecord(rawParams).threadId !== params.threadId) return;
+      if (recordOrEmpty(rawParams).threadId !== params.threadId) return;
       if (!isDeniedTrustedZoteroMcpGuardianReview(rawParams)) {
         appLogger.debug("Codex app-server native guardian review observed", {
           method: CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
@@ -2018,9 +2002,7 @@ async function loadStoredProviderSession(params: {
     const rawPermissionState =
       await params.hooks.loadProviderPermissionState?.();
     return {
-      threadId: normalizeNonEmptyString(
-        await params.hooks.loadProviderSessionId(),
-      ),
+      threadId: trimmedString(await params.hooks.loadProviderSessionId()),
       appliedPermissionState: rawPermissionState
         ? deserializeCodexPermissionState(rawPermissionState) || undefined
         : undefined,
@@ -2030,7 +2012,7 @@ async function loadStoredProviderSession(params: {
   }
   const summary = await getCodexConversationSummary(params.conversationKey);
   return {
-    threadId: normalizeNonEmptyString(summary?.providerSessionId),
+    threadId: trimmedString(summary?.providerSessionId),
     appliedPermissionState: summary?.providerPermissionState
       ? deserializeCodexPermissionState(summary.providerPermissionState) ||
         undefined
@@ -2112,8 +2094,8 @@ async function persistProviderSessionId(params: {
     ) {
       throw new Error("Conversation write generation changed");
     }
-    const expected = normalizeNonEmptyString(params.expectedProviderSessionId);
-    if (expected !== normalizeNonEmptyString(current.providerSessionId)) return;
+    const expected = trimmedString(params.expectedProviderSessionId);
+    if (expected !== trimmedString(current.providerSessionId)) return;
     await upsertCodexConversationSummary({
       conversationKey: params.scope.conversationKey,
       libraryID: params.scope.libraryID,
@@ -2278,16 +2260,14 @@ function readEffectiveCodexThreadSettings(
         ? (settings.active_permission_profile as Record<string, unknown>)
         : {};
   return {
-    threadId: normalizeNonEmptyString(
-      record.threadId || record.thread_id || thread.id,
-    ),
-    approvalPolicy: normalizeNonEmptyString(
+    threadId: trimmedString(record.threadId || record.thread_id || thread.id),
+    approvalPolicy: trimmedString(
       settings.approvalPolicy || settings.approval_policy,
     ),
-    approvalsReviewer: normalizeNonEmptyString(
+    approvalsReviewer: trimmedString(
       settings.approvalsReviewer || settings.approvals_reviewer,
     ),
-    permissionProfileId: normalizeNonEmptyString(activeProfile.id),
+    permissionProfileId: trimmedString(activeProfile.id),
   };
 }
 
@@ -2448,7 +2428,7 @@ async function resolveNativeThread(params: {
   const storedSession =
     params.storedThreadId !== undefined
       ? {
-          threadId: normalizeNonEmptyString(params.storedThreadId),
+          threadId: trimmedString(params.storedThreadId),
         }
       : await loadResumableProviderSession({
           conversationKey: params.scope.conversationKey,
@@ -2626,7 +2606,7 @@ async function setNativeThreadName(params: {
   threadId: string;
   name?: string;
 }): Promise<void> {
-  const name = normalizeNonEmptyString(params.name).slice(0, 120);
+  const name = trimmedString(params.name).slice(0, 120);
   if (!name) return;
   try {
     await params.proc.sendRequest("thread/name/set", {
@@ -2676,10 +2656,10 @@ function registerNativeApprovalRequestHandlers(params: {
 }): () => void {
   const acceptsRequest = params.getActiveThreadId
     ? (rawParams: unknown) => {
-        const record = normalizeRecord(rawParams);
+        const record = recordOrEmpty(rawParams);
         const requestThreadId =
-          normalizeNonEmptyString(record.threadId) ||
-          normalizeNonEmptyString(record.conversationId);
+          trimmedString(record.threadId) ||
+          trimmedString(record.conversationId);
         // A request that names no thread cannot be routed; the first turn
         // takes it, as before.
         if (!requestThreadId) return true;
@@ -2728,10 +2708,10 @@ function registerNativeApprovalRequestHandlers(params: {
           const identity = await params.getTurnIdentity?.();
           if (controller.signal.aborted) return { answers: {} };
           params.isTurnStillLive?.();
-          const record = normalizeRecord(rawParams);
+          const record = recordOrEmpty(rawParams);
           const requestThreadId =
-            normalizeNonEmptyString(record.threadId) ||
-            normalizeNonEmptyString(record.conversationId);
+            trimmedString(record.threadId) ||
+            trimmedString(record.conversationId);
           const isChildRequest =
             requestThreadId !== identity?.threadId &&
             params.childThreadIds?.has(requestThreadId);
@@ -2757,12 +2737,12 @@ function registerNativeApprovalRequestHandlers(params: {
           const interruptIdentity = isChildRequest
             ? {
                 threadId: requestThreadId,
-                turnId: normalizeNonEmptyString(record.turnId),
+                turnId: trimmedString(record.turnId),
               }
             : identity;
           if (
             questions &&
-            !Object.keys(normalizeRecord(normalizeRecord(response).answers))
+            !Object.keys(recordOrEmpty(recordOrEmpty(response).answers))
               .length &&
             interruptIdentity?.turnId
           ) {
@@ -3077,7 +3057,7 @@ async function verifyCodexAppServerThreadHistoryIfDue(params: {
   proc: CodexAppServerProcess;
   threadId: string;
 }): Promise<boolean | undefined> {
-  const threadId = normalizeNonEmptyString(params.threadId);
+  const threadId = trimmedString(params.threadId);
   if (!threadId) return undefined;
   const now = Date.now();
   const lastVerifiedAt = nativeHistoryVerificationState.get(threadId);
@@ -3309,7 +3289,7 @@ export async function runCodexAppServerNativeTurn(input: {
       });
       const mcpEnabled = isCodexZoteroMcpToolsEnabled();
       const profileSignature =
-        normalizeNonEmptyString(params.scope.profileSignature) ||
+        trimmedString(params.scope.profileSignature) ||
         getCodexProfileSignature();
       const latestUserText = params.executionRequest.userText;
       const summary = await getCodexConversationSummary(

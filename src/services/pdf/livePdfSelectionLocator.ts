@@ -31,6 +31,7 @@ import {
   stripPdfTextItemBoundaries,
   type QuoteTextIndex,
 } from "../quotes/quoteTextNormalization";
+import { positiveIntOrZero } from "../../core/values";
 
 type PdfReaderPageText = {
   pageIndex: number;
@@ -3118,11 +3119,6 @@ async function settleBeforeDeadline<T>(
   }
 }
 
-function parsePositiveInteger(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
 function getFindControllerMatchCount(findController: any): number {
   const candidates = [
     findController?.matchesCount?.total,
@@ -3130,7 +3126,7 @@ function getFindControllerMatchCount(findController: any): number {
     findController?._matchesCountTotal,
   ];
   for (const candidate of candidates) {
-    const parsed = parsePositiveInteger(candidate);
+    const parsed = positiveIntOrZero(candidate);
     if (parsed > 0) return parsed;
   }
   return 0;

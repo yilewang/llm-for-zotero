@@ -10,6 +10,7 @@ import {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
+import { positiveIntOrUndefined } from "../../core/values";
 
 type ZoteroDb = {
   queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
@@ -56,12 +57,6 @@ function logTranscriptStoreError(message: string, error: unknown): void {
   toolkit?.log?.(message, error);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function stableJson(value: unknown): string {
   return JSON.stringify(stabilizeForJson(value));
 }
@@ -80,7 +75,7 @@ function stabilizeForJson(value: unknown): unknown {
 }
 
 function segmentKey(conversationKey: number, compatibilityKey: string): string {
-  return `${normalizePositiveInt(conversationKey) || 0}:${compatibilityKey}`;
+  return `${positiveIntOrUndefined(conversationKey) || 0}:${compatibilityKey}`;
 }
 
 function normalizeMessage(value: unknown): AgentModelMessage | null {
@@ -272,7 +267,7 @@ async function hydrateTranscriptSegment(params: {
   conversationKey: number;
   compatibilityKey: string;
 }): Promise<void> {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey) return;
   const expectedGeneration = getConversationWriteGeneration(conversationKey);
   const key = segmentKey(conversationKey, params.compatibilityKey);
@@ -310,7 +305,7 @@ async function hydrateTranscriptSegment(params: {
     let compactedAt: number | undefined;
     for (const row of rows) {
       if (compactedAt === undefined) {
-        compactedAt = normalizePositiveInt(row.compactedAt);
+        compactedAt = positiveIntOrUndefined(row.compactedAt);
       }
       const raw = typeof row.messageJson === "string" ? row.messageJson : "";
       if (!raw) continue;
@@ -337,7 +332,7 @@ export async function loadAgentTranscriptSegment(params: {
   conversationKey: number;
   compatibilityKey: string;
 }): Promise<AgentTranscriptSegment> {
-  const conversationKey = normalizePositiveInt(params.conversationKey) || 0;
+  const conversationKey = positiveIntOrUndefined(params.conversationKey) || 0;
   const key = segmentKey(conversationKey, params.compatibilityKey);
   await hydrateTranscriptSegment({
     conversationKey,
@@ -355,7 +350,7 @@ export async function loadAgentTranscriptSegment(params: {
 export async function loadLatestAgentTranscriptSegment(
   conversationKeyValue: number,
 ): Promise<AgentTranscriptSegment | null> {
-  const conversationKey = normalizePositiveInt(conversationKeyValue);
+  const conversationKey = positiveIntOrUndefined(conversationKeyValue);
   if (!conversationKey) return null;
   const dbReady = await ensureAgentTranscriptStore();
   const db = getDb();
@@ -527,7 +522,7 @@ export async function clearAgentTranscript(
     transcriptByKey.clear();
     hydratedKeys.clear();
   } else {
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (conversationKey) {
       const prefix = `${conversationKey}:`;
       for (const key of Array.from(transcriptByKey.keys())) {
@@ -546,7 +541,7 @@ export async function clearAgentTranscript(
       await db.queryAsync(`DELETE FROM ${TRANSCRIPT_TABLE}`);
       return;
     }
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (!conversationKey) return;
     await db.queryAsync(
       `DELETE FROM ${TRANSCRIPT_TABLE} WHERE conversation_key = ?`,

@@ -21,6 +21,7 @@ import {
   loadPastConversation,
   type PastConversationSource,
 } from "../../../services/pastConversations/pastConversationLoader";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * past_chat_read: opens a past conversation the user attached somewhere in
@@ -320,12 +321,6 @@ async function executePastChatRead(
     : readMessages(loaded, { ...input, message: input.message });
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 export function createPastChatReadTool(
   source: PastConversationSource = defaultPastConversationSource,
 ): AgentToolDefinition<PastChatReadInput, unknown> {
@@ -386,7 +381,7 @@ export function createPastChatReadTool(
       summaries: {
         onCall: "Reading past chat",
         onSuccess: ({ content }) => {
-          const result = record(content);
+          const result = recordOrEmpty(content);
           if (result.ok !== true) return "Could not read past chat";
           const title = String(result.title || "");
           if (Array.isArray(result.matches)) {

@@ -44,6 +44,7 @@ import {
   resolveUsageScope,
   type UsageEventRuntime,
 } from "./usageStore";
+import { positiveIntOrZero } from "../core/values";
 
 export type UsageTurnIdentity = {
   conversationKey: number;
@@ -94,11 +95,6 @@ const EMPTY_TOTALS: UsageTurnTotals = {
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
 };
-
-function normalizeTokenCount(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
 
 function defaultIsWriteAllowed(identity: UsageTurnIdentity): boolean {
   // A temporary side chat records no usage.
@@ -175,11 +171,11 @@ export function createTurnUsageRecorder(
       // superseded conversation must not accumulate usage either.
       if (!isWriteAllowed(identity)) return;
       const sample: UsageTurnTotals = {
-        promptTokens: normalizeTokenCount(usage?.promptTokens),
-        completionTokens: normalizeTokenCount(usage?.completionTokens),
-        totalTokens: normalizeTokenCount(usage?.totalTokens),
-        cacheReadTokens: normalizeTokenCount(usage?.cacheReadTokens),
-        cacheWriteTokens: normalizeTokenCount(usage?.cacheWriteTokens),
+        promptTokens: positiveIntOrZero(usage?.promptTokens),
+        completionTokens: positiveIntOrZero(usage?.completionTokens),
+        totalTokens: positiveIntOrZero(usage?.totalTokens),
+        cacheReadTokens: positiveIntOrZero(usage?.cacheReadTokens),
+        cacheWriteTokens: positiveIntOrZero(usage?.cacheWriteTokens),
       };
       if (
         !sample.promptTokens &&

@@ -13,6 +13,7 @@ import { skillGuidance } from "../guidance";
 import { PAPER_DIGEST_HANDLE_TOOL } from "../../digests/digestJobHost";
 import { withoutDigestQuoteCitations } from "../../digests/paperDigestWorker";
 import { extractQuoteCitationsFromToolContent } from "../../../services/quotes/quoteCitations";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * context_read: exact stored context the prompt no longer carries in full.
@@ -178,19 +179,13 @@ function stableStringify(value: unknown): string {
   }
 }
 
-function contentRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function availablePaths(content: unknown): string[] {
-  const record = contentRecord(content);
+  const record = recordOrEmpty(content);
   return Object.keys(record).filter((key) => record[key] !== undefined);
 }
 
 function summarizeRoot(content: unknown): Record<string, unknown> {
-  const record = contentRecord(content);
+  const record = recordOrEmpty(content);
   const summary: Record<string, unknown> = {
     availablePaths: availablePaths(content),
   };
@@ -284,7 +279,7 @@ const DIGEST_RESULT_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 function isDigestResultRead(result: unknown): boolean {
-  const toolName = contentRecord(result).toolName;
+  const toolName = recordOrEmpty(result).toolName;
   return typeof toolName === "string" && DIGEST_RESULT_TOOL_NAMES.has(toolName);
 }
 
@@ -368,7 +363,7 @@ async function readToolResult(
       warnings: [...new Set([...warnings, ...stored])],
     };
   }
-  const root = contentRecord(content);
+  const root = recordOrEmpty(content);
   if (!Object.prototype.hasOwnProperty.call(root, input.path)) {
     return {
       ...base,

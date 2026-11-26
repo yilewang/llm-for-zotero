@@ -22,6 +22,7 @@ import {
   type ConversationKeyKind,
 } from "../shared/conversationKeySpace";
 import { getRegisteredConversationScope } from "../shared/conversationRegistry";
+import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
 
 export const USAGE_EVENTS_TABLE = "llm_for_zotero_usage_events";
 
@@ -226,17 +227,6 @@ function normalizePositiveInt(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function normalizeTokenCount(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
-function normalizeText(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 /**
  * The heatmap must line up with the user's own days, so the calendar day is
  * computed once, at write time, from the local clock. A UTC date would move a
@@ -381,17 +371,17 @@ export async function recordUsageEvent(
         toLocalDateKey(timestamp),
         mode,
         conversationKey,
-        normalizeText(input.conversationInstanceID),
+        trimmedStringOrNull(input.conversationInstanceID),
         normalizePositiveInt(input.libraryID),
         normalizePositiveInt(input.paperItemID),
-        normalizeText(input.model),
-        normalizeText(input.provider),
-        normalizeText(input.runtime),
-        normalizeTokenCount(input.promptTokens),
-        normalizeTokenCount(input.completionTokens),
-        normalizeTokenCount(input.totalTokens),
-        normalizeTokenCount(input.cacheReadTokens),
-        normalizeTokenCount(input.cacheWriteTokens),
+        trimmedStringOrNull(input.model),
+        trimmedStringOrNull(input.provider),
+        trimmedStringOrNull(input.runtime),
+        positiveIntOrZero(input.promptTokens),
+        positiveIntOrZero(input.completionTokens),
+        positiveIntOrZero(input.totalTokens),
+        positiveIntOrZero(input.cacheReadTokens),
+        positiveIntOrZero(input.cacheWriteTokens),
         input.countsAsQuestion === false ? 0 : 1,
         normalizeTokenSource(input.tokenSource),
       ],
@@ -425,7 +415,7 @@ export async function resolveUsageScope(conversationKey: number): Promise<{
     if (!scope) return fallback;
     return {
       mode: scope.kind === "paper" ? "paper" : fallback.mode,
-      conversationInstanceID: normalizeText(scope.instanceID),
+      conversationInstanceID: trimmedStringOrNull(scope.instanceID),
       libraryID: normalizePositiveInt(scope.libraryID),
       paperItemID: normalizePositiveInt(scope.paperItemID),
     };
@@ -515,17 +505,17 @@ export async function loadUsageEventsForConversation(
     localDate: String(row.localDate),
     mode: row.mode === "paper" ? "paper" : "library",
     conversationKey: Number(row.conversationKey),
-    conversationInstanceID: normalizeText(row.conversationInstanceID),
+    conversationInstanceID: trimmedStringOrNull(row.conversationInstanceID),
     libraryID: normalizePositiveInt(row.libraryID),
     paperItemID: normalizePositiveInt(row.paperItemID),
-    model: normalizeText(row.model),
-    provider: normalizeText(row.provider),
-    runtime: normalizeText(row.runtime),
-    promptTokens: normalizeTokenCount(row.promptTokens),
-    completionTokens: normalizeTokenCount(row.completionTokens),
-    totalTokens: normalizeTokenCount(row.totalTokens),
-    cacheReadTokens: normalizeTokenCount(row.cacheReadTokens),
-    cacheWriteTokens: normalizeTokenCount(row.cacheWriteTokens),
+    model: trimmedStringOrNull(row.model),
+    provider: trimmedStringOrNull(row.provider),
+    runtime: trimmedStringOrNull(row.runtime),
+    promptTokens: positiveIntOrZero(row.promptTokens),
+    completionTokens: positiveIntOrZero(row.completionTokens),
+    totalTokens: positiveIntOrZero(row.totalTokens),
+    cacheReadTokens: positiveIntOrZero(row.cacheReadTokens),
+    cacheWriteTokens: positiveIntOrZero(row.cacheWriteTokens),
     countsAsQuestion: Number(row.countsAsQuestion) !== 0,
     tokenSource: normalizeTokenSource(row.tokenSource),
   }));

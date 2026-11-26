@@ -23,6 +23,7 @@ import {
   type ResponseActionTarget,
 } from "../../state";
 import { openStandaloneResponseDocument } from "../../standaloneResponseDocumentWindow";
+import { positiveIntOrZero } from "../../../../core/values";
 
 export type ResponseMenuTarget = ResponseActionTarget | null;
 
@@ -129,20 +130,12 @@ function stopFloatingMenuPropagation(menu: HTMLDivElement): void {
   });
 }
 
-function parsePositiveFiniteNumber(value: unknown): number {
-  const parsed = Number(value || 0);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
 function normalizeResponseTurnReference(
   input: Partial<ResponseTurnReference> | null | undefined,
 ): ResponseTurnReference | null {
-  const conversationKey = parsePositiveFiniteNumber(input?.conversationKey);
-  const userTimestamp = parsePositiveFiniteNumber(input?.userTimestamp);
-  const assistantTimestamp = parsePositiveFiniteNumber(
-    input?.assistantTimestamp,
-  );
+  const conversationKey = positiveIntOrZero(input?.conversationKey);
+  const userTimestamp = positiveIntOrZero(input?.userTimestamp);
+  const assistantTimestamp = positiveIntOrZero(input?.assistantTimestamp);
   if (!conversationKey || !userTimestamp || !assistantTimestamp) return null;
   return { conversationKey, userTimestamp, assistantTimestamp };
 }
@@ -248,10 +241,8 @@ function buildResponseNoteSaveKey(
   target: NonNullable<ResponseMenuTarget>,
 ): string {
   const itemId = Number(target.item?.id || 0);
-  const conversationKey = parsePositiveFiniteNumber(target.conversationKey);
-  const assistantTimestamp = parsePositiveFiniteNumber(
-    target.assistantTimestamp,
-  );
+  const conversationKey = positiveIntOrZero(target.conversationKey);
+  const assistantTimestamp = positiveIntOrZero(target.assistantTimestamp);
   if (conversationKey && assistantTimestamp) {
     return `${itemId}:${conversationKey}:${assistantTimestamp}`;
   }
@@ -423,11 +414,9 @@ function normalizeTurnTarget(
   assistantTimestamp: number;
 } | null {
   if (!target?.item) return null;
-  const conversationKey = parsePositiveFiniteNumber(target.conversationKey);
-  const userTimestamp = parsePositiveFiniteNumber(target.userTimestamp);
-  const assistantTimestamp = parsePositiveFiniteNumber(
-    target.assistantTimestamp,
-  );
+  const conversationKey = positiveIntOrZero(target.conversationKey);
+  const userTimestamp = positiveIntOrZero(target.userTimestamp);
+  const assistantTimestamp = positiveIntOrZero(target.assistantTimestamp);
   if (!conversationKey || !userTimestamp || !assistantTimestamp) return null;
   return {
     item: target.item,
@@ -447,7 +436,7 @@ export async function runResponseMenuAction(
   ) => void,
 ): Promise<void> {
   const targetConversationKey = target?.conversationKey
-    ? parsePositiveFiniteNumber(target.conversationKey)
+    ? positiveIntOrZero(target.conversationKey)
     : undefined;
   const ownership = captureMenuActionOwnership(
     deps,

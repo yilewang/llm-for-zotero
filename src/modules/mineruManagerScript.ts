@@ -55,6 +55,7 @@ import {
   buildMineruFilenameMatcher,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
+import { lowerTrimmedString } from "../core/values";
 
 /** Show a confirm dialog with a custom title using ztoolkit.Dialog. */
 async function confirmDialog(message: string): Promise<boolean> {
@@ -146,17 +147,11 @@ export type MineruManagerSearchInput = Pick<
   "title" | "pdfTitle" | "firstCreator" | "year" | "dateAdded"
 >;
 
-function normalizeMineruManagerSearchText(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
 export function filterMineruItemsForSearch<T extends MineruManagerSearchInput>(
   items: readonly T[],
   query: string,
 ): T[] {
-  const tokens = normalizeMineruManagerSearchText(query)
-    .split(/\s+/)
-    .filter(Boolean);
+  const tokens = lowerTrimmedString(query).split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return [...items];
   return items.filter((item) => {
     const haystack = [
@@ -167,7 +162,7 @@ export function filterMineruItemsForSearch<T extends MineruManagerSearchInput>(
       item.dateAdded,
       fmtDate(item.dateAdded),
     ]
-      .map(normalizeMineruManagerSearchText)
+      .map(lowerTrimmedString)
       .join(" ");
     return tokens.every((token) => haystack.includes(token));
   });

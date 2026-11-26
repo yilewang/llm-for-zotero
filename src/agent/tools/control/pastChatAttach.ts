@@ -24,6 +24,7 @@ import {
   type PastConversationSource,
 } from "../../../services/pastConversations/pastConversationLoader";
 import { notifyPastChatAttached } from "../../../services/pastConversations/attachSink";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * past_chat_attach: adds a chat found by past_chat_search to the user's
@@ -222,12 +223,6 @@ async function executePastChatAttach(
   };
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 export function createPastChatAttachTool(
   source: PastConversationSource = defaultPastConversationSource,
 ): AgentToolDefinition<PastChatAttachInput, unknown> {
@@ -264,7 +259,7 @@ export function createPastChatAttachTool(
       summaries: {
         onCall: "Adding past chat",
         onSuccess: ({ content }) => {
-          const result = record(content);
+          const result = recordOrEmpty(content);
           const title = String(result.title || "");
           if (result.ok !== true) return "Could not add past chat";
           return result.alreadyAttached

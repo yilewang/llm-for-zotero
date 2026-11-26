@@ -116,6 +116,7 @@ import {
   normalizeAttachedConversationScope,
   pastConversationId,
 } from "../../services/pastConversations/pastConversationText";
+import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
 
 export const ZOTERO_MCP_SERVER_NAME = "llm_for_zotero";
 export const ZOTERO_MCP_ENDPOINT_PATH = "/llm-for-zotero/mcp";
@@ -757,12 +758,6 @@ export function buildZoteroMcpConfigValue(
   };
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function normalizeText(value: unknown, maxLength = 240): string | undefined {
   if (typeof value !== "string") return undefined;
   const withoutControlChars = Array.from(value, (char) => {
@@ -796,9 +791,9 @@ function normalizePaperContext(
   value: PaperContextRef | undefined,
 ): PaperContextRef | undefined {
   if (!value) return undefined;
-  const libraryID = normalizePositiveInt(value.libraryID);
-  const itemId = normalizePositiveInt(value.itemId);
-  const contextItemId = normalizePositiveInt(value.contextItemId);
+  const libraryID = positiveIntOrUndefined(value.libraryID);
+  const itemId = positiveIntOrUndefined(value.itemId);
+  const contextItemId = positiveIntOrUndefined(value.contextItemId);
   if (!itemId || !contextItemId) return undefined;
   return {
     ...(libraryID ? { libraryID } : {}),
@@ -838,8 +833,8 @@ function normalizeCollectionContexts(
   const out: CollectionContextRef[] = [];
   const seen = new Set<string>();
   for (const value of values) {
-    const collectionId = normalizePositiveInt(value?.collectionId);
-    const libraryID = normalizePositiveInt(value?.libraryID);
+    const collectionId = positiveIntOrUndefined(value?.collectionId);
+    const libraryID = positiveIntOrUndefined(value?.libraryID);
     const name = normalizeText(value?.name);
     if (!collectionId || !libraryID || !name) continue;
     const key = `${libraryID}:${collectionId}`;
@@ -863,7 +858,7 @@ function normalizeTagContexts(
   const out: TagContextRef[] = [];
   const seen = new Set<string>();
   for (const value of values) {
-    const libraryID = normalizePositiveInt(value?.libraryID);
+    const libraryID = positiveIntOrUndefined(value?.libraryID);
     const scope =
       value?.scope === "allTagged" || value?.scope === "untagged"
         ? value.scope
@@ -966,17 +961,17 @@ function normalizeActiveScope(
   const canonicalActivePaper = scope.turnPaperScope
     ? getActiveTurnPaper(scope.turnPaperScope)
     : undefined;
-  const conversationKey = normalizePositiveInt(scope.conversationKey);
+  const conversationKey = positiveIntOrUndefined(scope.conversationKey);
   const paperItemID =
-    normalizePositiveInt(scope.paperItemID) ||
+    positiveIntOrUndefined(scope.paperItemID) ||
     canonicalActivePaper?.itemId ||
     paperContext?.itemId;
   const activeContextItemId =
-    normalizePositiveInt(scope.activeContextItemId) ||
+    positiveIntOrUndefined(scope.activeContextItemId) ||
     canonicalActivePaper?.contextItemId ||
     paperContext?.contextItemId;
-  const metadataLibraryID = normalizePositiveInt(scope.libraryID);
-  const canonicalLibraryID = normalizePositiveInt(
+  const metadataLibraryID = positiveIntOrUndefined(scope.libraryID);
+  const canonicalLibraryID = positiveIntOrUndefined(
     scope.turnPaperScope?.libraryID,
   );
   if (
@@ -1018,12 +1013,14 @@ function normalizeActiveScope(
       (scope.kind === "paper" ? "paper" : "global"),
     paperItemID,
     activeItemId:
-      normalizePositiveInt(scope.activeItemId) || paperItemID || undefined,
+      positiveIntOrUndefined(scope.activeItemId) || paperItemID || undefined,
     activeContextItemId,
-    activeNoteId: normalizePositiveInt(scope.activeNoteId),
+    activeNoteId: positiveIntOrUndefined(scope.activeNoteId),
     activeNoteKind: normalizeNoteKind(scope.activeNoteKind),
     activeNoteTitle: normalizeText(scope.activeNoteTitle),
-    activeNoteParentItemId: normalizePositiveInt(scope.activeNoteParentItemId),
+    activeNoteParentItemId: positiveIntOrUndefined(
+      scope.activeNoteParentItemId,
+    ),
     libraryName: normalizeText(scope.libraryName),
     title: normalizeText(scope.title),
     userText: typeof scope.userText === "string" ? scope.userText : "",
@@ -1398,8 +1395,8 @@ function collectPaperIdentities(value: unknown): Array<{
   if (!value || typeof value !== "object") return [];
   if (Array.isArray(value)) return value.flatMap(collectPaperIdentities);
   const record = value as Record<string, unknown>;
-  const itemId = normalizePositiveInt(record.itemId ?? record.itemID);
-  const contextItemId = normalizePositiveInt(
+  const itemId = positiveIntOrUndefined(record.itemId ?? record.itemID);
+  const contextItemId = positiveIntOrUndefined(
     record.contextItemId ?? record.contextItemID,
   );
   const current = itemId || contextItemId ? [{ itemId, contextItemId }] : [];
@@ -1409,11 +1406,11 @@ function collectPaperIdentities(value: unknown): Array<{
 function collectLibraryRetrieveItemIdentities(
   value: unknown,
 ): Array<{ itemId: number }> {
-  const record = normalizeRecord(value);
-  const scope = normalizeRecord(record.scope);
+  const record = recordOrEmpty(value);
+  const scope = recordOrEmpty(record.scope);
   if (!Array.isArray(scope.itemIds)) return [];
   return scope.itemIds
-    .map((itemId) => normalizePositiveInt(itemId))
+    .map((itemId) => positiveIntOrUndefined(itemId))
     .filter((itemId): itemId is number => Boolean(itemId))
     .map((itemId) => ({ itemId }));
 }
@@ -1421,10 +1418,10 @@ function collectLibraryRetrieveItemIdentities(
 function collectLibraryReadItemIdentities(
   value: unknown,
 ): Array<{ itemId: number }> {
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   if (!Array.isArray(record.itemIds)) return [];
   return record.itemIds
-    .map((itemId) => normalizePositiveInt(itemId))
+    .map((itemId) => positiveIntOrUndefined(itemId))
     .filter((itemId): itemId is number => Boolean(itemId))
     .map((itemId) => ({ itemId }));
 }
@@ -1434,7 +1431,7 @@ function getAttachmentParentItemId(itemId: number): number | null {
     const item = Zotero?.Items?.get?.(itemId);
     if (!item || typeof item.isAttachment !== "function") return null;
     if (!item.isAttachment()) return null;
-    return normalizePositiveInt(item.parentID) || null;
+    return positiveIntOrUndefined(item.parentID) || null;
   } catch {
     return null;
   }
@@ -1445,7 +1442,7 @@ function identityUsesAttachmentUnderRawParent(
   rawParentItemIds: ReadonlySet<number>,
 ): boolean {
   return [identity.itemId, identity.contextItemId].some((value) => {
-    const itemId = normalizePositiveInt(value);
+    const itemId = positiveIntOrUndefined(value);
     if (!itemId) return false;
     const parentItemId = getAttachmentParentItemId(itemId);
     return Boolean(parentItemId && rawParentItemIds.has(parentItemId));
@@ -1462,8 +1459,8 @@ function shouldBlockRawPdfRetrieval(params: {
   if (!rawPdfs.length) return false;
   const isLibraryAttachmentEnumeration =
     params.toolName === "library_read" &&
-    Array.isArray(normalizeRecord(params.rawArgs).sections) &&
-    (normalizeRecord(params.rawArgs).sections as unknown[]).includes(
+    Array.isArray(recordOrEmpty(params.rawArgs).sections) &&
+    (recordOrEmpty(params.rawArgs).sections as unknown[]).includes(
       "attachments",
     );
   const identities: Array<{
@@ -1488,7 +1485,7 @@ function shouldBlockRawPdfRetrieval(params: {
     // same-parent attachment aliases before that canonicalization occurs.
     return identities.some((identity) => {
       const suppliedValues = [identity.itemId, identity.contextItemId]
-        .map(normalizePositiveInt)
+        .map(positiveIntOrUndefined)
         .filter((value): value is number => Boolean(value));
       return (
         suppliedValues.some((value) => rawContextItemIds.has(value)) ||
@@ -1520,8 +1517,8 @@ function shouldBlockRawPdfRetrieval(params: {
     explicitTextContexts.map((paper) => paper.itemId),
   );
   return identities.some((identity) => {
-    const itemId = normalizePositiveInt(identity.itemId);
-    const contextItemId = normalizePositiveInt(identity.contextItemId);
+    const itemId = positiveIntOrUndefined(identity.itemId);
+    const contextItemId = positiveIntOrUndefined(identity.contextItemId);
     if (!itemId && !contextItemId) return true;
 
     const suppliedValues = [itemId, contextItemId].filter(
@@ -1664,7 +1661,7 @@ function mcpScopeStoresToolResults(
   scope: ZoteroMcpActiveScope | null,
 ): boolean {
   return Boolean(
-    normalizePositiveInt(scope?.conversationKey) && scope?.runtimeAuthority,
+    positiveIntOrUndefined(scope?.conversationKey) && scope?.runtimeAuthority,
   );
 }
 
@@ -1719,8 +1716,8 @@ const PAPER_READ_NO_FULL_MODE_NOTE =
 /** paper_read's schema without the full mode, for such a scope. */
 function withoutFullPaperReadMode(schema: object): object {
   const record = schema as Record<string, unknown>;
-  const properties = normalizeRecord(record.properties);
-  const mode = normalizeRecord(properties.mode);
+  const properties = recordOrEmpty(record.properties);
+  const mode = recordOrEmpty(properties.mode);
   if (!Array.isArray(mode.enum)) return schema;
   return {
     ...record,
@@ -1784,12 +1781,6 @@ function handleToolsList(
   return { tools };
 }
 
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function hasJsonRpcId(request: JsonRpcRequest): boolean {
   return Object.prototype.hasOwnProperty.call(request, "id");
 }
@@ -1816,14 +1807,16 @@ function extractMcpScopeArgs(rawArgs: unknown): {
   activeItemId?: number;
   activeContextItemId?: number;
 } {
-  const args = normalizeRecord(rawArgs);
+  const args = recordOrEmpty(rawArgs);
   const toolArgs = { ...args };
   for (const key of MCP_SCOPE_ARG_NAMES) delete toolArgs[key];
   return {
     toolArgs,
-    libraryID: normalizePositiveInt(args.libraryID ?? args.libraryId),
-    activeItemId: normalizePositiveInt(args.activeItemId ?? args.activeItemID),
-    activeContextItemId: normalizePositiveInt(
+    libraryID: positiveIntOrUndefined(args.libraryID ?? args.libraryId),
+    activeItemId: positiveIntOrUndefined(
+      args.activeItemId ?? args.activeItemID,
+    ),
+    activeContextItemId: positiveIntOrUndefined(
       args.activeContextItemId ?? args.activeContextItemID,
     ),
   };
@@ -1843,8 +1836,8 @@ function resolveLibraryRetrieveScopeID(
   toolArgs: Record<string, unknown>,
 ): number | undefined {
   if (toolName !== "library_retrieve") return undefined;
-  const retrievalScope = normalizeRecord(toolArgs.scope);
-  return normalizePositiveInt(
+  const retrievalScope = recordOrEmpty(toolArgs.scope);
+  return positiveIntOrUndefined(
     retrievalScope.libraryID ?? retrievalScope.libraryId,
   );
 }
@@ -1874,7 +1867,7 @@ function resolveMcpCallScope(params: {
   // libraryID that differs from the scope's is refused (libraryMismatch)
   // instead of overriding it.
   const pinnedToScopeLibrary = LIBRARY_PINNED_TOOL_NAMES.has(params.toolName);
-  const scopeLibraryID = normalizePositiveInt(scope?.libraryID) || 0;
+  const scopeLibraryID = positiveIntOrUndefined(scope?.libraryID) || 0;
   const libraryMismatch =
     pinnedToScopeLibrary &&
     scopeArgs.libraryID &&
@@ -1938,12 +1931,12 @@ function decorateMcpToolSchema(inputSchema: object, toolName: string): object {
     return inputSchema;
   }
   const record = inputSchema as Record<string, unknown>;
-  const rawProperties = { ...normalizeRecord(record.properties) };
+  const rawProperties = { ...recordOrEmpty(record.properties) };
   const refused = MCP_REFUSED_TOOL_ARGUMENTS.get(toolName);
   if (refused?.value === undefined) {
     if (refused) delete rawProperties[refused.argument];
   } else {
-    const property = normalizeRecord(rawProperties[refused.argument]);
+    const property = recordOrEmpty(rawProperties[refused.argument]);
     if (Array.isArray(property.enum))
       rawProperties[refused.argument] = {
         ...property,
@@ -1987,8 +1980,10 @@ function resolveScopePaperContext(
   }
   const paperContext = normalizePaperContext(scope.paperContext);
   if (paperContext) return paperContext;
-  const itemId = normalizePositiveInt(scope.paperItemID || scope.activeItemId);
-  const contextItemId = normalizePositiveInt(scope.activeContextItemId);
+  const itemId = positiveIntOrUndefined(
+    scope.paperItemID || scope.activeItemId,
+  );
+  const contextItemId = positiveIntOrUndefined(scope.activeContextItemId);
   if (!itemId || !contextItemId) return undefined;
   return {
     itemId,
@@ -2000,7 +1995,7 @@ function resolveScopePaperContext(
 function resolveScopeActiveNoteContext(
   scope: ZoteroMcpActiveScope | null,
 ): AgentRuntimeRequest["activeNoteContext"] {
-  const noteId = normalizePositiveInt(scope?.activeNoteId);
+  const noteId = positiveIntOrUndefined(scope?.activeNoteId);
   if (!noteId) return undefined;
   const noteItem =
     (
@@ -2025,7 +2020,7 @@ function resolveScopeActiveNoteContext(
     noteId,
     title: normalizeText(scope?.activeNoteTitle) || `Note ${noteId}`,
     noteKind: normalizeNoteKind(scope?.activeNoteKind) || "standalone",
-    parentItemId: normalizePositiveInt(scope?.activeNoteParentItemId),
+    parentItemId: positiveIntOrUndefined(scope?.activeNoteParentItemId),
     noteText: "",
   };
 }
@@ -2991,7 +2986,7 @@ async function handleToolsCall(
     // A client that can page a stored result reads a sized view, as the
     // plugin Agent does; the whole result stays under a handle.
     const contextReadTool = deps.toolRegistry.getTool("context_read");
-    const storeConversationKey = normalizePositiveInt(scope?.conversationKey);
+    const storeConversationKey = positiveIntOrUndefined(scope?.conversationKey);
     const pagesResults = Boolean(
       storeConversationKey &&
       contextReadTool &&

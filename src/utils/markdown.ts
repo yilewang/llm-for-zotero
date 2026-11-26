@@ -39,6 +39,7 @@ import {
   previewSurfaceFor,
 } from "./previewTheme";
 import { isAbsoluteLocalPath, toFileUrl } from "./localPath";
+import { collapseWhitespace, escapeRegExp } from "../core/values";
 
 // =============================================================================
 // Types
@@ -452,14 +453,9 @@ function wrapCopyable(
 function countOccurrences(text: string, pattern: string | RegExp): number {
   const regex =
     typeof pattern === "string"
-      ? new RegExp(escapeRegex(pattern), "g")
+      ? new RegExp(escapeRegExp(pattern), "g")
       : pattern;
   return (text.match(regex) || []).length;
-}
-
-/** Escape special regex characters */
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeFenceLanguage(raw: string | undefined): string {
@@ -1518,10 +1514,6 @@ function hasExpectedTableCells(row: string, expectedCells: number): boolean {
   return readTableCells(row).length >= expectedCells;
 }
 
-function normalizeTableLine(line: string): string {
-  return line.trim().replace(/\s+/g, " ");
-}
-
 function collectTableBlock(
   lines: string[],
   startIndex: number,
@@ -1529,10 +1521,10 @@ function collectTableBlock(
   const dividerIndex = findTableDividerIndex(lines, startIndex);
   if (dividerIndex < 0) return null;
 
-  const header = normalizeTableLine(
+  const header = collapseWhitespace(
     lines.slice(startIndex, dividerIndex).join(" "),
   );
-  const divider = normalizeTableLine(lines[dividerIndex] || "");
+  const divider = collapseWhitespace(lines[dividerIndex] || "");
   const expectedCells = Math.max(
     readTableCells(header).length,
     readTableCells(divider).length,
@@ -1544,7 +1536,7 @@ function collectTableBlock(
   let i = dividerIndex + 1;
 
   while (i < lines.length) {
-    const trimmed = normalizeTableLine(lines[i] || "");
+    const trimmed = collapseWhitespace(lines[i] || "");
     if (!trimmed) break;
     if (
       !currentRow &&

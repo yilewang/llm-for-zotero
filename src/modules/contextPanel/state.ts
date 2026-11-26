@@ -36,6 +36,7 @@ import {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
+import { positiveIntOrZero } from "../../core/values";
 // =============================================================================
 // Module State
 // =============================================================================
@@ -154,15 +155,10 @@ function notifyRequestActivityChanged(
   for (const listener of requestActivityListeners) listener(conversationKey);
 }
 
-function normalizeConversationKey(value: unknown): number {
-  const key = Math.floor(Number(value || 0));
-  return Number.isFinite(key) && key > 0 ? key : 0;
-}
-
 export function markWebChatConversationForceNewChat(
   conversationKey: number,
 ): void {
-  const key = normalizeConversationKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return;
   webChatForceNewChatConversationKeys.add(key);
 }
@@ -170,7 +166,7 @@ export function markWebChatConversationForceNewChat(
 export function clearWebChatConversationForceNewChat(
   conversationKey: number,
 ): void {
-  const key = normalizeConversationKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return;
   webChatForceNewChatConversationKeys.delete(key);
 }
@@ -178,7 +174,7 @@ export function clearWebChatConversationForceNewChat(
 export function consumeWebChatConversationForceNewChat(
   conversationKey: number,
 ): boolean {
-  const key = normalizeConversationKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return false;
   const shouldForce = webChatForceNewChatConversationKeys.has(key);
   webChatForceNewChatConversationKeys.delete(key);
@@ -200,7 +196,7 @@ export function tryBeginRequest(
   abortController: AbortController | null,
   startingBody?: Element | null,
 ): boolean {
-  const key = normalizeConversationKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key || requestId <= 0 || pendingRequestIds.has(key)) return false;
   pendingRequestIds.set(key, requestId);
   if (abortController) abortControllers.set(key, abortController);
@@ -213,7 +209,7 @@ export function isRequestOwner(
   conversationKey: number,
   requestId: number,
 ): boolean {
-  const key = normalizeConversationKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   return Boolean(
     key && requestId > 0 && pendingRequestIds.get(key) === requestId,
   );
@@ -240,7 +236,7 @@ export function finishRequest(
   conversationKey: number,
   requestId: number,
 ): boolean {
-  const key = normalizeConversationKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key || pendingRequestIds.get(key) !== requestId) return false;
   pendingRequestIds.delete(key);
   abortControllers.delete(key);
@@ -253,8 +249,8 @@ export function transferRequest(
   toConversationKey: number,
   requestId: number,
 ): boolean {
-  const fromKey = normalizeConversationKey(fromConversationKey);
-  const toKey = normalizeConversationKey(toConversationKey);
+  const fromKey = positiveIntOrZero(fromConversationKey);
+  const toKey = positiveIntOrZero(toConversationKey);
   if (!fromKey || !toKey || pendingRequestIds.get(fromKey) !== requestId) {
     return false;
   }
@@ -353,7 +349,7 @@ export function isAnyRequestPending(): boolean {
 export function clearConversationOwnedRuntimeState(
   conversationKey: number,
 ): void {
-  const key = normalizeConversationKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return;
 
   bumpConversationWriteGeneration(key);
@@ -377,28 +373,28 @@ export function clearConversationOwnedRuntimeState(
   autoLockedGlobalConversationKeys.delete(key);
 
   for (const [libraryID, activeKey] of activeGlobalConversationByLibrary) {
-    if (normalizeConversationKey(activeKey) === key) {
+    if (positiveIntOrZero(activeKey) === key) {
       activeGlobalConversationByLibrary.delete(libraryID);
     }
   }
   for (const [stateKey, activeKey] of activePaperConversationByPaper) {
-    if (normalizeConversationKey(activeKey) === key) {
+    if (positiveIntOrZero(activeKey) === key) {
       activePaperConversationByPaper.delete(stateKey);
     }
   }
   for (const [stateKey, activeKey] of standaloneGlobalConversationByLibrary) {
-    if (normalizeConversationKey(activeKey) === key) {
+    if (positiveIntOrZero(activeKey) === key) {
       standaloneGlobalConversationByLibrary.delete(stateKey);
     }
   }
   for (const [stateKey, activeKey] of standalonePaperConversationByPaper) {
-    if (normalizeConversationKey(activeKey) === key) {
+    if (positiveIntOrZero(activeKey) === key) {
       standalonePaperConversationByPaper.delete(stateKey);
     }
   }
   for (const tornMap of [tornGlobalByLibrary, tornPaperByPaper]) {
     for (const [stateKey, activeKey] of tornMap) {
-      if (normalizeConversationKey(activeKey) === key) {
+      if (positiveIntOrZero(activeKey) === key) {
         tornMap.delete(stateKey);
       }
     }

@@ -48,6 +48,7 @@ import type { ChatMessage } from "../../utils/llmClient";
 import { resolveModelInputTokenLimit } from "../../utils/modelInputCap";
 import { detectProviderPreset } from "../../utils/providerPresets";
 import type { EffectiveRequestConfig } from "./requestContext";
+import { collapseWhitespace } from "../../core/values";
 
 export type SimpleChatPastChatSourceMessage = {
   role?: unknown;
@@ -103,10 +104,6 @@ function resolveInputLimitTokens(
   }
 }
 
-function singleLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 /**
  * The one line that stands in for an attaching message's chats once they no
  * longer fit. It depends only on the message's own chat titles, so its bytes
@@ -116,7 +113,7 @@ function formatLeftOutLine(
   message: SimpleChatPastChatSourceMessage | undefined,
 ): string {
   const titles = (message?.attachedConversations || [])
-    .map((ref) => singleLine(ref.title || ""))
+    .map((ref) => collapseWhitespace(ref.title || ""))
     .filter(Boolean)
     .join(", ");
   return `Past chats attached earlier in this conversation (${titles}) were left out to save space.`;
@@ -134,7 +131,8 @@ function formatLeftOutPointerLines(
       formatPastChatPointerLine({
         id: pastConversationId(ref),
         title:
-          singleLine(ref.title || "") || `Conversation ${ref.conversationKey}`,
+          collapseWhitespace(ref.title || "") ||
+          `Conversation ${ref.conversationKey}`,
       }),
     )
     .join("\n");

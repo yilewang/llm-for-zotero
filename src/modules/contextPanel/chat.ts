@@ -519,6 +519,7 @@ import {
   isEphemeralConversationKey,
 } from "../../shared/conversationKeySpace";
 import { buildEphemeralBackgroundContextBlock } from "../../shared/ephemeralBackgroundContext";
+import { positiveIntOrNull } from "../../core/values";
 
 /** Get AbortController constructor from global scope */
 function getAbortControllerCtor(): (new () => AbortController) | undefined {
@@ -718,19 +719,12 @@ function isolateWebChatConversationKey(
   loadedConversationKeys.add(key);
 }
 
-function normalizeConversationScopeInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
 function buildConversationRegistryScopeForItem(
   item: Zotero.Item,
   conversationKey: number,
   conversationSystem?: ConversationSystem | null,
 ): ConversationRegistryScope | null {
-  const normalizedConversationKey =
-    normalizeConversationScopeInt(conversationKey);
+  const normalizedConversationKey = positiveIntOrNull(conversationKey);
   if (!normalizedConversationKey) return null;
   const storageSystem = resolveConversationStorageSystemForItem({
     item,
@@ -738,7 +732,7 @@ function buildConversationRegistryScopeForItem(
   });
   if (!storageSystem) return null;
   const kind = resolveDisplayConversationKind(item);
-  const libraryID = normalizeConversationScopeInt(item?.libraryID);
+  const libraryID = positiveIntOrNull(item?.libraryID);
   if (!kind || !libraryID) return null;
   if (kind === "global") {
     return {
@@ -749,9 +743,8 @@ function buildConversationRegistryScopeForItem(
     };
   }
   const baseItem = resolveConversationBaseItem(item);
-  const paperItemID = normalizeConversationScopeInt(baseItem?.id);
-  const paperLibraryID =
-    normalizeConversationScopeInt(baseItem?.libraryID) || libraryID;
+  const paperItemID = positiveIntOrNull(baseItem?.id);
+  const paperLibraryID = positiveIntOrNull(baseItem?.libraryID) || libraryID;
   if (!paperItemID || !paperLibraryID) return null;
   return {
     conversationKey: normalizedConversationKey,
@@ -810,7 +803,7 @@ function collectMessagePaperContextIds(
 ): void {
   if (!Array.isArray(refs)) return;
   for (const ref of refs) {
-    const itemID = normalizeConversationScopeInt(ref?.itemId);
+    const itemID = positiveIntOrNull(ref?.itemId);
     if (itemID) out.add(itemID);
   }
 }
@@ -824,7 +817,7 @@ export function storedMessagesMatchActivePaper(
   if (resolveActiveNoteSession(item)) return true;
   if (resolveDisplayConversationKind(item) !== "paper") return true;
   const baseItem = resolveConversationBaseItem(item);
-  const activePaperItemID = normalizeConversationScopeInt(baseItem?.id);
+  const activePaperItemID = positiveIntOrNull(baseItem?.id);
   if (!activePaperItemID) return true;
   const ids = new Set<number>();
   for (const message of storedMessages) {

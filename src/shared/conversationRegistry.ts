@@ -4,6 +4,7 @@ import type { ConversationSystem } from "./types";
 import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
 import { getConversationCatalogTable } from "./conversationStore/storeTables";
 import { isConversationSystem } from "../core/conversations/conversationSystems";
+import { positiveIntOrNull } from "../core/values";
 
 export type RegistryConversationKind = "global" | "paper";
 
@@ -106,12 +107,6 @@ export function registerPaperRestoreTargetInvalidationListener(
   };
 }
 
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
 function normalizeText(value: unknown, maxLength = 256): string {
   if (typeof value !== "string") return "";
   return value
@@ -200,10 +195,10 @@ export function buildConversationID(params: {
   paperItemID?: number | null;
   profileSignature?: string | null;
 }): string {
-  const conversationKey = normalizePositiveInt(params.conversationKey) || 0;
-  const libraryID = normalizePositiveInt(params.libraryID) || 0;
+  const conversationKey = positiveIntOrNull(params.conversationKey) || 0;
+  const libraryID = positiveIntOrNull(params.libraryID) || 0;
   const paperItemID =
-    params.kind === "paper" ? normalizePositiveInt(params.paperItemID) || 0 : 0;
+    params.kind === "paper" ? positiveIntOrNull(params.paperItemID) || 0 : 0;
   const profileSignature =
     normalizeText(params.profileSignature, 128) || getCurrentProfileSignature();
   return [
@@ -224,13 +219,13 @@ function normalizeScope(params: ConversationRegistryScope):
       title: string | null;
     })
   | null {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
-  const libraryID = normalizePositiveInt(params.libraryID);
+  const conversationKey = positiveIntOrNull(params.conversationKey);
+  const libraryID = positiveIntOrNull(params.libraryID);
   const system = normalizeSystem(params.system);
   const kind = normalizeKind(params.kind);
   if (!conversationKey || !libraryID || !system || !kind) return null;
   const paperItemID =
-    kind === "paper" ? normalizePositiveInt(params.paperItemID) : null;
+    kind === "paper" ? positiveIntOrNull(params.paperItemID) : null;
   if (kind === "paper" && !paperItemID) return null;
   return {
     instanceID:
@@ -408,7 +403,7 @@ export async function syncCatalogInstanceID(
   const db = getZoteroDb();
   const table = getConversationCatalogTable(scope.system, scope.kind);
   const instanceID = normalizeInstanceID(scope.instanceID);
-  const conversationKey = normalizePositiveInt(scope.conversationKey);
+  const conversationKey = positiveIntOrNull(scope.conversationKey);
   if (!db?.queryAsync || !table || !instanceID || !conversationKey) return;
   try {
     await db.queryAsync(
@@ -429,7 +424,7 @@ async function getCatalogInstanceID(
 ): Promise<string> {
   const db = getZoteroDb();
   const table = getConversationCatalogTable(scope.system, scope.kind);
-  const conversationKey = normalizePositiveInt(scope.conversationKey);
+  const conversationKey = positiveIntOrNull(scope.conversationKey);
   if (!db?.queryAsync || !table || !conversationKey) return "";
   try {
     const rows = (await db.queryAsync(
@@ -456,7 +451,7 @@ async function hasDeletionTombstoneAtOrAfter(
   createdAt: unknown,
 ): Promise<boolean> {
   const db = getZoteroDb();
-  const normalizedKey = normalizePositiveInt(conversationKey);
+  const normalizedKey = positiveIntOrNull(conversationKey);
   if (!db?.queryAsync || !normalizedKey) return false;
   const createdTimestamp = normalizeTimestamp(createdAt);
   try {
@@ -520,10 +515,10 @@ async function migrateLegacyRegistrySchema(
   for (const row of rows || []) {
     const system = normalizeSystem(row.system);
     const kind = normalizeKind(row.kind);
-    const conversationKey = normalizePositiveInt(row.conversationKey);
-    const libraryID = normalizePositiveInt(row.libraryID);
+    const conversationKey = positiveIntOrNull(row.conversationKey);
+    const libraryID = positiveIntOrNull(row.libraryID);
     if (!system || !kind || !conversationKey || !libraryID) continue;
-    const paperItemID = normalizePositiveInt(row.paperItemID);
+    const paperItemID = positiveIntOrNull(row.paperItemID);
     const profileSignature =
       normalizeText(row.profileSignature, 128) || getCurrentProfileSignature();
     await db.queryAsync(
@@ -665,7 +660,7 @@ async function initConversationRegistryStoreUncached(): Promise<void> {
 export async function getRegisteredConversationScope(
   conversationKey: number,
 ): Promise<ConversationRegistryRow | null> {
-  const normalizedKey = normalizePositiveInt(conversationKey);
+  const normalizedKey = positiveIntOrNull(conversationKey);
   if (!normalizedKey) return null;
   const db = getZoteroDb();
   if (!db?.queryAsync) return null;
@@ -691,7 +686,7 @@ export async function getRegisteredConversationScope(
   if (!row) return null;
   const system = normalizeSystem(row.system);
   const kind = normalizeKind(row.kind);
-  const libraryID = normalizePositiveInt(row.libraryID);
+  const libraryID = positiveIntOrNull(row.libraryID);
   if (!system || !kind || !libraryID) return null;
   return {
     instanceID:
@@ -705,14 +700,14 @@ export async function getRegisteredConversationScope(
         kind,
         profileSignature: normalizeText(row.profileSignature, 128),
         libraryID,
-        paperItemID: normalizePositiveInt(row.paperItemID),
+        paperItemID: positiveIntOrNull(row.paperItemID),
       }),
     conversationKey: normalizedKey,
     system,
     kind,
     profileSignature: normalizeText(row.profileSignature, 128),
     libraryID,
-    paperItemID: normalizePositiveInt(row.paperItemID),
+    paperItemID: positiveIntOrNull(row.paperItemID),
     valid: Number(row.valid) !== 0,
     invalidReason: normalizeText(row.invalidReason, 256) || undefined,
   };
@@ -731,18 +726,18 @@ export async function registerConversationScope(
   const catalogInstanceID = await getCatalogInstanceID(params);
   await initConversationRegistryStore();
   const existing = await getRegisteredConversationScope(
-    normalizePositiveInt(params.conversationKey) || 0,
+    positiveIntOrNull(params.conversationKey) || 0,
   );
   if (
     !params.instanceID &&
     !catalogInstanceID &&
     (await hasDeletionTombstoneAtOrAfter(
-      normalizePositiveInt(params.conversationKey) || 0,
+      positiveIntOrNull(params.conversationKey) || 0,
       params.createdAt,
     ))
   ) {
     logRegistryWarning(
-      `Refused to recreate registry for deleted conversation ${normalizePositiveInt(params.conversationKey) || 0} from a stale catalog read.`,
+      `Refused to recreate registry for deleted conversation ${positiveIntOrNull(params.conversationKey) || 0} from a stale catalog read.`,
     );
     return false;
   }
@@ -846,7 +841,7 @@ export async function deleteRegisteredConversationScopeInTransaction(
   if (!normalizedInstanceID) return;
   const db = getZoteroDb();
   if (!db?.queryAsync) return;
-  const normalizedKey = normalizePositiveInt(conversationKey);
+  const normalizedKey = positiveIntOrNull(conversationKey);
   const normalizedConversationID = normalizeConversationID(conversationID);
   const normalizedSystem = normalizeSystem(system);
   if (normalizedKey) {
@@ -932,18 +927,18 @@ export async function repairRegisteredConversationScope(
   const catalogInstanceID = await getCatalogInstanceID(params);
   await initConversationRegistryStore();
   const existing = await getRegisteredConversationScope(
-    normalizePositiveInt(params.conversationKey) || 0,
+    positiveIntOrNull(params.conversationKey) || 0,
   );
   if (
     !params.instanceID &&
     !catalogInstanceID &&
     (await hasDeletionTombstoneAtOrAfter(
-      normalizePositiveInt(params.conversationKey) || 0,
+      positiveIntOrNull(params.conversationKey) || 0,
       params.createdAt,
     ))
   ) {
     logRegistryWarning(
-      `Refused to recreate registry for deleted conversation ${normalizePositiveInt(params.conversationKey) || 0} from a stale catalog repair.`,
+      `Refused to recreate registry for deleted conversation ${positiveIntOrNull(params.conversationKey) || 0} from a stale catalog repair.`,
     );
     return false;
   }
@@ -1143,8 +1138,8 @@ export function canMigrateLegacyAmbiguousPaperRegistryScope(
     "system" | "kind" | "libraryID" | "paperItemID"
   >,
 ): boolean {
-  const libraryID = normalizePositiveInt(scope.libraryID);
-  const paperItemID = normalizePositiveInt(scope.paperItemID);
+  const libraryID = positiveIntOrNull(scope.libraryID);
+  const paperItemID = positiveIntOrNull(scope.paperItemID);
   return Boolean(
     registered &&
     !registered.valid &&
@@ -1166,7 +1161,7 @@ function collectPaperIdsFromValue(value: unknown, out: Set<number>): void {
     const entries = Array.isArray(parsed) ? parsed : [parsed];
     for (const entry of entries) {
       if (!entry || typeof entry !== "object") continue;
-      const itemID = normalizePositiveInt(
+      const itemID = positiveIntOrNull(
         (entry as { itemId?: unknown; itemID?: unknown }).itemId ??
           (entry as { itemId?: unknown; itemID?: unknown }).itemID,
       );

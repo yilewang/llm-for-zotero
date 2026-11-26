@@ -11,6 +11,7 @@ import {
   deleteIfPresent,
   type AgentPurgeDb,
 } from "../store/inTransactionDelete";
+import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
 
 export type AgentCoverageSourceKind =
   | "zotero_metadata"
@@ -150,18 +151,6 @@ function normalizeText(value: unknown, maxLength = 160): string {
     .slice(0, maxLength);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function stableJson(value: unknown): string {
   // JSON.stringify(undefined) is undefined, not a string; a visual paper_read
   // redirect with neither pages nor artifacts hashes exactly that value.
@@ -190,7 +179,7 @@ function hashText(value: string): string {
 }
 
 function conversationScopeKey(conversationKey: number): string {
-  return `conversation:${normalizePositiveInt(conversationKey) || 0}`;
+  return `conversation:${positiveIntOrUndefined(conversationKey) || 0}`;
 }
 
 function durableScopeKey(resourceKey: string): string {
@@ -207,8 +196,8 @@ function ledgerForScope(scopeKey: string): Map<string, AgentCoverageEntry> {
 }
 
 function paperResourceKey(paper: Partial<PaperContextRef>): string {
-  const itemId = normalizePositiveInt(paper.itemId);
-  const contextItemId = normalizePositiveInt(paper.contextItemId);
+  const itemId = positiveIntOrUndefined(paper.itemId);
+  const contextItemId = positiveIntOrUndefined(paper.contextItemId);
   if (itemId && contextItemId) return `paper:${itemId}:${contextItemId}`;
   if (itemId) return `item:${itemId}`;
   if (contextItemId) return `attachment:${contextItemId}`;
@@ -216,17 +205,17 @@ function paperResourceKey(paper: Partial<PaperContextRef>): string {
 }
 
 function itemResourceKey(itemId: unknown): string {
-  const normalized = normalizePositiveInt(itemId);
+  const normalized = positiveIntOrUndefined(itemId);
   return normalized ? `item:${normalized}` : "";
 }
 
 function noteResourceKey(itemId: unknown): string {
-  const normalized = normalizePositiveInt(itemId);
+  const normalized = positiveIntOrUndefined(itemId);
   return normalized ? `note:${normalized}` : "";
 }
 
 function attachmentResourceKey(value: unknown): string {
-  const normalized = normalizePositiveInt(value);
+  const normalized = positiveIntOrUndefined(value);
   return normalized ? `attachment:${normalized}` : "";
 }
 
@@ -234,14 +223,14 @@ function collectionResourceKey(value: {
   collectionId?: unknown;
   libraryID?: unknown;
 }): string {
-  const collectionId = normalizePositiveInt(value.collectionId);
+  const collectionId = positiveIntOrUndefined(value.collectionId);
   if (!collectionId) return "";
-  const libraryID = normalizePositiveInt(value.libraryID) || 0;
+  const libraryID = positiveIntOrUndefined(value.libraryID) || 0;
   return `collection:${libraryID}:${collectionId}`;
 }
 
 function tagResourceKey(value: Partial<TagContextRef>): string {
-  const libraryID = normalizePositiveInt(value.libraryID) || 0;
+  const libraryID = positiveIntOrUndefined(value.libraryID) || 0;
   if (value.scope) return `tag:${libraryID}:scope:${value.scope}`;
   const name = normalizeText(value.normalizedName || value.name, 180)
     .toLowerCase()
@@ -250,7 +239,7 @@ function tagResourceKey(value: Partial<TagContextRef>): string {
 }
 
 function libraryResourceKey(libraryID: unknown): string {
-  const normalized = normalizePositiveInt(libraryID);
+  const normalized = positiveIntOrUndefined(libraryID);
   return normalized ? `library:${normalized}` : "library:unknown";
 }
 
@@ -302,7 +291,7 @@ function createCoverageEntry(
 }
 
 function deserializeCoverageEntry(value: unknown): AgentCoverageEntry | null {
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   const key = normalizeText(record.key, 320);
   const resourceKey = normalizeText(record.resourceKey, 220);
   const sourceKind = normalizeText(
@@ -344,8 +333,8 @@ function deserializeCoverageEntry(value: unknown): AgentCoverageEntry | null {
           .slice(0, 4)
       : [],
     durable: record.durable === true,
-    count: Math.max(1, normalizePositiveInt(record.count) || 1),
-    updatedAt: Math.max(0, normalizePositiveInt(record.updatedAt) || 0),
+    count: Math.max(1, positiveIntOrUndefined(record.count) || 1),
+    updatedAt: Math.max(0, positiveIntOrUndefined(record.updatedAt) || 0),
   };
   const resourceLabel = normalizeText(record.resourceLabel, 160);
   if (resourceLabel) entry.resourceLabel = resourceLabel;
@@ -353,7 +342,7 @@ function deserializeCoverageEntry(value: unknown): AgentCoverageEntry | null {
   if (topic) entry.topic = topic;
   const contentHash = normalizeText(record.contentHash, 120);
   if (contentHash) entry.contentHash = contentHash;
-  const originConversationKey = normalizePositiveInt(
+  const originConversationKey = positiveIntOrUndefined(
     record.originConversationKey,
   );
   if (originConversationKey)
@@ -534,7 +523,7 @@ export async function hydrateAgentCoverageLedger(params: {
   conversationKey: number;
   request?: AgentRuntimeRequest;
 }): Promise<void> {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey) return;
   await hydrateCoverageScope(conversationScopeKey(conversationKey));
   if (!params.request) return;
@@ -563,15 +552,15 @@ function activityContentHash(
 }
 
 function paperContextFromRecord(value: unknown): Partial<PaperContextRef> {
-  const record = normalizeRecord(value);
-  const nested = normalizeRecord(record.paperContext);
+  const record = recordOrEmpty(value);
+  const nested = recordOrEmpty(record.paperContext);
   return {
     itemId:
-      normalizePositiveInt(record.itemId) ||
-      normalizePositiveInt(nested.itemId),
+      positiveIntOrUndefined(record.itemId) ||
+      positiveIntOrUndefined(nested.itemId),
     contextItemId:
-      normalizePositiveInt(record.contextItemId) ||
-      normalizePositiveInt(nested.contextItemId),
+      positiveIntOrUndefined(record.contextItemId) ||
+      positiveIntOrUndefined(nested.contextItemId),
     title: normalizeText(record.title, 160) || normalizeText(nested.title, 160),
     mineruCacheDir:
       normalizeText(record.mineruCacheDir, 1024) ||
@@ -601,15 +590,15 @@ function sourceKindFromFilePath(filePath: string): AgentCoverageSourceKind {
 function buildPaperReadCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const content = normalizeRecord(activity.content);
-  const input = normalizeRecord(activity.input);
+  const content = recordOrEmpty(activity.content);
+  const input = recordOrEmpty(activity.input);
   const mode = normalizeText(content.mode, 40) || normalizeText(input.mode, 40);
   const topic = normalizeTopic(input.query, activity.request.userText);
   const entries: AgentCoverageEntry[] = [];
 
   if (mode === "overview" && Array.isArray(content.results)) {
     for (const result of content.results) {
-      const record = normalizeRecord(result);
+      const record = recordOrEmpty(result);
       const paper = paperContextFromRecord(record);
       const resourceKey = paperResourceKey(paper);
       const sourceKind = sourceKindFromPaperBackend(
@@ -639,7 +628,7 @@ function buildPaperReadCoverageEntries(
     // ranked passages from an embedding search.
     const wholeSections = content.read === "whole_sections";
     for (const paperRecord of content.papers) {
-      const record = normalizeRecord(paperRecord);
+      const record = recordOrEmpty(paperRecord);
       const paper = paperContextFromRecord(record);
       const passages = Array.isArray(record.passages) ? record.passages : [];
       const contentHash = activityContentHash(activity, {
@@ -682,8 +671,8 @@ function buildPaperReadCoverageEntries(
 function buildSearchPaperCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const content = normalizeRecord(activity.content);
-  const input = normalizeRecord(activity.input);
+  const content = recordOrEmpty(activity.content);
+  const input = recordOrEmpty(activity.input);
   const results = Array.isArray(content.results) ? content.results : [];
   const topic = normalizeTopic(
     input.question || input.query,
@@ -724,8 +713,8 @@ function buildSearchPaperCoverageEntries(
 function buildVisualCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const content = normalizeRecord(activity.content);
-  const input = normalizeRecord(activity.input);
+  const content = recordOrEmpty(activity.content);
+  const input = recordOrEmpty(activity.input);
   const target = paperContextFromRecord(input.target || input);
   const contentPaper = paperContextFromRecord(content.paperContext);
   const paper = paperResourceKey(contentPaper) ? contentPaper : target;
@@ -745,7 +734,7 @@ function buildVisualCoverageEntries(
     contentHash: activityContentHash(activity, {
       pages: content.pages,
       artifacts: activity.artifacts?.map((artifact) => {
-        const record = normalizeRecord(artifact);
+        const record = recordOrEmpty(artifact);
         return {
           contentHash: normalizeText(record.contentHash, 120),
           pageLabel: normalizeText(record.pageLabel, 40),
@@ -765,7 +754,7 @@ function buildVisualCoverageEntries(
 function buildFileIoCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const input = normalizeRecord(activity.input);
+  const input = recordOrEmpty(activity.input);
   if (input.action !== "read") return [];
   const filePath = normalizeText(input.filePath, 1024);
   if (!filePath) return [];
@@ -812,14 +801,14 @@ function buildFileIoCoverageEntries(
 function buildReadAttachmentCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const input = normalizeRecord(activity.input);
-  const targetInput = normalizeRecord(input.target);
-  const content = normalizeRecord(activity.content);
+  const input = recordOrEmpty(activity.input);
+  const targetInput = recordOrEmpty(input.target);
+  const content = recordOrEmpty(activity.content);
   const paper = paperContextFromRecord(content.paperContext);
   const attachmentId =
-    normalizePositiveInt(content.attachmentId) ||
-    normalizePositiveInt(targetInput.contextItemId) ||
-    normalizePositiveInt(input.contextItemId);
+    positiveIntOrUndefined(content.attachmentId) ||
+    positiveIntOrUndefined(targetInput.contextItemId) ||
+    positiveIntOrUndefined(input.contextItemId);
   const resourceKey =
     paperResourceKey(paper) || attachmentResourceKey(attachmentId);
   const text = normalizeText(content.textContent, 1200);
@@ -849,8 +838,8 @@ function buildReadAttachmentCoverageEntries(
 function buildLibrarySearchCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const input = normalizeRecord(activity.input);
-  const content = normalizeRecord(activity.content);
+  const input = recordOrEmpty(activity.input);
+  const content = recordOrEmpty(activity.content);
   const entity = normalizeText(content.entity || input.entity, 40);
   const mode = normalizeText(content.mode || input.mode, 40);
   const topic = normalizeTopic(input.text, activity.request.userText);
@@ -880,9 +869,9 @@ function buildLibrarySearchCoverageEntries(
   if (scopeEntry) entries.push(scopeEntry);
 
   for (const result of results.slice(0, 12)) {
-    const record = normalizeRecord(result);
-    const itemId = normalizePositiveInt(record.itemId);
-    const collectionId = normalizePositiveInt(record.collectionId);
+    const record = recordOrEmpty(result);
+    const itemId = positiveIntOrUndefined(record.itemId);
+    const collectionId = positiveIntOrUndefined(record.collectionId);
     const resourceKey =
       entity === "collections"
         ? collectionResourceKey({
@@ -895,7 +884,7 @@ function buildLibrarySearchCoverageEntries(
     if (!resourceKey) continue;
     const hasAbstract = Boolean(
       normalizeText(record.abstract, 240) ||
-      normalizeText(normalizeRecord(record.metadata).abstractNote, 240),
+      normalizeText(recordOrEmpty(record.metadata).abstractNote, 240),
     );
     const sourceKind: AgentCoverageSourceKind =
       entity === "notes" || normalizeText(record.itemType, 40) === "note"
@@ -926,19 +915,19 @@ function buildLibrarySearchCoverageEntries(
 function buildLibraryReadCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const input = normalizeRecord(activity.input);
-  const content = normalizeRecord(activity.content);
+  const input = recordOrEmpty(activity.input);
+  const content = recordOrEmpty(activity.content);
   const sections = Array.isArray(content.sections)
     ? content.sections.map((entry) => normalizeText(entry, 40)).filter(Boolean)
     : Array.isArray(input.sections)
       ? input.sections.map((entry) => normalizeText(entry, 40)).filter(Boolean)
       : [];
-  const results = normalizeRecord(content.results);
+  const results = recordOrEmpty(content.results);
   return Object.entries(results)
     .map(([key, value]) => {
-      const record = normalizeRecord(value);
+      const record = recordOrEmpty(value);
       const itemId =
-        normalizePositiveInt(record.itemId) || normalizePositiveInt(key);
+        positiveIntOrUndefined(record.itemId) || positiveIntOrUndefined(key);
       const itemType = normalizeText(record.itemType, 40);
       const resourceKey =
         itemType === "note" ? noteResourceKey(itemId) : itemResourceKey(itemId);
@@ -1002,23 +991,23 @@ function sourceKindFromLibraryRetrieveSnippet(
 function buildLibraryRetrieveCoverageEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentCoverageEntry[] {
-  const input = normalizeRecord(activity.input);
-  const content = normalizeRecord(activity.content);
-  const pool = normalizeRecord(content.resourcePool);
-  const scope = normalizeRecord(pool.scope);
-  const queryCoverage = normalizeRecord(pool.queryCoverage);
+  const input = recordOrEmpty(activity.input);
+  const content = recordOrEmpty(activity.content);
+  const pool = recordOrEmpty(content.resourcePool);
+  const scope = recordOrEmpty(pool.scope);
+  const queryCoverage = recordOrEmpty(pool.queryCoverage);
   const snippets = Array.isArray(content.snippets) ? content.snippets : [];
   const topic = normalizeTopic(input.query, activity.request.userText);
   const collectionIds = Array.isArray(scope.collectionIds)
     ? scope.collectionIds
     : [];
   const firstCollectionId = collectionIds
-    .map((value) => normalizePositiveInt(value))
+    .map((value) => positiveIntOrUndefined(value))
     .find(Boolean);
   const tagNames = Array.isArray(scope.tagNames) ? scope.tagNames : [];
   const tagScopes = Array.isArray(scope.tagScopes) ? scope.tagScopes : [];
   const libraryID =
-    normalizePositiveInt(scope.libraryID) || activity.request.libraryID;
+    positiveIntOrUndefined(scope.libraryID) || activity.request.libraryID;
   const firstTagKey = tagScopes.length
     ? tagResourceKey({ libraryID, scope: tagScopes[0] })
     : tagNames.length
@@ -1049,10 +1038,10 @@ function buildLibraryRetrieveCoverageEntries(
     sourceKind: "zotero_metadata",
     topic,
     granularity: "scope",
-    coverage: normalizePositiveInt(queryCoverage.indexedTextScanned)
+    coverage: positiveIntOrUndefined(queryCoverage.indexedTextScanned)
       ? "broad"
-      : normalizePositiveInt(queryCoverage.snippetPapersExpanded) ||
-          normalizePositiveInt(queryCoverage.fullTextSearched)
+      : positiveIntOrUndefined(queryCoverage.snippetPapersExpanded) ||
+          positiveIntOrUndefined(queryCoverage.fullTextSearched)
         ? "broad"
         : "listed",
     confidence: "high",
@@ -1084,9 +1073,9 @@ function buildLibraryRetrieveCoverageEntries(
     }
   >();
   for (const rawSnippet of snippets) {
-    const snippet = normalizeRecord(rawSnippet);
-    const itemId = normalizePositiveInt(snippet.itemId);
-    const contextItemId = normalizePositiveInt(snippet.contextItemId);
+    const snippet = recordOrEmpty(rawSnippet);
+    const itemId = positiveIntOrUndefined(snippet.itemId);
+    const contextItemId = positiveIntOrUndefined(snippet.contextItemId);
     const paper = {
       itemId,
       contextItemId,
@@ -1164,7 +1153,7 @@ export async function commitAgentCoverageActivities(params: {
   conversationKey: number;
   activities: AgentCacheEvidenceActivity[];
 }): Promise<void> {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey || !params.activities.length) return;
   if (isConversationKeyRetiredInMemory(conversationKey)) return;
   // A temporary side chat records no coverage, not even paper-wide (durable)
@@ -1205,7 +1194,7 @@ export async function clearPersistedAgentCoverage(
     coverageByScope.clear();
     hydratedScopes.clear();
   } else {
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (conversationKey) {
       const scopeKey = conversationScopeKey(conversationKey);
       coverageByScope.delete(scopeKey);
@@ -1231,7 +1220,7 @@ export async function clearPersistedAgentCoverage(
       await db.queryAsync(`DELETE FROM ${COVERAGE_TABLE}`);
       return;
     }
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (!conversationKey) return;
     await db.queryAsync(
       `DELETE FROM ${COVERAGE_TABLE}
@@ -1296,7 +1285,7 @@ export function buildAgentCoverageContextBlock(params: {
   conversationKey: number;
   request?: AgentRuntimeRequest;
 }): string {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey) return "";
   const entries = getVisibleCoverageEntries({
     conversationKey,

@@ -51,6 +51,7 @@ import {
   quoteTokenPattern,
   quoteTokenSource,
 } from "./quoteTokenIds";
+import { escapeRegExp } from "../../core/values";
 
 export const QUOTE_CITATION_PATTERN = quoteTokenPattern("quote");
 const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE = `^[ \\t]*(?:>[ \\t]*)+${quoteTokenSource("quote")}[ \\t]*$`;
@@ -4348,10 +4349,6 @@ function extractLeadingParentheticalLabel(value: string): {
 
 function normalizeCitationRemainder(value: string | undefined): string {
   return stripLeadingCitationSeparators(normalizeMultilineText(value || ""));
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stripMetadataQuoteCitationPlaceholders(

@@ -40,6 +40,7 @@ import {
   normalizeStringArray,
   validateObject,
 } from "../shared";
+import { trimmedString } from "../../../core/values";
 
 // ── Tag assignment helpers ──────────────────────────────────────────────────
 
@@ -203,10 +204,6 @@ type MoveAssignmentItemSummary = {
   collectionIds: number[];
 };
 
-function normalizeDisplayText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 export function formatItemTypeLabel(itemType: string | undefined): string {
   if (!itemType) return "";
   if (itemType === "journalArticle") return "Journal article";
@@ -268,9 +265,9 @@ function getFallbackMoveAssignmentItemSummary(
   const isAttachment = Boolean(item.isAttachment?.());
   const itemType = isNote ? "note" : isAttachment ? "attachment" : undefined;
   const displayTitle =
-    normalizeDisplayText((item as any).getNoteTitle?.()) ||
-    normalizeDisplayText(item.getField?.("title")) ||
-    normalizeDisplayText(item.getDisplayTitle?.()) ||
+    trimmedString((item as any).getNoteTitle?.()) ||
+    trimmedString(item.getField?.("title")) ||
+    trimmedString(item.getDisplayTitle?.()) ||
     `${formatItemTypeLabel(itemType) || "Item"} ${itemId}`;
   return {
     itemId,

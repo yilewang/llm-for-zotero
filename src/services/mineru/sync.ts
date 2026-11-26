@@ -27,6 +27,7 @@ import {
   type MineruCacheFile,
 } from "./mineruCache";
 import { paperTextStore } from "../paperContent/paperTextStore";
+import { escapeRegExp, positiveIntOrNull } from "../../core/values";
 
 export const MINERU_SYNC_PACKAGE_KIND = "llm-for-zotero/mineru-cache";
 export const MINERU_SYNC_PACKAGE_VERSION = 1;
@@ -522,10 +523,6 @@ function findItemByLibraryAndKey(key: string): Zotero.Item | null {
 
 function buildPackageTitle(sourceAttachmentKey: string): string {
   return `${MINERU_SYNC_ATTACHMENT_TITLE_PREFIX} ${sourceAttachmentKey}.zip`;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const MINERU_SYNC_PACKAGE_TITLE_PATTERN = new RegExp(
@@ -1751,11 +1748,6 @@ function normalizeAttachmentId(value: number): number | null {
   return Number.isFinite(id) && id > 0 ? Math.floor(id) : null;
 }
 
-function normalizePackageAttachmentId(value: unknown): number | null {
-  const id = Number(value);
-  return Number.isFinite(id) && id > 0 ? Math.floor(id) : null;
-}
-
 function getParentItemFromProvenance(
   parentItemKey: string | undefined,
 ): Zotero.Item | null {
@@ -1951,7 +1943,7 @@ export async function deleteMineruCacheArtifactsForAttachment(
     getItemKey(liveItem) ||
     sourceProvenance?.attachmentKey ||
     localSyncState?.sourceAttachmentKey;
-  const packageAttachmentId = normalizePackageAttachmentId(
+  const packageAttachmentId = positiveIntOrNull(
     sourceProvenance?.packageAttachmentId ??
       localSyncState?.packageAttachmentId,
   );
@@ -2076,7 +2068,7 @@ export async function cleanupMineruArtifactsForRemovedAttachment(
   const parentItem =
     (liveItem ? getParentItem(liveItem) : null) ||
     getParentItemFromProvenance(sourceProvenance?.parentItemKey);
-  const packageAttachmentId = normalizePackageAttachmentId(
+  const packageAttachmentId = positiveIntOrNull(
     sourceProvenance?.packageAttachmentId ??
       localSyncState?.packageAttachmentId,
   );

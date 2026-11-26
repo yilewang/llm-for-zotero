@@ -7,6 +7,7 @@ import {
   isConversationKeyLedgerStoreInitialized,
 } from "./conversationKeyLedger";
 import { isConversationSystem } from "../core/conversations/conversationSystems";
+import { positiveIntOrZero, trimmedStringOrUndefined } from "../core/values";
 
 export type ConversationForkScopeKind = "global" | "paper";
 
@@ -40,12 +41,6 @@ function isAlreadyExistingColumnError(error: unknown): boolean {
   );
 }
 
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
 function normalizeSystem(value: unknown): ConversationSystem | null {
   return isConversationSystem(value) ? value : null;
 }
@@ -54,30 +49,22 @@ function normalizeKind(value: unknown): ConversationForkScopeKind | null {
   return value === "global" || value === "paper" ? value : null;
 }
 
-function normalizeString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function normalizeLink(value: ConversationForkLink): ConversationForkLink {
-  const targetConversationKey = normalizePositiveInt(
-    value.targetConversationKey,
-  );
+  const targetConversationKey = positiveIntOrZero(value.targetConversationKey);
   const targetSystem = normalizeSystem(value.targetSystem);
   const targetKind = normalizeKind(value.targetKind);
-  const sourceConversationKey = normalizePositiveInt(
-    value.sourceConversationKey,
-  );
+  const sourceConversationKey = positiveIntOrZero(value.sourceConversationKey);
   const sourceSystem = normalizeSystem(value.sourceSystem);
   const sourceKind = normalizeKind(value.sourceKind);
-  const sourceLibraryID = normalizePositiveInt(value.sourceLibraryID);
-  const sourcePaperItemID = normalizePositiveInt(value.sourcePaperItemID);
-  const sourceAssistantTimestamp = normalizePositiveInt(
+  const sourceLibraryID = positiveIntOrZero(value.sourceLibraryID);
+  const sourcePaperItemID = positiveIntOrZero(value.sourcePaperItemID);
+  const sourceAssistantTimestamp = positiveIntOrZero(
     value.sourceAssistantTimestamp,
   );
-  const targetAnchorAssistantTimestamp = normalizePositiveInt(
+  const targetAnchorAssistantTimestamp = positiveIntOrZero(
     value.targetAnchorAssistantTimestamp,
   );
-  const createdAt = normalizePositiveInt(value.createdAt) || Date.now();
+  const createdAt = positiveIntOrZero(value.createdAt) || Date.now();
 
   if (
     !targetConversationKey ||
@@ -98,13 +85,13 @@ function normalizeLink(value: ConversationForkLink): ConversationForkLink {
 
   return {
     targetConversationKey,
-    targetInstanceID: normalizeString(value.targetInstanceID),
-    targetConversationID: normalizeString(value.targetConversationID),
+    targetInstanceID: trimmedStringOrUndefined(value.targetInstanceID),
+    targetConversationID: trimmedStringOrUndefined(value.targetConversationID),
     targetSystem,
     targetKind,
     sourceConversationKey,
-    sourceInstanceID: normalizeString(value.sourceInstanceID),
-    sourceConversationID: normalizeString(value.sourceConversationID),
+    sourceInstanceID: trimmedStringOrUndefined(value.sourceInstanceID),
+    sourceConversationID: trimmedStringOrUndefined(value.sourceConversationID),
     sourceSystem,
     sourceKind,
     sourceLibraryID,
@@ -124,16 +111,16 @@ function rowToForkLink(row: Record<string, unknown> | undefined | null) {
   if (!targetSystem || !targetKind || !sourceSystem || !sourceKind) {
     return null;
   }
-  const targetConversationKey = normalizePositiveInt(row.targetConversationKey);
-  const sourceConversationKey = normalizePositiveInt(row.sourceConversationKey);
-  const sourceLibraryID = normalizePositiveInt(row.sourceLibraryID);
-  const sourceAssistantTimestamp = normalizePositiveInt(
+  const targetConversationKey = positiveIntOrZero(row.targetConversationKey);
+  const sourceConversationKey = positiveIntOrZero(row.sourceConversationKey);
+  const sourceLibraryID = positiveIntOrZero(row.sourceLibraryID);
+  const sourceAssistantTimestamp = positiveIntOrZero(
     row.sourceAssistantTimestamp,
   );
-  const targetAnchorAssistantTimestamp = normalizePositiveInt(
+  const targetAnchorAssistantTimestamp = positiveIntOrZero(
     row.targetAnchorAssistantTimestamp,
   );
-  const createdAt = normalizePositiveInt(row.createdAt);
+  const createdAt = positiveIntOrZero(row.createdAt);
   if (
     !targetConversationKey ||
     !sourceConversationKey ||
@@ -146,17 +133,17 @@ function rowToForkLink(row: Record<string, unknown> | undefined | null) {
   }
   return {
     targetConversationKey,
-    targetInstanceID: normalizeString(row.targetInstanceID),
-    targetConversationID: normalizeString(row.targetConversationID),
+    targetInstanceID: trimmedStringOrUndefined(row.targetInstanceID),
+    targetConversationID: trimmedStringOrUndefined(row.targetConversationID),
     targetSystem,
     targetKind,
     sourceConversationKey,
-    sourceInstanceID: normalizeString(row.sourceInstanceID),
-    sourceConversationID: normalizeString(row.sourceConversationID),
+    sourceInstanceID: trimmedStringOrUndefined(row.sourceInstanceID),
+    sourceConversationID: trimmedStringOrUndefined(row.sourceConversationID),
     sourceSystem,
     sourceKind,
     sourceLibraryID,
-    sourcePaperItemID: normalizePositiveInt(row.sourcePaperItemID) || undefined,
+    sourcePaperItemID: positiveIntOrZero(row.sourcePaperItemID) || undefined,
     sourceAssistantTimestamp,
     targetAnchorAssistantTimestamp,
     createdAt,
@@ -311,7 +298,7 @@ export async function recordConversationForkLink(
 export async function getConversationForkLink(
   targetConversationKey: number,
 ): Promise<ConversationForkLink | null> {
-  const normalizedKey = normalizePositiveInt(targetConversationKey);
+  const normalizedKey = positiveIntOrZero(targetConversationKey);
   if (!normalizedKey) return null;
   await initConversationForkLinksStore();
   const rows = (await Zotero.DB.queryAsync(
@@ -341,7 +328,7 @@ export async function getConversationForkLink(
 export async function deleteConversationForkLink(
   targetConversationKey: number,
 ): Promise<void> {
-  const normalizedKey = normalizePositiveInt(targetConversationKey);
+  const normalizedKey = positiveIntOrZero(targetConversationKey);
   if (!normalizedKey) return;
   await initConversationForkLinksStore();
   await Zotero.DB.queryAsync(
@@ -362,8 +349,8 @@ export async function deleteConversationForkLinksForInstanceInTransaction(params
   system: ConversationSystem;
   conversationID?: string;
 }): Promise<void> {
-  const normalizedKey = normalizePositiveInt(params.conversationKey);
-  const conversationID = normalizeString(params.conversationID);
+  const normalizedKey = positiveIntOrZero(params.conversationKey);
+  const conversationID = trimmedStringOrUndefined(params.conversationID);
   if (!normalizedKey) return;
   const targetKeyClause = conversationID
     ? "(target_conversation_id = ? OR (target_conversation_id IS NULL AND target_system = ? AND target_conversation_key = ?))"

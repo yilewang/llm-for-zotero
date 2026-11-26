@@ -22,6 +22,7 @@ import { getAgentToolResultHandle } from "../../agent/store/toolResultHandles";
 import { MIN_NEAR_COMPLETE_QUOTE_SUPPORT_COVERAGE } from "../../services/quotes/quoteCitations";
 import { summarizeQuoteTextSupport } from "../../services/quotes/quoteTextSearch";
 import { sanitizeText } from "../../utils/textSanitization";
+import { positiveIntOrZero } from "../../core/values";
 
 export type QuoteEvidenceProvenance = {
   itemId: number;
@@ -49,11 +50,6 @@ const MAX_EVIDENCE_PASSAGES = 1000;
 const MAX_CACHED_RUNS = 8;
 
 const runEvidenceCache = new Map<string, EvidencePassage[]>();
-
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
 
 /**
  * Every recorded rendering of a passage, not just the first: a tool often
@@ -121,8 +117,8 @@ function readIdPair(
 ): { itemId: number; contextItemId: number } | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const itemId = normalizePositiveInt(record.itemId);
-  const contextItemId = normalizePositiveInt(record.contextItemId);
+  const itemId = positiveIntOrZero(record.itemId);
+  const contextItemId = positiveIntOrZero(record.contextItemId);
   return itemId && contextItemId ? { itemId, contextItemId } : null;
 }
 

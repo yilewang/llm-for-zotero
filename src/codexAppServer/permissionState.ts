@@ -1,3 +1,4 @@
+import { isRecord } from "../core/values";
 export type CodexApprovalPolicy = "untrusted" | "on-request" | "never";
 export type CodexApprovalsReviewer = "user" | "auto_review";
 
@@ -59,10 +60,6 @@ export function cloneCodexPermissionState(
       ? { ...state.approvalOverride }
       : null,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export function parseCodexPermissionState(

@@ -1,5 +1,6 @@
 import type { RuntimeModelEntry } from "../utils/modelProviders";
 import { claudeBridgeFetch } from "./bridgeProcess";
+import { trimmedString } from "../core/values";
 
 const CLAUDE_RUNTIME_GROUP_ID = "claude-runtime";
 const CLAUDE_RUNTIME_ENTRY_PREFIX = "claude_runtime";
@@ -60,10 +61,6 @@ export type ClaudeModelPreferenceSelection = {
   customValue: string;
 };
 
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function normalizeBoolean(
   record: Record<string, unknown>,
   key: string,
@@ -82,7 +79,7 @@ function normalizeEffortLevels(value: unknown): string[] {
       typeof raw === "string"
         ? raw.trim()
         : raw && typeof raw === "object"
-          ? normalizeString(
+          ? trimmedString(
               (raw as Record<string, unknown>).value ??
                 (raw as Record<string, unknown>).level ??
                 (raw as Record<string, unknown>).effort,
@@ -100,9 +97,9 @@ function normalizeStructuredModel(
 ): ClaudeModelCatalogEntry | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const modelValue = normalizeString(record.value);
+  const modelValue = trimmedString(record.value);
   if (!modelValue) return null;
-  const resolvedModel = normalizeString(record.resolvedModel);
+  const resolvedModel = trimmedString(record.resolvedModel);
   const supportsEffort = normalizeBoolean(record, "supportsEffort");
   const supportsAdaptiveThinking = normalizeBoolean(
     record,
@@ -113,8 +110,8 @@ function normalizeStructuredModel(
   return {
     value: modelValue,
     ...(resolvedModel ? { resolvedModel } : {}),
-    displayName: normalizeString(record.displayName) || modelValue,
-    description: normalizeString(record.description),
+    displayName: trimmedString(record.displayName) || modelValue,
+    description: trimmedString(record.description),
     ...(supportsEffort === undefined ? {} : { supportsEffort }),
     supportedEffortLevels: normalizeEffortLevels(record.supportedEffortLevels),
     ...(supportsAdaptiveThinking === undefined
@@ -160,7 +157,7 @@ export function normalizeClaudeModelCatalog(
   return {
     models: dedupeModels(
       rawModels
-        .map((model) => normalizeString(model))
+        .map((model) => trimmedString(model))
         .filter(Boolean)
         .map((model) => ({
           value: model,

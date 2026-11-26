@@ -94,6 +94,7 @@ import {
   isRuntimeConversationSystem,
   RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
 } from "../core/conversations/conversationSystems";
+import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
 
 export const USAGE_HISTORY_BACKFILL_MIGRATION_ID = "usage-history-backfill-v1";
 
@@ -225,17 +226,6 @@ function normalizePositiveInt(value: unknown): number | null {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-function normalizeTokenCount(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
-function normalizeText(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 /** Column names a table actually has; empty means the table is not there. */
 async function readTableColumns(
   db: BackfillDb,
@@ -303,14 +293,14 @@ async function loadConversationsFromCatalog(
   for (const row of rows || []) {
     const conversationKey = normalizePositiveInt(row.conversationKey);
     if (!conversationKey) continue;
-    const kind = normalizeText(row.kind);
+    const kind = trimmedStringOrNull(row.kind);
     conversations.push({
       conversationKey,
       messagesTable: params.messagesTable,
       catalogMode: params.fixedMode ?? (kind === "paper" ? "paper" : "library"),
       libraryID: normalizePositiveInt(row.libraryID),
       paperItemID: normalizePositiveInt(row.paperItemID),
-      conversationInstanceID: normalizeText(row.conversationInstanceID),
+      conversationInstanceID: trimmedStringOrNull(row.conversationInstanceID),
     });
   }
   return conversations;
@@ -395,7 +385,7 @@ async function loadMessages(
   )) as Array<Record<string, unknown>> | undefined;
   const messages: HistoryMessage[] = [];
   for (const row of rows || []) {
-    const role = normalizeText(row.role);
+    const role = trimmedStringOrNull(row.role);
     const timestamp = Math.floor(Number(row.timestamp));
     if (
       (role !== "user" && role !== "assistant") ||
@@ -405,11 +395,11 @@ async function loadMessages(
     messages.push({
       role,
       timestamp,
-      runMode: normalizeText(row.runMode),
-      modelName: normalizeText(row.modelName),
-      providerLabel: normalizeText(row.providerLabel),
-      contextTokens: normalizeTokenCount(row.contextTokens),
-      webchatRunState: normalizeText(row.webchatRunState),
+      runMode: trimmedStringOrNull(row.runMode),
+      modelName: trimmedStringOrNull(row.modelName),
+      providerLabel: trimmedStringOrNull(row.providerLabel),
+      contextTokens: positiveIntOrZero(row.contextTokens),
+      webchatRunState: trimmedStringOrNull(row.webchatRunState),
       text: typeof row.text === "string" ? row.text : "",
       reasoningSummary:
         typeof row.reasoningSummary === "string" ? row.reasoningSummary : "",
@@ -761,7 +751,7 @@ async function loadHistoryEstimateRows(db: BackfillDb): Promise<EstimateRow[]> {
       id,
       conversationKey,
       timestamp,
-      completionTokens: normalizeTokenCount(row.completionTokens),
+      completionTokens: positiveIntOrZero(row.completionTokens),
     });
   }
   return estimates;

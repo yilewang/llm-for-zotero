@@ -34,6 +34,7 @@ import type {
   TagContextRef,
 } from "./types";
 import { resolvePaperContextDisplayMetadata } from "./setupHandlers/controllers/composeContextController";
+import { positiveIntOrZero } from "../../core/values";
 
 export type ContextSelectionStatusLevel = "ready" | "warning" | "error";
 export type ReferenceAttachmentContextKind =
@@ -79,11 +80,6 @@ const changed = (
   statusMessage,
   statusLevel,
 });
-
-function normalizePositiveItemId(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
 
 function clearPaperOverridesForItem(
   itemId: number,
@@ -208,7 +204,7 @@ function resolveDefaultContextParentItem(
 ): Zotero.Item | null {
   if (!zoteroItem) return null;
   if (zoteroItem.isRegularItem?.()) return zoteroItem;
-  const parentId = normalizePositiveItemId(
+  const parentId = positiveIntOrZero(
     (zoteroItem as any).parentID || (zoteroItem as any).parentItemID,
   );
   if (!parentId || typeof Zotero === "undefined") return null;
@@ -243,7 +239,7 @@ export async function addZoteroItemsAsDefaultContext(
   const seenParentIds = new Set<number>();
   for (const zoteroItem of zoteroItems) {
     const parent = resolveDefaultContextParentItem(zoteroItem);
-    const parentId = normalizePositiveItemId(parent?.id);
+    const parentId = positiveIntOrZero(parent?.id);
     if (!parent || !parentId || seenParentIds.has(parentId)) continue;
     seenParentIds.add(parentId);
     parentItems.push(parent);
@@ -277,9 +273,9 @@ export function hasUserAddedContextForItem(params: {
   itemId: number;
   textContextKey?: number | null;
 }): boolean {
-  const itemId = normalizePositiveItemId(params.itemId);
+  const itemId = positiveIntOrZero(params.itemId);
   if (!itemId) return false;
-  const textContextKey = normalizePositiveItemId(params.textContextKey);
+  const textContextKey = positiveIntOrZero(params.textContextKey);
   return (
     composeContextStore.papers.list(itemId).length > 0 ||
     composeContextStore.otherRefs.list(itemId).length > 0 ||
@@ -298,9 +294,9 @@ export function clearUserAddedContextForItem(params: {
   itemId: number;
   textContextKey?: number | null;
 }): ContextSelectionActionResult {
-  const itemId = normalizePositiveItemId(params.itemId);
+  const itemId = positiveIntOrZero(params.itemId);
   if (!itemId) return unchanged();
-  const textContextKey = normalizePositiveItemId(params.textContextKey);
+  const textContextKey = positiveIntOrZero(params.textContextKey);
   const hadContext = hasUserAddedContextForItem({ itemId, textContextKey });
   composeContextStore.initializedConversations.mark(itemId);
 

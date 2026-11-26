@@ -106,6 +106,7 @@ import {
   isRuntimeConversationSystem,
   type RuntimeConversationSystem,
 } from "./conversationSystems";
+import { positiveIntOrZero, trimmedStringOrUndefined } from "../values";
 
 export type ConversationCatalogKind = "global" | "paper";
 
@@ -242,31 +243,15 @@ export type ForkConversationResult = {
   forkLink: ConversationForkLink;
 };
 
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
 function normalizeLimit(value: unknown, fallback = 50): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.max(1, Math.floor(parsed));
 }
 
-function normalizeTitle(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function normalizeTimestamp(value: unknown, fallback = 0): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
-  return Math.floor(parsed);
-}
-
-function normalizeUserTurnCount(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return Math.floor(parsed);
 }
 
@@ -293,8 +278,8 @@ function fromUpstreamGlobalSummary(
   summary: GlobalConversationSummary | null | undefined,
 ): ConversationCatalogEntry | null {
   if (!summary) return null;
-  const conversationKey = normalizePositiveInt(summary.conversationKey);
-  const libraryID = normalizePositiveInt(summary.libraryID);
+  const conversationKey = positiveIntOrZero(summary.conversationKey);
+  const libraryID = positiveIntOrZero(summary.libraryID);
   const createdAt = normalizeTimestamp(summary.createdAt);
   if (
     !conversationKey ||
@@ -313,8 +298,8 @@ function fromUpstreamGlobalSummary(
     libraryID,
     createdAt,
     lastActivityAt,
-    title: normalizeTitle(summary.title),
-    userTurnCount: normalizeUserTurnCount(summary.userTurnCount),
+    title: trimmedStringOrUndefined(summary.title),
+    userTurnCount: positiveIntOrZero(summary.userTurnCount),
     ...(summary.webchatSession === true ? { webchatSession: true } : {}),
   };
 }
@@ -323,10 +308,10 @@ function fromUpstreamPaperSummary(
   summary: PaperConversationSummary | null | undefined,
 ): ConversationCatalogEntry | null {
   if (!summary) return null;
-  const conversationKey = normalizePositiveInt(summary.conversationKey);
-  const libraryID = normalizePositiveInt(summary.libraryID);
-  const paperItemID = normalizePositiveInt(summary.paperItemID);
-  const sessionVersion = normalizePositiveInt(summary.sessionVersion);
+  const conversationKey = positiveIntOrZero(summary.conversationKey);
+  const libraryID = positiveIntOrZero(summary.libraryID);
+  const paperItemID = positiveIntOrZero(summary.paperItemID);
+  const sessionVersion = positiveIntOrZero(summary.sessionVersion);
   const createdAt = normalizeTimestamp(summary.createdAt);
   if (
     !conversationKey ||
@@ -349,8 +334,8 @@ function fromUpstreamPaperSummary(
     sessionVersion,
     createdAt,
     lastActivityAt,
-    title: normalizeTitle(summary.title),
-    userTurnCount: normalizeUserTurnCount(summary.userTurnCount),
+    title: trimmedStringOrUndefined(summary.title),
+    userTurnCount: positiveIntOrZero(summary.userTurnCount),
     ...(summary.webchatSession === true ? { webchatSession: true } : {}),
   };
 }
@@ -365,10 +350,10 @@ function fromRuntimeSummary(
     | undefined,
 ): ConversationCatalogEntry | null {
   if (!summary) return null;
-  const conversationKey = normalizePositiveInt(summary.conversationKey);
-  const libraryID = normalizePositiveInt(summary.libraryID);
+  const conversationKey = positiveIntOrZero(summary.conversationKey);
+  const libraryID = positiveIntOrZero(summary.libraryID);
   const createdAt = normalizeTimestamp(summary.createdAt);
-  const paperItemID = normalizePositiveInt(summary.paperItemID);
+  const paperItemID = positiveIntOrZero(summary.paperItemID);
   if (!conversationKey || !libraryID || !createdAt) return null;
   if (summary.kind === "paper" && !paperItemID) return null;
   return {
@@ -381,16 +366,18 @@ function fromRuntimeSummary(
     paperItemID: summary.kind === "paper" ? paperItemID : undefined,
     createdAt,
     lastActivityAt: normalizeTimestamp(summary.updatedAt, createdAt),
-    title: normalizeTitle(summary.title),
-    userTurnCount: normalizeUserTurnCount(summary.userTurnCount),
-    providerSessionId: normalizeTitle(summary.providerSessionId),
-    scopedConversationKey: normalizeTitle(summary.scopedConversationKey),
-    scopeType: normalizeTitle(summary.scopeType),
-    scopeId: normalizeTitle(summary.scopeId),
-    scopeLabel: normalizeTitle(summary.scopeLabel),
-    cwd: normalizeTitle(summary.cwd),
-    model: normalizeTitle(summary.model),
-    effort: normalizeTitle(summary.effort),
+    title: trimmedStringOrUndefined(summary.title),
+    userTurnCount: positiveIntOrZero(summary.userTurnCount),
+    providerSessionId: trimmedStringOrUndefined(summary.providerSessionId),
+    scopedConversationKey: trimmedStringOrUndefined(
+      summary.scopedConversationKey,
+    ),
+    scopeType: trimmedStringOrUndefined(summary.scopeType),
+    scopeId: trimmedStringOrUndefined(summary.scopeId),
+    scopeLabel: trimmedStringOrUndefined(summary.scopeLabel),
+    cwd: trimmedStringOrUndefined(summary.cwd),
+    model: trimmedStringOrUndefined(summary.model),
+    effort: trimmedStringOrUndefined(summary.effort),
   };
 }
 
@@ -466,11 +453,11 @@ function catalogEntryMatchesScope(
   if (!entry) return false;
   if (entry.system !== scope.system) return false;
   if (entry.kind !== scope.kind) return false;
-  if (entry.libraryID !== normalizePositiveInt(scope.libraryID)) return false;
+  if (entry.libraryID !== positiveIntOrZero(scope.libraryID)) return false;
   if (scope.kind === "paper") {
     return (
-      normalizePositiveInt(entry.paperItemID) ===
-      normalizePositiveInt(scope.paperItemID)
+      positiveIntOrZero(entry.paperItemID) ===
+      positiveIntOrZero(scope.paperItemID)
     );
   }
   return true;
@@ -1154,7 +1141,7 @@ export const conversationRepository = {
   async getCatalogEntry(
     target: ConversationCatalogMutationTarget,
   ): Promise<ConversationCatalogEntry | null> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return null;
     const entry = await storeFor(target.system).getCatalogEntry(
       conversationKey,
@@ -1230,14 +1217,14 @@ export const conversationRepository = {
   async loadMessages(
     target: ConversationMessageTarget & { limit?: number },
   ): Promise<StoredChatMessage[]> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return [];
     const limit = normalizeLimit(target.limit, 200);
     return storeFor(target.system).loadMessages(conversationKey, limit);
   },
 
   async deleteTurnMessages(target: DeleteTurnMessagesParams): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     const userTimestamp = normalizeTimestamp(target.userTimestamp);
     const assistantTimestamp = normalizeTimestamp(target.assistantTimestamp);
@@ -1254,9 +1241,9 @@ export const conversationRepository = {
   async ensureCatalogEntry(
     params: EnsureCatalogEntryParams,
   ): Promise<ConversationCatalogEntry | null> {
-    const libraryID = normalizePositiveInt(params.libraryID);
-    const paperItemID = normalizePositiveInt(params.paperItemID);
-    const conversationKey = normalizePositiveInt(params.conversationKey);
+    const libraryID = positiveIntOrZero(params.libraryID);
+    const paperItemID = positiveIntOrZero(params.paperItemID);
+    const conversationKey = positiveIntOrZero(params.conversationKey);
     if (!libraryID) return null;
     return storeFor(params.system).ensureCatalogEntry(params, {
       libraryID,
@@ -1268,8 +1255,8 @@ export const conversationRepository = {
   async createCatalogEntry(
     params: CreateCatalogEntryParams,
   ): Promise<ConversationCatalogEntry | null> {
-    const libraryID = normalizePositiveInt(params.libraryID);
-    const paperItemID = normalizePositiveInt(params.paperItemID);
+    const libraryID = positiveIntOrZero(params.libraryID);
+    const paperItemID = positiveIntOrZero(params.paperItemID);
     if (!libraryID) return null;
     return storeFor(params.system).createCatalogEntry(params, {
       libraryID,
@@ -1285,9 +1272,9 @@ export const conversationRepository = {
     }
     const fork = storeFor(params.system).fork;
     if (!fork) return null;
-    const libraryID = normalizePositiveInt(params.libraryID);
-    const paperItemID = normalizePositiveInt(params.paperItemID);
-    const sourceConversationKey = normalizePositiveInt(
+    const libraryID = positiveIntOrZero(params.libraryID);
+    const paperItemID = positiveIntOrZero(params.paperItemID);
+    const sourceConversationKey = positiveIntOrZero(
       params.sourceConversationKey,
     );
     const throughAssistantTimestamp = normalizeTimestamp(
@@ -1311,7 +1298,7 @@ export const conversationRepository = {
       });
       if (!catalogEntryMatchesScope(sourceEntry, params)) return null;
       const sourceProviderSessionId =
-        normalizeTitle(sourceEntry.providerSessionId) || "";
+        trimmedStringOrUndefined(sourceEntry.providerSessionId) || "";
 
       if (fork.getLatestForkableAssistantTimestamp) {
         const latestForkableAssistantTimestamp =
@@ -1463,8 +1450,8 @@ export const conversationRepository = {
       });
 
       const titleSeed =
-        normalizeTitle(params.title) ||
-        normalizeTitle(sourceEntry?.title) ||
+        trimmedStringOrUndefined(params.title) ||
+        trimmedStringOrUndefined(sourceEntry?.title) ||
         "Forked chat";
       await conversationRepository.setCatalogTitle({
         system: params.system,
@@ -1511,8 +1498,8 @@ export const conversationRepository = {
   async listCatalogEntries(
     params: ConversationCatalogListParams,
   ): Promise<ConversationCatalogEntry[]> {
-    const libraryID = normalizePositiveInt(params.libraryID);
-    const paperItemID = normalizePositiveInt(params.paperItemID);
+    const libraryID = positiveIntOrZero(params.libraryID);
+    const paperItemID = positiveIntOrZero(params.paperItemID);
     const limit = normalizeLimit(params.limit);
     if (!libraryID) return [];
     return storeFor(params.system).listCatalogEntries(params, {
@@ -1527,7 +1514,7 @@ export const conversationRepository = {
     libraryID: number;
     limit?: number | null;
   }): Promise<ConversationCatalogEntry[]> {
-    const libraryID = normalizePositiveInt(params.libraryID);
+    const libraryID = positiveIntOrZero(params.libraryID);
     const limit =
       params.limit === null ? null : normalizeLimit(params.limit, 100);
     if (!libraryID) return [];
@@ -1537,7 +1524,7 @@ export const conversationRepository = {
   async setCatalogTitle(
     target: ConversationCatalogMutationTarget & { title: string },
   ): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     await withConversationWriteLock(conversationKey, async () => {
       if (areConversationWritesFrozen(conversationKey)) return;
@@ -1561,7 +1548,7 @@ export const conversationRepository = {
   async clearCatalogTitle(
     target: ConversationCatalogMutationTarget,
   ): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     await storeFor(target.system).clearCatalogTitle(conversationKey, {
       instanceID: target.instanceID,
@@ -1573,7 +1560,7 @@ export const conversationRepository = {
   async touchCatalogTitle(
     target: ConversationCatalogMutationTarget & { title: string },
   ): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     await storeFor(target.system).touchCatalogTitle(
       conversationKey,
@@ -1585,7 +1572,7 @@ export const conversationRepository = {
   async touchEmptyCatalogActivity(
     target: ConversationCatalogMutationTarget & { timestamp?: number },
   ): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     const expectedGeneration =
       target.expectedGeneration ??
@@ -1611,7 +1598,7 @@ export const conversationRepository = {
   async deleteCatalogEntry(
     target: ConversationCatalogMutationTarget,
   ): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     // Once the permanent ledger is active, even internal rollback paths must
     // use the same identity-bound local deletion primitive as user deletion.
@@ -1634,7 +1621,7 @@ export const conversationRepository = {
   async deleteLocalConversationRows(
     target: ConversationCatalogMutationTarget,
   ): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     const store = storeFor(target.system);
     const providerCleanup = store.providerCleanup;
@@ -1717,7 +1704,7 @@ export const conversationRepository = {
   async preflightDeleteLocalConversationRows(
     target: ConversationCatalogMutationTarget,
   ): Promise<void> {
-    const conversationKey = normalizePositiveInt(target.conversationKey);
+    const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return;
     await storeFor(target.system).preflightDeleteLocalConversationRows(
       conversationKey,
