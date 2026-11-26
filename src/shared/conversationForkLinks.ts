@@ -8,7 +8,7 @@ import {
 } from "./conversationKeyLedger";
 import { isConversationSystem } from "../core/conversations/conversationSystems";
 import { positiveIntOrZero, trimmedStringOrUndefined } from "../core/values";
-import { isAlreadyExistingColumnError } from "../core/conversations/conversationCleanupJobs";
+import { isAlreadyExistingColumnError } from "../core/zoteroDb";
 
 export type ConversationForkScopeKind = "global" | "paper";
 

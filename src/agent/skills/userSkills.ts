@@ -46,6 +46,7 @@ import {
   getZoteroAgentRuntimeRootDir,
   NATIVE_SKILL_FILE_NAME,
 } from "./nativeSkillPaths";
+import { getIOUtils, type GeckoIOUtils } from "../../utils/geckoFs";
 
 // ---------------------------------------------------------------------------
 // Body hash tracking — detect user modifications to skill files
@@ -205,25 +206,6 @@ const BUILTIN_FRONTMATTER_PATCH_OPTIONS: Partial<
 // Gecko runtime helpers (mirrors patterns from mineruCache.ts)
 // ---------------------------------------------------------------------------
 
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-  write?: (path: string, data: Uint8Array) => Promise<number>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-  getChildren?: (path: string) => Promise<string[]>;
-  remove?: (
-    path: string,
-    options?: { recursive?: boolean; ignoreAbsent?: boolean },
-  ) => Promise<void>;
-};
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
-
 /** Returns the directory path where user skill files are stored. */
 export function getUserSkillsDir(): string {
   return getCanonicalUserSkillsDir();
@@ -282,7 +264,7 @@ function ensureNativeSkillName(raw: string, skill: AgentSkill): string {
 }
 
 async function readSkillFile(
-  io: IOUtilsLike,
+  io: GeckoIOUtils,
   filePath: string,
 ): Promise<{ raw: string; skill: AgentSkill } | null> {
   const raw = await readFileText(io, filePath);
@@ -294,7 +276,7 @@ async function readSkillFile(
   }
 }
 
-async function listCanonicalSkillFiles(io: IOUtilsLike): Promise<string[]> {
+async function listCanonicalSkillFiles(io: GeckoIOUtils): Promise<string[]> {
   if (!io.exists || !io.getChildren) return [];
   const skillsDir = getUserSkillsDir();
   try {
@@ -315,7 +297,7 @@ async function listCanonicalSkillFiles(io: IOUtilsLike): Promise<string[]> {
 }
 
 async function normalizeCanonicalSkillFrontmatter(
-  io: IOUtilsLike,
+  io: GeckoIOUtils,
 ): Promise<void> {
   if (!io.read || !io.write) return;
   for (const filePath of await listCanonicalSkillFiles(io)) {
@@ -328,7 +310,7 @@ async function normalizeCanonicalSkillFrontmatter(
 }
 
 async function migrateLegacyFlatSkills(
-  io: IOUtilsLike,
+  io: GeckoIOUtils,
   seeded: Set<string>,
 ): Promise<void> {
   if (
@@ -444,7 +426,7 @@ function setSeededSkillsDir(value: string): void {
 // ---------------------------------------------------------------------------
 
 async function readFileText(
-  io: IOUtilsLike,
+  io: GeckoIOUtils,
   path: string,
 ): Promise<string | null> {
   if (!io.read) return null;
@@ -524,7 +506,7 @@ function upgradeKnownCopy(
  * `.agents/skills/<id>/SKILL.md`.
  */
 async function skillIdsInOtherProfileFolders(
-  io: IOUtilsLike,
+  io: GeckoIOUtils,
   skillIds: ReadonlyArray<string>,
 ): Promise<Set<string>> {
   const found = new Set<string>();

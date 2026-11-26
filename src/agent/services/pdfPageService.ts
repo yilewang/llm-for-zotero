@@ -39,7 +39,14 @@ import {
   type PdfFigureExtractionRuntime,
 } from "./pdfFigureRuntimeService";
 import { collapseWhitespace, positiveIntOrUndefined } from "../../core/values";
-import { getReaderDocument } from "../../services/pdf/pdfPageCapture";
+import {
+  getCloneInto,
+  getPdfRenderWindow,
+  getPdfViewerApplication,
+  getReaderDocument,
+  type WindowConstructors,
+  unwrapWrappedJsObject,
+} from "../../services/pdf/pdfPageCapture";
 
 export type PdfVisualMode = "general" | "figure" | "equation";
 
@@ -159,20 +166,6 @@ type RenderablePdfPage = {
       };
 };
 
-type CloneIntoFn = <T extends object>(
-  value: T,
-  targetScope: unknown,
-  options?: {
-    cloneFunctions?: boolean;
-    wrapReflectors?: boolean;
-  },
-) => T;
-
-type WindowConstructors = {
-  Object?: ObjectConstructor;
-  Array?: ArrayConstructor;
-};
-
 export type PdfFigurePageRender = {
   pageIndex: number;
   pageLabel: string;
@@ -254,41 +247,6 @@ function rectFromPdfXmlAttributes(
     return null;
   }
   return { left, top, width, height };
-}
-
-function unwrapWrappedJsObject<T>(value: T): T {
-  if (!value || (typeof value !== "object" && typeof value !== "function")) {
-    return value;
-  }
-  try {
-    return (value as T & { wrappedJSObject?: T }).wrappedJSObject || value;
-  } catch (_error) {
-    return value;
-  }
-}
-
-function getCloneInto(): CloneIntoFn | undefined {
-  const globalWithClone = globalThis as unknown as {
-    cloneInto?: CloneIntoFn;
-    Components?: { utils?: { cloneInto?: CloneIntoFn } };
-  };
-  return (
-    globalWithClone.cloneInto || globalWithClone.Components?.utils?.cloneInto
-  );
-}
-
-function getPdfRenderWindow(canvasDoc: Document, reader: any): Window | null {
-  try {
-    const canvasWindow = unwrapWrappedJsObject(
-      canvasDoc.defaultView || null,
-    ) as Window | null;
-    const iframeWindow = unwrapWrappedJsObject(
-      reader?._iframeWindow || null,
-    ) as Window | null;
-    return canvasWindow || iframeWindow || null;
-  } catch {
-    return null;
-  }
 }
 
 function getWindowConstructors(windowObject: Window | null | undefined) {
@@ -663,33 +621,6 @@ function getFirstPdfAttachment(
 function getReaderItemId(reader: any): number {
   const raw = Number(reader?._item?.id || reader?.itemID || 0);
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
-}
-
-function getPdfViewerApplication(reader: any): any | null {
-  const candidates = [
-    reader?._internalReader?._lastView,
-    reader?._internalReader?._primaryView,
-    reader?._internalReader?._secondaryView,
-    reader,
-  ];
-  for (const candidate of candidates) {
-    const direct =
-      candidate?._iframeWindow?.PDFViewerApplication ||
-      candidate?._iframe?.contentWindow?.PDFViewerApplication ||
-      candidate?._window?.PDFViewerApplication;
-    if (direct?.pdfDocument) return direct;
-    try {
-      const wrapped =
-        candidate?._iframeWindow?.wrappedJSObject?.PDFViewerApplication ||
-        candidate?._iframe?.contentWindow?.wrappedJSObject
-          ?.PDFViewerApplication ||
-        candidate?._window?.wrappedJSObject?.PDFViewerApplication;
-      if (wrapped?.pdfDocument) return wrapped;
-    } catch (_error) {
-      void _error;
-    }
-  }
-  return null;
 }
 
 async function waitForReaderForItem(targetItemId: number): Promise<any | null> {

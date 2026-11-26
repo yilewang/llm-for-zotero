@@ -7,6 +7,7 @@ import {
 import { CONVERSATION_MESSAGE_TABLES } from "./conversationStore/storeTables";
 import { isConversationSystem } from "../core/conversations/conversationSystems";
 import { positiveIntOrNull } from "../core/values";
+import { getZoteroDb, type ZoteroDb } from "../core/zoteroDb";
 
 export type ConversationKeyLedgerKind = "global" | "paper";
 
@@ -57,23 +58,11 @@ let initializedDbRef: ZoteroDb | null = null;
 const retiredConversationKeys = new Set<number>();
 let retiredConversationKeysDbRef: ZoteroDb | null = null;
 
-type ZoteroDb = {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction?: <T>(task: () => Promise<T>) => Promise<T>;
-};
-
 type QueryableZoteroDb = ZoteroDb & {
   queryAsync: NonNullable<ZoteroDb["queryAsync"]>;
 };
 
 const ledgerInitializationByDb = new WeakMap<ZoteroDb, Promise<void>>();
-
-function getDb(): ZoteroDb | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { DB?: ZoteroDb } }).Zotero
-      ?.DB || null
-  );
-}
 
 function getCurrentProfileSignature(): string {
   const profileDir = String(
@@ -264,7 +253,7 @@ async function initializeConversationKeyLedgerStore(
   // after a restart.  Install the database fence for any such tables now;
   // each lazy store also calls this helper after creating its own table.
   await installConversationKeyLedgerAgentTriggers();
-  if (getDb() !== db) {
+  if (getZoteroDb() !== db) {
     throw new Error("Conversation key ledger DB changed during initialization");
   }
   retiredConversationKeys.clear();
@@ -279,7 +268,7 @@ async function initializeConversationKeyLedgerStore(
 async function ensureConversationKeyLedgerStoreInitialized(
   forceRefresh: boolean,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   const queryableDb = db as QueryableZoteroDb;
@@ -308,7 +297,7 @@ async function ensureConversationKeyLedgerStoreInitialized(
     // discovered trigger has been installed.  Keep the store unready so the
     // next startup or lazy-store attempt retries, while retaining the prior
     // same-database fence conservatively if a forced refresh failed.
-    if (getDb() === db) {
+    if (getZoteroDb() === db) {
       keyLedgerStoreInitialized = false;
       initializedDbRef = null;
     }
@@ -337,7 +326,7 @@ export async function refreshConversationKeyLedgerStore(): Promise<void> {
 }
 
 export function isConversationKeyLedgerStoreInitialized(): boolean {
-  return keyLedgerStoreInitialized && initializedDbRef === getDb();
+  return keyLedgerStoreInitialized && initializedDbRef === getZoteroDb();
 }
 
 /**
@@ -353,14 +342,14 @@ export function isConversationKeyRetiredInMemory(
   const key = positiveIntOrNull(conversationKey);
   return Boolean(
     key &&
-    retiredConversationKeysDbRef === getDb() &&
+    retiredConversationKeysDbRef === getZoteroDb() &&
     retiredConversationKeys.has(key),
   );
 }
 
 export function rememberConversationKeyRetired(conversationKey: number): void {
   const key = positiveIntOrNull(conversationKey);
-  const db = getDb();
+  const db = getZoteroDb();
   if (!key || !db) return;
   if (retiredConversationKeysDbRef !== db) {
     retiredConversationKeys.clear();
@@ -372,7 +361,7 @@ export function rememberConversationKeyRetired(conversationKey: number): void {
 export async function getConversationKeyLedgerEntry(
   conversationKey: number,
 ): Promise<ConversationKeyLedgerEntry | null> {
-  const db = getDb();
+  const db = getZoteroDb();
   const key = positiveIntOrNull(conversationKey);
   if (!db?.queryAsync || !key) return null;
   const rows = (await db.queryAsync(
@@ -404,7 +393,7 @@ export async function getConversationKeyLedgerEntry(
 export async function ensureConversationKeyLedgerEntryInTransaction(
   entry: ConversationKeyLedgerEntry,
 ): Promise<ConversationKeyLedgerEntry> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   const normalized = normalizeEntry(entry);
@@ -457,7 +446,7 @@ export async function ensureConversationKeyLedgerEntry(
   entry: ConversationKeyLedgerEntry,
 ): Promise<ConversationKeyLedgerEntry> {
   await initConversationKeyLedgerStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.executeTransaction) {
     throw new Error("Conversation key ledger transaction DB is unavailable");
   }
@@ -474,7 +463,7 @@ export async function allocateConversationKeyInTransaction(params: {
   paperItemID?: number;
   issuedAt?: number;
 }): Promise<ConversationKeyLedgerEntry> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   const range = normalizeRange(params.range);
@@ -571,7 +560,7 @@ export async function allocateConversationKeyInTransaction(params: {
 export async function initializeConversationKeyCounterInTransaction(
   range: ConversationKeyRange,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   const normalized = normalizeRange(range);
@@ -633,7 +622,7 @@ function logLedger(message: string, details?: Record<string, unknown>): void {
 async function conversationKeyHasMessages(
   conversationKey: number,
 ): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync) return false;
   for (const table of CONVERSATION_MESSAGE_TABLES) {
     try {
@@ -671,7 +660,7 @@ export async function nextUnissuedConversationKeyInRange(params: {
   endExclusive: number;
   atLeast?: number;
 }): Promise<number> {
-  const db = getDb();
+  const db = getZoteroDb();
   const start = positiveIntOrNull(params.start);
   const requestedEnd = positiveIntOrNull(params.endExclusive);
   if (!db?.queryAsync || !start || !requestedEnd || requestedEnd <= start) {
@@ -709,7 +698,7 @@ export async function retireOrphanedConversationLedgerEntries(params: {
    */
   atomically?: <T>(task: () => Promise<T>) => Promise<T>;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync) return;
   const catalogTables = params.catalogTables
     .map((table) => table.replace(/[^A-Za-z0-9_]/g, ""))
@@ -800,7 +789,7 @@ export async function updateConversationKeyLedgerConversationIDInTransaction(par
   instanceID: string;
   conversationID: string;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   const key = positiveIntOrNull(params.conversationKey);
   const instanceID = normalizeText(params.instanceID, 128);
   const conversationID = normalizeText(params.conversationID, 512);
@@ -822,7 +811,7 @@ export async function retireConversationKeyInTransaction(params: {
   reason?: string;
   retiredAt?: number;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   const key = positiveIntOrNull(params.conversationKey);
   const instanceID = normalizeText(params.instanceID, 128);
   if (!db?.queryAsync || !key || !instanceID) {
@@ -978,7 +967,7 @@ async function dropSupersededConversationFenceTriggers(
   tables: readonly string[],
   installed: ReadonlySet<string> | null,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync) return;
   for (const table of tables) {
     const safe = table.replace(/[^A-Za-z0-9_]/g, "");
@@ -1019,7 +1008,7 @@ async function dropSupersededConversationFenceTriggers(
 export async function installConversationKeyLedgerCatalogTriggers(
   catalogTables: readonly string[],
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   const installed = await readInstalledTriggerNames(db);
@@ -1061,7 +1050,7 @@ export async function installConversationKeyLedgerCatalogTriggers(
 export async function installConversationKeyLedgerMessageTriggers(params: {
   messageTable: string;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync) {
     throw new Error("Conversation key ledger DB is unavailable");
   }
@@ -1103,7 +1092,7 @@ export async function installConversationKeyLedgerMessageTriggers(params: {
  * but SQLite rejects it once the ledger marks the key retired.
  */
 export async function installConversationKeyLedgerAgentTriggers(): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync) return;
   let rows: Array<{ type?: unknown; name?: unknown }> | undefined;
   try {
@@ -1312,7 +1301,7 @@ export async function seedConversationKeyLedgerFromCatalogs(
     kindColumn?: boolean;
   }>,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   for (const catalog of catalogs) {
@@ -1414,7 +1403,7 @@ export async function seedConversationKeyLedgerFromCatalogs(
 /** Reserve keys recorded by the durable deletion tombstone table even when
  * their catalog row was removed before this migration first ran. */
 export async function seedConversationKeyLedgerFromTombstones(): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   let rows: Array<Record<string, unknown>> | undefined;
@@ -1501,7 +1490,7 @@ export async function reserveOrphanConversationMessageKeys(params: {
   catalogTables: string[];
   system: ConversationSystem;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync)
     throw new Error("Conversation key ledger DB is unavailable");
   const sourceTables = [
@@ -1624,7 +1613,7 @@ export type ConversationKeyQuarantineEntry = {
 export async function getConversationKeyQuarantineEntries(): Promise<
   ConversationKeyQuarantineEntry[]
 > {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync) return [];
   try {
     const rows = (await db.queryAsync(

@@ -4,10 +4,7 @@ import {
   CONVERSATION_STORE_TABLES,
 } from "./conversationStore/storeTables";
 import { messageJoinCondition } from "./conversationStore/messageConversationSelector";
-
-type ZoteroDb = {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
+import { getZoteroDb, tableExists, type ZoteroDb } from "../core/zoteroDb";
 
 export type ConversationIntegrityIssueCode =
   | "registry_blank_conversation_id"
@@ -66,25 +63,6 @@ const SUMMARY_TABLES: Array<{
       ? "c.created_at"
       : "c.updated_at, c.created_at",
 }));
-
-function getZoteroDb(): ZoteroDb | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { DB?: ZoteroDb } }).Zotero
-      ?.DB || null
-  );
-}
-
-async function tableExists(db: ZoteroDb, tableName: string): Promise<boolean> {
-  const rows = (await db.queryAsync?.(
-    `SELECT name
-     FROM sqlite_master
-     WHERE type = 'table'
-       AND name = ?
-     LIMIT 1`,
-    [tableName],
-  )) as Array<{ name?: unknown }> | undefined;
-  return Boolean(rows?.length);
-}
 
 function firstUserTitleSql(messageTable: string): string {
   return `(SELECT m0.text

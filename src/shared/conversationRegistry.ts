@@ -5,6 +5,7 @@ import { getConversationKeyLedgerEntry } from "./conversationKeyLedger";
 import { getConversationCatalogTable } from "./conversationStore/storeTables";
 import { isConversationSystem } from "../core/conversations/conversationSystems";
 import { positiveIntOrNull } from "../core/values";
+import { getZoteroDb } from "../core/zoteroDb";
 
 export type RegistryConversationKind = "global" | "paper";
 
@@ -296,24 +297,6 @@ async function registryWriteStillOwnsLedger(
     ledgerEntry.conversationID === scope.conversationID &&
     ledgerEntry.system === scope.system &&
     ledgerEntry.kind === scope.kind,
-  );
-}
-
-function getZoteroDb(): {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction?: <T>(task: () => Promise<T>) => Promise<T>;
-} | null {
-  return (
-    (
-      globalThis as typeof globalThis & {
-        Zotero?: {
-          DB?: {
-            queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-            executeTransaction?: <T>(task: () => Promise<T>) => Promise<T>;
-          };
-        };
-      }
-    ).Zotero?.DB || null
   );
 }
 

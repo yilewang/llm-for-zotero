@@ -25,11 +25,7 @@ import { CONVERSATION_KEY_LEDGER_TABLE } from "./conversationKeyLedger";
 import { CONVERSATION_REGISTRY_TABLE } from "./conversationRegistry";
 import { markConversationSchemaMigrationApplied } from "./conversationSchemaMigrations";
 import { CONVERSATION_SEARCH_INDEX_TABLE } from "./conversationSearchIndex";
-
-type ZoteroDb = {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction?: <T>(task: () => Promise<T>) => Promise<T>;
-};
+import { getZoteroDb, type ZoteroDb } from "../core/zoteroDb";
 
 export const CONVERSATION_SYSTEM_CHECK_MIGRATION_ID =
   "conversation-system-check-v1:removed";
@@ -47,13 +43,6 @@ export const CONVERSATION_SYSTEM_CHECK_TABLES: readonly string[] = [
 /** The clause, with the whitespace before it, as SQLite stores it. */
 const SYSTEM_CHECK_CLAUSE =
   /\s*CHECK\s*\(\s*system\s+IN\s*\(\s*'[^']*'(?:\s*,\s*'[^']*')*\s*\)\s*\)/i;
-
-function getZoteroDb(): ZoteroDb | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { DB?: ZoteroDb } }).Zotero
-      ?.DB || null
-  );
-}
 
 async function query<T = Record<string, unknown>>(
   db: ZoteroDb,

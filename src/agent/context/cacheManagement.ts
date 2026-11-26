@@ -22,6 +22,7 @@ import {
 import { normalizeQuoteTokenId } from "../../services/quotes/quoteTokenIds";
 import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
 import { stableJson } from "../store/stableJson";
+import { getZoteroDb } from "../../core/zoteroDb";
 
 export type AgentCacheEvidenceActivity = {
   toolName: string;
@@ -64,10 +65,6 @@ type AgentEvidenceEntry = {
   lastSeenAt: number;
 };
 
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
 const MAX_EVIDENCE_ENTRIES = 12;
 const MAX_RENDERED_EVIDENCE_ENTRIES = 8;
 const MAX_SNIPPETS_PER_ENTRY = 4;
@@ -80,15 +77,6 @@ const evidenceLedger = new Map<string, Map<string, AgentEvidenceEntry>>();
 const hydratedConversations = new Set<string>();
 let initPromise: Promise<boolean> | null = null;
 
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
-
 function logEvidenceStoreError(message: string, error: unknown): void {
   const toolkit = (
     globalThis as typeof globalThis & {
@@ -99,7 +87,7 @@ function logEvidenceStoreError(message: string, error: unknown): void {
 }
 
 async function ensureAgentEvidenceStore(): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return false;
   if (initPromise) return initPromise;
   initPromise = (async () => {
@@ -734,7 +722,7 @@ async function persistEvidenceLedger(
   // A temporary side chat's key (reserved band) is never persisted.
   if (isEphemeralConversationKey(conversationKey)) return;
   const dbReady = await ensureAgentEvidenceStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   const entries = Array.from(ledger.values())
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
@@ -790,7 +778,7 @@ export async function hydrateAgentEvidenceCache(
   const key = lifecycleKey(conversationKey);
   if (hydratedConversations.has(key)) return;
   const dbReady = await ensureAgentEvidenceStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     const rows = (await db.queryAsync(
@@ -850,7 +838,7 @@ export async function clearPersistedAgentEvidence(
     }
   }
   const dbReady = await ensureAgentEvidenceStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     if (conversationKeyValue === undefined) {

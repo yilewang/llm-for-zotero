@@ -12,6 +12,7 @@ import {
 } from "../../shared/conversationWriteFence";
 import { positiveIntOrUndefined } from "../../core/values";
 import { stableJson } from "./stableJson";
+import { getZoteroDb } from "../../core/zoteroDb";
 
 export type AgentToolResultHandleRecord = {
   handle: string;
@@ -34,10 +35,6 @@ export type AgentToolResultHandleSeed = {
   createdAt?: number;
 };
 
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
 const TOOL_RESULT_HANDLE_TABLE = "llm_for_zotero_agent_tool_result_handles";
 const TOOL_RESULT_HANDLE_INDEX =
   "llm_for_zotero_agent_tool_result_handles_conversation_idx";
@@ -45,16 +42,6 @@ const TOOL_RESULT_HANDLE_INDEX =
 const handleStore = new Map<string, AgentToolResultHandleRecord>();
 const hydratedConversations = new Set<number>();
 let initPromise: Promise<boolean> | null = null;
-
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-      ztoolkit?: { log?: (...args: unknown[]) => void };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
 
 function logHandleStoreError(message: string, error: unknown): void {
   const toolkit = (
@@ -113,7 +100,7 @@ function normalizeRecord(value: unknown): AgentToolResultHandleRecord | null {
 }
 
 async function ensureAgentToolResultHandleStore(): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return false;
   if (initPromise) return initPromise;
   initPromise = (async () => {
@@ -192,7 +179,7 @@ export async function hydrateAgentToolResultHandles(
   if (!conversationKey || hydratedConversations.has(conversationKey)) return;
   const expectedGeneration = getConversationWriteGeneration(conversationKey);
   const dbReady = await ensureAgentToolResultHandleStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) {
     hydratedConversations.add(conversationKey);
     return;
@@ -258,7 +245,7 @@ export async function upsertAgentToolResultHandles(
     return false;
   }
   const dbReady = await ensureAgentToolResultHandleStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return false;
   let written = true;
   try {
@@ -377,7 +364,7 @@ export async function clearPersistedAgentToolResultHandles(
     }
   }
   const dbReady = await ensureAgentToolResultHandleStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     if (conversationKeyValue === undefined) {

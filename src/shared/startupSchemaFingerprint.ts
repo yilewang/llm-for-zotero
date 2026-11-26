@@ -3,6 +3,7 @@ import {
   CONVERSATION_SCHEMA_MIGRATIONS_TABLE,
   markConversationSchemaMigrationApplied,
 } from "./conversationSchemaMigrations";
+import { getZoteroDb } from "../core/zoteroDb";
 
 /**
  * Startup schema passes and the Zotero transaction queue.
@@ -47,18 +48,6 @@ export type StartupSchemaPass = {
 };
 
 const STARTUP_SCHEMA_FINGERPRINT_ID_PREFIX = "startup-schema-fingerprint:";
-
-type ZoteroDb = {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction?: <T>(task: () => Promise<T>) => Promise<T>;
-};
-
-function getZoteroDb(): ZoteroDb | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { DB?: ZoteroDb } }).Zotero
-      ?.DB || null
-  );
-}
 
 export function startupSchemaFingerprintID(storeID: string): string {
   return `${STARTUP_SCHEMA_FINGERPRINT_ID_PREFIX}${storeID}`;

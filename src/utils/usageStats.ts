@@ -29,10 +29,10 @@ import {
   toLocalDateKey,
   type StoredUsageEvent,
   type UsageTokenSource,
-  getUsageDb,
   normalizePositiveInt,
 } from "./usageStore";
 import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
+import { getZoteroDb } from "../core/zoteroDb";
 
 /** Catalog tables a library conversation's title can live in. */
 const CONVERSATION_CATALOG_TABLES = [
@@ -198,7 +198,7 @@ function logUsageStatsWarning(message: string, error?: unknown): void {
  * read failure yields no rows: the Usage view shows zeros rather than an error.
  */
 async function readRows(sql: string, params: unknown[] = []): Promise<Row[]> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   if (!db) return [];
   try {
     const rows = await db.queryAsync(sql, params);
