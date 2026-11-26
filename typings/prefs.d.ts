@@ -65,6 +65,7 @@ declare namespace _ZoteroTypes {
       "openalexApiKey": string;
       "webAccessProvider": string;
       "anysearchApiKey": string;
+      "keenableApiKey": string;
       "conversationSystem": string;
       "enableCodexAppServerMode": boolean;
       "codexAppServerModel": string;

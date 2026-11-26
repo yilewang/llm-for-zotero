@@ -2,12 +2,14 @@ import type { AgentRuntimeRequest } from "../../types";
 import {
   getTavilyApiKey,
   getAnysearchApiKey,
+  getKeenableApiKey,
   getWebAccessProvider,
   isWebAccessConfigured,
 } from "../../../webAccess/prefs";
 import type { WebAccessProvider } from "../../../webAccess/types";
 import { TavilyClient } from "../../../webAccess/tavilyClient";
 import { AnysearchClient } from "../../../webAccess/anysearchClient";
+import { KeenableClient } from "../../../webAccess/keenableClient";
 import { DeepSeekSearchClient } from "../../../webAccess/deepseekSearchClient";
 import { getDeepSeekSearchCredential } from "../../../webAccess/deepseekSearchKey";
 
@@ -17,6 +19,10 @@ export function createConfiguredWebAccessProvider(): WebAccessProvider {
   const provider = getWebAccessProvider();
   if (provider === "anysearch") {
     return new AnysearchClient(getAnysearchApiKey());
+  }
+  if (provider === "keenable") {
+    // Keyless without a key; a key only lifts rate limits.
+    return new KeenableClient(getKeenableApiKey());
   }
   if (provider === "deepseek") {
     // An empty key throws here: no other provider is tried instead.

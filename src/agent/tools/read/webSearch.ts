@@ -85,6 +85,7 @@ function webProviderLabel(): string {
   const provider = getWebAccessProvider();
   if (provider === "anysearch") return "AnySearch";
   if (provider === "deepseek") return "DeepSeek";
+  if (provider === "keenable") return "Keenable";
   return "Tavily";
 }
 
@@ -232,7 +233,7 @@ export function validateWebSearchInput(
   if (query.length > 2_000)
     return fail("query must be 2,000 characters or less");
   const provider = getWebAccessProvider();
-  if (provider === "anysearch") {
+  if (provider === "anysearch" || provider === "keenable") {
     if (
       Object.keys(args).some(
         (key) =>
@@ -241,7 +242,9 @@ export function validateWebSearchInput(
       )
     ) {
       return fail(
-        "AnySearch supports only query and maxResults; Tavily-only fields and vertical filters are not supported.",
+        provider === "keenable"
+          ? "Keenable supports only query and maxResults; Tavily-only fields are not supported."
+          : "AnySearch supports only query and maxResults; Tavily-only fields and vertical filters are not supported.",
       );
     }
     const maxResults = args.maxResults ?? 5;
@@ -408,6 +411,29 @@ const DEEPSEEK_SEARCH_GUIDANCE = {
   instruction: `DeepSeek Search accepts query, maxResults, includeDomains, excludeDomains, startDate and endDate; do not send depth, topic or timeRange. Keep the query within ${DEEPSEEK_QUERY_LIMIT} characters including filters. Use web_read with searched URLs only when search summaries are insufficient. Every final-answer paragraph that uses web results must end with the exact hidden source marker described in the tool result, using only returned sourceId values. Do not add a references footer.`,
 };
 
+const KEENABLE_SEARCH_SPEC = {
+  description:
+    "Search the current public web with Keenable; write the query in the user's language by default. Supports query and result count only, not depth, topic or date/domain filters. Returns ranked results with page text snippets; web_read reads a result's page, PDFs included. " +
+    OUTSIDE_SEARCH_NEED_SENTENCE +
+    ".",
+  inputSchema: {
+    type: "object",
+    required: ["query", "need"],
+    additionalProperties: false,
+    properties: {
+      query: { type: "string", minLength: 1, maxLength: 2000 },
+      maxResults: { type: "integer", minimum: 1, maximum: 10 },
+      ...OUTSIDE_SEARCH_NEED_PROPERTIES,
+    },
+  },
+};
+
+const KEENABLE_SEARCH_GUIDANCE = {
+  matches: neverSelected,
+  instruction:
+    "Keenable accepts query and maxResults only; do not send depth, topic or date/domain filters. Use web_read with searched URLs only when snippets are insufficient. Every final-answer paragraph that uses web results must end with the exact hidden source marker described in the tool result, using only returned sourceId values. Do not add a references footer.",
+};
+
 export function createWebSearchTool(
   providerFactory: WebAccessProviderFactory = createConfiguredWebAccessProvider,
 ): AgentToolDefinition<WebSearchInput, WebSearchToolResult> {
@@ -476,6 +502,7 @@ export function createWebSearchTool(
         if (!result) return null;
         if (result.provider === "anysearch") return "Searched web · AnySearch";
         if (result.provider === "deepseek") return "Searched web · DeepSeek";
+        if (result.provider === "keenable") return "Searched web · Keenable";
         const depth = validateObject<Record<string, unknown>>(args)
           ? args.depth
           : undefined;
@@ -567,6 +594,8 @@ export function createWebSearchTool(
       const provider = getWebAccessProvider();
       if (provider === "deepseek")
         return { ...tool.spec, ...DEEPSEEK_SEARCH_SPEC };
+      if (provider === "keenable")
+        return { ...tool.spec, ...KEENABLE_SEARCH_SPEC };
       if (provider !== "anysearch") return tool.spec;
       return {
         ...tool.spec,
@@ -589,6 +618,7 @@ export function createWebSearchTool(
     get guidance() {
       const provider = getWebAccessProvider();
       if (provider === "deepseek") return DEEPSEEK_SEARCH_GUIDANCE;
+      if (provider === "keenable") return KEENABLE_SEARCH_GUIDANCE;
       if (provider !== "anysearch") return tool.guidance;
       return {
         matches: neverSelected,
