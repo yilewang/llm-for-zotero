@@ -38,6 +38,8 @@ import {
   resolveSystemPdfFigurePdftoppmPath as resolvePdftoppmPath,
   type PdfFigureExtractionRuntime,
 } from "./pdfFigureRuntimeService";
+import { collapseWhitespace, positiveIntOrUndefined } from "../../core/values";
+import { getReaderDocument } from "../../services/pdf/pdfPageCapture";
 
 export type PdfVisualMode = "general" | "figure" | "equation";
 
@@ -205,10 +207,6 @@ type CropPdfFigureRegionParams = ResolvePdfTargetInput & {
 };
 
 const HEADLESS_FIGURE_CROP_DPI = 216;
-
-function sanitizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
 
 function decodeXmlText(value: string): string {
   return value
@@ -450,12 +448,6 @@ export function resolveRenderablePdfPage(
   return null;
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 /**
  * Every page of a range from 1, in order. No cap: a read too large for the
  * context returns its page map, as a page list given as an array does.
@@ -481,7 +473,7 @@ const BARE_PAGE_TOKEN = /^(\d+)(?:\s*[-–—]\s*(\d+))?$/;
  * other text, or for a page 0.
  */
 function parseBarePageList(text: string): ParsedPageSelection | null {
-  const tokens = sanitizeText(text)
+  const tokens = collapseWhitespace(text)
     .split(",")
     .map((token) => token.trim());
   if (!tokens.length || tokens.some((token) => !BARE_PAGE_TOKEN.test(token)))
@@ -502,7 +494,7 @@ function parseBarePageList(text: string): ParsedPageSelection | null {
 }
 
 function extractNumericPageRanges(text: string): number[] {
-  const normalized = sanitizeText(text).toLowerCase();
+  const normalized = collapseWhitespace(text).toLowerCase();
   if (!normalized) return [];
   const out: number[] = [];
   const seen = new Set<number>();
@@ -565,7 +557,7 @@ export function parsePageSelectionValue(
 ): ParsedPageSelection | null {
   if (Array.isArray(value)) {
     const pageIndexes = value
-      .map((entry) => normalizePositiveInt(entry))
+      .map((entry) => positiveIntOrUndefined(entry))
       .filter((entry): entry is number => Number.isFinite(entry))
       .map((entry) => Math.max(0, entry - 1));
     if (!pageIndexes.length) return null;
@@ -617,7 +609,7 @@ export function formatPageSelectionValue(pageIndexes: number[]): string {
 }
 
 function extractSearchTokens(text: string): string[] {
-  return sanitizeText(text)
+  return collapseWhitespace(text)
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
@@ -626,7 +618,7 @@ function extractSearchTokens(text: string): string[] {
 }
 
 function getPageLabel(pageIndex: number, pageLabel?: string): string {
-  const trimmed = sanitizeText(pageLabel);
+  const trimmed = collapseWhitespace(pageLabel);
   return trimmed || `${pageIndex + 1}`;
 }
 
@@ -643,12 +635,12 @@ function getPdfPath(item: Zotero.Item | null | undefined): string {
   const directPath =
     typeof (item as { getFilePath?: () => string | undefined }).getFilePath ===
     "function"
-      ? sanitizeText(
+      ? collapseWhitespace(
           (item as { getFilePath?: () => string | undefined }).getFilePath?.(),
         )
       : "";
   if (directPath) return directPath;
-  const fallbackPath = sanitizeText(
+  const fallbackPath = collapseWhitespace(
     (item as unknown as { attachmentPath?: string }).attachmentPath,
   );
   return fallbackPath;
@@ -720,7 +712,7 @@ async function navigateReaderToPage(
 ): Promise<boolean> {
   if (typeof reader?.navigate !== "function") return false;
   const normalizedPageIndex = Math.max(0, Math.floor(pageIndex));
-  const normalizedPageLabel = sanitizeText(pageLabel);
+  const normalizedPageLabel = collapseWhitespace(pageLabel);
   try {
     await reader.navigate(
       normalizedPageLabel
@@ -761,7 +753,7 @@ function toReaderApiLocation(
       annotationID: location.annotationKey,
     } as unknown as _ZoteroTypes.Reader.Location;
   }
-  const pageLabel = sanitizeText(location.pageLabel);
+  const pageLabel = collapseWhitespace(location.pageLabel);
   if (location.pageIndex !== undefined) {
     return {
       pageIndex: Math.max(0, Math.floor(location.pageIndex)),
@@ -873,13 +865,13 @@ export async function waitForReaderPageLabel(
   expected: string,
   timeoutMs = 3000,
 ): Promise<{ verified: boolean; shown: string }> {
-  const wanted = sanitizeText(expected);
+  const wanted = collapseWhitespace(expected);
   const startedAt = Date.now();
   let shown = "";
   do {
     const viewer = getPdfViewerApplication(reader)?.pdfViewer;
     if (viewer && Number(viewer.pagesCount) > 0) {
-      shown = sanitizeText(
+      shown = collapseWhitespace(
         viewer.currentPageLabel ?? String(viewer.currentPageNumber),
       );
       if (shown === wanted) return { verified: true, shown };
@@ -933,15 +925,6 @@ async function waitForPdfDocument(
   return null;
 }
 
-function getReaderDocument(reader: any): Document | null {
-  return (
-    reader?._iframeWindow?.document ||
-    reader?._iframe?.contentDocument ||
-    reader?._internalReader?._lastView?._iframeWindow?.document ||
-    null
-  );
-}
-
 async function canvasToBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
   if (typeof canvas.toBlob === "function") {
     const blob = await new Promise<Blob | null>((resolve) => {
@@ -975,7 +958,7 @@ function extractTextBoxesFromPdfTextContent(params: {
   const scaleY = Number.isFinite(params.scaleY) ? params.scaleY! : params.scale;
   for (const item of params.textContent.items || []) {
     const transform = Array.isArray(item.transform) ? item.transform : [];
-    const text = sanitizeText(item.str);
+    const text = collapseWhitespace(item.str);
     if (!text || transform.length < 6) continue;
     const rawX = Number(transform[4]);
     const rawY = Number(transform[5]);
@@ -1250,7 +1233,7 @@ async function drainSubprocessPipe(pipe: any): Promise<string> {
 
 function getTempRoot(): string {
   const pathUtils = (globalThis as any).PathUtils;
-  const fromPathUtils = sanitizeText(pathUtils?.tempDir);
+  const fromPathUtils = collapseWhitespace(pathUtils?.tempDir);
   if (fromPathUtils) return fromPathUtils;
   const components = (globalThis as any).Components;
   try {
@@ -1258,7 +1241,7 @@ function getTempRoot(): string {
       "TmpD",
       components?.interfaces?.nsIFile,
     )?.path;
-    const normalized = sanitizeText(tempDir);
+    const normalized = collapseWhitespace(tempDir);
     if (normalized) return normalized;
   } catch {
     // Fall through to POSIX temp.
@@ -1292,7 +1275,8 @@ async function readHeadlessCropOutput(
   const pngPath = (children as string[])
     .filter(
       (path) =>
-        sanitizeText(path).startsWith(outputPrefix) && /\.png$/i.test(path),
+        collapseWhitespace(path).startsWith(outputPrefix) &&
+        /\.png$/i.test(path),
     )
     .sort()[0];
   if (!pngPath) {
@@ -1342,13 +1326,15 @@ async function writeUtf8File(path: string, text: string): Promise<void> {
 }
 
 export function resolveAddonRootUri(): string {
-  const direct = sanitizeText((globalThis as any).rootURI);
+  const direct = collapseWhitespace((globalThis as any).rootURI);
   if (direct) return direct;
-  const sandboxObject = sanitizeText((globalThis as any)._globalThis?.rootURI);
+  const sandboxObject = collapseWhitespace(
+    (globalThis as any)._globalThis?.rootURI,
+  );
   if (sandboxObject) return sandboxObject;
   try {
     if (typeof _globalThis !== "undefined") {
-      const sandboxGlobal = sanitizeText(_globalThis?.rootURI);
+      const sandboxGlobal = collapseWhitespace(_globalThis?.rootURI);
       if (sandboxGlobal) return sandboxGlobal;
     }
   } catch {
@@ -1356,7 +1342,7 @@ export function resolveAddonRootUri(): string {
   }
   try {
     if (typeof rootURI !== "undefined") {
-      const rootGlobal = sanitizeText(rootURI);
+      const rootGlobal = collapseWhitespace(rootURI);
       if (rootGlobal) return rootGlobal;
     }
   } catch {
@@ -1440,21 +1426,21 @@ function normalizeRawExpectedFigures(value: unknown): ExpectedPdfFigure[] {
   for (const raw of rawFigures) {
     if (!raw || typeof raw !== "object") continue;
     const figure = raw as Record<string, unknown>;
-    const label = sanitizeText(figure.label);
+    const label = collapseWhitespace(figure.label);
     if (!label) continue;
     const pageNumber = Math.floor(Number(figure.pageNumber));
     const captionPageNumber = Math.floor(Number(figure.captionPageNumber));
     const confidence = Number(figure.confidence);
     figures.push({
       label,
-      baseLabel: sanitizeText(figure.baseLabel) || label,
+      baseLabel: collapseWhitespace(figure.baseLabel) || label,
       pageNumber: Number.isFinite(pageNumber) ? pageNumber : undefined,
       captionPageNumber: Number.isFinite(captionPageNumber)
         ? captionPageNumber
         : undefined,
-      status: sanitizeText(figure.status) || undefined,
-      cropPath: sanitizeText(figure.cropPath) || undefined,
-      source: sanitizeText(figure.source) || undefined,
+      status: collapseWhitespace(figure.status) || undefined,
+      cropPath: collapseWhitespace(figure.cropPath) || undefined,
+      source: collapseWhitespace(figure.source) || undefined,
       confidence: Number.isFinite(confidence) ? confidence : undefined,
     });
   }
@@ -1473,9 +1459,9 @@ function normalizeRawFigureExtractionResult(
   for (const raw of rawFigures) {
     if (!raw || typeof raw !== "object") continue;
     const figure = raw as Record<string, unknown>;
-    const id = sanitizeText(figure.id);
-    const label = sanitizeText(figure.label);
-    const cropPath = sanitizeText(figure.cropPath);
+    const id = collapseWhitespace(figure.id);
+    const label = collapseWhitespace(figure.label);
+    const cropPath = collapseWhitespace(figure.cropPath);
     const pageNumber = Math.floor(Number(figure.pageNumber));
     const confidence = Number(figure.confidence);
     if (!id || !label || !cropPath || !Number.isFinite(pageNumber)) continue;
@@ -1485,19 +1471,19 @@ function normalizeRawFigureExtractionResult(
     figures.push({
       id,
       label,
-      baseLabel: sanitizeText(figure.baseLabel) || label,
+      baseLabel: collapseWhitespace(figure.baseLabel) || label,
       pageNumber,
       captionPageNumber:
         Math.floor(Number(figure.captionPageNumber)) || undefined,
       cropPath,
-      captionText: sanitizeText(figure.captionText) || undefined,
-      panelHint: sanitizeText(figure.panelHint) || undefined,
+      captionText: collapseWhitespace(figure.captionText) || undefined,
+      panelHint: collapseWhitespace(figure.panelHint) || undefined,
       rect: rectFromRawFigure(figure.rect),
       confidence: Number.isFinite(confidence) ? confidence : 0,
       source,
       warnings: Array.isArray(figure.warnings)
         ? figure.warnings
-            .map((warning) => sanitizeText(warning))
+            .map((warning) => collapseWhitespace(warning))
             .filter(Boolean)
         : [],
       mineruImagePaths: [],
@@ -1508,7 +1494,9 @@ function normalizeRawFigureExtractionResult(
     expectedFigures: normalizeRawExpectedFigures(record.expectedFigures),
     missingFigures: normalizeRawExpectedFigures(record.missingFigures),
     warnings: Array.isArray(record.warnings)
-      ? record.warnings.map((warning) => sanitizeText(warning)).filter(Boolean)
+      ? record.warnings
+          .map((warning) => collapseWhitespace(warning))
+          .filter(Boolean)
       : [],
   };
 }
@@ -1588,7 +1576,8 @@ async function cropPdfRegionWithPdftoppm(params: {
       const { exitCode: pageExitCode } = await pageProc.wait();
       if (pageExitCode !== 0) {
         const message =
-          sanitizeText(pageStderr || pageStdout) || `exit code ${pageExitCode}`;
+          collapseWhitespace(pageStderr || pageStdout) ||
+          `exit code ${pageExitCode}`;
         throw new Error(`pdftoppm page-size render failed: ${message}`);
       }
       renderedPageSize =
@@ -1621,7 +1610,8 @@ async function cropPdfRegionWithPdftoppm(params: {
     ]);
     const { exitCode } = await proc.wait();
     if (exitCode !== 0) {
-      const message = sanitizeText(stderr || stdout) || `exit code ${exitCode}`;
+      const message =
+        collapseWhitespace(stderr || stdout) || `exit code ${exitCode}`;
       throw new Error(`pdftoppm crop failed: ${message}`);
     }
     const bytes = await readHeadlessCropOutput(tempDir, outputPrefix);
@@ -1740,7 +1730,8 @@ async function extractPdfFigureGeometryWithPdftohtml(params: {
     ]);
     const { exitCode } = await proc.wait();
     if (exitCode !== 0) {
-      const message = sanitizeText(stderr || stdout) || `exit code ${exitCode}`;
+      const message =
+        collapseWhitespace(stderr || stdout) || `exit code ${exitCode}`;
       throw new Error(`pdftohtml XML extraction failed: ${message}`);
     }
     const xmlText = await readUtf8File(`${outputPrefix}.xml`);
@@ -1921,7 +1912,7 @@ export class PdfPageService {
         const { exitCode } = await proc.wait();
         if (exitCode !== 0) {
           const message =
-            sanitizeText(stderr || stdout) || `exit code ${exitCode}`;
+            collapseWhitespace(stderr || stdout) || `exit code ${exitCode}`;
           throw new Error(
             `raw source-PDF figure extraction failed: ${message}`,
           );
@@ -2019,7 +2010,7 @@ export class PdfPageService {
         contextItemId: contextItem.id,
         itemId: params.paperContext.itemId,
         attachmentName:
-          sanitizeText(
+          collapseWhitespace(
             (contextItem as unknown as { attachmentFilename?: string })
               .attachmentFilename,
           ) || undefined,
@@ -2051,7 +2042,7 @@ export class PdfPageService {
         contextItemId: contextItemById.id,
         itemId: paperContext?.itemId,
         attachmentName:
-          sanitizeText(
+          collapseWhitespace(
             (contextItemById as unknown as { attachmentFilename?: string })
               .attachmentFilename,
           ) || undefined,
@@ -2085,7 +2076,7 @@ export class PdfPageService {
         contextItemId: bibliographicAttachment.id,
         itemId: paperContext?.itemId || bibliographicItem?.id,
         attachmentName:
-          sanitizeText(
+          collapseWhitespace(
             (
               bibliographicAttachment as unknown as {
                 attachmentFilename?: string;
@@ -2138,7 +2129,7 @@ export class PdfPageService {
         contextItemId: activePdfItem.id,
         itemId: paperContext?.itemId,
         attachmentName:
-          sanitizeText(
+          collapseWhitespace(
             (activePdfItem as unknown as { attachmentFilename?: string })
               .attachmentFilename,
           ) || undefined,
@@ -2197,7 +2188,7 @@ export class PdfPageService {
       const mode = params.mode || "general";
       const scored = pages
         .map((page) => {
-          const text = sanitizeText(page.text).toLowerCase();
+          const text = collapseWhitespace(page.text).toLowerCase();
           let score = 0;
           for (const token of tokens) {
             if (!token) continue;
@@ -2228,7 +2219,7 @@ export class PdfPageService {
                     score < 3 ? "" : "s"
                   } from the question.`
                 : "Fallback page because no strong match was found.",
-            excerpt: sanitizeText(page.text).slice(0, 220),
+            excerpt: collapseWhitespace(page.text).slice(0, 220),
           };
         })
         .sort(
@@ -2298,7 +2289,7 @@ export class PdfPageService {
         return {
           pageIndex,
           pageLabel: getPageLabel(pageIndex, entry?.pageLabel),
-          text: sanitizeText(entry?.text),
+          text: collapseWhitespace(entry?.text),
         };
       }),
     };
@@ -2485,7 +2476,7 @@ export class PdfPageService {
         throw new Error(`Could not render PDF page ${pageIndex + 1}`);
       }
       const persisted = await persistAttachmentBlob(
-        `${sanitizeText(target.attachmentName || target.title || "pdf")}-page-${pageIndex + 1}.png`,
+        `${collapseWhitespace(target.attachmentName || target.title || "pdf")}-page-${pageIndex + 1}.png`,
         bytes,
       );
       preparedPages.push({
@@ -2515,7 +2506,7 @@ export class PdfPageService {
           (p: { pageIndex: number; text: string }) => p.pageIndex === pageIndex,
         );
         if (entry?.text) {
-          pageTexts[pageIndex] = sanitizeText(entry.text);
+          pageTexts[pageIndex] = collapseWhitespace(entry.text);
         }
       }
     } catch {
@@ -2610,7 +2601,7 @@ export class PdfPageService {
         throw new Error(`Could not render PDF page ${pageIndex + 1}`);
       }
       const persisted = await persistAttachmentBlob(
-        `${sanitizeText(target.attachmentName || target.title || "pdf")}-page-${pageIndex + 1}.png`,
+        `${collapseWhitespace(target.attachmentName || target.title || "pdf")}-page-${pageIndex + 1}.png`,
         bytes,
       );
       preparedPages.push({
@@ -2640,7 +2631,7 @@ export class PdfPageService {
         (p: { pageIndex: number; text: string }) =>
           p.pageIndex === currentPageIndex,
       );
-      pageText = sanitizeText(entry?.text ?? "");
+      pageText = collapseWhitespace(entry?.text ?? "");
     } catch {
       // non-fatal — image is the primary source
     }

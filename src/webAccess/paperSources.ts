@@ -9,6 +9,7 @@ import { fnv1a32Raw } from "../utils/fnv1a";
 import { looseWebUrlKey } from "./sourceLinks";
 import { normalizePublicWebUrl } from "./tavilyClient";
 import type { WebSourceDisplay } from "./types";
+import { recordOrNull, trimmedString } from "../core/values";
 
 export type PaperSourceRecord = {
   name: string;
@@ -35,18 +36,8 @@ const DOI_PREFIX_NAMES: Record<string, string> = {
   "10.48550": "arXiv",
 };
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function readText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function publicUrl(value: unknown): string | undefined {
-  const raw = readText(value);
+  const raw = trimmedString(value);
   if (!raw) return undefined;
   try {
     return normalizePublicWebUrl(raw);
@@ -56,7 +47,7 @@ function publicUrl(value: unknown): string | undefined {
 }
 
 function bareDoi(value: unknown): string {
-  return readText(value)
+  return trimmedString(value)
     .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "")
     .replace(/^doi:\s*/i, "")
     .toLowerCase();
@@ -78,15 +69,15 @@ function paperFields(raw: Record<string, unknown>, extra: unknown[] = []) {
     (value) => publicUrl(value) || [],
   );
   const fields: PaperFields = {
-    title: readText(raw.title) || readText(raw.displayTitle),
+    title: trimmedString(raw.title) || trimmedString(raw.displayTitle),
     authors: Array.isArray(raw.authors)
-      ? raw.authors.map(readText).filter(Boolean)
+      ? raw.authors.map(trimmedString).filter(Boolean)
       : [],
     ...(typeof raw.year === "number" ? { year: raw.year } : {}),
     doi: bareDoi(raw.doi),
-    arxivId: readText(raw.arxivId),
-    pmid: readText(raw.pmid),
-    pmcid: readText(raw.pmcid).toUpperCase(),
+    arxivId: trimmedString(raw.arxivId),
+    pmid: trimmedString(raw.pmid),
+    pmcid: trimmedString(raw.pmcid).toUpperCase(),
     urls,
   };
   if (fields.doi) fields.urls.unshift(`https://doi.org/${fields.doi}`);
@@ -219,16 +210,16 @@ export function collectPaperSources(records: readonly PaperSourceRecord[]): {
   };
   for (const record of records) {
     if (!record.ok) continue;
-    const content = asObject(record.content);
+    const content = recordOrNull(record.content);
     if (!content) continue;
     if (record.name === "literature_search" && Array.isArray(content.results)) {
       for (const entry of content.results) {
-        const raw = asObject(entry);
+        const raw = recordOrNull(entry);
         if (raw) add(paperFields(raw));
       }
     } else if (record.name === "literature_read") {
-      const paper = asObject(content.paper);
-      const fullText = asObject(content.fullText);
+      const paper = recordOrNull(content.paper);
+      const fullText = recordOrNull(content.fullText);
       if (paper) {
         add(paperFields(paper, [fullText?.landingUrl, fullText?.pdfUrl]));
       }

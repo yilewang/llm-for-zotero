@@ -8,6 +8,7 @@ import {
   type StoredPlanArtifact,
   type StoredPlanExecution,
 } from "./storedPlanEvents";
+import { isRecord } from "../../../core/values";
 
 /**
  * Everything the trace reads from a run by looking across all of its events,
@@ -80,10 +81,6 @@ export function readTracePlanPhase(
   return null;
 }
 
-function isTraceRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 /**
  * The paper display labels one event reports, or undefined.
  *
@@ -99,7 +96,7 @@ export function readTraceDisplayLabels(
     payload.payload?.version === 1
       ? payload.payload.displayLabels
       : payload.type === "tool_result" && payload.ok
-        ? isTraceRecord(payload.content)
+        ? isRecord(payload.content)
           ? payload.content.displayLabels
           : undefined
         : undefined;

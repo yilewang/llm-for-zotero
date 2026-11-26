@@ -2,7 +2,10 @@ import { fnv1a32Raw } from "../../utils/fnv1a";
 import { appLogger } from "../../core/logging";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
-import { clearCitationPageCache } from "./citationNavigationCache";
+import {
+  clearCitationPageCache,
+  normalizePageIndex,
+} from "./citationNavigationCache";
 import {
   readPageCompleteZoteroFulltextCache,
   type ProveTextPageOffset,
@@ -31,6 +34,7 @@ import {
   stripPdfTextItemBoundaries,
   type QuoteTextIndex,
 } from "../quotes/quoteTextNormalization";
+import { positiveIntOrZero } from "../../core/values";
 
 type PdfReaderPageText = {
   pageIndex: number;
@@ -3118,11 +3122,6 @@ async function settleBeforeDeadline<T>(
   }
 }
 
-function parsePositiveInteger(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
 function getFindControllerMatchCount(findController: any): number {
   const candidates = [
     findController?.matchesCount?.total,
@@ -3130,7 +3129,7 @@ function getFindControllerMatchCount(findController: any): number {
     findController?._matchesCountTotal,
   ];
   for (const candidate of candidates) {
-    const parsed = parsePositiveInteger(candidate);
+    const parsed = positiveIntOrZero(candidate);
     if (parsed > 0) return parsed;
   }
   return 0;
@@ -3305,12 +3304,6 @@ function getArrayLikeLength(value: unknown): number {
     : 0;
 }
 
-function normalizeZeroBasedPageIndex(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.floor(parsed);
-}
-
 function normalizeOneBasedPageNumber(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) return null;
@@ -3327,7 +3320,7 @@ function getFindControllerSelectedPageIndex(
     findController?._offset,
   ];
   for (const selected of selectedCandidates) {
-    const pageIndex = normalizeZeroBasedPageIndex(
+    const pageIndex = normalizePageIndex(
       selected?.pageIdx ?? selected?.pageIndex,
     );
     if (pageIndex !== null) return pageIndex;
@@ -3351,7 +3344,7 @@ function getFindControllerSelectedMatchIndex(
     findController?._offset,
   ];
   for (const selected of selectedCandidates) {
-    const matchIndex = normalizeZeroBasedPageIndex(
+    const matchIndex = normalizePageIndex(
       selected?.matchIdx ?? selected?.matchIndex,
     );
     if (matchIndex !== null) return matchIndex;

@@ -123,7 +123,7 @@ export function getPdfViewerApplication(reader: any): any | null {
   return null;
 }
 
-function getReaderDocument(reader: any): Document | null {
+export function getReaderDocument(reader: any): Document | null {
   return (
     reader?._iframeWindow?.document ||
     reader?._iframe?.contentDocument ||

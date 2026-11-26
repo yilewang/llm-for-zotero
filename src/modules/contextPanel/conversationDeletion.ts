@@ -74,6 +74,7 @@ import {
   unfreezeConversationWrites,
   withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
+import { positiveIntOrZero, trimmedString } from "../../core/values";
 
 type ConversationDeletionKind = "global" | "paper";
 
@@ -173,20 +174,6 @@ export type ConversationDeletionDeps = {
   operations?: Partial<ConversationDeletionOperations>;
 };
 
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
-function normalizeProviderSessionId(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizeConversationID(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function getClaudeProviderScope(
   target: Pick<
     ConversationDeletionTarget,
@@ -251,7 +238,7 @@ function clearSharedRuntimeCaches(
   target: ConversationDeletionTarget,
   deps: ConversationDeletionDeps,
 ): void {
-  const conversationKey = normalizePositiveInt(target.conversationKey);
+  const conversationKey = positiveIntOrZero(target.conversationKey);
   if (!conversationKey) return;
   if (target.conversationSystem === "codex") {
     clearCodexNativeReadLedgerForConversation({
@@ -269,7 +256,7 @@ function clearSharedRuntimeCaches(
     // was deleted.
     deps.clearTransientComposeStateForItem(
       target.kind === "paper"
-        ? normalizePositiveInt(target.paperItemID)
+        ? positiveIntOrZero(target.paperItemID)
         : conversationKey,
     );
   } else {
@@ -504,7 +491,7 @@ async function clearRememberedSelection(
     return;
   }
 
-  const paperItemID = normalizePositiveInt(target.paperItemID);
+  const paperItemID = positiveIntOrZero(target.paperItemID);
   if (!paperItemID) return;
   forget(
     {
@@ -522,8 +509,8 @@ export async function finalizeConversationDeletion(
   deps: ConversationDeletionDeps = {},
 ): Promise<ConversationDeletionResult> {
   const result = createResult();
-  const conversationKey = normalizePositiveInt(target.conversationKey);
-  const libraryID = normalizePositiveInt(target.libraryID);
+  const conversationKey = positiveIntOrZero(target.conversationKey);
+  const libraryID = positiveIntOrZero(target.libraryID);
   const log = deps.warn || deps.log;
   if (!conversationKey || !libraryID) {
     recordIssue(
@@ -538,7 +525,7 @@ export async function finalizeConversationDeletion(
     return result;
   }
 
-  const targetConversationID = normalizeConversationID(target.conversationID);
+  const targetConversationID = trimmedString(target.conversationID);
   const resolvedRef = targetConversationID
     ? null
     : await resolveConversationRefForKey(conversationKey);
@@ -549,7 +536,7 @@ export async function finalizeConversationDeletion(
     conversationID: conversationID || undefined,
     conversationKey,
     libraryID,
-    paperItemID: normalizePositiveInt(target.paperItemID) || undefined,
+    paperItemID: positiveIntOrZero(target.paperItemID) || undefined,
   };
   normalizedTarget = {
     ...normalizedTarget,
@@ -663,7 +650,7 @@ export async function finalizeConversationDeletion(
 
   const codexThreadId =
     normalizedTarget.conversationSystem === "codex"
-      ? normalizeProviderSessionId(normalizedTarget.providerSessionId)
+      ? trimmedString(normalizedTarget.providerSessionId)
       : "";
   await runStep(
     result,
@@ -817,9 +804,7 @@ export async function finalizeConversationDeletion(
   }
 
   if (normalizedTarget.conversationSystem === "claude_code") {
-    const providerSessionId = normalizeProviderSessionId(
-      normalizedTarget.providerSessionId,
-    );
+    const providerSessionId = trimmedString(normalizedTarget.providerSessionId);
     let job: ConversationCleanupJob | null = null;
     try {
       job = await enqueueConversationCleanupJob({
@@ -1012,7 +997,7 @@ async function classifyQueuedConversationDeletionStaleness(
     );
     return "stale";
   }
-  const catalogConversationID = normalizeConversationID(summary.conversationID);
+  const catalogConversationID = trimmedString(summary.conversationID);
   if (
     entry.conversationID &&
     catalogConversationID &&
@@ -1065,7 +1050,7 @@ async function ensureQueuedProviderCleanupJob(
   entry: PendingConversationDeletionEntry,
 ): Promise<boolean> {
   if (entry.providerCleanupState === "complete") return true;
-  const providerSessionId = normalizeProviderSessionId(entry.providerSessionId);
+  const providerSessionId = trimmedString(entry.providerSessionId);
   if (!isRuntimeConversationSystem(entry.system)) return true;
   const operation = RUNTIME_PROVIDER_CLEANUP_OPERATIONS[entry.system];
   if (!operation) return true;

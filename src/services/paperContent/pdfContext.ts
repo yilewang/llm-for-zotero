@@ -108,6 +108,7 @@ import type {
   ProjectedPaperMetadata,
   ZoteroMetadataResolver,
 } from "../../services/zoteroMetadata/types";
+import { escapeRegExp } from "../../core/values";
 
 // ── HTML table → Markdown table conversion ──────────────────────────────────
 // MinerU sometimes emits tables as raw <table> HTML in the markdown.
@@ -1462,10 +1463,6 @@ function buildPdfSourceFingerprint(
 
 function sanitizePdfText(value: string): string {
   return (value || "").replace(/\r\n?/g, "\n").trim();
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function sectionLabelPatternSource(sectionLabel: string): string {
@@ -3712,7 +3709,9 @@ function sectionLabelForDigest(candidate: PaperContextCandidate): string {
   );
 }
 
-function candidateHasBodyEvidence(candidate: PaperContextCandidate): boolean {
+export function candidateHasBodyEvidence(
+  candidate: PaperContextCandidate,
+): boolean {
   return isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind);
 }
 

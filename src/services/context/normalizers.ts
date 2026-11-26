@@ -327,7 +327,7 @@ export function normalizeAttachmentContentHash(
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : undefined;
 }
 
-function normalizePaperContentSourceMode(
+export function normalizePaperContentSourceMode(
   value: unknown,
 ): PaperContentSourceMode | undefined {
   if (typeof value !== "string") return undefined;

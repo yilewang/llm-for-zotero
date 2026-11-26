@@ -211,7 +211,7 @@ function looksLikeSourceCitationLabel(value: string): boolean {
   return /^[\p{L}][^()]{1,160}$/u.test(inner) && /[,;&]/.test(inner);
 }
 
-function stripLeadingInlineCitationCue(value: string): {
+export function stripLeadingInlineCitationCue(value: string): {
   stripped: string;
   consumed: number;
 } {

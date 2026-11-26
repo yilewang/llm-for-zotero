@@ -1,3 +1,4 @@
+import { positiveIntOrZero } from "../../core/values";
 /**
  * Verify-before-navigate resolution for cited quotes.
  *
@@ -157,11 +158,6 @@ export function mergeQuoteTargetResolutions(params: {
 const DEFAULT_NOT_FOUND_REASON =
   "The cited quote was not found in any matching paper.";
 
-function normalizeContextItemId(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
 function normalizeLabelRank(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -185,7 +181,7 @@ function prioritizeCandidates(
 ): QuoteTargetCandidate[] {
   const byContextItemId = new Map<number, QuoteTargetCandidate>();
   for (const candidate of candidates || []) {
-    const contextItemId = normalizeContextItemId(candidate?.contextItemId);
+    const contextItemId = positiveIntOrZero(candidate?.contextItemId);
     if (!contextItemId) continue;
     const normalized: QuoteTargetCandidate = {
       contextItemId,

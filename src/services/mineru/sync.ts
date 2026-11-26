@@ -25,8 +25,12 @@ import {
   writeMineruSourceProvenanceForAttachment,
   withMineruCacheWrite,
   type MineruCacheFile,
+  getAttachmentFilename,
+  getParentItem,
+  getItemKey,
 } from "./mineruCache";
 import { paperTextStore } from "../paperContent/paperTextStore";
+import { escapeRegExp, positiveIntOrNull } from "../../core/values";
 
 export const MINERU_SYNC_PACKAGE_KIND = "llm-for-zotero/mineru-cache";
 export const MINERU_SYNC_PACKAGE_VERSION = 1;
@@ -429,18 +433,6 @@ async function listCacheFiles(
   return out;
 }
 
-function getItemKey(item: Zotero.Item | null | undefined): string {
-  const value = (item as unknown as { key?: unknown } | null | undefined)?.key;
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function getAttachmentFilename(item: Zotero.Item): string {
-  return String(
-    (item as unknown as { attachmentFilename?: unknown }).attachmentFilename ||
-      "",
-  ).trim();
-}
-
 function getAttachmentTitle(item: Zotero.Item): string {
   try {
     const title = item.getField?.("title");
@@ -451,13 +443,7 @@ function getAttachmentTitle(item: Zotero.Item): string {
   return getAttachmentFilename(item) || `Attachment ${item.id}`;
 }
 
-function getParentItem(item: Zotero.Item): Zotero.Item | null {
-  const parentId = Number(item.parentID);
-  if (!Number.isFinite(parentId) || parentId <= 0) return null;
-  return Zotero.Items.get(Math.floor(parentId)) || null;
-}
-
-function isPdfAttachment(item: Zotero.Item | null | undefined): boolean {
+export function isPdfAttachment(item: Zotero.Item | null | undefined): boolean {
   return Boolean(
     item?.isAttachment?.() && item.attachmentContentType === "application/pdf",
   );
@@ -522,10 +508,6 @@ function findItemByLibraryAndKey(key: string): Zotero.Item | null {
 
 function buildPackageTitle(sourceAttachmentKey: string): string {
   return `${MINERU_SYNC_ATTACHMENT_TITLE_PREFIX} ${sourceAttachmentKey}.zip`;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const MINERU_SYNC_PACKAGE_TITLE_PATTERN = new RegExp(
@@ -1751,11 +1733,6 @@ function normalizeAttachmentId(value: number): number | null {
   return Number.isFinite(id) && id > 0 ? Math.floor(id) : null;
 }
 
-function normalizePackageAttachmentId(value: unknown): number | null {
-  const id = Number(value);
-  return Number.isFinite(id) && id > 0 ? Math.floor(id) : null;
-}
-
 function getParentItemFromProvenance(
   parentItemKey: string | undefined,
 ): Zotero.Item | null {
@@ -1951,7 +1928,7 @@ export async function deleteMineruCacheArtifactsForAttachment(
     getItemKey(liveItem) ||
     sourceProvenance?.attachmentKey ||
     localSyncState?.sourceAttachmentKey;
-  const packageAttachmentId = normalizePackageAttachmentId(
+  const packageAttachmentId = positiveIntOrNull(
     sourceProvenance?.packageAttachmentId ??
       localSyncState?.packageAttachmentId,
   );
@@ -2076,7 +2053,7 @@ export async function cleanupMineruArtifactsForRemovedAttachment(
   const parentItem =
     (liveItem ? getParentItem(liveItem) : null) ||
     getParentItemFromProvenance(sourceProvenance?.parentItemKey);
-  const packageAttachmentId = normalizePackageAttachmentId(
+  const packageAttachmentId = positiveIntOrNull(
     sourceProvenance?.packageAttachmentId ??
       localSyncState?.packageAttachmentId,
   );

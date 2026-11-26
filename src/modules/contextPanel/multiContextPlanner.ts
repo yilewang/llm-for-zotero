@@ -39,6 +39,7 @@ import {
   ensurePDFTextCached,
   ensureNoteTextCached,
   buildEvidencePack,
+  candidateHasBodyEvidence,
 } from "../../services/paperContent/pdfContext";
 import {
   isPdfContextAttachment,
@@ -191,6 +192,7 @@ import type {
   PaperContextCandidate,
   PdfContext,
 } from "../../services/paperContent/types";
+import { getFirstPdfChildAttachment } from "./contextResolution";
 
 type PlannerPaperEntry = {
   order: number;
@@ -203,20 +205,6 @@ type PlannerPaperEntry = {
 };
 
 type ConversationMode = "paper" | "open";
-
-function getFirstPdfChildAttachment(
-  item: Zotero.Item | null | undefined,
-): Zotero.Item | null {
-  if (!item || item.isAttachment()) return null;
-  const attachments = item.getAttachments();
-  for (const attachmentId of attachments) {
-    const attachment = Zotero.Items.get(attachmentId);
-    if (isPdfContextAttachment(attachment)) {
-      return attachment;
-    }
-  }
-  return null;
-}
 
 function resolveContextItem(ref: PaperContextRef): Zotero.Item | null {
   const direct = Zotero.Items.get(ref.contextItemId);
@@ -237,7 +225,7 @@ function normalizePaperContextEntries(value: unknown): PaperContextRef[] {
   return normalizePaperContextRefs(value, { sanitizeText });
 }
 
-function limitFullTextPaperContexts(
+export function limitFullTextPaperContexts(
   paperContexts: PaperContextRef[],
 ): PaperContextRef[] {
   return paperContexts.slice(0, MAX_FULL_TEXT_PAPER_CONTEXTS);
@@ -809,10 +797,6 @@ export function buildLockedChunkIndexesByContextItem(
   return lockedChunkIndexesByContextItem;
 }
 
-function isBodyEvidenceCandidate(candidate: PaperContextCandidate): boolean {
-  return isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind);
-}
-
 function buildRetrievedAssemblyReadStrategy(params: {
   papers: PlannerPaperEntry[];
   question: string;
@@ -833,7 +817,7 @@ function buildRetrievedAssemblyReadStrategy(params: {
   );
   const bodyPaperKeys = new Set(
     selectedCandidates
-      .filter(isBodyEvidenceCandidate)
+      .filter(candidateHasBodyEvidence)
       .map((candidate) => candidate.paperKey),
   );
   const candidatePaperKeys = new Set(
@@ -1284,20 +1268,20 @@ export async function assembleRetrievedMultiPaperContext(params: {
   if (shouldRepairBodyEvidence) {
     for (const paper of papers) {
       const list = candidatesByPaper.get(paper.paperKey) || [];
-      if (!list.some(isBodyEvidenceCandidate)) continue;
+      if (!list.some(candidateHasBodyEvidence)) continue;
       const selectedForPaper = Array.from(selected.values()).filter(
         (candidate) => candidate.paperKey === paper.paperKey,
       );
-      if (selectedForPaper.some(isBodyEvidenceCandidate)) continue;
+      if (selectedForPaper.some(candidateHasBodyEvidence)) continue;
       const bodyCandidate = list.find(
         (candidate) =>
-          isBodyEvidenceCandidate(candidate) &&
+          candidateHasBodyEvidence(candidate) &&
           !selected.has(candidateKey(candidate)) &&
           !shouldSkipCandidate(candidate),
       );
       if (!bodyCandidate) continue;
       const replaceable = [...selectedForPaper]
-        .filter((candidate) => !isBodyEvidenceCandidate(candidate))
+        .filter((candidate) => !candidateHasBodyEvidence(candidate))
         .sort((a, b) => b.estimatedTokens - a.estimatedTokens)[0];
       if (replaceable) {
         const tokenDelta =

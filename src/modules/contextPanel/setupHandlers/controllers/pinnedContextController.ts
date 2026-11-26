@@ -5,6 +5,7 @@ import type {
   PaperContextRef,
   SelectedTextContext,
 } from "../../types";
+import { trimmedString } from "../../../../core/values";
 
 function normalizeOwnerId(ownerId: number): number {
   return Number.isFinite(ownerId) && ownerId > 0 ? Math.floor(ownerId) : 0;
@@ -55,10 +56,6 @@ function normalizeTextSource(
   return "pdf";
 }
 
-function normalizeText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function buildPinnedNoteKey(
   noteContext: SelectedTextContext["noteContext"],
 ): string {
@@ -66,7 +63,7 @@ function buildPinnedNoteKey(
   const libraryID = Number.isFinite(noteContext.libraryID)
     ? Math.max(0, Math.floor(noteContext.libraryID))
     : 0;
-  const noteItemKey = normalizeText(noteContext.noteItemKey).toUpperCase();
+  const noteItemKey = trimmedString(noteContext.noteItemKey).toUpperCase();
   if (libraryID && noteItemKey) {
     return `${libraryID}:${noteItemKey}`;
   }
@@ -84,7 +81,7 @@ function hashText(text: string): string {
 export function buildPinnedSelectedTextKey(
   context: SelectedTextContext,
 ): string {
-  const text = normalizeText(context.text);
+  const text = trimmedString(context.text);
   const source = normalizeTextSource(context.source);
   const paperContext = context.paperContext;
   const paperPart = paperContext ? buildPinnedPaperKey(paperContext) : "-";
@@ -101,14 +98,14 @@ export function buildPinnedSelectedTextKey(
 }
 
 export function buildPinnedImageKey(imageUrl: string): string {
-  return normalizeText(imageUrl);
+  return trimmedString(imageUrl);
 }
 
 export function buildPinnedFileKey(attachment: ChatAttachment): string {
   const id = typeof attachment.id === "string" ? attachment.id.trim() : "";
   if (id) return id;
-  const name = normalizeText(attachment.name);
-  const mimeType = normalizeText(attachment.mimeType);
+  const name = trimmedString(attachment.name);
+  const mimeType = trimmedString(attachment.mimeType);
   const size = Number.isFinite(attachment.sizeBytes)
     ? Math.max(0, attachment.sizeBytes)
     : 0;

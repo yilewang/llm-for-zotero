@@ -20,6 +20,7 @@ import {
   metadataFieldLabel,
   metadataPatchFieldNames,
 } from "./tools/write/mutateLibraryShared";
+import { trimmedStringOrUndefined } from "../core/values";
 
 type LiteratureSearchMode =
   | "recommendations"
@@ -93,10 +94,6 @@ type SearchReviewArgs = {
   query?: string;
 };
 
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function readPositiveInt(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) {
     return Math.floor(value);
@@ -111,13 +108,13 @@ function readPositiveInt(value: unknown): number | undefined {
 }
 
 function bareDoi(value: unknown): string | undefined {
-  const doi = readString(value);
+  const doi = trimmedStringOrUndefined(value);
   if (!doi) return undefined;
   return doi.replace(/^https?:\/\/doi\.org\//i, "");
 }
 
 function maybeArxivIdentifier(url: unknown): string | undefined {
-  const raw = readString(url);
+  const raw = trimmedStringOrUndefined(url);
   if (!raw) return undefined;
   const match = /arxiv\.org\/abs\/([\d.]+)/i.exec(raw);
   return match?.[1] ? `arxiv:${match[1]}` : undefined;
@@ -140,7 +137,7 @@ function buildPaperSubtitle(
   const year =
     typeof result.year === "number"
       ? String(result.year)
-      : readString(result.year);
+      : trimmedStringOrUndefined(result.year);
   const authors = Array.isArray(result.authors)
     ? result.authors
         .filter(
@@ -176,11 +173,11 @@ function buildPaperBadges(
 function describeMetadataResult(result: Record<string, unknown>): string {
   const patch = result.patch as Record<string, unknown> | undefined;
   const title =
-    readString(result.displayTitle) ||
-    readString(patch?.title) ||
+    trimmedStringOrUndefined(result.displayTitle) ||
+    trimmedStringOrUndefined(patch?.title) ||
     "Untitled result";
-  const subtitle = readString(result.displaySubtitle) || "";
-  const abstract = readString(patch?.abstractNote) || "";
+  const subtitle = trimmedStringOrUndefined(result.displaySubtitle) || "";
+  const abstract = trimmedStringOrUndefined(patch?.abstractNote) || "";
   const abstractSnippet =
     abstract.length > 220 ? `${abstract.slice(0, 220).trimEnd()}...` : abstract;
   return [title, subtitle, abstractSnippet].filter(Boolean).join("\n");
@@ -225,7 +222,8 @@ function scoreMetadataChoice(
     score += 100;
   }
   const candidateTitle =
-    readString(record.displayTitle) || readString(patch?.title);
+    trimmedStringOrUndefined(record.displayTitle) ||
+    trimmedStringOrUndefined(patch?.title);
   const targetTitle =
     args.title || args.query || getReferencePaperTitle(context);
   if (candidateTitle && targetTitle) {
@@ -242,7 +240,7 @@ function scoreMetadataChoice(
       }
     }
   }
-  const source = readString(record.source)?.toLowerCase();
+  const source = trimmedStringOrUndefined(record.source)?.toLowerCase();
   if (source === "zotero translator") {
     score += 10;
   } else if (source === "crossref") {
@@ -257,11 +255,13 @@ function describeMetadataChoice(record: Record<string, unknown>): {
   badge?: string;
 } {
   const patch = record.patch as Record<string, unknown> | undefined;
-  const source = readString(record.source) || "Metadata result";
+  const source = trimmedStringOrUndefined(record.source) || "Metadata result";
   const title =
-    readString(record.displayTitle) || readString(patch?.title) || source;
+    trimmedStringOrUndefined(record.displayTitle) ||
+    trimmedStringOrUndefined(patch?.title) ||
+    source;
   const subtitle =
-    readString(record.displaySubtitle) ||
+    trimmedStringOrUndefined(record.displaySubtitle) ||
     [source].filter(Boolean).join(" · ") ||
     undefined;
   const doi = bareDoi(patch?.DOI);
@@ -363,7 +363,9 @@ function prepareSearchReview(
     return null;
   }
   const content = result.content as Record<string, unknown>;
-  const mode = readString(content.mode) as LiteratureSearchMode | undefined;
+  const mode = trimmedStringOrUndefined(content.mode) as
+    | LiteratureSearchMode
+    | undefined;
   const results = Array.isArray(content.results) ? content.results : [];
   if (!mode || (results.length === 0 && !content.sessionId)) {
     return null;
@@ -378,9 +380,9 @@ function prepareSearchReview(
       const rowId = `metadata-${index + 1}`;
       rows.push({
         key: rowId,
-        label: readString(record.source) || `Result ${index + 1}`,
+        label: trimmedStringOrUndefined(record.source) || `Result ${index + 1}`,
         before:
-          readString(
+          trimmedStringOrUndefined(
             (record.patch as Record<string, unknown> | undefined)?.url,
           ) ||
           bareDoi((record.patch as Record<string, unknown> | undefined)?.DOI),
@@ -399,8 +401,8 @@ function prepareSearchReview(
     if (!rows.length) return null;
     // Detect high confidence: translator source or DOI match confidence
     const firstRecord = results[0] as Record<string, unknown> | undefined;
-    const source = readString(firstRecord?.source)?.toLowerCase();
-    const matchConf = readString(firstRecord?.matchConfidence);
+    const source = trimmedStringOrUndefined(firstRecord?.source)?.toLowerCase();
+    const matchConf = trimmedStringOrUndefined(firstRecord?.matchConfidence);
     const highConfidence =
       source === "zotero translator" || matchConf === "doi";
     return {
@@ -417,15 +419,21 @@ function prepareSearchReview(
   for (const [index, entry] of results.entries()) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const record = entry as Record<string, unknown>;
-    const title = readString(record.title);
+    const title = trimmedStringOrUndefined(record.title);
     if (!title) continue;
     papers.push({
-      rowId: readString(record.discoveryPaperId) || `paper-${index + 1}`,
+      rowId:
+        trimmedStringOrUndefined(record.discoveryPaperId) ||
+        `paper-${index + 1}`,
       title,
       subtitle: buildPaperSubtitle(record),
-      body: readString(record.relevanceReason) || readString(record.abstract),
+      body:
+        trimmedStringOrUndefined(record.relevanceReason) ||
+        trimmedStringOrUndefined(record.abstract),
       badges: buildPaperBadges(record),
-      href: readString(record.openAccessUrl) || readString(record.sourceUrl),
+      href:
+        trimmedStringOrUndefined(record.openAccessUrl) ||
+        trimmedStringOrUndefined(record.sourceUrl),
       importIdentifier: buildImportIdentifier(record),
       raw: record,
     });
@@ -434,8 +442,8 @@ function prepareSearchReview(
   return {
     kind: "paper_results",
     mode,
-    source: readString(content.source),
-    query: readString(content.query),
+    source: trimmedStringOrUndefined(content.source),
+    query: trimmedStringOrUndefined(content.query),
     papers,
   };
 }
@@ -506,21 +514,25 @@ function normalizeSearchReviewArgs(args: unknown): SearchReviewArgs {
   const paperContext = validateMetadataPaperContext(record.paperContext);
   return {
     targetCollectionId: readPositiveInt(record.targetCollectionId),
-    destinationLabel: readString(record.destinationLabel),
-    shortfallReason: readString(record.shortfallReason),
-    workflow: readString(record.workflow) as
+    destinationLabel: trimmedStringOrUndefined(record.destinationLabel),
+    shortfallReason: trimmedStringOrUndefined(record.shortfallReason),
+    workflow: trimmedStringOrUndefined(record.workflow) as
       | LiteratureSearchWorkflow
       | undefined,
-    mode: readString(record.mode) as LiteratureSearchMode | undefined,
-    source: readString(record.source) as LiteratureSearchSource | undefined,
+    mode: trimmedStringOrUndefined(record.mode) as
+      | LiteratureSearchMode
+      | undefined,
+    source: trimmedStringOrUndefined(record.source) as
+      | LiteratureSearchSource
+      | undefined,
     limit: readPositiveInt(record.limit),
     libraryID: readPositiveInt(record.libraryID),
     itemId: readPositiveInt(record.itemId),
     paperContext,
-    doi: readString(record.doi),
-    title: readString(record.title),
-    arxivId: readString(record.arxivId),
-    query: readString(record.query),
+    doi: trimmedStringOrUndefined(record.doi),
+    title: trimmedStringOrUndefined(record.title),
+    arxivId: trimmedStringOrUndefined(record.arxivId),
+    query: trimmedStringOrUndefined(record.query),
   };
 }
 
@@ -849,7 +861,7 @@ export function resolveSearchLiteratureReview(
   if (prepared.kind === "metadata") {
     if (actionId === "save_note") {
       const noteContent = normalizeNoteSourceText(
-        readString(data.noteContent) ||
+        trimmedStringOrUndefined(data.noteContent) ||
           buildMetadataNoteTemplate(context, prepared.rows),
       );
       return {
@@ -930,7 +942,7 @@ export function resolveSearchLiteratureReview(
     if (actionId === "review_changes") {
       const selectedChoice = resolveMetadataChoice(
         prepared,
-        readString(data.selectedMetadataResult),
+        trimmedStringOrUndefined(data.selectedMetadataResult),
         normalizedArgs,
         context,
       );

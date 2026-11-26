@@ -1,5 +1,6 @@
 import { getCodexHomePref } from "../utils/codexHomePref";
 import { getLocalParentPath, joinLocalPath } from "../utils/localPath";
+import { trimmedString } from "../core/values";
 
 export const CODEX_DIRECT_RESPONSES_URL =
   "https://chatgpt.com/backend-api/codex/responses";
@@ -249,10 +250,6 @@ export async function loadCodexAuthJson(
   }
 }
 
-function normalizeToken(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function normalizeAuthPathKey(path: string): string {
   const normalized = path.trim().replace(/[\\/]+/g, "/");
   return /^[a-z]:\//i.test(normalized) || normalized.startsWith("//")
@@ -264,9 +261,9 @@ function sessionFromAuthJson(
   authPath: string,
   auth: CodexAuthJson | null,
 ): CodexAuthSession {
-  const token = normalizeToken(auth?.tokens?.access_token);
-  const refreshToken = normalizeToken(auth?.tokens?.refresh_token);
-  const accountId = normalizeToken(auth?.tokens?.account_id);
+  const token = trimmedString(auth?.tokens?.access_token);
+  const refreshToken = trimmedString(auth?.tokens?.refresh_token);
+  const accountId = trimmedString(auth?.tokens?.account_id);
   return {
     token,
     refreshToken,
@@ -310,11 +307,10 @@ async function refreshCodexAuthSessionOnce(
     );
   }
   const payload = (await response.json()) as unknown as Record<string, unknown>;
-  const token = normalizeToken(payload.access_token);
+  const token = trimmedString(payload.access_token);
   if (!token)
     throw new Error("Codex token refresh returned empty access token");
-  const nextRefreshToken =
-    normalizeToken(payload.refresh_token) || refreshToken;
+  const nextRefreshToken = trimmedString(payload.refresh_token) || refreshToken;
   const latest = (await loadCodexAuthJson(dependencies)) || currentAuth || {};
   const tokens: CodexTokenData = {
     ...(latest.tokens || {}),

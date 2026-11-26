@@ -8,6 +8,7 @@ import {
   type ParsedJatsArticle,
   type ParsedPaperSection,
 } from "./literatureReadParser";
+import { recordOrEmpty, trimmedString } from "../../core/values";
 
 /**
  * literature_read's resolution ladder: one outside paper's full abstract and,
@@ -306,19 +307,9 @@ class RequestBudget {
 
 // --- metadata helpers ----------------------------------------------------
 
-function str(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function parseJson(text: string): Record<string, unknown> | null {
   try {
-    return record(JSON.parse(text));
+    return recordOrEmpty(JSON.parse(text));
   } catch {
     return null;
   }
@@ -343,7 +334,9 @@ function doiUrl(doi: string | undefined): string | undefined {
 
 function reconstructAbstract(invertedIndex: unknown): string {
   const words: Array<[string, number]> = [];
-  for (const [word, positions] of Object.entries(record(invertedIndex))) {
+  for (const [word, positions] of Object.entries(
+    recordOrEmpty(invertedIndex),
+  )) {
     if (!Array.isArray(positions)) continue;
     for (const position of positions) {
       if (typeof position === "number") words.push([word, position]);
@@ -484,68 +477,77 @@ async function searchEuropePmc(
   if (!isOk(outcome)) return { hit: null, failure: failureReason(outcome) };
   const body = parseJson(outcome.text);
   if (!body) return { hit: null, failure: "request_failed" };
-  const results = record(body.resultList).result;
-  const item = Array.isArray(results) ? record(results[0]) : {};
-  if (!str(item.id) && !str(item.title)) return { hit: null };
-  return { hit: { item, openAccess: str(item.isOpenAccess) === "Y" } };
+  const results = recordOrEmpty(body.resultList).result;
+  const item = Array.isArray(results) ? recordOrEmpty(results[0]) : {};
+  if (!trimmedString(item.id) && !trimmedString(item.title))
+    return { hit: null };
+  return {
+    hit: { item, openAccess: trimmedString(item.isOpenAccess) === "Y" },
+  };
 }
 
 function applyEuropePmcItem(draft: Draft, item: Record<string, unknown>): void {
-  const authorList = record(item.authorList).author;
+  const authorList = recordOrEmpty(item.authorList).author;
   const authors: string[] = [];
   const surnames: string[] = [];
   for (const entry of Array.isArray(authorList) ? authorList : []) {
-    const author = record(entry);
-    const last = str(author.lastName);
+    const author = recordOrEmpty(entry);
+    const last = trimmedString(author.lastName);
     const name =
-      [str(author.firstName), last].filter(Boolean).join(" ") ||
-      str(author.fullName) ||
-      str(author.collectiveName);
+      [trimmedString(author.firstName), last].filter(Boolean).join(" ") ||
+      trimmedString(author.fullName) ||
+      trimmedString(author.collectiveName);
     if (!name) continue;
     authors.push(name);
-    surnames.push(last || str(author.collectiveName) || lastNameOf(name));
+    surnames.push(
+      last || trimmedString(author.collectiveName) || lastNameOf(name),
+    );
   }
   if (!authors.length) {
-    for (const name of str(item.authorString).replace(/\.$/, "").split(",")) {
+    for (const name of trimmedString(item.authorString)
+      .replace(/\.$/, "")
+      .split(",")) {
       if (!name.trim()) continue;
       authors.push(name.trim());
       surnames.push(name.trim().split(/\s+/)[0]);
     }
   }
-  const year = parseInt(str(item.pubYear), 10);
-  const doi = str(item.doi) || draft.paper.doi;
-  const pmid = str(item.pmid) || draft.paper.pmid;
-  const pmcid = str(item.pmcid) || draft.paper.pmcid;
-  const source = str(item.source) || "MED";
-  const id = str(item.id);
+  const year = parseInt(trimmedString(item.pubYear), 10);
+  const doi = trimmedString(item.doi) || draft.paper.doi;
+  const pmid = trimmedString(item.pmid) || draft.paper.pmid;
+  const pmcid = trimmedString(item.pmcid) || draft.paper.pmcid;
+  const source = trimmedString(item.source) || "MED";
+  const id = trimmedString(item.id);
   const europePmcUrl = id
     ? `https://europepmc.org/article/${source}/${id}`
     : undefined;
   draft.paper = {
     ...draft.paper,
-    title: str(item.title).replace(/\.$/, "") || draft.paper.title,
+    title: trimmedString(item.title).replace(/\.$/, "") || draft.paper.title,
     authors: authors.length ? authors : draft.paper.authors,
     ...(Number.isFinite(year) ? { year } : {}),
     ...(doi ? { doi } : {}),
     ...(pmid ? { pmid } : {}),
     ...(pmcid ? { pmcid } : {}),
     url: doiUrl(doi) || europePmcUrl || draft.paper.url,
-    ...(str(item.license) ? { license: str(item.license) } : {}),
+    ...(trimmedString(item.license)
+      ? { license: trimmedString(item.license) }
+      : {}),
   };
   if (surnames.length) draft.firstCreator = firstCreatorOf(surnames);
-  const abstract = htmlFragmentToText(str(item.abstractText));
+  const abstract = htmlFragmentToText(trimmedString(item.abstractText));
   if (abstract) draft.abstract = abstract;
   draft.landingUrl = doiUrl(doi) || europePmcUrl || draft.landingUrl;
-  const urls = record(item.fullTextUrlList).fullTextUrl;
+  const urls = recordOrEmpty(item.fullTextUrlList).fullTextUrl;
   for (const entry of Array.isArray(urls) ? urls : []) {
-    const link = record(entry);
-    const code = str(link.availabilityCode);
+    const link = recordOrEmpty(entry);
+    const code = trimmedString(link.availabilityCode);
     if (
-      str(link.documentStyle) === "pdf" &&
+      trimmedString(link.documentStyle) === "pdf" &&
       (code === "OA" || code === "F") &&
-      str(link.url)
+      trimmedString(link.url)
     ) {
-      draft.pdfUrl ||= str(link.url);
+      draft.pdfUrl ||= trimmedString(link.url);
       break;
     }
   }
@@ -627,18 +629,20 @@ async function readOpenAlex(
   if (!work) return finish(draft, "unavailable", "request_failed");
   const authors: string[] = [];
   for (const entry of Array.isArray(work.authorships) ? work.authorships : []) {
-    const name = str(record(record(entry).author).display_name);
+    const name = trimmedString(
+      recordOrEmpty(recordOrEmpty(entry).author).display_name,
+    );
     if (name) authors.push(name);
   }
-  const ids = record(work.ids);
-  const pmid = str(ids.pmid).replace(/^.*\//, "");
-  const pmcid = str(ids.pmcid).replace(/^.*\//, "");
+  const ids = recordOrEmpty(work.ids);
+  const pmid = trimmedString(ids.pmid).replace(/^.*\//, "");
+  const pmcid = trimmedString(ids.pmcid).replace(/^.*\//, "");
   const year = Number(work.publication_year);
-  const best = record(work.best_oa_location);
+  const best = recordOrEmpty(work.best_oa_location);
   draft.source = "openalex";
   draft.paper = {
     ...draft.paper,
-    title: str(work.display_name) || undefined,
+    title: trimmedString(work.display_name) || undefined,
     authors,
     ...(Number.isFinite(year) && year > 0 ? { year } : {}),
     ...(/^\d+$/.test(pmid) ? { pmid } : {}),
@@ -647,10 +651,10 @@ async function readOpenAlex(
   };
   draft.firstCreator = firstCreatorOf(authors.map(lastNameOf));
   draft.abstract = reconstructAbstract(work.abstract_inverted_index);
-  draft.pdfUrl = str(best.pdf_url) || undefined;
+  draft.pdfUrl = trimmedString(best.pdf_url) || undefined;
   draft.landingUrl =
-    str(best.landing_page_url) ||
-    str(record(work.open_access).oa_url) ||
+    trimmedString(best.landing_page_url) ||
+    trimmedString(recordOrEmpty(work.open_access).oa_url) ||
     doiUrl(doi);
   if (draft.paper.pmcid) return readFullText(draft, false, budget);
   if (draft.paper.pmid) {

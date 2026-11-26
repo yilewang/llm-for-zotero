@@ -111,6 +111,7 @@ import {
   setLastUsedUpstreamConversationMode,
   setLastUsedUpstreamGlobalConversationKey,
 } from "./prefHelpers";
+import { positiveIntOrZero } from "../../core/values";
 
 export type ConversationSelectionMode = "global" | "paper";
 
@@ -742,11 +743,6 @@ type GuardedRestore = {
   restore: () => void;
 };
 
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value || 0);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
 function isRestorableKey(value: number | null): value is number {
   return Boolean(value && value > 0);
 }
@@ -804,13 +800,13 @@ function primeEntry<V>(params: {
  * leaves the sidebar's selection alone.
  */
 export function prime(params: SelectionPrimeParams): SelectionPrimeSnapshot {
-  const libraryID = normalizePositiveInt(params.libraryID);
+  const libraryID = positiveIntOrZero(params.libraryID);
   if (!libraryID) return { restore: () => undefined };
   // The side chat selects nothing (see isSideSurface).
   if (isSideSurface(params.surface)) return { restore: () => undefined };
 
-  const conversationKey = normalizePositiveInt(params.conversationKey);
-  const paperItemID = normalizePositiveInt(params.paperItemID);
+  const conversationKey = positiveIntOrZero(params.conversationKey);
+  const paperItemID = positiveIntOrZero(params.paperItemID);
   const mode: ConversationSelectionMode =
     params.mode === "global" ? "global" : "paper";
   const adapter = adapterFor(params.system);

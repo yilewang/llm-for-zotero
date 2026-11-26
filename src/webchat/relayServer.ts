@@ -29,6 +29,7 @@ import {
   getWebChatTargetByUrl,
   isWebChatUrlForTarget,
 } from "./types";
+import { positiveIntOrNull } from "../core/values";
 
 const PREFIX = "/llm-for-zotero/webchat";
 const PRE_SUBMIT_RECLAIM_MS = 120_000;
@@ -979,11 +980,6 @@ function readNullableString(value: unknown): string | null {
 
 function readNullableBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
-}
-
-function readNullableNumber(value: unknown): number | null {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
 }
 
 function normalizeTurnDiagnostic(
@@ -1983,8 +1979,8 @@ const ExtensionStatusEndpoint = createEndpoint(["POST"], (opts) => {
     ),
     supportedTargets: normalizeSupportedTargets(body.supportedTargets),
     answerCapture: normalizeAnswerCapture(body.answerCapture),
-    lastRequestAt: readNullableNumber(body.lastRequestAt),
-    lastStreamAt: readNullableNumber(body.lastStreamAt),
+    lastRequestAt: positiveIntOrNull(body.lastRequestAt),
+    lastStreamAt: positiveIntOrNull(body.lastStreamAt),
     lastDiagnostic:
       normalizeTurnDiagnostic(
         {

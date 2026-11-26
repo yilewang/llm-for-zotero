@@ -29,7 +29,11 @@ import type {
   AgentModelStep,
   AgentToolCall,
 } from "../../agent/types";
-import { scriptedJobTurn, stubPaperReadTool } from "./longJobReplay";
+import {
+  scriptedJobTurn,
+  stubPaperReadTool,
+  contentText,
+} from "./longJobReplay";
 
 export type StopRuleScenario =
   | "runaway_search"
@@ -56,14 +60,6 @@ export type StopRuleScenario =
 const CHECKPOINT_MARK = "Search checkpoint.";
 const FINAL_ONLY_MARK = "Answer now, without calling any tool.";
 const REFUSAL_MARK = "Not run: this step is for the answer";
-
-function contentText(message: AgentModelMessage): string {
-  return typeof message.content === "string"
-    ? message.content
-    : message.content
-        .map((part) => (part.type === "text" ? part.text : ""))
-        .join("\n");
-}
 
 const toolStep = (calls: AgentToolCall[]): AgentModelStep => ({
   kind: "tool_calls",

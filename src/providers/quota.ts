@@ -2,6 +2,7 @@ import { createAbortController } from "../utils/apiHelpers";
 import { detectProviderPreset } from "../utils/providerPresets";
 import { parseMiniMaxQuota } from "./minimaxQuota";
 import type { ProviderQuota } from "./types";
+import { recordOrEmpty } from "../core/values";
 
 export type { ProviderQuota } from "./types";
 
@@ -97,12 +98,6 @@ export function resolveQuotaTarget(
   return null;
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function number(value: unknown): number | undefined {
   if (
     (typeof value !== "number" && typeof value !== "string") ||
@@ -126,12 +121,12 @@ export function parseApiQuota(
       model,
     );
   }
-  const payload = record(value);
+  const payload = recordOrEmpty(value);
   if (kind === "opencode_go") {
-    const usage = record(payload.usage);
+    const usage = recordOrEmpty(payload.usage);
     const windows = (["rolling", "weekly", "monthly"] as const).flatMap(
       (period) => {
-        const row = record(usage[period]);
+        const row = recordOrEmpty(usage[period]);
         const usedPercent = number(row.percent);
         if (
           (row.status !== "ok" && row.status !== "rate-limited") ||
@@ -162,8 +157,8 @@ export function parseApiQuota(
     const rows = [
       { detail: payload.usage, durationMins: 10080 },
       ...(Array.isArray(payload.limits) ? payload.limits : []).map((raw) => {
-        const row = record(raw);
-        const window = record(row.window);
+        const row = recordOrEmpty(raw);
+        const window = recordOrEmpty(row.window);
         const duration = number(window.duration);
         const unit = typeof window.timeUnit === "string" ? window.timeUnit : "";
         const factor = unit.includes("MINUTE")
@@ -183,7 +178,7 @@ export function parseApiQuota(
       }),
     ];
     const windows = rows.flatMap(({ detail, durationMins }) => {
-      const row = record(detail);
+      const row = recordOrEmpty(detail);
       const limit = number(row.limit);
       const remaining = number(row.remaining);
       const used =
@@ -216,9 +211,9 @@ export function parseApiQuota(
       (payload.code !== undefined && number(payload.code) !== 200)
     )
       return null;
-    const limits = record(payload.data).limits;
+    const limits = recordOrEmpty(payload.data).limits;
     const windows = (Array.isArray(limits) ? limits : []).flatMap((raw) => {
-      const row = record(raw);
+      const row = recordOrEmpty(raw);
       const usedPercent = number(row.percentage);
       // TIME_LIMIT is the separate MCP allowance. Do not present it as chat usage.
       if (
@@ -235,7 +230,7 @@ export function parseApiQuota(
     // Kimi's regional keys and currencies are independent; never fall back
     // across regions or reconstruct available_balance from cash/vouchers.
     if (payload.status !== true || payload.code !== 0) return null;
-    const amount = number(record(payload.data).available_balance);
+    const amount = number(recordOrEmpty(payload.data).available_balance);
     return amount === undefined
       ? null
       : {
@@ -248,7 +243,7 @@ export function parseApiQuota(
     const balances = (
       Array.isArray(payload.balance_infos) ? payload.balance_infos : []
     ).flatMap((raw) => {
-      const row = record(raw);
+      const row = recordOrEmpty(raw);
       const amount = number(row.total_balance);
       return amount !== undefined &&
         (row.currency === "USD" || row.currency === "CNY")
@@ -259,7 +254,7 @@ export function parseApiQuota(
       ? { kind: "balance", scope: "account", balances }
       : null;
   }
-  const data = record(payload.data);
+  const data = recordOrEmpty(payload.data);
   const amount = number(data.limit_remaining);
   // A null limit is unlimited key spending, not an account balance of zero.
   return amount !== undefined && number(data.limit) !== undefined
@@ -269,13 +264,13 @@ export function parseApiQuota(
 
 /** Codex account/rateLimits/read: prefer the named Codex bucket when present. */
 export function parseCodexQuota(value: unknown): ProviderQuota | null {
-  const payload = record(value);
-  const buckets = record(payload.rateLimitsByLimitId);
+  const payload = recordOrEmpty(value);
+  const buckets = recordOrEmpty(payload.rateLimitsByLimitId);
   const bucket = Object.keys(buckets).length
-    ? record(buckets.codex)
-    : record(payload.rateLimits);
+    ? recordOrEmpty(buckets.codex)
+    : recordOrEmpty(payload.rateLimits);
   const windows = [bucket.primary, bucket.secondary].flatMap((raw) => {
-    const row = record(raw);
+    const row = recordOrEmpty(raw);
     const usedPercent = number(row.usedPercent);
     if (usedPercent === undefined || usedPercent < 0) return [];
     const durationMins = number(row.windowDurationMins);

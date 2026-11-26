@@ -35,7 +35,7 @@ import {
   saveGeneratedImageAssetToPath,
 } from "../../services/images/generatedImageAssets";
 
-function openGeneratedImageFileUrl(fileUrl: string): boolean {
+export function openGeneratedImageFileUrl(fileUrl: string): boolean {
   try {
     const launch = (Zotero as any).launchURL as
       | ((url: string) => void)

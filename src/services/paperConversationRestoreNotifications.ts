@@ -1,13 +1,8 @@
 import { forgetPaperRestoreTargetsForItems } from "../shared/paperConversationRestore";
 import { zoteroChangeDispatcher } from "./zoteroChangeDispatcher";
+import { positiveIntOrNull } from "../core/values";
 
 let unsubscribe: (() => void) | null = null;
-
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
 
 export function registerPaperConversationRestoreNotifications(): void {
   if (unsubscribe) return;
@@ -25,7 +20,7 @@ export function registerPaperConversationRestoreNotifications(): void {
       const itemIDs = [
         ...new Set(
           change.ids
-            .map(normalizePositiveInt)
+            .map(positiveIntOrNull)
             .filter((id): id is number => id !== null),
         ),
       ];

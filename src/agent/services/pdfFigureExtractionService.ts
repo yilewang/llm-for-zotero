@@ -25,6 +25,7 @@ import type { AgentToolArtifact, AgentToolContext } from "../types";
 import type { PdfFigureSelection, PdfPageService } from "./pdfPageService";
 import { sha256Bytes } from "../store/journalRecoveryBlobStore";
 import type { PlanDocumentAsset } from "../documents/types";
+import { collapseWhitespace, positiveIntOrZero } from "../../core/values";
 
 const FIGURE_EXTRACTION_RENDER_SCALE = 1.8;
 
@@ -91,15 +92,15 @@ function resolveDirectFigureSelection(
         ),
     };
   }
-  const userText = normalizeText(input.query || context.request.userText);
+  const userText = collapseWhitespace(input.query || context.request.userText);
   if (!/\b(?:fig(?:ure)?s?|images?)\b/i.test(userText)) return undefined;
 
   const labels = new Set<string>();
   const labelPattern =
     /\b((?:extended\s+data\s+|supplement(?:ary|al)\s+)?fig(?:ure)?\.?)\s*(S?\d+[A-Za-z]?)/gi;
   for (const match of userText.matchAll(labelPattern)) {
-    const prefix = normalizeText(match[1]).toLowerCase();
-    const number = normalizeText(match[2]);
+    const prefix = collapseWhitespace(match[1]).toLowerCase();
+    const number = collapseWhitespace(match[2]);
     if (!number) continue;
     labels.add(
       prefix.startsWith("extended data")
@@ -116,15 +117,6 @@ function resolveDirectFigureSelection(
       input.includeSupplementary ??
       /\b(?:supplement(?:ary|al)|extended\s+data|S\d)\b/i.test(userText),
   };
-}
-
-function normalizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
-
-function normalizePositiveInt(value: unknown): number {
-  const number = Math.floor(Number(value));
-  return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
 async function readTextFile(filePath: string): Promise<string | null> {
@@ -222,7 +214,7 @@ function cropPathByFigureLabel(
   const paths = new Map<string, string>();
   for (const figure of figures) {
     for (const label of [figure.label, figure.baseLabel]) {
-      const normalized = normalizeText(label).toLowerCase();
+      const normalized = collapseWhitespace(label).toLowerCase();
       if (normalized && !paths.has(normalized)) {
         paths.set(normalized, figure.cropPath);
       }
@@ -239,8 +231,8 @@ function refreshExpectedFigureCropPaths(
   const cropPaths = cropPathByFigureLabel(figures);
   return expectedFigures.map((figure) => {
     const cropPath =
-      cropPaths.get(normalizeText(figure.label).toLowerCase()) ||
-      cropPaths.get(normalizeText(figure.baseLabel).toLowerCase());
+      cropPaths.get(collapseWhitespace(figure.label).toLowerCase()) ||
+      cropPaths.get(collapseWhitespace(figure.baseLabel).toLowerCase());
     return cropPath ? { ...figure, cropPath } : figure;
   });
 }
@@ -253,9 +245,9 @@ type CachedFigureRequest = {
 };
 
 function normalizeFigureLabelKey(value: unknown): string {
-  const text = normalizeText(value);
+  const text = collapseWhitespace(value);
   if (!text) return "";
-  return normalizeText(getManifestFigureBaseLabel(text)).toLowerCase();
+  return collapseWhitespace(getManifestFigureBaseLabel(text)).toLowerCase();
 }
 
 function addFigureLabelKey(labels: Set<string>, value: unknown): void {
@@ -285,7 +277,7 @@ function labelAllowedForAllQuery(
   label: string,
   includeSupplementary: boolean,
 ): boolean {
-  const normalized = normalizeText(label);
+  const normalized = collapseWhitespace(label);
   if (/^Extended Data Figure\s+\d+/i.test(normalized)) {
     return includeSupplementary;
   }
@@ -318,8 +310,8 @@ function figureMatchesPages(
   pages: Set<number>,
 ): boolean {
   if (!pages.size) return true;
-  const pageNumber = normalizePositiveInt(figure.pageNumber);
-  const captionPageNumber = normalizePositiveInt(figure.captionPageNumber);
+  const pageNumber = positiveIntOrZero(figure.pageNumber);
+  const captionPageNumber = positiveIntOrZero(figure.captionPageNumber);
   return (
     (pageNumber > 0 && pages.has(pageNumber)) ||
     (captionPageNumber > 0 && pages.has(captionPageNumber))
@@ -349,8 +341,10 @@ function figureMatchesRequest(
 }
 
 function expectedFigureIsKnownMissing(figure: ExpectedPdfFigure): boolean {
-  const status = normalizeText(figure.status).toLowerCase();
-  return Boolean(status && status !== "ok") || !normalizeText(figure.cropPath);
+  const status = collapseWhitespace(figure.status).toLowerCase();
+  return (
+    Boolean(status && status !== "ok") || !collapseWhitespace(figure.cropPath)
+  );
 }
 
 function cachedCoverageLabels(
@@ -482,13 +476,13 @@ async function readVerifiedCachedFigures(params: {
   if (!cache.entries.length) return null;
 
   const attachmentMatches =
-    normalizePositiveInt(cache.attachmentId) === params.attachmentId;
+    positiveIntOrZero(cache.attachmentId) === params.attachmentId;
   if (!attachmentMatches) return null;
 
   const figures: ExtractedPdfFigure[] = [];
   for (const figure of cache.entries) {
     if (
-      normalizeText(figure.cropPath) &&
+      collapseWhitespace(figure.cropPath) &&
       (await pdfFigureCropFileExists(figure.cropPath))
     ) {
       figures.push(figure);
@@ -600,7 +594,7 @@ export class PdfFigureExtractionService {
 
     for (const paperContext of params.paperContexts) {
       const attachmentId = Math.floor(Number(paperContext.contextItemId || 0));
-      const mineruCacheDir = normalizeText(paperContext.mineruCacheDir);
+      const mineruCacheDir = collapseWhitespace(paperContext.mineruCacheDir);
       if (!attachmentId) {
         warnings.push(
           `${paperContext.title || "Paper"} does not have a Zotero PDF attachment ID.`,

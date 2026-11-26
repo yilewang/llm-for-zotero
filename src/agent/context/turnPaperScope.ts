@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types";
 import { isAbsoluteLocalPath } from "../../utils/localPath";
 import { normalizeExcludedItemIds } from "../../services/context/normalizers";
+import { positiveIntOrUndefined, trimmedString } from "../../core/values";
 
 export type TurnPaperKey = `${number}:${number}:${number}`;
 
@@ -107,16 +108,6 @@ export type TurnPaperScopeBuildResult =
       resourceKind?: "paper" | "collection" | "tag" | "local_document";
     }>;
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
-function normalizeText(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
 export function buildTurnPaperKey(
   paper: Pick<TurnPaperRef, "libraryID" | "itemId" | "contextItemId">,
 ): TurnPaperKey {
@@ -139,9 +130,9 @@ function normalizePaper(
   libraryID: number,
 ): TurnPaperRef | null {
   if (!paper) return null;
-  const itemId = normalizePositiveInt(paper.itemId);
-  const contextItemId = normalizePositiveInt(paper.contextItemId);
-  const paperLibraryID = normalizePositiveInt(paper.libraryID);
+  const itemId = positiveIntOrUndefined(paper.itemId);
+  const contextItemId = positiveIntOrUndefined(paper.contextItemId);
+  const paperLibraryID = positiveIntOrUndefined(paper.libraryID);
   if (
     !itemId ||
     !contextItemId ||
@@ -154,13 +145,13 @@ function normalizePaper(
     libraryID: paperLibraryID || libraryID,
     itemId,
     contextItemId,
-    title: normalizeText(paper.title) || `Paper ${itemId}`,
-    attachmentTitle: normalizeText(paper.attachmentTitle) || undefined,
-    citationKey: normalizeText(paper.citationKey) || undefined,
-    firstCreator: normalizeText(paper.firstCreator) || undefined,
-    year: normalizeText(paper.year) || undefined,
+    title: trimmedString(paper.title) || `Paper ${itemId}`,
+    attachmentTitle: trimmedString(paper.attachmentTitle) || undefined,
+    citationKey: trimmedString(paper.citationKey) || undefined,
+    firstCreator: trimmedString(paper.firstCreator) || undefined,
+    year: trimmedString(paper.year) || undefined,
     contentSourceMode: paper.contentSourceMode,
-    mineruCacheDir: normalizeText(paper.mineruCacheDir) || undefined,
+    mineruCacheDir: trimmedString(paper.mineruCacheDir) || undefined,
   };
 }
 
@@ -171,8 +162,8 @@ function normalizePaperWithResolver(
 ): TurnPaperRef | null {
   const normalized = normalizePaper(paper, libraryID);
   if (normalized || !paper || !resolvePaperContext) return normalized;
-  const itemId = normalizePositiveInt(paper.itemId);
-  const contextItemId = normalizePositiveInt(paper.contextItemId);
+  const itemId = positiveIntOrUndefined(paper.itemId);
+  const contextItemId = positiveIntOrUndefined(paper.contextItemId);
   if (!itemId && !contextItemId) return null;
   return normalizePaper(
     resolvePaperContext({ itemId, contextItemId }) || undefined,
@@ -202,8 +193,8 @@ function normalizeCollections(
   const out: Readonly<CollectionContextRef>[] = [];
   const seen = new Set<string>();
   for (const [index, collection] of (collections || []).entries()) {
-    const collectionId = normalizePositiveInt(collection?.collectionId);
-    const collectionLibraryID = normalizePositiveInt(collection?.libraryID);
+    const collectionId = positiveIntOrUndefined(collection?.collectionId);
+    const collectionLibraryID = positiveIntOrUndefined(collection?.libraryID);
     if (!collectionId || !collectionLibraryID) {
       return {
         ok: false,
@@ -227,7 +218,7 @@ function normalizeCollections(
     out.push({
       collectionId,
       libraryID: collectionLibraryID,
-      name: normalizeText(collection.name) || `Collection ${collectionId}`,
+      name: trimmedString(collection.name) || `Collection ${collectionId}`,
       ...(excludedItemIds ? { excludedItemIds } : {}),
     });
   }
@@ -243,9 +234,9 @@ function normalizeTags(
   const out: Readonly<TagContextRef>[] = [];
   const seen = new Set<string>();
   for (const [index, tag] of (tags || []).entries()) {
-    const tagLibraryID = normalizePositiveInt(tag?.libraryID);
-    const name = normalizeText(tag?.name);
-    const normalizedName = normalizeText(tag?.normalizedName);
+    const tagLibraryID = positiveIntOrUndefined(tag?.libraryID);
+    const name = trimmedString(tag?.name);
+    const normalizedName = trimmedString(tag?.normalizedName);
     const scope = tag?.scope;
     if (
       !tagLibraryID ||
@@ -289,12 +280,12 @@ export function buildTurnPaperScope(
   input: TurnPaperScopeInput,
 ): TurnPaperScopeBuildResult {
   const libraryID =
-    normalizePositiveInt(input.libraryID) ||
-    normalizePositiveInt(input.activePaperContext?.libraryID) ||
-    normalizePositiveInt(input.selectedCollectionContexts?.[0]?.libraryID) ||
-    normalizePositiveInt(input.selectedTagContexts?.[0]?.libraryID) ||
+    positiveIntOrUndefined(input.libraryID) ||
+    positiveIntOrUndefined(input.activePaperContext?.libraryID) ||
+    positiveIntOrUndefined(input.selectedCollectionContexts?.[0]?.libraryID) ||
+    positiveIntOrUndefined(input.selectedTagContexts?.[0]?.libraryID) ||
     0;
-  const activeItemId = normalizePositiveInt(input.activeItemId);
+  const activeItemId = positiveIntOrUndefined(input.activeItemId);
   const allConcretePapers = [
     input.activePaperContext,
     ...(input.selectedPaperContexts || []),
@@ -469,7 +460,7 @@ export function buildTurnPaperScope(
   ).map(({ paperContext: _paperContext, ...anchor }) => anchor);
   const scope: TurnPaperScope = {
     libraryID,
-    libraryName: normalizeText(input.libraryName) || undefined,
+    libraryName: trimmedString(input.libraryName) || undefined,
     conversationKind: input.conversationKind === "paper" ? "paper" : "global",
     papers,
     collections: collectionsResult.collections,
@@ -485,8 +476,8 @@ export function buildTurnPaperScope(
   const localDocuments: TurnLocalDocument[] = [];
   const seenLocalDocuments = new Set<TurnPaperKey>();
   for (const [index, resource] of (input.localDocuments || []).entries()) {
-    const itemId = normalizePositiveInt(resource?.itemId);
-    const contextItemId = normalizePositiveInt(resource?.contextItemId);
+    const itemId = positiveIntOrUndefined(resource?.itemId);
+    const contextItemId = positiveIntOrUndefined(resource?.contextItemId);
     if (!libraryID || !itemId || !contextItemId) {
       return {
         ok: false,

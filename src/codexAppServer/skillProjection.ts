@@ -5,6 +5,7 @@ import {
   type CodexSkillProjection,
   type CodexSkillProjectionResult,
 } from "../agent/skills/codexSkillProjection";
+import { isRecord } from "../core/values";
 
 /**
  * Codex sees only the Codex-only copy of a skill with runtime sections
@@ -112,10 +113,6 @@ export async function prepareCodexSkillProjections(
   }
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 /**
  * `config` plus a `skills.config` rule `{ path, enabled:false }` for each
  * path. Existing keys stay. Existing rules stay, in order, before the new
@@ -133,7 +130,7 @@ export function withCodexSkillDisableRules(
     if (existing !== undefined && !Array.isArray(existing)) return undefined;
     const list = [...((existing as unknown[] | undefined) || [])];
     for (const path of paths) {
-      if (!list.some((entry) => isPlainObject(entry) && entry.path === path))
+      if (!list.some((entry) => isRecord(entry) && entry.path === path))
         list.push({ path, enabled: false });
     }
     return list;
@@ -144,7 +141,7 @@ export function withCodexSkillDisableRules(
     if (merged) next["skills.config"] = merged;
     return next;
   }
-  if (isPlainObject(next.skills)) {
+  if (isRecord(next.skills)) {
     const merged = merge(next.skills.config);
     if (merged) next.skills = { ...next.skills, config: merged };
     return next;

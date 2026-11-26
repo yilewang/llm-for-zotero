@@ -6,6 +6,7 @@ import {
 } from "./conversationKeySpace";
 import { CONVERSATION_MESSAGE_TABLES } from "./conversationStore/storeTables";
 import { isConversationSystem } from "../core/conversations/conversationSystems";
+import { positiveIntOrNull } from "../core/values";
 
 export type ConversationKeyLedgerKind = "global" | "paper";
 
@@ -111,12 +112,6 @@ function generateConversationInstanceID(): string {
   throw new Error("Secure randomness unavailable for conversation identity");
 }
 
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
 function normalizeText(value: unknown, maxLength = 256): string {
   return typeof value === "string"
     ? value
@@ -135,8 +130,8 @@ function normalizeKind(value: unknown): ConversationKeyLedgerKind | null {
 }
 
 function normalizeRange(range: ConversationKeyRange): ConversationKeyRange {
-  const start = normalizePositiveInt(range.start) || 0;
-  const endExclusive = normalizePositiveInt(range.endExclusive) || 0;
+  const start = positiveIntOrNull(range.start) || 0;
+  const endExclusive = positiveIntOrNull(range.endExclusive) || 0;
   const system = normalizeSystem(range.system);
   const kind = normalizeKind(range.kind);
   if (!start || !endExclusive || endExclusive <= start || !system || !kind) {
@@ -169,13 +164,13 @@ function rangeID(range: ConversationKeyRange): string {
 function normalizeEntry(
   entry: ConversationKeyLedgerEntry,
 ): ConversationKeyLedgerEntry {
-  const conversationKey = normalizePositiveInt(entry.conversationKey);
+  const conversationKey = positiveIntOrNull(entry.conversationKey);
   const instanceID = normalizeText(entry.instanceID, 128);
   const conversationID = normalizeText(entry.conversationID, 512);
   const system = normalizeSystem(entry.system);
   const kind = normalizeKind(entry.kind);
-  const libraryID = normalizePositiveInt(entry.libraryID);
-  const paperItemID = normalizePositiveInt(entry.paperItemID);
+  const libraryID = positiveIntOrNull(entry.libraryID);
+  const paperItemID = positiveIntOrNull(entry.paperItemID);
   if (
     !conversationKey ||
     !instanceID ||
@@ -198,8 +193,8 @@ function normalizeEntry(
       getCurrentProfileSignature(),
     libraryID,
     paperItemID: paperItemID || undefined,
-    issuedAt: normalizePositiveInt(entry.issuedAt) || Date.now(),
-    retiredAt: normalizePositiveInt(entry.retiredAt) || undefined,
+    issuedAt: positiveIntOrNull(entry.issuedAt) || Date.now(),
+    retiredAt: positiveIntOrNull(entry.retiredAt) || undefined,
     retirementReason: normalizeText(entry.retirementReason, 256) || undefined,
   };
 }
@@ -262,7 +257,7 @@ async function initializeConversationKeyLedgerStore(
      WHERE retired_at IS NOT NULL`,
   )) as Array<{ conversationKey?: unknown }> | undefined;
   for (const row of retiredRows || []) {
-    const key = normalizePositiveInt(row.conversationKey);
+    const key = positiveIntOrNull(row.conversationKey);
     if (key) nextRetiredConversationKeys.add(key);
   }
   // Agent stores are lazy and may already exist when the ledger is restored
@@ -355,7 +350,7 @@ export function isConversationKeyLedgerStoreInitialized(): boolean {
 export function isConversationKeyRetiredInMemory(
   conversationKey: number,
 ): boolean {
-  const key = normalizePositiveInt(conversationKey);
+  const key = positiveIntOrNull(conversationKey);
   return Boolean(
     key &&
     retiredConversationKeysDbRef === getDb() &&
@@ -364,7 +359,7 @@ export function isConversationKeyRetiredInMemory(
 }
 
 export function rememberConversationKeyRetired(conversationKey: number): void {
-  const key = normalizePositiveInt(conversationKey);
+  const key = positiveIntOrNull(conversationKey);
   const db = getDb();
   if (!key || !db) return;
   if (retiredConversationKeysDbRef !== db) {
@@ -378,7 +373,7 @@ export async function getConversationKeyLedgerEntry(
   conversationKey: number,
 ): Promise<ConversationKeyLedgerEntry | null> {
   const db = getDb();
-  const key = normalizePositiveInt(conversationKey);
+  const key = positiveIntOrNull(conversationKey);
   if (!db?.queryAsync || !key) return null;
   const rows = (await db.queryAsync(
     `SELECT conversation_key AS conversationKey,
@@ -488,8 +483,8 @@ export async function allocateConversationKeyInTransaction(params: {
   const conversationID =
     normalizeText(params.conversationID, 512) ||
     `pending-conversation:${instanceID}`;
-  const libraryID = normalizePositiveInt(params.libraryID);
-  const paperItemID = normalizePositiveInt(params.paperItemID);
+  const libraryID = positiveIntOrNull(params.libraryID);
+  const paperItemID = positiveIntOrNull(params.paperItemID);
   if (
     !conversationID ||
     !libraryID ||
@@ -677,8 +672,8 @@ export async function nextUnissuedConversationKeyInRange(params: {
   atLeast?: number;
 }): Promise<number> {
   const db = getDb();
-  const start = normalizePositiveInt(params.start);
-  const requestedEnd = normalizePositiveInt(params.endExclusive);
+  const start = positiveIntOrNull(params.start);
+  const requestedEnd = positiveIntOrNull(params.endExclusive);
   if (!db?.queryAsync || !start || !requestedEnd || requestedEnd <= start) {
     throw new Error("Invalid conversation key allocation range");
   }
@@ -687,14 +682,14 @@ export async function nextUnissuedConversationKeyInRange(params: {
     start,
     requestedEnd,
   );
-  const floor = Math.max(start, normalizePositiveInt(params.atLeast) || start);
+  const floor = Math.max(start, positiveIntOrNull(params.atLeast) || start);
   const rows = (await db.queryAsync(
     `SELECT MAX(conversation_key) AS maxKey
      FROM ${KEY_LEDGER_TABLE}
      WHERE conversation_key >= ? AND conversation_key < ?`,
     [start, endExclusive],
   )) as Array<{ maxKey?: unknown }> | undefined;
-  const maxIssued = normalizePositiveInt(rows?.[0]?.maxKey) || 0;
+  const maxIssued = positiveIntOrNull(rows?.[0]?.maxKey) || 0;
   const next = Math.max(floor, maxIssued + 1);
   if (next >= endExclusive) {
     throw new Error(
@@ -758,7 +753,7 @@ export async function retireOrphanedConversationLedgerEntries(params: {
     return;
   }
   for (const row of rows) {
-    const key = normalizePositiveInt(row.conversationKey);
+    const key = positiveIntOrNull(row.conversationKey);
     const instanceID = normalizeText(row.instanceID, 128);
     if (!key || !instanceID) continue;
     // An orphan with surviving messages is not the crash artifact this pass
@@ -806,7 +801,7 @@ export async function updateConversationKeyLedgerConversationIDInTransaction(par
   conversationID: string;
 }): Promise<void> {
   const db = getDb();
-  const key = normalizePositiveInt(params.conversationKey);
+  const key = positiveIntOrNull(params.conversationKey);
   const instanceID = normalizeText(params.instanceID, 128);
   const conversationID = normalizeText(params.conversationID, 512);
   if (!db?.queryAsync || !key || !instanceID || !conversationID) {
@@ -828,7 +823,7 @@ export async function retireConversationKeyInTransaction(params: {
   retiredAt?: number;
 }): Promise<void> {
   const db = getDb();
-  const key = normalizePositiveInt(params.conversationKey);
+  const key = positiveIntOrNull(params.conversationKey);
   const instanceID = normalizeText(params.instanceID, 128);
   if (!db?.queryAsync || !key || !instanceID) {
     throw new Error("Invalid conversation key retirement request");
@@ -857,7 +852,7 @@ export async function retireConversationKeyInTransaction(params: {
      WHERE conversation_key = ?
        AND instance_id = ?`,
     [
-      normalizePositiveInt(params.retiredAt) || Date.now(),
+      positiveIntOrNull(params.retiredAt) || Date.now(),
       normalizeText(params.reason, 256) || "conversation-deleted",
       key,
       instanceID,
@@ -925,7 +920,7 @@ export async function withRetiredKeyErrorMapping<T>(
   } catch (error) {
     if (error instanceof ConversationRetiredError) throw error;
     if (!isRetiredKeyAbort(error)) throw error;
-    const key = normalizePositiveInt(conversationKey);
+    const key = positiveIntOrNull(conversationKey);
     if (key) rememberConversationKeyRetired(key);
     throw new ConversationRetiredError(
       key || 0,
@@ -1367,8 +1362,8 @@ export async function seedConversationKeyLedgerFromCatalogs(
       )) as Array<Record<string, unknown>> | undefined;
     }
     for (const row of rows || []) {
-      const key = normalizePositiveInt(row.conversationKey);
-      const libraryID = normalizePositiveInt(row.libraryID);
+      const key = positiveIntOrNull(row.conversationKey);
+      const libraryID = positiveIntOrNull(row.libraryID);
       if (!key || !libraryID) continue;
       const instanceID =
         normalizeText(row.instanceID, 128) ||
@@ -1376,7 +1371,7 @@ export async function seedConversationKeyLedgerFromCatalogs(
       const conversationID =
         normalizeText(row.conversationID, 512) ||
         `legacy-conversation:${catalog.system}:${catalog.kind}:${key}`;
-      const paperItemID = normalizePositiveInt(row.paperItemID) || undefined;
+      const paperItemID = positiveIntOrNull(row.paperItemID) || undefined;
       try {
         await ensureConversationKeyLedgerEntryInTransaction({
           conversationKey: key,
@@ -1387,7 +1382,7 @@ export async function seedConversationKeyLedgerFromCatalogs(
           profileSignature: getCurrentProfileSignature(),
           libraryID,
           paperItemID,
-          issuedAt: normalizePositiveInt(row.issuedAt) || Date.now(),
+          issuedAt: positiveIntOrNull(row.issuedAt) || Date.now(),
         });
       } catch (error) {
         // Two legacy witnesses claiming one numeric key cannot be repaired
@@ -1435,7 +1430,7 @@ export async function seedConversationKeyLedgerFromTombstones(): Promise<void> {
     throw error;
   }
   for (const row of rows || []) {
-    const key = normalizePositiveInt(row.conversationKey);
+    const key = positiveIntOrNull(row.conversationKey);
     const classification = key ? classifyConversationKey(key) : null;
     if (!key || !classification) continue;
     const instanceID =
@@ -1475,8 +1470,8 @@ export async function seedConversationKeyLedgerFromTombstones(): Promise<void> {
         profileSignature: getCurrentProfileSignature(),
         libraryID: 1,
         paperItemID,
-        issuedAt: normalizePositiveInt(row.deletedAt) || Date.now(),
-        retiredAt: normalizePositiveInt(row.deletedAt) || Date.now(),
+        issuedAt: positiveIntOrNull(row.deletedAt) || Date.now(),
+        retiredAt: positiveIntOrNull(row.deletedAt) || Date.now(),
         retirementReason: "legacy-deletion-tombstone",
       });
     }
@@ -1484,7 +1479,7 @@ export async function seedConversationKeyLedgerFromTombstones(): Promise<void> {
       conversationKey: key,
       instanceID,
       reason: "legacy-deletion-tombstone",
-      retiredAt: normalizePositiveInt(row.deletedAt) || Date.now(),
+      retiredAt: positiveIntOrNull(row.deletedAt) || Date.now(),
     });
     rememberConversationKeyRetired(key);
   }
@@ -1559,7 +1554,7 @@ export async function reserveOrphanConversationMessageKeys(params: {
       throw error;
     }
     for (const row of rows || []) {
-      const key = normalizePositiveInt(row.conversationKey);
+      const key = positiveIntOrNull(row.conversationKey);
       if (key) keys.add(key);
     }
   }
@@ -1644,7 +1639,7 @@ export async function getConversationKeyQuarantineEntries(): Promise<
        ORDER BY observed_at DESC`,
     )) as Array<Record<string, unknown>> | undefined;
     return (rows || []).flatMap((row) => {
-      const conversationKey = normalizePositiveInt(row.conversationKey);
+      const conversationKey = positiveIntOrNull(row.conversationKey);
       if (!conversationKey) return [];
       return [
         {
@@ -1654,7 +1649,7 @@ export async function getConversationKeyQuarantineEntries(): Promise<
           system: normalizeText(row.system, 32),
           kind: normalizeText(row.kind, 32),
           reason: normalizeText(row.reason, 512),
-          observedAt: normalizePositiveInt(row.observedAt) || 0,
+          observedAt: positiveIntOrNull(row.observedAt) || 0,
         },
       ];
     });

@@ -3,6 +3,7 @@ import {
   CONVERSATION_CATALOG_TABLES,
   CONVERSATION_STORE_TABLES,
 } from "./conversationStore/storeTables";
+import { messageJoinCondition } from "./conversationStore/messageConversationSelector";
 
 type ZoteroDb = {
   queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
@@ -83,17 +84,6 @@ async function tableExists(db: ZoteroDb, tableName: string): Promise<boolean> {
     [tableName],
   )) as Array<{ name?: unknown }> | undefined;
   return Boolean(rows?.length);
-}
-
-function messageJoinCondition(
-  messageAlias: string,
-  conversationAlias: string,
-): string {
-  return (
-    `(${messageAlias}.conversation_id = ${conversationAlias}.conversation_id OR ((` +
-    `${messageAlias}.conversation_id IS NULL OR TRIM(${messageAlias}.conversation_id) = '') AND ` +
-    `${messageAlias}.conversation_key = ${conversationAlias}.conversation_key))`
-  );
 }
 
 function firstUserTitleSql(messageTable: string): string {

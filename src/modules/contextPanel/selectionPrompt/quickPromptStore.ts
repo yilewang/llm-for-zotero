@@ -23,6 +23,7 @@ import {
   setStringArrayPref,
   setStringPref,
 } from "../prefHelpers";
+import { trimmedString } from "../../../core/values";
 
 export type QuickPrompt = {
   id: string;
@@ -50,10 +51,6 @@ export type QuickPromptStore = {
   deleted: string[];
 };
 
-function cleanText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function isBuiltin(list: QuickPromptList, id: string): boolean {
   return list.defaults.some((entry) => entry.id === id);
 }
@@ -73,9 +70,9 @@ export function parseSavedQuickPrompts(raw: string): QuickPrompt[] {
   for (const row of parsed) {
     if (!row || typeof row !== "object") continue;
     const record = row as Record<string, unknown>;
-    const id = cleanText(record.id);
-    const label = cleanText(record.label);
-    const prompt = cleanText(record.prompt);
+    const id = trimmedString(record.id);
+    const label = trimmedString(record.label);
+    const prompt = trimmedString(record.prompt);
     if (!id || !label || !prompt || seen.has(id)) continue;
     seen.add(id);
     out.push({ id, label, prompt });
@@ -145,7 +142,10 @@ export function buildQuickPrompts(
 }
 
 function normalizedText(value: QuickPromptText): QuickPromptText {
-  return { label: cleanText(value.label), prompt: cleanText(value.prompt) };
+  return {
+    label: trimmedString(value.label),
+    prompt: trimmedString(value.prompt),
+  };
 }
 
 /**

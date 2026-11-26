@@ -17,6 +17,7 @@ import {
   type SelectionSurface,
   type TornSurface,
 } from "./conversationSelection";
+import { positiveIntOrZero } from "../../core/values";
 
 export type PanelHostSurface = "reader" | "library" | "standalone" | "side";
 
@@ -62,11 +63,6 @@ export type PanelOperationLease = {
 const hostBindings = new WeakMap<Element, PanelHostBinding>();
 const loggedVerdicts = new WeakMap<Element, Set<string>>();
 
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value || 0);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
 function normalizeTabID(value: unknown): string {
   return typeof value === "string" || typeof value === "number"
     ? `${value}`.trim()
@@ -93,17 +89,15 @@ function getRawBasePaperItemID(item: Zotero.Item | null | undefined): number {
   if (!item) return 0;
   try {
     if ((item as any).isNote?.()) {
-      return normalizePositiveInt(item.parentID);
+      return positiveIntOrZero(item.parentID);
     }
     if (item.isAttachment?.()) {
-      return (
-        normalizePositiveInt(item.parentID) || normalizePositiveInt(item.id)
-      );
+      return positiveIntOrZero(item.parentID) || positiveIntOrZero(item.id);
     }
   } catch (_error) {
     return 0;
   }
-  return normalizePositiveInt(resolveConversationBaseItem(item)?.id);
+  return positiveIntOrZero(resolveConversationBaseItem(item)?.id);
 }
 
 function buildHostIdentity(binding: PanelHostBinding): string {
@@ -135,12 +129,12 @@ function buildLifecycleBinding(
     tabType: normalizedTabType,
     tabID,
     libraryID:
-      normalizePositiveInt(item?.libraryID) ||
-      (!isReader && !item ? normalizePositiveInt(resolveActiveLibraryID()) : 0),
-    rawItemID: normalizePositiveInt(item?.id),
+      positiveIntOrZero(item?.libraryID) ||
+      (!isReader && !item ? positiveIntOrZero(resolveActiveLibraryID()) : 0),
+    rawItemID: positiveIntOrZero(item?.id),
     basePaperItemID: getRawBasePaperItemID(item),
-    noteID: normalizePositiveInt(note?.noteId),
-    noteParentItemID: normalizePositiveInt(note?.parentItemId),
+    noteID: positiveIntOrZero(note?.noteId),
+    noteParentItemID: positiveIntOrZero(note?.parentItemId),
     selectionSurface: "embedded",
   };
 }
@@ -187,11 +181,11 @@ export function bindStandalonePanelHost(
     surface: "standalone",
     tabType: "standalone",
     tabID: "",
-    libraryID: normalizePositiveInt(item?.libraryID),
-    rawItemID: normalizePositiveInt(item?.id),
+    libraryID: positiveIntOrZero(item?.libraryID),
+    rawItemID: positiveIntOrZero(item?.id),
     basePaperItemID: getRawBasePaperItemID(item),
-    noteID: normalizePositiveInt(note?.noteId),
-    noteParentItemID: normalizePositiveInt(note?.parentItemId),
+    noteID: positiveIntOrZero(note?.noteId),
+    noteParentItemID: positiveIntOrZero(note?.parentItemId),
     selectionSurface,
   });
 }
@@ -208,8 +202,8 @@ export function bindSidePanelHost(
     surface: "side",
     tabType: "side",
     tabID: "",
-    libraryID: normalizePositiveInt(item?.libraryID),
-    rawItemID: normalizePositiveInt(item?.id),
+    libraryID: positiveIntOrZero(item?.libraryID),
+    rawItemID: positiveIntOrZero(item?.id),
     basePaperItemID: getRawBasePaperItemID(item),
     noteID: 0,
     noteParentItemID: 0,
@@ -318,8 +312,8 @@ function resolveScopeForItem(
       ? "global"
       : "paper";
   const basePaper = kind === "paper" ? resolveConversationBaseItem(item) : null;
-  const conversationKey = normalizePositiveInt(getConversationKey(item));
-  const libraryID = normalizePositiveInt(item.libraryID);
+  const conversationKey = positiveIntOrZero(getConversationKey(item));
+  const libraryID = positiveIntOrZero(item.libraryID);
   if (!conversationKey || !libraryID) return null;
   return {
     system: note
@@ -329,11 +323,11 @@ function resolveScopeForItem(
     conversationKey,
     kind,
     libraryID,
-    paperItemID: normalizePositiveInt(
+    paperItemID: positiveIntOrZero(
       kind === "note" ? note?.parentItemId : basePaper?.id,
     ),
-    noteID: normalizePositiveInt(note?.noteId),
-    noteParentItemID: normalizePositiveInt(note?.parentItemId),
+    noteID: positiveIntOrZero(note?.noteId),
+    noteParentItemID: positiveIntOrZero(note?.parentItemId),
     explicitGlobalMode,
   };
 }
@@ -341,10 +335,10 @@ function resolveScopeForItem(
 function resolveMountedScope(body: Element): ConversationScopeIdentity | null {
   const root = body.querySelector("#llm-main") as HTMLElement | null;
   if (!root) return null;
-  const conversationKey = normalizePositiveInt(root.dataset.itemId);
-  const libraryID = normalizePositiveInt(root.dataset.libraryId);
-  const noteID = normalizePositiveInt(root.dataset.noteId);
-  const noteParentItemID = normalizePositiveInt(root.dataset.noteParentItemId);
+  const conversationKey = positiveIntOrZero(root.dataset.itemId);
+  const libraryID = positiveIntOrZero(root.dataset.libraryId);
+  const noteID = positiveIntOrZero(root.dataset.noteId);
+  const noteParentItemID = positiveIntOrZero(root.dataset.noteParentItemId);
   const displayedKind = root.dataset.conversationKind;
   const kind = noteID
     ? "note"
@@ -361,7 +355,7 @@ function resolveMountedScope(body: Element): ConversationScopeIdentity | null {
     conversationKey,
     kind,
     libraryID,
-    paperItemID: normalizePositiveInt(root.dataset.basePaperItemId),
+    paperItemID: positiveIntOrZero(root.dataset.basePaperItemId),
     noteID,
     noteParentItemID,
     explicitGlobalMode: displayedKind === "global",
@@ -427,7 +421,7 @@ export function evaluatePanelOwnership(
       root &&
       !root.dataset.itemId &&
       !root.dataset.conversationKind &&
-      normalizePositiveInt(root.dataset.libraryId) === binding.libraryID
+      positiveIntOrZero(root.dataset.libraryId) === binding.libraryID
     )
       return candidateItem ? "stale-candidate" : "match";
     return "unresolved";
@@ -646,10 +640,8 @@ export function requireCurrentPanelOwnership(
   if (verdict === "match") return true;
   const root = body.querySelector("#llm-main") as HTMLElement | null;
   if (verdict === "unresolved" && !root?.dataset.handlersInitialized) {
-    const displayedKey = normalizePositiveInt(root?.dataset.itemId);
-    const candidateKey = item
-      ? normalizePositiveInt(getConversationKey(item))
-      : 0;
+    const displayedKey = positiveIntOrZero(root?.dataset.itemId);
+    const candidateKey = item ? positiveIntOrZero(getConversationKey(item)) : 0;
     return !displayedKey || !candidateKey || displayedKey === candidateKey;
   }
   if (verdict === "host-mismatch" || verdict === "unresolved") {
@@ -752,7 +744,7 @@ export function isPanelHostCompatibleWithPaper(
   if (binding.surface === "standalone" || binding.surface === "side") {
     return true;
   }
-  if (binding.libraryID !== normalizePositiveInt(paperItem.libraryID))
+  if (binding.libraryID !== positiveIntOrZero(paperItem.libraryID))
     return false;
   // The same family rule as scopeBelongsToHost: a paper and its notes.
   const familyPaperID = binding.noteID
@@ -760,5 +752,5 @@ export function isPanelHostCompatibleWithPaper(
     : binding.basePaperItemID;
   return familyPaperID
     ? resolveChatFamilyItemID(paperItem.id) === familyPaperID
-    : binding.noteID === normalizePositiveInt(paperItem.id);
+    : binding.noteID === positiveIntOrZero(paperItem.id);
 }

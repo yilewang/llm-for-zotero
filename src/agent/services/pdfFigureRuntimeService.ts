@@ -7,6 +7,7 @@ import {
 } from "../../utils/geckoFs";
 import { getLocalParentPath, joinLocalPath } from "../../utils/localPath";
 import { getRuntimePlatformInfo } from "../../utils/runtimePlatform";
+import { collapseWhitespace } from "../../core/values";
 
 export const PDF_FIGURE_RUNTIME_VERSION = "1";
 
@@ -45,10 +46,6 @@ export type PdfFigureExtractionRuntime = {
 };
 
 let managedInstallTask: Promise<PdfFigureExtractionRuntime> | null = null;
-
-function sanitizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
 
 async function ensureDir(path: string): Promise<void> {
   if (!(await ensureDirFromParent(path))) {
@@ -141,22 +138,22 @@ function getBaseRuntimeDir(): string {
         Profile?: { dir?: string };
       }
     | undefined;
-  const dataDir = sanitizeText(zotero?.DataDirectory?.dir);
+  const dataDir = collapseWhitespace(zotero?.DataDirectory?.dir);
   if (dataDir) return dataDir;
-  const profileDir = sanitizeText(zotero?.Profile?.dir);
+  const profileDir = collapseWhitespace(zotero?.Profile?.dir);
   if (profileDir) return profileDir;
   throw new Error("Cannot resolve Zotero data directory for managed runtime");
 }
 
 function getArchitecture(): "arm64" | "x64" {
-  const abi = sanitizeText(
+  const abi = collapseWhitespace(
     (globalThis as any).Services?.appinfo?.XPCOMABI,
   ).toLowerCase();
   if (abi.includes("aarch64") || abi.includes("arm64")) return "arm64";
   if (abi.includes("x86_64") || abi.includes("x64") || abi.includes("amd64")) {
     return "x64";
   }
-  const processArch = sanitizeText(
+  const processArch = collapseWhitespace(
     (globalThis as { process?: { arch?: string } }).process?.arch,
   ).toLowerCase();
   if (processArch === "arm64" || processArch === "aarch64") return "arm64";
@@ -199,7 +196,7 @@ function isAbsoluteLocalPath(path: string): boolean {
 }
 
 function resolveRuntimePath(rootDir: string, value: unknown): string {
-  const path = sanitizeText(value);
+  const path = collapseWhitespace(value);
   if (!path) return "";
   return isAbsoluteLocalPath(path) ? path : joinLocalPath(rootDir, path);
 }
@@ -271,7 +268,7 @@ function readPopplerPreference(): string {
     "llmforzotero.pdftoppmPath",
   ];
   for (const key of preferenceKeys) {
-    const value = sanitizeText(readPreference(key));
+    const value = collapseWhitespace(readPreference(key));
     if (value) return value;
   }
   return "";
@@ -437,16 +434,16 @@ async function markRuntimeExecutables(params: {
   platformKey: PdfFigureRuntimePlatformKey;
 }): Promise<void> {
   const executablePaths = Array.isArray(params.manifest.executablePaths)
-    ? params.manifest.executablePaths.map((entry) => sanitizeText(entry))
+    ? params.manifest.executablePaths.map((entry) => collapseWhitespace(entry))
     : [];
   const popplerBinDir = resolveRuntimePath(
     params.rootDir,
     params.manifest.popplerBinDir,
   );
   const defaults = [
-    sanitizeText(params.manifest.pythonPath),
+    collapseWhitespace(params.manifest.pythonPath),
     ...popplerExecutableNames(params.platformKey).map((entry) =>
-      joinLocalPath(sanitizeText(params.manifest.popplerBinDir), entry),
+      joinLocalPath(collapseWhitespace(params.manifest.popplerBinDir), entry),
     ),
   ];
   for (const executablePath of [...defaults, ...executablePaths]) {

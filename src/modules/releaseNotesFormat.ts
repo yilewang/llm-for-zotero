@@ -1,3 +1,4 @@
+import { escapeRegExp } from "../core/values";
 /**
  * Tidies a GitHub release body for the "What's new" window. Release text is
  * written for the GitHub page, which shows every line break; the chat
@@ -14,10 +15,6 @@
 
 const BLOCK_START =
   /^(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|~~~|<|!\[|\s{2,}|\t|-{3,}\s*$|\*{3,}\s*$|_{3,}\s*$|=+\s*$)/;
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 function isReleaseTitle(line: string, version: string): boolean {
   const text = line

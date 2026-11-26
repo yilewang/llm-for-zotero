@@ -114,6 +114,7 @@ import {
 import {
   buildToolResultTraceInfo,
   type ToolResultTraceInfo,
+  omitLargeTraceString,
 } from "./toolResultTraceInfo";
 import {
   isTruncatedToolResultContent,
@@ -143,6 +144,8 @@ import {
   scanAgentTraceEvents,
   type AgentTraceEventScan,
 } from "./traceEventScan";
+import { isRecord } from "../../../core/values";
+import { compactCodexNativePathBasename } from "../../../codexAppServer/nativeActivityStages";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 
@@ -509,10 +512,6 @@ function normalizePaperContexts(paperContexts: unknown): PaperContextRef[] {
   return normalizePaperContextRefs(paperContexts, { sanitizeText });
 }
 
-function isAgentTraceRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function readAgentTraceText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   return value.trim() ? value : null;
@@ -540,14 +539,6 @@ function normalizeAgentTraceDetail(
     value: cleanValue,
     ...(kind ? { kind } : {}),
   };
-}
-
-function omitLargeTraceString(value: string): string {
-  if (/^data:(?:image|application)\//i.test(value) && value.length > 160) {
-    const marker = value.slice(0, 96);
-    return `${marker}...[omitted ${value.length - marker.length} chars]`;
-  }
-  return value;
 }
 
 function stringifyAgentTraceJson(value: unknown): string | null {
@@ -3273,9 +3264,9 @@ function buildAgentTraceToolChips(
   // A tool that builds its own chips, even none, replaces the generic ones.
   if (Array.isArray(customChips)) return customChips;
 
-  const record = isAgentTraceRecord(args) ? args : null;
+  const record = isRecord(args) ? args : null;
   const chips: AgentTraceChip[] = [];
-  const paperContext = isAgentTraceRecord(record?.paperContext)
+  const paperContext = isRecord(record?.paperContext)
     ? record?.paperContext
     : null;
   if (paperContext) {
@@ -3485,7 +3476,7 @@ function redactContentLikeTraceArgs(value: unknown, key = ""): unknown {
     if (Array.isArray(value)) {
       return `[redacted ${value.length} entries]`;
     }
-    if (isAgentTraceRecord(value)) {
+    if (isRecord(value)) {
       return "[redacted object]";
     }
     return value == null ? value : "[redacted value]";
@@ -3496,7 +3487,7 @@ function redactContentLikeTraceArgs(value: unknown, key = ""): unknown {
   if (Array.isArray(value)) {
     return value.map((entry) => redactContentLikeTraceArgs(entry));
   }
-  if (!isAgentTraceRecord(value)) return value;
+  if (!isRecord(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [entryKey, entryValue] of Object.entries(value)) {
     out[entryKey] = redactContentLikeTraceArgs(entryValue, entryKey);
@@ -3509,7 +3500,7 @@ function buildAgentTraceArgsDetails(
   args: unknown,
 ): AgentTraceDetail[] {
   const details: AgentTraceDetail[] = [];
-  const record = isAgentTraceRecord(args) ? args : null;
+  const record = isRecord(args) ? args : null;
   // A tool that knows which of its argument spellings matter says so itself.
   if (toolName) {
     try {
@@ -3982,7 +3973,7 @@ function summarizeAgentTraceToolResult(
   request?: AgentTraceRequestSummary,
 ): AgentTraceSummaryRow | null {
   const label = toolLabelFromEvent(name, toolLabel);
-  const normalized = isAgentTraceRecord(content) ? content : null;
+  const normalized = isRecord(content) ? content : null;
   if (!ok) {
     const rawError = readAgentTraceText(normalized?.error);
     if (rawError?.toLowerCase() === "user denied action") {
@@ -4186,14 +4177,12 @@ function normalizeImageArtifacts(artifacts: unknown): ImageAgentToolArtifact[] {
   return images;
 }
 
-function basenameFromLocalPath(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() || path;
-}
-
 function imageArtifactLabel(artifact: ImageAgentToolArtifact): string {
   const title = sanitizeText(artifact.title || "").trim();
   if (title) return title;
-  const basename = sanitizeText(basenameFromLocalPath(artifact.storedPath));
+  const basename = sanitizeText(
+    compactCodexNativePathBasename(artifact.storedPath),
+  );
   if (basename) return basename;
   const pageLabel = sanitizeText(artifact.pageLabel || "").trim();
   return pageLabel ? `Page ${pageLabel}` : "Image artifact";

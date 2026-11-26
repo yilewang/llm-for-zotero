@@ -13,6 +13,7 @@ import type {
   PdfFigureCandidateSource,
   PdfFigureRect,
 } from "./pdfFigureGeometry";
+import { positiveIntOrZero } from "../../core/values";
 
 export const PDF_FIGURE_CROP_CACHE_VERSION = 2;
 export const PDF_FIGURE_CROP_ALGORITHM_VERSION = 14;
@@ -79,11 +80,6 @@ type PdfFigureCropFingerprintInput = Pick<
   "itemId" | "contextItemId" | "attachmentTitle" | "title"
 >;
 
-function normalizePositiveInt(value: unknown): number {
-  const number = Math.floor(Number(value));
-  return Number.isFinite(number) && number > 0 ? number : 0;
-}
-
 function getBaseWritableDir(): string {
   const zotero = (
     globalThis as unknown as {
@@ -114,7 +110,7 @@ function getBaseWritableDir(): string {
 export function getStandalonePdfFigureCropCacheDirForAttachmentId(
   attachmentId: number,
 ): string {
-  const normalizedAttachmentId = normalizePositiveInt(attachmentId);
+  const normalizedAttachmentId = positiveIntOrZero(attachmentId);
   if (!normalizedAttachmentId) {
     throw new Error("Cannot resolve PDF figure cache without an attachment ID");
   }
@@ -198,9 +194,7 @@ export function getPdfFigureCropCacheFreshness(
   if (cache.manifestHash !== buildPdfFigureCropManifestHash(params.manifest)) {
     return { ok: false, reason: "manifest" };
   }
-  const contextItemId = normalizePositiveInt(
-    params.paperContext?.contextItemId,
-  );
+  const contextItemId = positiveIntOrZero(params.paperContext?.contextItemId);
   if (contextItemId && cache.attachmentId !== contextItemId) {
     return { ok: false, reason: "attachment" };
   }

@@ -18,6 +18,8 @@ import {
   type AgentCacheEvidenceActivity,
 } from "./cacheManagement";
 import { getSelectedPassagePaper } from "./turnPaperScope";
+import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
+import { stableJson } from "../store/stableJson";
 
 export { hydrateAgentEvidenceCache };
 
@@ -64,35 +66,6 @@ function normalizeText(value: unknown, maxLength = 160): string {
     .slice(0, maxLength);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
-}
-
 function hashText(value: string): string {
   let hash = 5381;
   for (let index = 0; index < value.length; index += 1) {
@@ -112,8 +85,8 @@ function sortResourceRecords<T extends AgentResourceRecord>(records: T[]): T[] {
 }
 
 function paperKey(entry: PaperContextRef): string {
-  return `${normalizePositiveInt(entry.itemId) || 0}:${
-    normalizePositiveInt(entry.contextItemId) || 0
+  return `${positiveIntOrUndefined(entry.itemId) || 0}:${
+    positiveIntOrUndefined(entry.contextItemId) || 0
   }`;
 }
 
@@ -142,16 +115,16 @@ function buildPaperResourceRecords(params: {
     (params.papers || [])
       .filter((entry) =>
         Boolean(
-          normalizePositiveInt(entry.itemId) ||
-          normalizePositiveInt(entry.contextItemId),
+          positiveIntOrUndefined(entry.itemId) ||
+          positiveIntOrUndefined(entry.contextItemId),
         ),
       )
       .map((entry) => ({
         group: params.group,
         key: paperKey(entry),
         signature: stableJson({
-          itemId: normalizePositiveInt(entry.itemId) || 0,
-          contextItemId: normalizePositiveInt(entry.contextItemId) || 0,
+          itemId: positiveIntOrUndefined(entry.itemId) || 0,
+          contextItemId: positiveIntOrUndefined(entry.contextItemId) || 0,
           title: normalizeText(entry.title, 240),
           attachmentTitle: normalizeText(entry.attachmentTitle, 240),
           citationKey: normalizeText(entry.citationKey, 120),
@@ -170,15 +143,15 @@ function buildCollectionResourceRecords(
 ): AgentResourceRecord[] {
   return sortResourceRecords(
     request.turnPaperScope.collections
-      .filter((entry) => normalizePositiveInt(entry.collectionId))
+      .filter((entry) => positiveIntOrUndefined(entry.collectionId))
       .map((entry) => ({
         group: "collections" as const,
-        key: `${normalizePositiveInt(entry.libraryID) || 0}:${
-          normalizePositiveInt(entry.collectionId) || 0
+        key: `${positiveIntOrUndefined(entry.libraryID) || 0}:${
+          positiveIntOrUndefined(entry.collectionId) || 0
         }`,
         signature: stableJson({
-          collectionId: normalizePositiveInt(entry.collectionId) || 0,
-          libraryID: normalizePositiveInt(entry.libraryID) || 0,
+          collectionId: positiveIntOrUndefined(entry.collectionId) || 0,
+          libraryID: positiveIntOrUndefined(entry.libraryID) || 0,
           name: normalizeText(entry.name, 240),
         }),
         line: `- Collection: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
@@ -187,7 +160,7 @@ function buildCollectionResourceRecords(
 }
 
 function tagScopeKey(entry: TagContextRef): string {
-  const libraryID = normalizePositiveInt(entry.libraryID) || 0;
+  const libraryID = positiveIntOrUndefined(entry.libraryID) || 0;
   if (entry.scope) {
     return `${libraryID}:scope:${entry.scope}:${
       entry.includeAutomatic ? "auto" : "manual"
@@ -223,7 +196,7 @@ function buildTagResourceRecords(
       group: "tags" as const,
       key: tagScopeKey(entry),
       signature: stableJson({
-        libraryID: normalizePositiveInt(entry.libraryID) || 0,
+        libraryID: positiveIntOrUndefined(entry.libraryID) || 0,
         name: normalizeText(entry.name, 240),
         normalizedName: normalizeText(entry.normalizedName, 240).toLowerCase(),
         scope: entry.scope || "",
@@ -382,8 +355,8 @@ function buildAttachmentPoolResourceRecords(
   const records: AgentResourceRecord[] = [];
   for (const resource of request.availableAttachmentResources || []) {
     if (
-      !normalizePositiveInt(resource.parentItemId) ||
-      !normalizePositiveInt(resource.contextItemId)
+      !positiveIntOrUndefined(resource.parentItemId) ||
+      !positiveIntOrUndefined(resource.contextItemId)
     ) {
       continue;
     }
@@ -392,9 +365,9 @@ function buildAttachmentPoolResourceRecords(
       key: `resource:${resource.parentItemId}:${resource.contextItemId}`,
       signature: stableJson({
         lifecycleState: resource.lifecycleState,
-        parentItemId: normalizePositiveInt(resource.parentItemId),
+        parentItemId: positiveIntOrUndefined(resource.parentItemId),
         parentTitle: normalizeText(resource.parentTitle, 240),
-        contextItemId: normalizePositiveInt(resource.contextItemId),
+        contextItemId: positiveIntOrUndefined(resource.contextItemId),
         title: normalizeText(resource.title, 240),
         contentType: normalizeText(resource.contentType, 120),
         attachmentType: normalizeText(resource.attachmentType, 40),
@@ -412,10 +385,10 @@ function buildAttachmentPoolResourceRecords(
       key: `summary:${summary.libraryID}:${summary.collectionId}`,
       signature: stableJson({
         scope: summary.scope,
-        collectionId: normalizePositiveInt(summary.collectionId),
-        libraryID: normalizePositiveInt(summary.libraryID),
+        collectionId: positiveIntOrUndefined(summary.collectionId),
+        libraryID: positiveIntOrUndefined(summary.libraryID),
         collectionName: normalizeText(summary.collectionName, 240),
-        parentItemCount: normalizePositiveInt(summary.parentItemCount) || 0,
+        parentItemCount: positiveIntOrUndefined(summary.parentItemCount) || 0,
         attachmentCounts: summary.attachmentCounts,
       }),
       line:
@@ -432,14 +405,15 @@ function buildAgentBaseScopeSnapshot(
   request: AgentRuntimeRequest,
 ): Record<string, unknown> {
   const activeNote = request.activeNoteContext;
-  const metadata = normalizeRecord(request.metadata);
+  const metadata = recordOrEmpty(request.metadata);
   return {
-    conversationKey: normalizePositiveInt(request.conversationKey) || 0,
-    libraryID: normalizePositiveInt(request.libraryID) || 0,
-    activeItemId: normalizePositiveInt(request.activeItemId) || 0,
-    activeNoteId: normalizePositiveInt(activeNote?.noteId) || 0,
+    conversationKey: positiveIntOrUndefined(request.conversationKey) || 0,
+    libraryID: positiveIntOrUndefined(request.libraryID) || 0,
+    activeItemId: positiveIntOrUndefined(request.activeItemId) || 0,
+    activeNoteId: positiveIntOrUndefined(activeNote?.noteId) || 0,
     activeNoteKind: normalizeText(activeNote?.noteKind, 40),
-    activeNoteParentItemId: normalizePositiveInt(activeNote?.parentItemId) || 0,
+    activeNoteParentItemId:
+      positiveIntOrUndefined(activeNote?.parentItemId) || 0,
     activeNoteTitle: normalizeText(activeNote?.title, 240),
     activeNoteTextHash: activeNote ? hashText(activeNote.noteText || "") : "",
     activeNoteHtmlHash: activeNote?.noteHtml
@@ -490,7 +464,7 @@ export function buildAgentResourceSignatureFromSnapshot(
 export function buildAgentResourceContextPlan(
   request: AgentRuntimeRequest,
 ): AgentResourceContextPlan {
-  const conversationKey = normalizePositiveInt(request.conversationKey) || 0;
+  const conversationKey = positiveIntOrUndefined(request.conversationKey) || 0;
   const snapshot = buildAgentResourceSnapshot(request);
   const signature = buildAgentResourceSignatureFromSnapshot(snapshot);
   const priorReadBlock = buildAgentEvidenceContextBlock({

@@ -48,6 +48,7 @@ import {
   isGlobalPortalItem,
   resolvePaperPortalBaseItem,
 } from "../../services/context/portalItems";
+import { escapeRegExp } from "../../core/values";
 
 export const SAVED_FILES_MANIFEST = ".llm-files.json";
 /** A page bigger than this opens only from Finder, not in the chat. */
@@ -158,10 +159,6 @@ function isInside(path: string, directory: string): boolean {
   return (
     path === dir || path.startsWith(`${dir}/`) || path.startsWith(`${dir}\\`)
   );
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeCandidate(raw: string, homeDir: string): string | null {

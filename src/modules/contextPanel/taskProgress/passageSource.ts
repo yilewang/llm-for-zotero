@@ -8,6 +8,7 @@ import type {
   TaskPaperReadGranularity,
 } from "../../../agent/context/taskPaperLedger";
 import { stripBoundaryEllipsis } from "../../../services/quotes/quoteTextSearch";
+import { collapseWhitespace } from "../../../core/values";
 
 /** What the card hands the panel when "Source" is clicked on a passage. */
 export type TaskPaperPassageTarget = {
@@ -140,10 +141,6 @@ export function bestTaskPaperReach<T extends TaskPaperReadEvent>(
   return best;
 }
 
-function oneLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 /** Sentences short enough to be coincidental are not worth a search. */
 const MIN_FRAGMENT_WORDS = 6;
 const MAX_FRAGMENTS = 3;
@@ -162,11 +159,11 @@ export function buildTaskPaperPassageSearchTexts(
 ): string[] {
   const out: string[] = [];
   const add = (value: string) => {
-    const text = oneLine(value);
+    const text = collapseWhitespace(value);
     if (text && !out.includes(text)) out.push(text);
   };
   for (const source of [cleanedSnippet, rawSnippet]) {
-    const text = oneLine(source || "");
+    const text = collapseWhitespace(source || "");
     if (!text) continue;
     const clippedEnd = ELLIPSIS_AT_END.test(text);
     const clippedStart = ELLIPSIS_AT_START.test(text);

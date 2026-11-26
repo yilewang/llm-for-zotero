@@ -5,6 +5,7 @@ import {
   type LibraryIndexSnapshot,
 } from "../../services/libraryIndexService";
 import type { ZoteroGateway } from "../services/zoteroGateway";
+import { collapseWhitespace } from "../../core/values";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -90,10 +91,6 @@ export type LibraryStatisticsOutput = {
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function normalizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
 
 function increment(map: Map<string, number>, key: string): void {
   map.set(key, (map.get(key) || 0) + 1);
@@ -507,7 +504,7 @@ export async function computeLibraryStatistics(
 
         // getAnnotations returns the annotation items themselves, not ids.
         for (const ann of att.getAnnotations(false)) {
-          const annType = normalizeText(ann.annotationType) || "highlight";
+          const annType = collapseWhitespace(ann.annotationType) || "highlight";
           increment(annotationsByType, annType);
           itemAnnotationCount++;
         }

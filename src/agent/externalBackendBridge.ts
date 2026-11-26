@@ -10,6 +10,7 @@ import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
 import {
   getClaudeBridgeUrl,
   getClaudeCustomInstructionPref,
+  getClaudeSettingSourcesCsvByPref,
 } from "../claudeCode/prefs";
 import {
   fetchClaudeModelCatalog,
@@ -88,6 +89,7 @@ import type {
 import {
   normalizeExcludedItemIds,
   synthesizeSelectedTextContexts,
+  normalizePaperContentSourceMode,
 } from "../services/context/normalizers";
 import { formatSelectedTextLocator } from "../services/context/selectedTextAnchorFormatting";
 import {
@@ -109,6 +111,7 @@ import {
   normalizeAttachedConversationScope,
 } from "../services/pastConversations/pastConversationText";
 import { LocalDocumentPathStreamRedactor } from "./privacy/localDocumentPathRedaction";
+import { positiveIntOrUndefined, trimmedStringOrNull } from "../core/values";
 
 export type RunTurnParams = ExternalRunTurnParams;
 
@@ -623,10 +626,6 @@ function getClaudeSettingSourcesByPref(): Array<"user" | "project" | "local"> {
   return ["user", "project", "local"];
 }
 
-function getClaudeSettingSourcesCsvByPref(): string {
-  return getClaudeSettingSourcesByPref().join(",");
-}
-
 function buildAgentPermissionMetadata(): {
   permissionMode: ClaudePermissionMode;
   allowDangerouslySkipPermissions?: true;
@@ -753,12 +752,6 @@ function normalizeScopeType(value: unknown): BridgeScopeType | null {
   }
 }
 
-function normalizeScopeId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  return normalized ? normalized : null;
-}
-
 function resolvePaperScopeFromRequest(
   request: AgentRuntimeRequest,
 ): BridgeScope | null {
@@ -818,7 +811,7 @@ function resolveBridgeScope(request: AgentRuntimeRequest): BridgeScope {
   const explicitType = normalizeScopeType(
     (request as unknown as { scopeType?: unknown }).scopeType,
   );
-  const explicitId = normalizeScopeId(
+  const explicitId = trimmedStringOrNull(
     (request as unknown as { scopeId?: unknown }).scopeId,
   );
   const explicitLabel =
@@ -1330,12 +1323,6 @@ function trimText(value: unknown, max = 360): string {
   return `${normalized.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function resolveLibraryName(libraryID: number | undefined): string | undefined {
   if (!libraryID) return undefined;
   try {
@@ -1373,13 +1360,13 @@ function resolveFallbackLibraryId(
     request.turnPaperScope.tags,
     1,
   )[0]?.libraryID;
-  const userLibraryId = normalizePositiveInt(
+  const userLibraryId = positiveIntOrUndefined(
     (Zotero as unknown as { Libraries?: { userLibraryID?: unknown } }).Libraries
       ?.userLibraryID,
   );
   return (
-    normalizePositiveInt(request.libraryID) ||
-    normalizePositiveInt(request.item?.libraryID) ||
+    positiveIntOrUndefined(request.libraryID) ||
+    positiveIntOrUndefined(request.item?.libraryID) ||
     selectedCollectionLibraryId ||
     selectedTagLibraryId ||
     userLibraryId
@@ -1443,8 +1430,8 @@ export function buildExternalRuntimeZoteroMcpScope(
     request.turnPaperScope.papers[0]?.paper;
   const kind = request.conversationKind === "paper" ? "paper" : "global";
   const activeItemId =
-    normalizePositiveInt(request.activeItemId) ||
-    normalizePositiveInt(request.item?.id) ||
+    positiveIntOrUndefined(request.activeItemId) ||
+    positiveIntOrUndefined(request.item?.id) ||
     selectedPaper?.itemId;
   const activeNote = request.activeNoteContext;
   const paperItemID =
@@ -1461,19 +1448,19 @@ export function buildExternalRuntimeZoteroMcpScope(
     outsidePaperSelection: request.outsidePaperSelection,
     profileSignature,
     conversationGeneration: request.conversationGeneration,
-    conversationKey: normalizePositiveInt(request.conversationKey),
+    conversationKey: positiveIntOrUndefined(request.conversationKey),
     libraryID,
     kind,
     paperItemID,
     activeItemId: paperItemID || activeItemId,
     activeContextItemId: selectedPaper?.contextItemId,
-    activeNoteId: normalizePositiveInt(activeNote?.noteId),
+    activeNoteId: positiveIntOrUndefined(activeNote?.noteId),
     activeNoteKind:
       activeNote?.noteKind === "item" || activeNote?.noteKind === "standalone"
         ? activeNote.noteKind
         : undefined,
     activeNoteTitle: activeNote?.title,
-    activeNoteParentItemId: normalizePositiveInt(activeNote?.parentItemId),
+    activeNoteParentItemId: positiveIntOrUndefined(activeNote?.parentItemId),
     libraryName: resolveLibraryName(libraryID),
     title: selectedPaper?.title,
     userText: request.userText,
@@ -1488,25 +1475,6 @@ export function buildExternalRuntimeZoteroMcpScope(
     turnPaperScope: request.turnPaperScope,
     turnPaperScopeWarnings: request.turnPaperScopeWarnings,
   };
-}
-
-function normalizePaperContentSourceMode(
-  value: unknown,
-): PaperContentSourceMode | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "text":
-    case "mineru":
-    case "pdf":
-    case "markdown":
-    case "html":
-    case "txt":
-    case "docx":
-      return normalized;
-    default:
-      return undefined;
-  }
 }
 
 function normalizePaperRefs(list: unknown, limit = 8): PaperContextRef[] {

@@ -1,17 +1,14 @@
 import { unzipSync } from "fflate";
 
 import type { TextAttachmentSourceMode } from "./contextAttachmentTypes";
-
-function normalizeMetadataText(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
+import { lowerTrimmedString } from "../../core/values";
 
 export function resolveTextAttachmentSourceModeFromMetadata(input: {
   contentType?: unknown;
   filename?: unknown;
 }): TextAttachmentSourceMode | null {
-  const contentType = normalizeMetadataText(input.contentType);
-  const filename = normalizeMetadataText(input.filename);
+  const contentType = lowerTrimmedString(input.contentType);
+  const filename = lowerTrimmedString(input.filename);
   if (
     contentType === "text/markdown" ||
     contentType === "text/x-markdown" ||

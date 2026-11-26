@@ -1,3 +1,4 @@
+import { positiveIntOrZero } from "../core/values";
 /**
  * Process-local serialization and generation fencing for conversation-owned
  * writes.  Clear uses the same lock as message/agent persistence, so a write
@@ -9,22 +10,17 @@ const generations = new Map<number, number>();
 const frozen = new Set<number>();
 const locks = new Map<number, Promise<void>>();
 
-function normalizeKey(value: unknown): number {
-  const key = Math.floor(Number(value || 0));
-  return Number.isFinite(key) && key > 0 ? key : 0;
-}
-
 export function getConversationWriteGeneration(
   conversationKey: number,
 ): number {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   return key ? generations.get(key) || 0 : 0;
 }
 
 export function bumpConversationWriteGeneration(
   conversationKey: number,
 ): number {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return 0;
   const next = getConversationWriteGeneration(key) + 1;
   generations.set(key, next);
@@ -42,17 +38,17 @@ export function isConversationWriteGenerationCurrent(
 }
 
 export function freezeConversationWrites(conversationKey: number): void {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (key) frozen.add(key);
 }
 
 export function unfreezeConversationWrites(conversationKey: number): void {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (key) frozen.delete(key);
 }
 
 export function areConversationWritesFrozen(conversationKey: number): boolean {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   return Boolean(key && frozen.has(key));
 }
 
@@ -60,7 +56,7 @@ export async function withConversationWriteLock<T>(
   conversationKey: number,
   task: () => Promise<T> | T,
 ): Promise<T> {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return task();
   const previous = locks.get(key) || Promise.resolve();
   let release!: () => void;
@@ -84,5 +80,5 @@ export async function withConversationWriteLock<T>(
 export function getConversationWriteLockTailForTests(
   conversationKey: number,
 ): Promise<void> | undefined {
-  return locks.get(normalizeKey(conversationKey));
+  return locks.get(positiveIntOrZero(conversationKey));
 }

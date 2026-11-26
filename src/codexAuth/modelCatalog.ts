@@ -16,6 +16,7 @@ import {
   resolveCodexDirectModelsUrl,
   type CodexAuthDependencies,
 } from "./auth";
+import { trimmedString } from "../core/values";
 
 const CATALOG_TTL_MS = 60_000;
 const CATALOG_TIMEOUT_MS = 5_000;
@@ -68,10 +69,6 @@ const catalogSubscribers = new Set<
   (snapshot: CodexDirectCatalogSnapshot) => void
 >();
 
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function normalizeNumber(value: unknown): number | undefined {
   const parsed = typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -89,7 +86,7 @@ function normalizeReasoningEfforts(value: unknown): CodexReasoningEffort[] {
     const effort =
       typeof item === "string"
         ? item.trim()
-        : normalizeString(
+        : trimmedString(
             record?.effort ??
               record?.reasoning_level ??
               record?.reasoningLevel ??
@@ -98,7 +95,7 @@ function normalizeReasoningEfforts(value: unknown): CodexReasoningEffort[] {
     const key = effort.toLowerCase();
     if (!effort || seen.has(key)) continue;
     seen.add(key);
-    const description = normalizeString(record?.description);
+    const description = trimmedString(record?.description);
     efforts.push({
       value: effort,
       ...(description ? { description } : {}),
@@ -113,18 +110,16 @@ function normalizeCatalogModel(
 ): (CodexDirectCatalogModel & { serverOrder: number }) | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  if (normalizeString(record.visibility).toLowerCase() !== "list") return null;
-  const model = normalizeString(record.slug);
+  if (trimmedString(record.visibility).toLowerCase() !== "list") return null;
+  const model = trimmedString(record.slug);
   if (!model) return null;
   const priority = normalizeNumber(record.priority) ?? 0;
   const contextWindow = normalizeNumber(record.context_window);
-  const defaultReasoningEffort = normalizeString(
-    record.default_reasoning_level,
-  );
+  const defaultReasoningEffort = trimmedString(record.default_reasoning_level);
   return {
     model,
-    displayName: normalizeString(record.display_name) || model,
-    description: normalizeString(record.description),
+    displayName: trimmedString(record.display_name) || model,
+    description: trimmedString(record.description),
     priority,
     supportedReasoningEfforts: normalizeReasoningEfforts(
       record.supported_reasoning_levels,

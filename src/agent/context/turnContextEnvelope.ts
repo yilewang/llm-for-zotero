@@ -23,6 +23,7 @@ import {
   type TurnPaperScope,
   type TurnPaperScopeWarning,
 } from "./turnPaperScope";
+import { positiveIntOrUndefined, trimmedString } from "../../core/values";
 
 type LegacyTurnContextEnvelopeInput = Pick<
   AgentRuntimeRequestInput,
@@ -112,14 +113,14 @@ function formatSelectionLocator(
 ): string {
   if (context.source !== "pdf") return "";
   const contextItemId =
-    normalizeNumber(context.contextItemId) ||
-    normalizeNumber(paper?.contextItemId) ||
+    positiveIntOrUndefined(context.contextItemId) ||
+    positiveIntOrUndefined(paper?.contextItemId) ||
     anchor?.contextItemId;
   const pageIndex = Number.isFinite(context.pageIndex)
     ? Math.max(0, Math.floor(context.pageIndex as number))
     : anchor?.pageIndex;
   const pageLabel =
-    normalizeText(context.pageLabel || anchor?.pageLabel) ||
+    trimmedString(context.pageLabel || anchor?.pageLabel) ||
     (pageIndex !== undefined ? `${pageIndex + 1}` : "");
   return renderFields([
     ["attachmentId", contextItemId],
@@ -127,16 +128,6 @@ function formatSelectionLocator(
     ["pageIndex", pageIndex],
     ["resolution", anchor?.resolution],
   ]);
-}
-
-function normalizeText(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
-function normalizeNumber(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
 }
 
 export function buildTurnContextEnvelope(
@@ -187,9 +178,9 @@ export function buildTurnContextEnvelope(
   > = [];
   (input.selectedTextNoteContexts || []).forEach((note, index) => {
     if (!note) return;
-    const title = normalizeText(note.title);
-    const noteId = normalizeNumber(note.noteItemId);
-    const parentItemId = normalizeNumber(note.parentItemId);
+    const title = trimmedString(note.title);
+    const noteId = positiveIntOrUndefined(note.noteItemId);
+    const parentItemId = positiveIntOrUndefined(note.parentItemId);
     selectedTextNotes.push({
       index: index + 1,
       ...(noteId ? { noteId } : {}),
@@ -216,9 +207,9 @@ export function buildTurnContextEnvelope(
       "zoteroMetadataContext" in input
         ? input.zoteroMetadataContext
         : undefined,
-    activeItemId: normalizeNumber(input.activeItemId),
+    activeItemId: positiveIntOrUndefined(input.activeItemId),
     activePaperTitle:
-      normalizeText(input.activePaperTitle) ||
+      trimmedString(input.activePaperTitle) ||
       getActiveTurnPaper(paperScopeResult.scope)?.title ||
       undefined,
     selectedTextCount: selectedTexts.length,

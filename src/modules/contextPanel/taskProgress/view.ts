@@ -95,6 +95,7 @@ import {
   type TaskProgressOpenSourceDetail,
   type TaskProgressShowInAnswerDetail,
   type TaskSourceRow,
+  el,
 } from "./outsideView";
 import type { TaskOutsideQuote } from "./outside";
 import type { TaskAnswerCitation } from "./answerCitations";
@@ -1184,18 +1185,6 @@ const STATE_LABELS: Record<TaskPaperState, string> = {
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
-
-function el<K extends keyof HTMLElementTagNameMap>(
-  doc: Document,
-  tag: K,
-  className: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = doc.createElement(tag);
-  node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 

@@ -13,10 +13,7 @@ import {
   resolveNoteEditingParentItem,
   resolveNoteEditingScope,
 } from "../../../services/notes/scope";
-
-function normalizeTitle(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
+import { trimmedString } from "../../../core/values";
 
 /**
  * The conversations whose "Editing" chip mirrors the note's selection: the
@@ -56,10 +53,10 @@ export function buildNoteEditingSelectedTextContext(
   const parentItem = resolveNoteEditingParentItem(item);
   return {
     libraryID: scope.libraryID,
-    noteItemKey: normalizeTitle((item as any)?.key) || `${scope.noteId}`,
+    noteItemKey: trimmedString((item as any)?.key) || `${scope.noteId}`,
     noteItemId: scope.noteId,
     parentItemId: scope.parentItemId,
-    parentItemKey: normalizeTitle((parentItem as any)?.key) || undefined,
+    parentItemKey: trimmedString((parentItem as any)?.key) || undefined,
     noteKind: scope.noteKind,
     title: scope.title || `Note ${scope.noteId}`,
   };

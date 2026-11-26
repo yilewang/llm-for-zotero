@@ -49,6 +49,7 @@ import {
   movesTaskOutside,
   type TaskOutsideTurn,
 } from "./outside";
+import { positiveIntOrZero } from "../../../core/values";
 
 export type TaskRunState =
   | "idle"
@@ -268,11 +269,6 @@ export type TaskProgressViewMemo = {
 
 const viewMemos = new Map<number, TaskProgressViewMemo>();
 
-function normalizeKey(value: unknown): number {
-  const key = Math.floor(Number(value || 0));
-  return Number.isFinite(key) && key > 0 ? key : 0;
-}
-
 function isLive(state: TaskRunState): boolean {
   return state === "working" || state === "answering" || state === "waiting";
 }
@@ -325,7 +321,7 @@ function emptyRecord(conversationKey: number): TaskProgressRecord {
 
 /** The record to write, most recently used last. */
 function writable(conversationKey: number): TaskProgressRecord | null {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return null;
   const existing = records.get(key);
   if (existing) {
@@ -358,7 +354,7 @@ function changed(record: TaskProgressRecord): void {
 export function getTaskProgress(
   conversationKey: number,
 ): TaskProgressRecord | null {
-  return records.get(normalizeKey(conversationKey)) || null;
+  return records.get(positiveIntOrZero(conversationKey)) || null;
 }
 
 export function subscribeTaskProgress(
@@ -554,7 +550,7 @@ export function noteTaskQuestion(
   conversationKey: number,
   params: { turnIndex: number; text?: string },
 ): void {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   const turn = Math.floor(params.turnIndex || 0);
   if (!record || !(turn > 0)) return;
   const text = params.text?.trim() || undefined;
@@ -685,7 +681,7 @@ export function applyTaskOutsideEvent(
   event: AgentEvent,
 ): void {
   if (!runId || !movesTaskOutside(event)) return;
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   if (!record) return;
   const turn = turnFor(record, runId);
   if (!turn) return;
@@ -716,7 +712,7 @@ export function markTaskAnswering(
   conversationKey: number,
   runId?: string,
 ): boolean {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   if (!record || record.runState !== "working" || !isCurrentRun(record, runId))
     return false;
   writable(conversationKey);
@@ -834,7 +830,7 @@ export function syncTaskAnswerCitations(
    */
   options: { hasWebSources?: boolean } = {},
 ): void {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   if (!record) return;
   const question = answerQuestion(record, target);
   if (!question) return;
@@ -985,7 +981,7 @@ export function endTaskRun(
   outcome: "failed" | "cancelled" | "interrupted",
   runId?: string,
 ): void {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   if (!record || !isLive(record.runState) || !isCurrentRun(record, runId))
     return;
   writable(conversationKey);
@@ -1002,7 +998,7 @@ export function markTaskWaiting(
   runId: string | undefined,
   waiting: boolean,
 ): void {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   if (!record || !isCurrentRun(record, runId)) return;
   const applies = waiting
     ? record.runState === "working" || record.runState === "answering"
@@ -1137,7 +1133,7 @@ export function setTaskActionStep(
   runId: string,
   params: { step: string; index: number; total: number },
 ): void {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   const checklist = actionChecklist(record, runId);
   if (!record || !checklist) return;
   const index = Math.max(1, Math.floor(params.index) || 1);
@@ -1163,7 +1159,7 @@ export function setTaskActionSummary(
   runId: string,
   summary: string,
 ): void {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   const checklist = actionChecklist(record, runId);
   if (!record || !checklist || checklist.summary === summary) return;
   checklist.summary = summary;
@@ -1178,7 +1174,7 @@ export function endTaskAction(
   outcome: "completed" | "failed" | "cancelled",
   detail?: string,
 ): void {
-  const record = records.get(normalizeKey(conversationKey));
+  const record = records.get(positiveIntOrZero(conversationKey));
   const checklist = actionChecklist(record, runId);
   if (!record || !checklist) return;
   if (outcome === "completed") {
@@ -1302,7 +1298,7 @@ export function setTaskOutcomes(
 ): void {
   const next = taskOutcomesChecklist(runId?.trim() || "", checkpoint);
   if (!next) return;
-  const existing = records.get(normalizeKey(conversationKey));
+  const existing = records.get(positiveIntOrZero(conversationKey));
   if (existing && !isCurrentRun(existing, next.runId)) return;
   const record = writable(conversationKey);
   if (!record) return;
@@ -1577,7 +1573,7 @@ export function taskTurnIndexFor(
 export function getTaskProgressViewMemo(
   conversationKey: number,
 ): TaskProgressViewMemo | null {
-  const memo = viewMemos.get(normalizeKey(conversationKey));
+  const memo = viewMemos.get(positiveIntOrZero(conversationKey));
   return memo
     ? {
         ...memo,
@@ -1597,7 +1593,7 @@ export function rememberTaskProgressView(
   conversationKey: number,
   patch: Partial<TaskProgressViewMemo>,
 ): void {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   const record = key ? records.get(key) : undefined;
   if (!record) return;
   const previous = viewMemos.get(key);
@@ -1625,11 +1621,13 @@ let clearAllCount = 0;
 
 /** Changes whenever the conversation's record is cleared. */
 export function getTaskProgressClearCount(conversationKey: number): number {
-  return clearAllCount + (clearCounts.get(normalizeKey(conversationKey)) || 0);
+  return (
+    clearAllCount + (clearCounts.get(positiveIntOrZero(conversationKey)) || 0)
+  );
 }
 
 export function clearTaskProgress(conversationKey: number): void {
-  const key = normalizeKey(conversationKey);
+  const key = positiveIntOrZero(conversationKey);
   if (!key) return;
   clearCounts.set(key, (clearCounts.get(key) || 0) + 1);
   viewMemos.delete(key);

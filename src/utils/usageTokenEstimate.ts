@@ -1,3 +1,4 @@
+import { collapseWhitespace } from "../core/values";
 /**
  * A tokenizer-free estimate of how many tokens a piece of text is worth.
  *
@@ -100,11 +101,6 @@ export type AssistantOutputParts = {
   reasoningSummary?: string | null;
   reasoningDetails?: string | null;
 };
-
-/** Whitespace-insensitive form, so "a  b" and "a\nb" compare as the same text. */
-function collapseWhitespace(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
 
 function nonBlank(value: unknown): string {
   return typeof value === "string" && value.trim() ? value : "";

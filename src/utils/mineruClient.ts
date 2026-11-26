@@ -36,6 +36,7 @@ import {
   ensureMineruLocalServerRunning,
   acquireMineruServerJob,
 } from "./mineruServerManager";
+import { lowerTrimmedString } from "../core/values";
 
 const MINERU_DIRECT_API_BASE = "https://mineru.net/api/v4";
 
@@ -914,10 +915,6 @@ function truncateResponseText(text: string, maxLength = 240): string {
     : normalized;
 }
 
-function normalizeMineruCloudState(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
 function isMineruCloudActiveState(state: string): boolean {
   return state === "running" || state === "converting";
 }
@@ -942,7 +939,7 @@ function getMineruCloudPollInterval(params: {
 function getMineruCloudPollDecision(
   params: MineruCloudPollDecisionInput,
 ): MineruCloudPollDecision {
-  const state = normalizeMineruCloudState(params.state);
+  const state = lowerTrimmedString(params.state);
   const activeStartedAtMs =
     params.activeStartedAtMs ??
     (isMineruCloudActiveState(state) ? params.nowMs : null);
@@ -1988,7 +1985,7 @@ async function parsePdfViaUpload(
       continue;
     }
 
-    const state = normalizeMineruCloudState(extractResult.state);
+    const state = lowerTrimmedString(extractResult.state);
     if (
       state &&
       ![

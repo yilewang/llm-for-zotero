@@ -4,6 +4,7 @@ import type {
   ModelReasoningCapability,
   RegistryModelEntry,
 } from "./types";
+import { lowerTrimmedString } from "../core/values";
 
 export const MODEL_CAPABILITY_REGISTRY_URL =
   "https://raw.githubusercontent.com/yilewang/llm-for-zotero/main/registry/model-capabilities.v1.json";
@@ -282,10 +283,6 @@ export function validateRegistry(
   return cloneRegistry(value as ModelCapabilityRegistry);
 }
 
-function normalized(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
 function matchesPrefix(value: string, prefix: string): boolean {
   if (!value.startsWith(prefix)) return false;
   const next = value[prefix.length];
@@ -298,8 +295,8 @@ export function findRegistryEntry(
   provider: string,
   model: string,
 ): RegistryModelEntry | null {
-  const providerName = normalized(provider);
-  const modelName = normalized(model);
+  const providerName = lowerTrimmedString(provider);
+  const modelName = lowerTrimmedString(model);
   const modelCandidates = [modelName];
   for (let index = 0; index < modelName.length - 1; index += 1) {
     if (
@@ -312,11 +309,11 @@ export function findRegistryEntry(
   }
   let best: { entry: RegistryModelEntry; score: number } | null = null;
   for (const entry of registry.models) {
-    const matchProvider = normalized(entry.match.provider);
+    const matchProvider = lowerTrimmedString(entry.match.provider);
     if (matchProvider && matchProvider !== providerName) continue;
     const providerSpecificity = matchProvider ? 100 : 0;
-    const exact = normalized(entry.match.exact);
-    const prefix = normalized(entry.match.prefix);
+    const exact = lowerTrimmedString(entry.match.exact);
+    const prefix = lowerTrimmedString(entry.match.prefix);
     let score = -1;
     if (exact && modelCandidates.includes(exact)) {
       score = providerSpecificity + 100000 + exact.length;
@@ -332,7 +329,7 @@ export function findRegistryEntry(
   return best?.entry || null;
 }
 
-function cloneValue<T>(value: T): T {
+export function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 

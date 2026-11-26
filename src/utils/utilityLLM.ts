@@ -26,6 +26,7 @@ import {
   getGeminiReasoningProfileForModel,
 } from "./reasoningProfiles";
 import { callLLMWithTimeout } from "./llmCallTimeout";
+import { isRecord } from "../core/values";
 
 export type UtilityLLMFailureReason =
   | "not_configured"
@@ -222,10 +223,6 @@ function numericGeminiReserve(
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? Math.floor(value)
     : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function findLowestSupportedOption(

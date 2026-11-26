@@ -1,3 +1,4 @@
+import { positiveIntOrZero } from "../../core/values";
 /**
  * Pure state for the standalone window's side panel (no DOM, no Zotero):
  * its tabs (read-only past chats, temporary side chats, and the History
@@ -561,19 +562,14 @@ export type SideChatContext = {
   libraryID: number;
 };
 
-function positiveInt(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
 /** The side chat follows the main chat: its paper, or its library. */
 export function resolveSideChatContext(params: {
   mode: "open" | "paper";
   basePaperItemID: number | null | undefined;
   libraryID: number;
 }): SideChatContext {
-  const paperItemID = positiveInt(params.basePaperItemID);
-  const libraryID = positiveInt(params.libraryID) || 1;
+  const paperItemID = positiveIntOrZero(params.basePaperItemID);
+  const libraryID = positiveIntOrZero(params.libraryID) || 1;
   return params.mode === "paper" && paperItemID
     ? { kind: "paper", paperItemID, libraryID }
     : { kind: "global", paperItemID: 0, libraryID };
@@ -637,7 +633,7 @@ export function resolveSideChatContextNoteAnchors(
 export function buildSidePanelExcludedKeys(
   mainConversationKey: number,
 ): ReadonlySet<number> {
-  const key = positiveInt(mainConversationKey);
+  const key = positiveIntOrZero(mainConversationKey);
   return new Set(key ? [key] : []);
 }
 
@@ -659,5 +655,5 @@ export function resolveSidePanelWorkspaceKey(params: {
 /** The paper a workspace key names, or 0 for a library's workspace. */
 export function resolveSidePanelWorkspacePaperID(key: string): number {
   const match = /^paper:(\d+)$/.exec(String(key || ""));
-  return match ? positiveInt(match[1]) : 0;
+  return match ? positiveIntOrZero(match[1]) : 0;
 }

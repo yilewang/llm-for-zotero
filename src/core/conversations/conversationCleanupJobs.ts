@@ -4,6 +4,7 @@ import {
   CONVERSATION_SYSTEMS,
   isConversationSystem,
 } from "./conversationSystems";
+import { positiveIntOrZero } from "../values";
 
 const CONVERSATION_SYSTEMS_SQL_LIST = CONVERSATION_SYSTEMS.map(
   (system) => `'${system}'`,
@@ -113,11 +114,6 @@ function queryCleanupDb(
   return db.queryAsync(sql, params, getMaintenanceQueryOptions());
 }
 
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
 function normalizeOperation(
   value: unknown,
 ): ConversationCleanupJob["operation"] | null {
@@ -134,12 +130,12 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
   const id = typeof row.id === "string" ? row.id.trim() : "";
   const operation = normalizeOperation(row.operation);
   const system = normalizeSystem(row.system);
-  const conversationKey = normalizePositiveInt(row.conversation_key);
+  const conversationKey = positiveIntOrZero(row.conversation_key);
   const instanceID =
     typeof row.instance_id === "string" ? row.instance_id.trim() : "";
   const conversationKind =
     row.conversation_kind === "paper" ? "paper" : "global";
-  const libraryID = normalizePositiveInt(row.library_id);
+  const libraryID = positiveIntOrZero(row.library_id);
   const providerSessionId =
     typeof row.provider_session_id === "string"
       ? row.provider_session_id.trim()
@@ -174,7 +170,7 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
     instanceID,
     conversationKind,
     libraryID,
-    paperItemID: normalizePositiveInt(row.paper_item_id) || undefined,
+    paperItemID: positiveIntOrZero(row.paper_item_id) || undefined,
     providerScope:
       providerScopeType && providerScopeId
         ? {
@@ -203,7 +199,7 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
 
 let initPromise: Promise<void> | null = null;
 
-function isAlreadyExistingColumnError(error: unknown): boolean {
+export function isAlreadyExistingColumnError(error: unknown): boolean {
   return /duplicate column|already exists/i.test(
     String(error instanceof Error ? error.message : error || ""),
   );
@@ -308,7 +304,7 @@ export async function enqueueConversationCleanupJob(params: {
   providerSessionId: string;
 }): Promise<ConversationCleanupJob | null> {
   const db = getDb();
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   const providerSessionId = String(params.providerSessionId || "").trim();
   const providerScope = params.providerScope;
   if (
@@ -352,7 +348,7 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
   providerSessionId: string;
 }): Promise<ConversationCleanupJob | null> {
   const db = getDb();
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   const providerSessionId = String(params.providerSessionId || "").trim();
   const providerScope = params.providerScope;
   if (
@@ -402,8 +398,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     conversationKey,
     instanceID: String(params.instanceID || "").trim(),
     conversationKind: params.conversationKind || "global",
-    libraryID: normalizePositiveInt(params.libraryID) || 0,
-    paperItemID: normalizePositiveInt(params.paperItemID) || undefined,
+    libraryID: positiveIntOrZero(params.libraryID) || 0,
+    paperItemID: positiveIntOrZero(params.paperItemID) || undefined,
     providerScope: params.providerScope,
     providerSessionId,
     attempts: 0,
@@ -471,7 +467,7 @@ export async function hasPendingEmptyClaudeCleanupJob(params: {
   instanceID?: string;
 }): Promise<boolean> {
   const db = getDb();
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   const instanceID = String(params.instanceID || "").trim();
   if (!db || !conversationKey) return false;
   try {

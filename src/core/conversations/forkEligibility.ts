@@ -1,4 +1,5 @@
 import type { ConversationSystem } from "../../shared/types";
+import { positiveIntOrZero } from "../values";
 
 export type ConversationForkEligibilityReason =
   | "invalid_turn"
@@ -26,12 +27,6 @@ export type ConversationForkEligibilityMessage = {
   webchatCompletionReason?: unknown;
 };
 
-function normalizeTimestamp(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
 function hasProviderSessionId(value: unknown): boolean {
   return typeof value === "string" && Boolean(value.trim());
 }
@@ -49,7 +44,7 @@ export function getLatestCompletedForkableAssistantTimestamp(
         !message.webchatRunState &&
         !message.webchatCompletionReason,
     );
-  return normalizeTimestamp(latest?.timestamp);
+  return positiveIntOrZero(latest?.timestamp);
 }
 
 export function evaluateConversationForkEligibility(params: {
@@ -82,7 +77,7 @@ export function evaluateConversationForkEligibility(params: {
     return blocked("unsupported_system");
   }
 
-  const assistantTimestamp = normalizeTimestamp(params.assistantTimestamp);
+  const assistantTimestamp = positiveIntOrZero(params.assistantTimestamp);
   if (
     !assistantTimestamp ||
     params.assistantMessage === null ||

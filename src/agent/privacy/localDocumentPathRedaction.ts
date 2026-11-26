@@ -1,6 +1,7 @@
 import type { LocalDocumentResource } from "../../shared/types";
 import { getLocalParentPath, isUncPath } from "../../utils/localPath";
 import type { AgentEvent } from "../types";
+import { positiveIntOrZero } from "../../core/values";
 
 type SensitivePathEntry = {
   rawPath: string;
@@ -22,11 +23,6 @@ const sensitivePathsByConversation = new Map<
   Map<string, SensitivePathEntry>
 >();
 let nextSensitivePathLeaseId = 1;
-
-function normalizeConversationKey(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
 
 function jsonEscapeStringContent(value: string): string {
   const encoded = JSON.stringify(value);
@@ -436,7 +432,7 @@ export function acquireLocalDocumentPathLease(
   conversationKeyValue: unknown,
   localDocuments?: readonly LocalDocumentResource[],
 ): LocalDocumentPathLease {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   const registry = conversationKey
     ? touchConversationRegistry(conversationKey)
     : new Map<string, SensitivePathEntry>();
@@ -515,7 +511,7 @@ export function rememberLocalDocumentPaths(
   conversationKeyValue: unknown,
   localDocuments: readonly LocalDocumentResource[] | undefined,
 ): void {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   if (!conversationKey || !localDocuments?.length) return;
   for (const document of localDocuments) {
     const rawPath =
@@ -551,7 +547,7 @@ export function rememberLocalDocumentPaths(
 export function clearRememberedLocalDocumentPaths(
   conversationKeyValue: unknown,
 ): void {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   if (!conversationKey) return;
   const registry = sensitivePathsByConversation.get(conversationKey);
   if (!registry) return;
@@ -566,7 +562,7 @@ export function clearRememberedLocalDocumentPaths(
 function getSensitivePathVariants(
   conversationKeyValue: unknown,
 ): Array<SensitivePathVariant & { replacement: string }> {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   if (!conversationKey) return [];
   const registry = sensitivePathsByConversation.get(conversationKey);
   if (!registry) return [];
