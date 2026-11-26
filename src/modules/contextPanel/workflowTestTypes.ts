@@ -460,6 +460,18 @@ export type WorkflowTestReaderInlineAskCard = {
     coveredControls: number;
     arcOpacity: number;
   }>;
+  /**
+   * The floating close button: whether it is shown (it fades in only while
+   * the pointer is near the top-left corner), and its center's offset
+   * from the card's top-left corner in pixels (null when it is absent).
+   */
+  closeButton: {
+    shown: boolean;
+    label: string;
+    disabled: boolean;
+    offsetX: number;
+    offsetY: number;
+  } | null;
   /** The message actions under the latest answer, in order. */
   messageActions: string[];
   modelLabel: string;
@@ -2332,9 +2344,9 @@ export type WorkflowTestApi = {
     /** Add Text's question box is open in the reader. */
     addTextPromptOpen: boolean;
   }>;
-  /** Closes the card (Discard, Escape in the card, or Escape on the page) and the reader. */
+  /** Closes the card (Discard, the floating close button, Escape in the card, or Escape on the page) and the reader. */
   endReaderInlineAsk: (input: {
-    via: "discard" | "escape" | "escape_page";
+    via: "discard" | "close" | "escape" | "escape_page";
   }) => Promise<{ cardRemoved: boolean }>;
   /** Closes the reader tab under the card (the card goes with it). */
   closeReaderInlineAskReaderTab: () => Promise<{ readerClosed: boolean }>;
@@ -2401,16 +2413,23 @@ export type WorkflowTestApi = {
   hoverReaderInlineAskPassage: (
     on: boolean,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /**
+   * Moves the pointer onto the card `distance` px in from its top-left
+   * corner (where the close button shows when near), or off the card (null).
+   */
+  hoverReaderInlineAskCloseCorner: (
+    distance: number | null,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Moves the pointer onto or off one corner's hit area. */
   hoverReaderInlineAskCorner: (
-    corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+    corner: "top-right" | "bottom-left" | "bottom-right",
     on: boolean,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Drags a blank point of the card ("card") or its corner grip ("resize"). */
   dragReaderInlineAsk: (input: {
     part: "card" | "resize";
     /** The corner to drag for a resize; the default is bottom-right. */
-    corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+    corner?: "top-right" | "bottom-left" | "bottom-right";
     dx: number;
     dy: number;
   }) => Promise<WorkflowTestReaderInlineAskCard>;

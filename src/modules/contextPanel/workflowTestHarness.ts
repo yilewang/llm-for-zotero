@@ -7574,6 +7574,26 @@ function readWorkflowInlineAskCard(
         arcOpacity: arc ? Number(win?.getComputedStyle(arc)?.opacity) : NaN,
       };
     }),
+    closeButton: (() => {
+      const node = card?.querySelector(
+        '[data-llm-inline-ask-close="true"]',
+      ) as HTMLButtonElement | null;
+      if (!card || !node) return null;
+      const box = node.getBoundingClientRect();
+      const cardBox = card.getBoundingClientRect();
+      return {
+        // Visible and clickable: it fades in near the top-left corner.
+        shown:
+          box.width > 0 &&
+          box.height > 0 &&
+          Number(win?.getComputedStyle(node)?.opacity) > 0 &&
+          win?.getComputedStyle(node)?.pointerEvents !== "none",
+        label: node.getAttribute("aria-label") || "",
+        disabled: node.disabled,
+        offsetX: Math.round(box.left + box.width / 2 - cardBox.left),
+        offsetY: Math.round(box.top + box.height / 2 - cardBox.top),
+      };
+    })(),
     messageActions: Array.from(
       card?.querySelectorAll("[data-llm-inline-ask-footer] button") || [],
     ).map(
@@ -8378,7 +8398,7 @@ async function closeReaderInlineAskReaderTab(): Promise<{
 }
 
 async function endReaderInlineAsk(input: {
-  via: "discard" | "escape" | "escape_page";
+  via: "discard" | "close" | "escape" | "escape_page";
 }): Promise<{ cardRemoved: boolean }> {
   assertWorkflowTestEnabled();
   const state = workflowInlineAsk;
@@ -8389,6 +8409,12 @@ async function endReaderInlineAsk(input: {
       (
         card.querySelector(
           '[data-llm-inline-ask-action="discard"]',
+        ) as HTMLButtonElement | null
+      )?.click();
+    } else if (card && input.via === "close") {
+      (
+        card.querySelector(
+          '[data-llm-inline-ask-close="true"]',
         ) as HTMLButtonElement | null
       )?.click();
     } else if (card && input.via === "escape_page") {
@@ -8966,8 +8992,47 @@ async function hoverReaderInlineAskPassage(
 }
 
 /** Moves the pointer onto or off a corner's hit area (mouseenter or mouseleave). */
+/**
+ * Moves the pointer over the card, `distance` px in from its top-left
+ * corner on both axes, or off the card (null).
+ */
+async function hoverReaderInlineAskCloseCorner(
+  distance: number | null,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card, win } = requireWorkflowInlineAskCardElement();
+  const rect = card.getBoundingClientRect();
+  const init = (x: number, y: number) =>
+    cloneEventInitIntoWindow(
+      {
+        bubbles: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+      },
+      win,
+    );
+  if (distance === null) {
+    card.dispatchEvent(
+      new win.PointerEvent("pointerleave", init(rect.left - 40, rect.top - 40)),
+    );
+  } else {
+    card.dispatchEvent(
+      new win.PointerEvent(
+        "pointermove",
+        init(rect.left + distance, rect.top + distance),
+      ),
+    );
+  }
+  // The button fades over 0.12 s.
+  await Zotero.Promise.delay(300);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
 async function hoverReaderInlineAskCorner(
-  corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+  corner: "top-right" | "bottom-left" | "bottom-right",
   on: boolean,
 ): Promise<WorkflowTestReaderInlineAskCard> {
   assertWorkflowTestEnabled();
@@ -8985,7 +9050,7 @@ async function hoverReaderInlineAskCorner(
 /** Drags the card by a blank point, or its corner grip, with pointer events. */
 async function dragReaderInlineAsk(input: {
   part: "card" | "resize";
-  corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  corner?: "top-right" | "bottom-left" | "bottom-right";
   dx: number;
   dy: number;
 }): Promise<WorkflowTestReaderInlineAskCard> {
@@ -12685,6 +12750,7 @@ export function installWorkflowTestHarness(targetAddon: {
     pressReaderInlineAskKey,
     hoverReaderInlineAskPassage,
     hoverReaderInlineAskCorner,
+    hoverReaderInlineAskCloseCorner,
     dragReaderInlineAsk,
     editReaderInlineAskPrompt,
     openReaderInlineAskModelMenu,

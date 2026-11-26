@@ -469,6 +469,7 @@ function openPopup(params: {
       replace: t("Replace"),
       insertBelow: t("Insert below"),
       discard: t("Discard"),
+      close: t("Close"),
       working: t("Writing…"),
     },
     renderChange: (answer) =>
