@@ -456,21 +456,11 @@ export async function repairMisroutedCodexConversationRows(): Promise<void> {
   }
 }
 
-export async function repairCodexConversationIdentityRegistry(
-  ...args: Parameters<typeof store.repairConversationIdentityRegistry>
-) {
-  return store.repairConversationIdentityRegistry(...args);
-}
-
-export const CODEX_STORE_STARTUP_MIGRATION_IDS = store.startupMigrationIDs;
-
 export async function initCodexAppServerStore(
   ...args: Parameters<typeof store.initStore>
 ) {
   return store.initStore(...args);
 }
-
-export const initCodexCodeStore = initCodexAppServerStore;
 
 export async function appendCodexMessage(
   ...args: Parameters<typeof store.appendMessage>
@@ -494,12 +484,6 @@ export async function loadCodexConversation(
   ...args: Parameters<typeof store.loadConversation>
 ) {
   return store.loadConversation(...args);
-}
-
-export async function clearCodexConversation(
-  ...args: Parameters<typeof store.clearConversation>
-) {
-  return store.clearConversation(...args);
 }
 
 export async function deleteCodexTurnMessages(

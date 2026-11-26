@@ -578,7 +578,3 @@ export async function clearAllUsageEvents(): Promise<boolean> {
     return false;
   }
 }
-
-export function resetUsageStoreForTests(): void {
-  initPromise = null;
-}

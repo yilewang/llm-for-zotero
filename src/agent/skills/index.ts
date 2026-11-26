@@ -27,46 +27,13 @@ import reorganizeLibraryRaw from "./reorganize-library.md";
 import zoteroScriptRaw from "./zotero-script.md";
 import { resolveSkillRouting } from "./routing";
 
-export { getSkillRoutingDiagnostics, parseSkill } from "./skillLoader";
+export type { AgentSkill } from "./skillLoader";
 export {
-  getSkillContextEligibility,
-  isSkillContextEligible,
-  resolveSkillRequestContext,
-} from "./contextEligibility";
-export type {
-  AgentSkill,
-  SkillActivationMode,
-  SkillContextKind,
-} from "./skillLoader";
-export type {
-  SkillContextEligibility,
-  SkillRequestContext,
-  SkillRoutingRequest,
-} from "./contextEligibility";
-export {
-  resolveSkillRouting,
   resolveSkillDirectiveText,
   prependNativeSkillMention,
 } from "./routing";
-export type {
-  SkillRequestedScope,
-  SkillRoutingReceipt,
-  ValidatedSkillActivation,
-} from "./routingTypes";
-export type {
-  SkillRoutingResolution,
-  SkillDirectiveTextResolution,
-} from "./routing";
-export {
-  buildSkillInventory,
-  fingerprintSkillInstruction,
-  loadSkill,
-} from "./progressiveLoading";
-export type {
-  LoadedSkill,
-  LoadedSkillRecord,
-  SkillInventoryEntry,
-} from "./progressiveLoading";
+export { buildSkillInventory, loadSkill } from "./progressiveLoading";
+export type { LoadedSkill } from "./progressiveLoading";
 
 /**
  * Built-in skill files bundled at compile time.

@@ -1,7 +1,6 @@
 import {
   CONVERSATION_SYSTEMS,
   RUNTIME_CONVERSATION_KEY_BAND_SIZE,
-  RUNTIME_CONVERSATION_SYSTEMS,
   RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
   type ConversationSystem,
   type RuntimeConversationSystem,
@@ -29,15 +28,6 @@ export const RUNTIME_PROFILE_SLOT_MOD = 999_999;
 export const RUNTIME_DEFAULT_CONVERSATION_KEY_OFFSET = 100_000_000;
 export const RUNTIME_ALLOCATED_CONVERSATION_KEY_OFFSET = 500_000_000;
 
-export const CLAUDE_GLOBAL_CONVERSATION_KEY_BASE =
-  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.claude_code.keyBases.global;
-export const CLAUDE_PAPER_CONVERSATION_KEY_BASE =
-  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.claude_code.keyBases.paper;
-export const CODEX_GLOBAL_CONVERSATION_KEY_BASE =
-  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.codex.keyBases.global;
-export const CODEX_PAPER_CONVERSATION_KEY_BASE =
-  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS.codex.keyBases.paper;
-
 /** A runtime's band for one kind: its base plus one band width. */
 export function getRuntimeKindKeyBand(
   system: RuntimeConversationSystem,
@@ -58,13 +48,6 @@ export function getRuntimeConversationKeySpan(
     endExclusive: Math.max(global.endExclusive, paper.endExclusive),
   };
 }
-
-/** End of the highest runtime band; no conversation key reaches it. */
-export const RUNTIME_CONVERSATION_KEY_END = Math.max(
-  ...RUNTIME_CONVERSATION_SYSTEMS.map(
-    (system) => getRuntimeConversationKeySpan(system).endExclusive,
-  ),
-);
 
 function normalizeConversationKey(value: number): number | null {
   if (!Number.isFinite(value)) return null;
@@ -221,13 +204,6 @@ export function isRuntimeAllocatedConversationKeyForKind(
   const offsetWithinProfile =
     (Math.floor(key) - base) % RUNTIME_PROFILE_KEY_MULTIPLIER;
   return offsetWithinProfile >= RUNTIME_ALLOCATED_CONVERSATION_KEY_OFFSET;
-}
-
-export function isConversationKeyInRange(
-  key: number,
-  range: ConversationKeyRange,
-): boolean {
-  return containsKey(range, key);
 }
 
 // ---------------------------------------------------------------------------

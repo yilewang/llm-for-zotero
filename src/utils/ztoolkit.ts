@@ -64,19 +64,3 @@ function initZToolkit(_ztoolkit: ReturnType<typeof createZToolkit>) {
 function disposeAppLogging(): void {
   setAppLogSink(null);
 }
-
-import { BasicTool, unregister } from "zotero-plugin-toolkit";
-import { UITool } from "zotero-plugin-toolkit";
-
-class MyToolkit extends BasicTool {
-  UI: UITool;
-
-  constructor() {
-    super();
-    this.UI = new UITool(this);
-  }
-
-  unregisterAll() {
-    unregister(this);
-  }
-}

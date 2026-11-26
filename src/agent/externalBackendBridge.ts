@@ -77,7 +77,6 @@ import type {
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
 } from "./types";
-import { resolveAgentRuntimeRequest } from "./context/resolvedAgentRequest";
 import type {
   LocalDocumentResource,
   NoteContextRef,
@@ -543,12 +542,6 @@ export async function preflightClaudeBridgeLocalPdfCapability(): Promise<void> {
   await assertClaudeBridgeLocalPdfCapability(bridgeUrl);
 }
 
-export function supportsClaudeBridgeLocalPdfPathsForTests(
-  payload: unknown,
-): boolean {
-  return supportsClaudeBridgeLocalPdfPaths(payload);
-}
-
 export function getBridgeQuickFixHint(baseUrl?: string): string {
   if (isManagedClaudeBridgeActive()) {
     return "Open the plugin settings, Claude Code section, to see the bridge status and log, or press Restart bridge.";
@@ -708,12 +701,6 @@ function buildClaudeBridgeCustomInstruction(
     .map((entry) => entry.trim())
     .filter(Boolean)
     .join("\n\n");
-}
-
-export function buildClaudeBridgeCustomInstructionForTests(
-  rawPdfMode = false,
-): string {
-  return buildClaudeBridgeCustomInstruction({ rawPdfMode });
 }
 
 function isClaudeCodeModeEnabled(): boolean {
@@ -1101,16 +1088,6 @@ export async function buildExternalRuntimeUserText(
     );
     return userText;
   }
-}
-
-export function buildExternalRuntimeUserTextForTests(
-  request: AgentRuntimeRequestInput,
-  source?: PastConversationSource,
-): Promise<string> {
-  return buildExternalRuntimeUserText(
-    resolveAgentRuntimeRequest(request),
-    source,
-  );
 }
 
 async function runExternalBridgeTurn(
@@ -1511,17 +1488,6 @@ export function buildExternalRuntimeZoteroMcpScope(
     turnPaperScope: request.turnPaperScope,
     turnPaperScopeWarnings: request.turnPaperScopeWarnings,
   };
-}
-
-export function buildClaudeZoteroMcpScopeForTests(
-  request: AgentRuntimeRequestInput,
-  profileSignature: string,
-): ZoteroMcpActiveScope {
-  return buildExternalRuntimeZoteroMcpScope(
-    resolveAgentRuntimeRequest(request),
-    profileSignature,
-    CLAUDE_MCP_IDENTITY,
-  );
 }
 
 function normalizePaperContentSourceMode(
@@ -2067,18 +2033,6 @@ async function buildBridgeRuntimeRequest(
   };
 }
 
-export function buildBridgeRuntimeRequestForTests(
-  request: AgentRuntimeRequestInput,
-): Promise<BridgeRuntimeRequest> {
-  return buildBridgeRuntimeRequest(resolveAgentRuntimeRequest(request));
-}
-
-export function buildExternalBridgeContextEnvelopeForTests(
-  request: AgentRuntimeRequestInput,
-) {
-  return buildContextEnvelope(resolveAgentRuntimeRequest(request));
-}
-
 function signatureForContextEnvelope(envelope: ContextEnvelope): string {
   return JSON.stringify({
     activeItemId: envelope.activeItemId,
@@ -2118,14 +2072,6 @@ function signatureForContextEnvelope(envelope: ContextEnvelope): string {
     ),
     activeNoteId: envelope.activeNote?.noteId,
   });
-}
-
-export function buildExternalBridgeContextSignatureForTests(
-  request: AgentRuntimeRequestInput,
-): string {
-  return signatureForContextEnvelope(
-    buildContextEnvelope(resolveAgentRuntimeRequest(request)),
-  );
 }
 
 async function fetchExternalTools(

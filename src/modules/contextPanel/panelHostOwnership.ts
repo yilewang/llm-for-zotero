@@ -762,9 +762,3 @@ export function isPanelHostCompatibleWithPaper(
     ? resolveChatFamilyItemID(paperItem.id) === familyPaperID
     : binding.noteID === normalizePositiveInt(paperItem.id);
 }
-
-export function getConversationScopeIdentityForTests(
-  item: Zotero.Item,
-): ConversationScopeIdentity | null {
-  return resolveScopeForItem(item);
-}

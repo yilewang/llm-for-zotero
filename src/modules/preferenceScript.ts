@@ -385,8 +385,6 @@ const LEGACY_CODEX_AUTH_HELPER_TEXT =
   "Uses credentials from `codex login` to call the Codex backend directly through the llm-for-zotero harness. This convenient legacy mode does not provide App Server sessions, MCP or runtime management, sandbox controls, approvals, or permission settings. Use Codex App Server for the full Codex runtime experience.";
 const CODEX_APP_SERVER_HELPER_TEXT =
   "Recommended official Codex integration. Runs the local `codex app-server` CLI as the native Codex runtime. Run `codex login` first.";
-const CODEX_APP_SERVER_PROTOCOL_HELPER_TEXT =
-  "Uses Codex responses with the local codex app-server transport.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_WINDOWS =
   "Optional. Leave blank to auto-detect native Windows Codex. WSL Codex is not supported because Zotero MCP uses Windows-local loopback. Or enter a native path such as C:\\nvm4w\\nodejs\\codex.cmd or C:\\Users\\<user>\\AppData\\Roaming\\npm\\codex.cmd.";
 const CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS =
@@ -400,8 +398,6 @@ function getCodexAppServerPathHelperText(): string {
   if (platform === "macos") return CODEX_APP_SERVER_PATH_HELPER_TEXT_MACOS;
   return CODEX_APP_SERVER_PATH_HELPER_TEXT_LINUX;
 }
-const LEGACY_CODEX_AUTH_PROTOCOL_HELPER_TEXT =
-  "Uses Codex responses with the legacy direct backend transport.";
 const COPILOT_API_HELPER_TEXT =
   "GitHub Copilot uses device-based login. Click Login to authenticate via GitHub.";
 const MAX_PROVIDER_COUNT = 10;

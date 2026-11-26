@@ -237,24 +237,6 @@ function createResult(): ConversationDeletionResult {
   };
 }
 
-export function getConversationDeletionFailureMessage(
-  result: Pick<ConversationDeletionResult, "blocked" | "errors">,
-): string {
-  if (result.errors.some((issue) => issue.code === "catalog_row")) {
-    return "Failed to delete conversation because its saved identity is inconsistent. Check logs.";
-  }
-  if (
-    result.blocked &&
-    result.errors.some(
-      (issue) =>
-        issue.code === "codex_thread_archive" || issue.code === "message_rows",
-    )
-  ) {
-    return "Failed to delete conversation. Codex thread was not archived.";
-  }
-  return "Failed to fully delete conversation. Check logs.";
-}
-
 function defaultCancelPendingRequest(conversationKey: number): void {
   const pendingRequestId = getPendingRequestId(conversationKey);
   if (pendingRequestId <= 0) return;

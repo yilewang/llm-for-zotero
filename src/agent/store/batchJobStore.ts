@@ -236,30 +236,12 @@ export async function listConversationBatchJobs(
 }
 
 /**
- * Jobs left running by a crash or a quit. The batch tool offers to resume
- * these rather than silently restarting from zero and repaying for pages the
- * user already approved.
- */
-export async function listResumableBatchJobs(
-  conversationKey: number,
-): Promise<BatchJobRecord[]> {
-  if (!hasDb()) return [];
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT * FROM ${BATCH_JOBS_TABLE}
-     WHERE conversation_key = ? AND status = 'running'
-     ORDER BY updated_at DESC`,
-    [conversationKey],
-  )) as unknown as JobRow[] | null;
-  return Array.isArray(rows) ? rows.map(toRecord) : [];
-}
-
-/**
  * Marks jobs abandoned by a crash or a quit.
  *
  * Nothing ever ran at startup, so a job interrupted mid-run stayed
- * `status:'running'` for ever: `listResumableBatchJobs` would keep offering
- * it, and the row implied work was still in progress when no process was
- * doing it. Sweeping at startup is what makes "running" mean running.
+ * `status:'running'` for ever, and the row implied work was still in
+ * progress when no process was doing it. Sweeping at startup is what makes
+ * "running" mean running.
  *
  * The rows are kept, not deleted -- the cursor is the only record of how far
  * the job got, and the user may want to resume from it.
@@ -302,9 +284,4 @@ export async function listInterruptedBatchJobs(
     scoped ? [Math.floor(Number(conversationKey))] : [],
   )) as unknown as JobRow[] | null;
   return Array.isArray(rows) ? rows.map(toRecord) : [];
-}
-
-export async function clearAgentBatchJobs(): Promise<void> {
-  if (!hasDb()) return;
-  await Zotero.DB.queryAsync(`DELETE FROM ${BATCH_JOBS_TABLE}`);
 }

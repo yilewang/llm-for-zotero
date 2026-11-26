@@ -307,10 +307,6 @@ function upsertEntry(
   if (oldest) ledger.delete(oldest.key);
 }
 
-export function clearCodexNativeReadLedger(): void {
-  readLedger.clear();
-}
-
 export function clearCodexNativeReadLedgerForConversation(params: {
   conversationKey: number;
   instanceID?: string;

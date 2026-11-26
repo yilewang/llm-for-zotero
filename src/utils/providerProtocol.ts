@@ -224,12 +224,6 @@ export function normalizeProviderProtocolForAuthMode(params: {
   return normalized;
 }
 
-export function supportsProviderProtocolFileInputs(
-  protocol: ProviderProtocol,
-): boolean {
-  return getProviderProtocolSpec(protocol).fileInputs;
-}
-
 export function getAgentCapabilityClass(params: {
   toolCalls: boolean;
   fileInputs: boolean;

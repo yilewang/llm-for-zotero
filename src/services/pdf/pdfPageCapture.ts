@@ -945,22 +945,6 @@ export async function renderPdfPageToDataUrl(
   }
 }
 
-export async function renderPdfPageToBytes(
-  app: any,
-
-  reader: any,
-  pageNumber: number,
-  options: PdfJsPageRenderOptions = {},
-): Promise<Uint8Array | null> {
-  const dataUrl = await renderPdfPageToDataUrl(
-    app,
-    reader,
-    pageNumber,
-    options,
-  );
-  return dataUrl ? dataUrlToBytes(dataUrl) : null;
-}
-
 /**
  * Captures the currently visible PDF page in the active Zotero reader as a
  * PNG data URL, or returns null if no PDF is open / rendering fails.

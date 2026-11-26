@@ -30,19 +30,16 @@ import {
 import {
   buildDefaultUpstreamGlobalConversationKey,
   GLOBAL_CONVERSATION_KEY_BASE,
-  MAX_SELECTED_PAPER_CONTEXTS,
   GLOBAL_HISTORY_LIMIT,
   PERSISTED_HISTORY_LIMIT,
   isUpstreamGlobalConversationKey,
 } from "../../constants";
-import type { Message } from "../../types";
 import {
   chatHistory,
   conversationForkLinks,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
   webChatSessionConversationKeys,
-  draftInputCache,
   setForkSourceNavigationRunner,
   isRequestPending,
 } from "../../state";
@@ -58,7 +55,6 @@ import {
   ensureConversationLoaded,
   getConversationKey,
   persistSeededConversationMessages,
-  refreshConversationPanels,
 } from "../../chat";
 import type { StoredChatMessage } from "../../../../utils/chatStore";
 import { storeSeededConversation } from "../../seededConversation";
@@ -79,11 +75,6 @@ import {
   listUnifiedHistoryEntries,
 } from "../../unifiedHistorySource";
 import { touchClaudeConversation } from "../../../../claudeCode/runtime";
-import {
-  getConversationSystemPref,
-  setConversationSystemPref,
-} from "../../../../shared/conversationSystemPrefs";
-import { setLastUsedClaudeGlobalConversationKey } from "../../../../claudeCode/prefs";
 import {
   createClaudeGlobalPortalItem,
   createClaudePaperPortalItem,
@@ -113,10 +104,7 @@ import {
   filterMessagesInPendingTurns,
   findTurnPairByTimestamps,
 } from "../../turnMessageUtils";
-import {
-  getLockedGlobalConversationKey,
-  setLockedGlobalConversationKey,
-} from "../../prefHelpers";
+import { getLockedGlobalConversationKey } from "../../prefHelpers";
 import {
   isTornSurface,
   recall,
@@ -290,8 +278,6 @@ type ForkTurnTarget = {
   userMessageID?: number;
   assistantMessageID?: number;
 };
-
-export { clearDeletedAgentConversationState } from "../../agentConversationCleanup";
 
 /**
  * A history row to open in another runtime. The panel switches its runtime

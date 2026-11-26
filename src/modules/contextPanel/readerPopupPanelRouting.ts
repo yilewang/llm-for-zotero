@@ -67,16 +67,6 @@ export function getReaderContextPanelForTab(
   return null;
 }
 
-export function isPanelInReaderContextForTab(
-  root: Element,
-  tabID: ReaderTabID,
-): boolean {
-  const readerPanel = getReaderContextPanelForTab(root.ownerDocument, tabID);
-  return Boolean(
-    readerPanel && (readerPanel === root || readerPanel.contains(root)),
-  );
-}
-
 function getPanelTarget(
   doc: Document,
   tabID: ReaderTabID,

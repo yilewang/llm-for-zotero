@@ -183,7 +183,7 @@ export function buildTaskProgressHistory(
 
 type HistoryLoader = (runIds: string[]) => Promise<AgentRunEventRecord[]>;
 
-const defaultLoader: HistoryLoader = (runIds) =>
+const loader: HistoryLoader = (runIds) =>
   listAgentRunEventsForRuns(runIds, TASK_PROGRESS_HISTORY_EVENT_TYPES);
 
 /** The outside tool results of runs that searched outside, read whole. */
@@ -192,10 +192,7 @@ type OutsideResultLoader = (
   runIds: string[],
 ) => Promise<AgentRunEventRecord[]>;
 
-const defaultOutsideLoader: OutsideResultLoader = async (
-  conversationKey,
-  runIds,
-) => {
+const outsideLoader: OutsideResultLoader = async (conversationKey, runIds) => {
   const events = (
     await listAgentRunEventsForRuns(runIds, ["tool_result"])
   ).filter(
@@ -222,21 +219,7 @@ const defaultOutsideLoader: OutsideResultLoader = async (
   return events;
 };
 
-let loader: HistoryLoader = defaultLoader;
-let outsideLoader: OutsideResultLoader = defaultOutsideLoader;
-
-export function setTaskProgressOutsideLoaderForTests(
-  next?: OutsideResultLoader,
-): void {
-  outsideLoader = next || defaultOutsideLoader;
-}
 const inflight = new Map<number, Promise<void>>();
-
-export function setTaskProgressHistoryLoaderForTests(
-  next?: HistoryLoader,
-): void {
-  loader = next || defaultLoader;
-}
 
 export async function waitForTaskProgressHydrationForTests(
   conversationKey: number,

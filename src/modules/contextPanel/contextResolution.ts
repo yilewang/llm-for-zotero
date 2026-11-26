@@ -620,25 +620,6 @@ export async function resolveContextSourceItemAsync(
   );
 }
 
-export function resolveContextSourceItemId(
-  panelItem: Zotero.Item | null | undefined,
-): number {
-  if (!panelItem) return 0;
-  const contextItem = resolveContextSourceItem(panelItem).contextItem;
-  const parsed = Number(contextItem?.id || 0);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
-export async function resolveContextSourceItemIdAsync(
-  panelItem: Zotero.Item | null | undefined,
-): Promise<number> {
-  if (!panelItem) return 0;
-  const contextItem = (await resolveContextSourceItemAsync(panelItem))
-    .contextItem;
-  const parsed = Number(contextItem?.id || 0);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
 export function getItemSelectionCacheKeys(
   item: Zotero.Item | null | undefined,
 ): number[] {
@@ -734,14 +715,6 @@ export function getSelectedTextContextEntries(
     composeContextStore.selectedTexts.set(itemId, deduped.contexts);
   }
   return deduped.contexts;
-}
-
-export function setSelectedTextContexts(itemId: number, texts: string[]): void {
-  const normalized = texts
-    .map((text) => normalizeSelectedText(text))
-    .filter(Boolean)
-    .map((text) => ({ text, source: "pdf" as const }));
-  setSelectedTextContextEntries(itemId, normalized);
 }
 
 function resolveNoteItemFromContext(

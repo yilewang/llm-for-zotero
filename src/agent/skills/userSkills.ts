@@ -47,10 +47,6 @@ import {
   NATIVE_SKILL_FILE_NAME,
 } from "./nativeSkillPaths";
 
-// Re-export for callers that previously imported these from this module.
-export { extractManagedBlock, spliceManagedBlock } from "./managedBlock";
-export { patchSkillFrontmatter } from "./frontmatterPatcher";
-
 // ---------------------------------------------------------------------------
 // Body hash tracking — detect user modifications to skill files
 // ---------------------------------------------------------------------------
@@ -988,12 +984,6 @@ export async function loadUserSkills(): Promise<AgentSkill[]> {
 // Skill file management (used by the skills popup UI)
 // ---------------------------------------------------------------------------
 
-export async function listSkillFiles(): Promise<string[]> {
-  const io = getIOUtils();
-  if (!io?.exists || !io?.getChildren) return [];
-  return listCanonicalSkillFiles(io);
-}
-
 export async function deleteSkillFile(filePath: string): Promise<boolean> {
   const io = getIOUtils();
   if (!io?.remove) return false;
@@ -1228,53 +1218,5 @@ export async function restoreSkillToDefault(
       `[llm-for-zotero] Failed to restore skill ${filename}: ${err instanceof Error ? err.message : String(err)}`,
     );
     return false;
-  }
-}
-
-/**
- * Return the on-disk and shipped content of a built-in skill for diff
- * preview. Returns null if the skill is not a built-in or I/O failed.
- */
-export async function getSkillDiff(
-  filenameOrSkillId: string,
-): Promise<{ onDisk: string; shipped: string } | null> {
-  const filename = resolveBuiltinFilename(filenameOrSkillId);
-  if (!filename) return null;
-  const shippedContent = BUILTIN_SKILL_FILES[filename];
-  if (shippedContent === undefined) return null;
-
-  const io = getIOUtils();
-  if (!io?.exists || !io?.read) return null;
-
-  const shippedSkill = parseSkill(shippedContent);
-  const filePath = getCanonicalSkillFilePath(shippedSkill.id);
-  try {
-    if (!(await io.exists(filePath))) return null;
-    const onDisk = await readFileText(io, filePath);
-    if (onDisk === null) return null;
-    return { onDisk, shipped: shippedContent };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Open a skill file in the OS default editor.
- */
-export async function openSkillFile(filePath: string): Promise<void> {
-  try {
-    const fileModule = Zotero as unknown as {
-      File?: { reveal?: (path: string) => void };
-      launchFile?: (path: string) => void;
-    };
-    if (typeof fileModule.launchFile === "function") {
-      fileModule.launchFile(filePath);
-    } else if (fileModule.File?.reveal) {
-      fileModule.File.reveal(filePath);
-    }
-  } catch (err) {
-    appLogger.warn(
-      `[llm-for-zotero] Failed to open skill file ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
-    );
   }
 }

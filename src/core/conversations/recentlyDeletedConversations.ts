@@ -43,24 +43,6 @@ function normalizeKey(conversationKey: number): number {
     : 0;
 }
 
-function prune(now: number): void {
-  for (const [key, deletedAt] of Array.from(tombstones.entries())) {
-    if (now - deletedAt >= RECENTLY_DELETED_CONVERSATION_TTL_MS) {
-      tombstones.delete(key);
-    }
-  }
-}
-
-export function markConversationRecentlyDeleted(
-  conversationKey: number,
-  now: number = Date.now(),
-): void {
-  const key = normalizeKey(conversationKey);
-  if (!key) return;
-  prune(now);
-  tombstones.set(key, now);
-}
-
 export function markConversationInstanceRecentlyDeleted(
   conversationKey: number,
   instanceID: string,
@@ -251,10 +233,4 @@ export function forgetRecentlyDeletedConversation(
   const key = normalizeKey(conversationKey);
   if (!key) return;
   tombstones.delete(key);
-}
-
-export function resetRecentlyDeletedConversationsForTests(): void {
-  tombstones.clear();
-  instanceTombstones.clear();
-  tombstoneStoreInitialized = false;
 }

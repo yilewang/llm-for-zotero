@@ -11,7 +11,6 @@ import {
   decodeReaderSelection,
   encodeReaderSelection,
   type ReaderRuntimeKey,
-  type ReaderSelection,
 } from "../shared/readerSelection";
 
 const READER_CHOICE_PREF_KEYS: Record<ReaderRuntimeKey, string> = {
@@ -51,10 +50,4 @@ export function setReaderChoicePref(
     encodeReaderSelection(decodeReaderSelection(stored)),
     true,
   );
-}
-
-export function getReaderSelectionPref(
-  runtime: ReaderRuntimeKey,
-): ReaderSelection | null {
-  return decodeReaderSelection(getReaderChoicePref(runtime));
 }

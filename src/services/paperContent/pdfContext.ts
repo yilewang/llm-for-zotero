@@ -34,7 +34,6 @@ import {
   buildPaperQuoteCitationGuidance,
   formatAttachmentSourceType,
   formatPaperAttachmentTitle,
-  formatPaperCitationLabel,
   formatPaperSourceLabel,
   isTextLikeAttachmentSourceMode,
 } from "./paperAttribution";
@@ -1710,28 +1709,6 @@ function resolveSectionedChunkKind(
   return normalizeEvidenceText(chunkText) ? "body" : "unknown";
 }
 
-function getSupportLevelLabel(chunkKind: PdfChunkKind | undefined): string {
-  switch (chunkKind) {
-    case "abstract":
-    case "results":
-    case "discussion":
-    case "conclusion":
-      return "likely direct";
-    case "methods":
-    case "introduction":
-    case "body":
-    case "figure-caption":
-    case "table-caption":
-      return "contextual";
-    case "references":
-      return "background only";
-    case "appendix":
-      return "weak or peripheral";
-    default:
-      return "contextual";
-  }
-}
-
 export function buildChunkMetadata(
   chunks: string[],
   sourceType?: PdfContext["sourceType"],
@@ -2178,60 +2155,6 @@ export function chunkPlainPdfText(
     },
     ...shift,
   };
-}
-
-function buildCompactPaperSourceLabel(ref: PaperContextRef): string {
-  const verbose = normalizeEvidenceText(formatPaperCitationLabel(ref));
-  if (verbose && !/^paper\b/i.test(verbose)) {
-    return verbose
-      .replace(/\set al\.,?/gi, "")
-      .replace(/,/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-  if (ref.citationKey) {
-    return normalizeEvidenceText(ref.citationKey);
-  }
-  return /^paper\b/i.test(verbose) ? verbose : "Paper";
-}
-
-function buildEvidenceAnchor(
-  chunkText: string,
-  sectionLabel?: string,
-  chunkKind: PdfChunkKind = "body",
-  fallbackAnchor?: string,
-): string {
-  if (fallbackAnchor) {
-    return fallbackAnchor;
-  }
-  const textWithoutHeading = trimLeadingSectionHeading(chunkText, sectionLabel);
-  const cleaned = cleanLeadingEvidenceNoise(textWithoutHeading, chunkKind);
-  return buildEvidenceAnchorFromText(cleaned.text);
-}
-
-export function formatSuggestedEvidenceCitation(
-  paper: PaperContextRef,
-  candidate: Pick<
-    PaperContextCandidate,
-    "chunkText" | "sectionLabel" | "chunkKind" | "anchorText"
-  >,
-): string {
-  const citationParts = [buildCompactPaperSourceLabel(paper)];
-  const sectionLabel =
-    candidate.sectionLabel || matchSectionHeading(candidate.chunkText)?.label;
-  if (sectionLabel) {
-    citationParts.push(sectionLabel);
-  }
-  const anchor = buildEvidenceAnchor(
-    candidate.chunkText,
-    sectionLabel,
-    candidate.chunkKind || "body",
-    candidate.anchorText,
-  );
-  if (anchor) {
-    citationParts.push(`"${anchor}"`);
-  }
-  return `(${citationParts.join(", ")})`;
 }
 
 /** A chunk's BM25 terms: index terms (stems of plain English words). */
@@ -4019,63 +3942,4 @@ export function buildEvidencePack(params: {
     quoteCitations: normalizedQuoteCitations,
     quoteAnchorDiagnostics,
   };
-}
-
-export function renderEvidencePack(params: {
-  papers: PaperContextRef[];
-  candidates: PaperContextCandidate[];
-}): string {
-  return buildEvidencePack(params).contextText;
-}
-
-export function renderClaimEvidencePack(params: {
-  paper: PaperContextRef;
-  candidates: PaperContextCandidate[];
-}): string {
-  const { paper, candidates } = params;
-  if (!candidates.length) return "";
-  const quoteCitations = mergeQuoteCitations(
-    candidates
-      .map((candidate) =>
-        buildQuoteCitation({
-          quoteText: buildEvidenceQuoteText(candidate),
-          citationLabel: formatPaperSourceLabel(paper),
-          contextItemId: paper.contextItemId,
-          itemId: paper.itemId,
-        }),
-      )
-      .filter((entry): entry is QuoteCitation => Boolean(entry)),
-  );
-  const quoteAnchorGuidance = buildQuoteAnchorPromptBlock(quoteCitations);
-  const hasSelectedAttachmentSource = isTextLikeAttachmentSourceMode(
-    paper.contentSourceMode,
-  );
-  const lines = [
-    "Claim Evidence:",
-    "",
-    ...quoteAnchorGuidance,
-    ...(quoteAnchorGuidance.length ? [""] : []),
-    ...(hasSelectedAttachmentSource
-      ? buildGenericSourceQuoteCitationGuidance()
-      : buildPaperQuoteCitationGuidance()),
-    hasSelectedAttachmentSource
-      ? "The full paper or selected attachment source remains available in paper chat."
-      : "The full paper remains available in paper chat.",
-    "Use the evidence snippets below as the primary grounding for this claim assessment.",
-    "Do not treat references or background citations as direct empirical evidence.",
-    "If the evidence is indirect or mixed, say so explicitly.",
-    "",
-  ];
-  candidates.forEach((candidate, index) => {
-    lines.push(`Evidence snippet ${index + 1}`);
-    lines.push(
-      `Support level: ${getSupportLevelLabel(candidate.chunkKind).toLowerCase()}`,
-    );
-    lines.push(`Section: ${candidate.sectionLabel || "Unlabeled body text"}`);
-    lines.push(`Source label: ${formatPaperSourceLabel(paper)}`);
-    lines.push("Quoted evidence:");
-    lines.push(formatMarkdownBlockquote(buildEvidenceQuoteText(candidate)));
-    lines.push("");
-  });
-  return lines.join("\n").trimEnd();
 }

@@ -71,11 +71,3 @@ export function getCanonicalSkillFilePath(skillId: string): string {
 export function getCodexSkillProjectionDir(): string {
   return joinLocalPath(getZoteroAgentRuntimeRootDir(), "codex-skills");
 }
-
-export function getCodexSkillProjectionFilePath(skillId: string): string {
-  return joinLocalPath(
-    getCodexSkillProjectionDir(),
-    skillId,
-    NATIVE_SKILL_FILE_NAME,
-  );
-}

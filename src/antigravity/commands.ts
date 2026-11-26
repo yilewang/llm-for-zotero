@@ -69,10 +69,3 @@ export function waitForAntigravityCommands(
 export function listAntigravitySlashCommands(): AntigravitySlashCommand[] {
   return rememberedCommands;
 }
-
-/** Sets (or, with an empty list, forgets) the commands, for tests. */
-export function setAntigravityCommandsForTests(
-  commands: readonly AcpAvailableCommand[],
-): void {
-  rememberAntigravityCommands(commands);
-}

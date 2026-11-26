@@ -3,12 +3,6 @@ import type {
   AgentModelCapabilities,
 } from "../types";
 
-export const NO_AGENT_CONTENT_INPUTS: AgentContentInputCapabilities = {
-  images: false,
-  pdfDocuments: false,
-  nativeFiles: false,
-};
-
 export function normalizeAgentContentInputs(
   contentInputs?: Partial<AgentContentInputCapabilities> | null,
 ): AgentContentInputCapabilities {
@@ -57,20 +51,5 @@ export function resolveCapabilitiesContentInputs(
     images: capabilities.multimodal,
     pdfDocuments: capabilities.fileInputs,
     nativeFiles: capabilities.fileInputs,
-  };
-}
-
-export function mediaContentInputs(
-  enabled: boolean,
-  options: {
-    pdfDocuments?: boolean;
-    nativeFiles?: boolean;
-  } = {},
-): AgentContentInputCapabilities {
-  if (!enabled) return { ...NO_AGENT_CONTENT_INPUTS };
-  return {
-    images: true,
-    pdfDocuments: Boolean(options.pdfDocuments),
-    nativeFiles: Boolean(options.nativeFiles),
   };
 }

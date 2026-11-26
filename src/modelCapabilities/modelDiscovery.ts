@@ -184,10 +184,6 @@ export function hasModelDiscoveryAdapter(identity: {
   return getModelDiscoveryAdapter(identity) !== null;
 }
 
-export function listModelDiscoveryProviders(): string[] {
-  return Array.from(discoveryAdapters.keys());
-}
-
 export function classifyModelDiscoveryHttpError(status: number): {
   code: ModelDiscoveryErrorCode;
   message: string;

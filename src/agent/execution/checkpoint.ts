@@ -3,8 +3,6 @@ import type { AgentExecutionContext, AgentRunEventRecord } from "../types";
 import { ExecutionCheckpointFold } from "./checkpointEvents";
 import type { ExecutionCheckpoint } from "./types";
 
-export type { ExecutionCheckpoint, ExecutionCheckpointTask } from "./types";
-
 function requiredText(value: unknown, label: string): string {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) throw new Error(`${label} must be a non-empty string`);

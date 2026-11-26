@@ -21,7 +21,6 @@ import type {
 import { normalizeAttachedConversationRefs } from "../../services/context/normalizers";
 import { findPastConversationCatalogEntry } from "../../services/pastConversations/pastConversationLoader";
 import {
-  PAST_CONVERSATION_SYSTEMS,
   listPastConversationCatalog,
   searchPastConversationIndex,
 } from "../../services/pastConversations/pastConversationSearch";
@@ -38,8 +37,6 @@ import {
   type HistorySearchDocument,
   type HistorySearchResult,
 } from "./setupHandlers/controllers/historySearchController";
-
-export { PAST_CONVERSATION_SYSTEMS };
 
 /** A picker row: the popup's entry plus the system the chat belongs to. */
 export type PastConversationEntry = ConversationHistoryEntry & {
@@ -335,18 +332,6 @@ export function formatAttachedConversationLabel(
     ? t("Deleted chat")
     : ref.title;
   return `${title} \u00B7 ${getPastConversationSystemLabel(ref.system)}`;
-}
-
-/** Seeds or clears the cache; for tests. */
-export function setAttachedConversationExistenceForTests(
-  ref: AttachedConversationRef | null,
-  exists?: boolean,
-): void {
-  if (!ref) {
-    existenceCache.clear();
-    return;
-  }
-  existenceCache.set(existenceKey(ref), exists !== false);
 }
 
 /**

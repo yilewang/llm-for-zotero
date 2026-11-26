@@ -599,25 +599,6 @@ function renderCodeHtml(code: string, lang: string): string {
   return html;
 }
 
-export function __getCodeHighlightCacheStatsForTest(): {
-  size: number;
-  hits: number;
-  misses: number;
-} {
-  return {
-    size: codeHighlightCache.size,
-    hits: codeHighlightCacheHits,
-    misses: codeHighlightCacheMisses,
-  };
-}
-
-export function __resetCodeHighlightCacheForTest(): void {
-  codeHighlightCache.clear();
-  codeHighlightCacheBytes = 0;
-  codeHighlightCacheHits = 0;
-  codeHighlightCacheMisses = 0;
-}
-
 function trimSvgLeadingMetadata(svg: string): string {
   let result = svg.trim().replace(/^\uFEFF/, "");
   let previous = "";
@@ -691,15 +672,6 @@ export function buildSafeSvgMarkup(
 /** An already safe drawing as an image URI. */
 export function svgMarkupToDataUri(svg: string): string {
   return `data:image/svg+xml;base64,${encodeBase64Utf8(svg)}`;
-}
-
-export function buildSafeSvgDataUri(
-  code: string,
-  maxChars = SVG_PREVIEW_MAX_CHARS,
-): string | null {
-  const svg = buildSafeSvgMarkup(code, maxChars);
-  if (!svg) return null;
-  return svgMarkupToDataUri(svg);
 }
 
 function renderMermaidPreview(code: string): string {
@@ -2697,11 +2669,6 @@ function reportMarkedMarkdownFailure(err: unknown): void {
   );
 }
 
-export function __setMarkdownParserDisabledForTest(disabled: boolean): void {
-  markedMarkdownDisabled = disabled;
-  markedMarkdownFailureReported = false;
-}
-
 // =============================================================================
 // Main Export
 // =============================================================================
@@ -2809,25 +2776,6 @@ export function renderMarkdownMemoized(text: string): string {
     renderedMarkdownCacheChars -= oldestKey.length + oldest.length;
   }
   return html;
-}
-
-export function __getRenderedMarkdownCacheStatsForTest(): {
-  size: number;
-  hits: number;
-  misses: number;
-} {
-  return {
-    size: renderedMarkdownCache.size,
-    hits: renderedMarkdownCacheHits,
-    misses: renderedMarkdownCacheMisses,
-  };
-}
-
-export function __resetRenderedMarkdownCacheForTest(): void {
-  renderedMarkdownCache.clear();
-  renderedMarkdownCacheChars = 0;
-  renderedMarkdownCacheHits = 0;
-  renderedMarkdownCacheMisses = 0;
 }
 
 /**

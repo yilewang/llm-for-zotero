@@ -34,7 +34,6 @@ import type {
 } from "./types";
 import {
   stripNoteHtml,
-  stripNoteMarkup,
   decodeNoteHtmlEntities,
 } from "../../services/notes/noteSnapshot";
 import {
@@ -46,22 +45,6 @@ import {
   lookupCachedCitationPageLocation,
 } from "./assistantCitationLinks";
 import { citationPageDisplayLabel } from "../../services/pdf/citationNavigationCache";
-import { resolveNoteParentItem } from "./portalScope";
-import {
-  isGlobalPortalItem,
-  isPaperPortalItem,
-  resolvePaperPortalBaseItem,
-} from "../../services/context/portalItems";
-import {
-  isClaudeGlobalPortalItem,
-  isClaudePaperPortalItem,
-  resolveClaudePaperPortalBaseItem,
-} from "../../claudeCode/portal";
-import {
-  isCodexGlobalPortalItem,
-  isCodexPaperPortalItem,
-  resolveCodexPaperPortalBaseItem,
-} from "../../codexAppServer/portal";
 import { getMessageCitationPaperContexts } from "./citationContexts";
 import { findMatchingTrustedQuoteCitation } from "../../services/quotes/quoteCitations";
 import {
@@ -483,60 +466,6 @@ function wrapAssistantNoteHtml(
     ? `<p><strong>User query:</strong></p><div>${queryHtml}</div>`
     : "";
   return `<div>${responseHtml}</div>${provenance}${queryBlock}${NOTE_FOOTER_HTML}`;
-}
-
-function buildAssistantNoteHtml(
-  contentText: string,
-  modelName: string,
-  paperContexts?: PaperContextRef[],
-  quoteCitations?: QuoteCitation[],
-  generatedImagesHtml = "",
-  queryText = "",
-  headingLevel: 1 | 2 = 1,
-): string {
-  const query = buildQuoteExpandedMarkdown(
-    {
-      markdown: sanitizeText(queryText || "").trim(),
-      quoteCitations,
-    },
-    { paragraphCitations: "line-labels" },
-  );
-  const response = buildQuoteExpandedMarkdown(
-    {
-      markdown: sanitizeText(
-        stripTrailingPluginFooter(contentText || ""),
-      ).trim(),
-      quoteCitations,
-    },
-    { paragraphCitations: "line-labels" },
-  );
-  const source = modelName.trim() || "unknown";
-  const timestamp = getCurrentLocalTimestamp();
-  let queryHtml = query ? renderRawNoteHtml(query) : "";
-  let responseHtml = response ? renderRawNoteHtml(response) : "";
-  if (queryHtml) {
-    queryHtml = injectCitationLinksIntoNoteHtml(
-      queryHtml,
-      paperContexts,
-      quoteCitations,
-    );
-  }
-  if (responseHtml) {
-    responseHtml = injectCitationLinksIntoNoteHtml(
-      responseHtml,
-      paperContexts,
-      quoteCitations,
-    );
-  }
-  return wrapAssistantNoteHtml(
-    `${responseHtml}${generatedImagesHtml}`,
-    queryHtml,
-    source,
-    timestamp,
-    sanitizeText(queryText || "").trim(),
-    headingLevel,
-    query,
-  );
 }
 
 export const NOTE_INCLUDE_USER_PROMPT_PREF = "noteIncludeUserPrompt";

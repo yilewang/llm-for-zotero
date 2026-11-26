@@ -70,9 +70,7 @@ import {
 import { isRuntimeConversationSystemEnabled } from "../../shared/conversationSystemPrefs";
 import {
   resolveNoteFocusSystemSwitch as resolveNoteFocusSystemSwitchPolicy,
-  resolveNoteEditingParentItem,
   resolveNoteEditingScope,
-  resolveNoteEditingTitle,
   resolveOpenedNotePaper,
   resolvePreferredNoteFocusSystem,
 } from "../../services/notes/scope";
@@ -161,16 +159,6 @@ export function createPaperPortalItem(
     },
   };
   return portalItem as unknown as Zotero.Item;
-}
-
-export function resolveNoteParentItem(
-  item: Zotero.Item | null | undefined,
-): Zotero.Item | null {
-  return resolveNoteEditingParentItem(item);
-}
-
-export function resolveNoteTitle(item: Zotero.Item | null | undefined): string {
-  return resolveNoteEditingTitle(item);
 }
 
 export function resolveActiveNoteSession(

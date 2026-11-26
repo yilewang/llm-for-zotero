@@ -23,7 +23,6 @@ import {
   identifyCommandOutput,
   type RunCommandInput,
 } from "./commandAnalysis";
-export { classifyRunCommandInvocation } from "./commandAnalysis";
 
 /**
  * Resolve the absolute path of the shell executable.

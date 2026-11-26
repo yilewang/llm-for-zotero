@@ -305,12 +305,6 @@ export const DIGEST_MAX_INPUT_CHARS = 120_000;
 export const DIGEST_INPUT_RESERVE_TOKENS = 12_000;
 export const DIGEST_TIMEOUT_CAP_MS = 240_000;
 /**
- * A ceiling far above any paper (a book chapter is under 200,000
- * characters): the value of `DIGEST_TEXT_MAX_CHARS` that would make every
- * digest read an item's whole text, in batches.
- */
-export const DIGEST_WHOLE_TEXT_MAX_CHARS = 1_500_000;
-/**
  * The long-item setting: the most characters of one paper a digest reads,
  * in a digest part and in `paper_digest` alike: 250,000 (decided
  * 2026-10-30). A longer item, such as a book or a thesis, is read up to it,
@@ -1570,17 +1564,6 @@ function isAbstractQuote(
 /** A digest of the abstract alone, returned as written (no model read it). */
 export function isAbstractDigest(digest: HostPaperDigest): boolean {
   return digest.source?.scope?.source === "abstract";
-}
-
-/**
- * Whether a digest read the paper's whole text: complete, and of the full
- * text (no scope, as every record saved before scopes). A scoped read that
- * read all it was asked for is complete, never whole (`isFullTextRead`).
- */
-export function digestReadWholeText(digest: {
-  source?: Pick<HostPaperDigest["source"], "complete" | "scope">;
-}): boolean {
-  return Boolean(digest.source && isFullTextRead(digest.source));
 }
 
 export async function runPaperDigestJob(

@@ -232,22 +232,6 @@ export async function removePdfFigureCropCacheDir(
   await removePathQuietly(getPdfFigureCropDirForCacheDir(cacheDir));
 }
 
-export function getPdfFigureCropPathForCacheDir(
-  cacheDir: string,
-  figureId: string,
-): string {
-  const safeId =
-    figureId
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "figure";
-  return joinLocalPath(
-    getPdfFigureCropImageDirForCacheDir(cacheDir),
-    `${safeId}.png`,
-  );
-}
-
 export async function readPdfFigureCropCacheFromDir(
   cacheDir: string,
 ): Promise<PdfFigureCropCache | null> {
@@ -298,27 +282,5 @@ export async function writePdfFigureCropCacheToDir(
   await writeFileBytes(
     getPdfFigureCropCachePathForCacheDir(cacheDir),
     new TextEncoder().encode(JSON.stringify(cache)),
-  );
-}
-
-export async function writePdfFigureCropBytesToDir(
-  cacheDir: string,
-  figureId: string,
-  bytes: Uint8Array,
-): Promise<string> {
-  await ensureDir(getPdfFigureCropImageDirForCacheDir(cacheDir));
-  const path = getPdfFigureCropPathForCacheDir(cacheDir, figureId);
-  await writeFileBytes(path, bytes);
-  return path;
-}
-
-export function isPdfFigureCropPath(
-  path: string | undefined,
-  cache: PdfFigureCropCache | null,
-): boolean {
-  const normalized = (path || "").replace(/\\/g, "/");
-  if (!normalized || !cache?.entries?.length) return false;
-  return cache.entries.some(
-    (entry) => entry.cropPath.replace(/\\/g, "/") === normalized,
   );
 }

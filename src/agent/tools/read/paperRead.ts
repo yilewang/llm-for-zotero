@@ -2250,9 +2250,6 @@ function resolveMetadataOverviewTitle(
   return standaloneContentTitle || `Paper ${metadata.itemId}`;
 }
 
-export const resolveMetadataOverviewTitleForTests =
-  resolveMetadataOverviewTitle;
-
 function buildMetadataOverview(params: {
   paperContext: NonNullable<PdfTarget["paperContext"]>;
   metadataResolver: ZoteroMetadataResolver;

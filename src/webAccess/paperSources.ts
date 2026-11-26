@@ -35,12 +35,6 @@ const DOI_PREFIX_NAMES: Record<string, string> = {
   "10.48550": "arXiv",
 };
 
-const PAPER_SOURCE_ID_PATTERN = /^paper_[a-z0-9]+$/;
-
-export function isPaperSourceId(id: string): boolean {
-  return PAPER_SOURCE_ID_PATTERN.test(id);
-}
-
 function asObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)

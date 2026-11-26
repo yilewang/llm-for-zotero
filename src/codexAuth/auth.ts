@@ -365,10 +365,6 @@ export async function resolveCodexAuthSession(
   );
 }
 
-export function resetCodexAuthRefreshStateForTests(): void {
-  refreshTasksByAuthPath.clear();
-}
-
 export function buildCodexAuthHeaders(
   session: Pick<CodexAuthSession, "token" | "accountId">,
   base: Record<string, string> = {},

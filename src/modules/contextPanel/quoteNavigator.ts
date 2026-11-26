@@ -285,25 +285,9 @@ export type CitationParagraphJumpParams = {
   fallbackQuoteTexts?: string[];
 };
 
-let citationParagraphJumpObserverForTests:
-  | ((params: CitationParagraphJumpParams) => void)
-  | null = null;
-
-/**
- * Test-only: hand every paragraph jump's arguments to `observer` before the
- * jump runs (null stops observing). Lets the characterization tests pin what
- * each navigation tier asks the jump for. Not used by production code.
- */
-export function observeCitationParagraphJumpsForTests(
-  observer: ((params: CitationParagraphJumpParams) => void) | null,
-): void {
-  citationParagraphJumpObserverForTests = observer;
-}
-
 export async function attemptCitationParagraphJump(
   params: CitationParagraphJumpParams,
 ): Promise<ExactQuoteJumpResult> {
-  citationParagraphJumpObserverForTests?.(params);
   // Source navigation is user-initiated. Raise an existing PDF above standalone
   // chat/document windows too, even if its paragraph cannot be highlighted.
   Zotero.getMainWindow()?.focus();
@@ -346,9 +330,6 @@ export async function attemptCitationParagraphJump(
   }
   return paragraphJump;
 }
-
-export const attemptCitationParagraphJumpForTests =
-  attemptCitationParagraphJump;
 
 /**
  * Said when a trusted click stays on a copy of the paper whose PDF is not
@@ -449,15 +430,6 @@ export function lookupCachedCitationPageLocation(
     : { pageIndex: entry.pageIndex };
 }
 
-/** How the verified page for this quote is shown, if one is cached. */
-export function lookupCachedCitationPage(
-  contextItemId: number,
-  quoteText: string,
-): string | null {
-  const location = lookupCachedCitationPageLocation(contextItemId, quoteText);
-  return location ? citationPageDisplayLabel(location) : null;
-}
-
 // ---------------------------------------------------------------------------
 // Background verification and the viewer fallback
 
@@ -512,9 +484,6 @@ function locatedResultIdentifiesQuoteSource(
   );
 }
 
-export const locatedResultIdentifiesQuoteSourceForTests =
-  locatedResultIdentifiesQuoteSource;
-
 /**
  * Whether a hit found by *opening* a candidate may move the reader.
  *
@@ -538,8 +507,6 @@ function acceptsOpenedQuoteMatch(params: {
     params.authoritative || locatedResultIdentifiesQuoteSource(params.result)
   );
 }
-
-export const acceptsOpenedQuoteMatchForTests = acceptsOpenedQuoteMatch;
 
 /**
  * Where the answer recorded its quote. It only chooses among identical

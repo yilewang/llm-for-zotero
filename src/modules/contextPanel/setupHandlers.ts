@@ -237,7 +237,6 @@ import {
   getReasoningOptions,
   getSelectedReasoningForItem,
   retryLatestAssistantResponse,
-  resetSessionTokens,
   editLatestUserMessageAndRetry,
   editUserTurnAndRetry,
   findLatestRetryPair,
@@ -429,7 +428,6 @@ import {
 } from "./paperSearch";
 import {
   resolvePaperScopedDefaultInput,
-  type PaperScopedActionCollectionCandidate,
   type PaperScopedActionProfile,
 } from "./paperScopeCommand";
 import { getAgentApi, initAgentSubsystem } from "../../agent/index";
@@ -619,14 +617,13 @@ import {
 import { clearAllAgentToolCaches } from "../../agent/tools";
 import { clearAgentConversationState } from "./agentConversationCleanup";
 import { renderShortcuts } from "./shortcuts";
-import { loadConversationHistoryScope } from "./historyLoader";
+
 import {
   buildClaudeScope,
   getClaudeRuntimeModelEntries as getFallbackClaudeRuntimeModelEntries,
   invalidateAllClaudeHotRuntimes,
   listClaudeEfforts,
   listClaudeModels,
-  rememberClaudeConversationSelection,
   refreshClaudeSlashCommands,
   touchClaudeConversation,
 } from "../../claudeCode/runtime";

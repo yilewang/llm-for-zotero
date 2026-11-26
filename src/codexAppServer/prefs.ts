@@ -1,4 +1,3 @@
-declare const Zotero: any;
 declare const Services:
   | {
       prefs?: { prefHasUserValue?: (key: string) => boolean };
@@ -33,12 +32,7 @@ import {
   type CodexPermissionState,
 } from "./permissionState";
 
-export type CodexNativeSkillRoutingMode =
-  | "hybrid"
-  | "deterministic"
-  | "classifier";
 export type CodexNativeSkillMode = "native" | "legacy" | "off";
-export type CodexAppServerApprovalsReviewer = "user" | "auto_review";
 
 type ZoteroPrefsAPI = {
   get?: (key: string, global?: boolean) => unknown;
@@ -176,18 +170,6 @@ export function setCodexHomePref(path: string): void {
   setPref("codexHome", String(path || "").trim());
 }
 
-export function getCodexPermissionProfilePref(): string {
-  return (
-    getStringPref("codexAppServerPermissionProfile").trim() || ":read-only"
-  );
-}
-
-export function setCodexPermissionProfilePref(profileId: string): void {
-  const normalized = String(profileId || "").trim();
-  if (!normalized) return;
-  setPref("codexAppServerPermissionProfile", normalized);
-}
-
 export type CodexPermissionStatePreference = {
   state: CodexPermissionState;
   hasUserValue: boolean;
@@ -223,12 +205,6 @@ export function readCodexPermissionStatePref(): CodexPermissionStatePreference {
   return { state, hasUserValue, raw };
 }
 
-export function getCodexPermissionStatePref(): CodexPermissionState {
-  const preference = readCodexPermissionStatePref();
-  if (preference.error) throw new Error(preference.error);
-  return preference.state;
-}
-
 export function setCodexPermissionStatePref(state: CodexPermissionState): void {
   setPref(
     "codexAppServerPermissionState",
@@ -254,40 +230,6 @@ export function setCodexZoteroMcpToolsEnabled(enabled: boolean): void {
   setPref("codexAppServerZoteroMcpToolsEnabled", Boolean(enabled));
 }
 
-export function isCodexAppServerNativeApprovalsEnabled(): boolean {
-  const value = getZoteroPrefs()?.get?.(
-    prefKey("codexAppServerNativeApprovalsEnabled"),
-    true,
-  );
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-  }
-  return false;
-}
-
-export function setCodexAppServerNativeApprovalsEnabled(
-  enabled: boolean,
-): void {
-  setPref("codexAppServerNativeApprovalsEnabled", Boolean(enabled));
-}
-
-export function getCodexAppServerApprovalsReviewerPref(): CodexAppServerApprovalsReviewer {
-  const raw = getStringPref("codexAppServerApprovalsReviewer")
-    .trim()
-    .toLowerCase();
-  return raw === "auto_review" ? "auto_review" : "user";
-}
-
-export function setCodexAppServerApprovalsReviewerPref(
-  reviewer: CodexAppServerApprovalsReviewer,
-): void {
-  if (reviewer !== "user" && reviewer !== "auto_review") return;
-  setPref("codexAppServerApprovalsReviewer", reviewer);
-}
-
 export function isNativeZoteroMcpToolsEnabled(): boolean {
   return isCodexZoteroMcpToolsEnabled();
 }
@@ -296,32 +238,10 @@ export function setNativeZoteroMcpToolsEnabled(enabled: boolean): void {
   setCodexZoteroMcpToolsEnabled(enabled);
 }
 
-export function getCodexNativeSkillRoutingModePref(): CodexNativeSkillRoutingMode {
-  const raw = getStringPref("codexNativeSkillRoutingMode").trim().toLowerCase();
-  if (raw === "deterministic" || raw === "classifier" || raw === "hybrid") {
-    return raw;
-  }
-  return "hybrid";
-}
-
-export function setCodexNativeSkillRoutingModePref(
-  mode: CodexNativeSkillRoutingMode,
-): void {
-  if (mode !== "hybrid" && mode !== "deterministic" && mode !== "classifier") {
-    return;
-  }
-  setPref("codexNativeSkillRoutingMode", mode);
-}
-
 export function getCodexNativeSkillModePref(): CodexNativeSkillMode {
   const raw = getStringPref("codexNativeSkillMode").trim().toLowerCase();
   if (raw === "legacy" || raw === "off") return raw;
   return "native";
-}
-
-export function setCodexNativeSkillModePref(mode: CodexNativeSkillMode): void {
-  if (mode !== "native" && mode !== "legacy" && mode !== "off") return;
-  setPref("codexNativeSkillMode", mode);
 }
 
 export function getLastUsedCodexConversationMode(

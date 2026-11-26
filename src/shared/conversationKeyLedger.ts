@@ -658,55 +658,6 @@ async function conversationKeyHasMessages(
 }
 
 /**
- * Reverse a retirement.  Retirement is otherwise permanent and irreversible,
- * which makes any false positive unrecoverable data loss; this is the repair
- * path for that case.  It deliberately refuses to revive a key that a real
- * deletion retired -- only allocations abandoned by a crash, and identities
- * quarantined by migration, are eligible.
- */
-export async function unretireConversationKeyInTransaction(params: {
-  conversationKey: number;
-  instanceID: string;
-}): Promise<boolean> {
-  const db = getDb();
-  const key = normalizePositiveInt(params.conversationKey);
-  const instanceID = normalizeText(params.instanceID, 128);
-  if (!db?.queryAsync || !key || !instanceID) return false;
-  const rows = (await db.queryAsync(
-    `SELECT retirement_reason AS retirementReason
-     FROM ${KEY_LEDGER_TABLE}
-     WHERE conversation_key = ? AND instance_id = ? AND retired_at IS NOT NULL
-     LIMIT 1`,
-    [key, instanceID],
-  )) as Array<{ retirementReason?: unknown }> | undefined;
-  if (!rows?.length) return false;
-  const reason = normalizeText(rows[0]?.retirementReason, 256);
-  const REVIVABLE = [
-    "orphaned-ledger-allocation-after-crash",
-    "quarantined-identity",
-  ];
-  if (!REVIVABLE.includes(reason)) {
-    logLedger("LLM: refusing to unretire a deliberately deleted conversation", {
-      conversationKey: key,
-      reason,
-    });
-    return false;
-  }
-  await db.queryAsync(
-    `UPDATE ${KEY_LEDGER_TABLE}
-     SET retired_at = NULL, retirement_reason = NULL
-     WHERE conversation_key = ? AND instance_id = ?`,
-    [key, instanceID],
-  );
-  retiredConversationKeys.delete(key);
-  logLedger("LLM: unretired conversation key", {
-    conversationKey: key,
-    previousReason: reason,
-  });
-  return true;
-}
-
-/**
  * Next key to issue in a range, without searching for gaps.
  *
  * Migration fallbacks previously did `while (await isIssued(k)) k += 1`, which
@@ -912,30 +863,6 @@ export async function retireConversationKeyInTransaction(params: {
       instanceID,
     ],
   );
-}
-
-export async function assertConversationKeyLiveInTransaction(params: {
-  conversationKey: number;
-  instanceID: string;
-}): Promise<void> {
-  const db = getDb();
-  const key = normalizePositiveInt(params.conversationKey);
-  const instanceID = normalizeText(params.instanceID, 128);
-  if (!db?.queryAsync || !key || !instanceID) {
-    throw new Error("Invalid conversation identity");
-  }
-  const rows = (await db.queryAsync(
-    `SELECT 1 AS live
-     FROM ${KEY_LEDGER_TABLE}
-     WHERE conversation_key = ?
-       AND instance_id = ?
-       AND retired_at IS NULL
-     LIMIT 1`,
-    [key, instanceID],
-  )) as Array<{ live?: unknown }> | undefined;
-  if (!rows?.length) {
-    throw new ConversationRetiredError(key, instanceID);
-  }
 }
 
 /**
@@ -1763,5 +1690,3 @@ export async function logConversationKeyQuarantineSummary(): Promise<number> {
 }
 
 export const CONVERSATION_KEY_LEDGER_TABLE = KEY_LEDGER_TABLE;
-export const CONVERSATION_KEY_COUNTERS_TABLE = KEY_COUNTERS_TABLE;
-export const CONVERSATION_KEY_QUARANTINE_TABLE = KEY_QUARANTINE_TABLE;

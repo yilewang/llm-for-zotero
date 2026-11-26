@@ -222,10 +222,6 @@ export function refuseLibraryTextIndexOpensForQuit(): void {
   quitting = true;
 }
 
-export function resetLibraryTextIndexQuitForTests(): void {
-  quitting = false;
-}
-
 export async function closeLibraryTextIndexDb(): Promise<void> {
   // An open racing shutdown must finish first, or its handle leaks.
   const pending = openPromise;

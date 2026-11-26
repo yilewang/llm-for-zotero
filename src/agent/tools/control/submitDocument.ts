@@ -110,22 +110,6 @@ function addSection(
   if (held.length) labels.set(id, held);
 }
 
-/**
- * Every heading each citation appears under, in order, by citation id.
- * A heading that only repeats the document's title names no section; a
- * citation used only before any other heading has none.
- */
-export function citationSectionLabels(
-  markdown: string,
-  title = "",
-): Map<string, string[]> {
-  const labels = new Map<string, string[]>();
-  for (const use of tokenUses(markdown, title)) {
-    if (use.kind === "cite") addSection(labels, use.id, use.section);
-  }
-  return labels;
-}
-
 /** What a source's Zotero item says about its paper. */
 export type CitedSourceItem = {
   /** The item the source's key names (an attachment stays an attachment). */

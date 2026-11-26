@@ -89,23 +89,6 @@ export function clearItemStatus(attachmentId: number): void {
   notifyListeners();
 }
 
-export function clearItemCachedStatus(attachmentId: number): void {
-  if (processingMap.get(attachmentId)?.status !== "cached") return;
-  processingMap.delete(attachmentId);
-  notifyListeners();
-}
-
-export function clearAllCachedStatuses(): void {
-  let changed = false;
-  for (const [attachmentId, status] of processingMap.entries()) {
-    if (status.status === "cached") {
-      processingMap.delete(attachmentId);
-      changed = true;
-    }
-  }
-  if (changed) notifyListeners();
-}
-
 export function getItemStatus(attachmentId: number): ItemStatus | undefined {
   return processingMap.get(attachmentId);
 }
@@ -293,16 +276,6 @@ export function getAllProcessingIds(): number[] {
   const result: number[] = [];
   for (const [id, status] of processingMap.entries()) {
     if (status.status === "processing") {
-      result.push(id);
-    }
-  }
-  return result;
-}
-
-export function getAllFailedIds(): number[] {
-  const result: number[] = [];
-  for (const [id, status] of processingMap.entries()) {
-    if (status.status === "failed") {
       result.push(id);
     }
   }

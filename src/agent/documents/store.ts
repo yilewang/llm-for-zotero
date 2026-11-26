@@ -508,23 +508,6 @@ export async function loadPlanDocumentOutbox(
   return parse(rows?.[0], decodePlanDocumentOutbox);
 }
 
-export async function listPendingPlanDocumentOutbox(
-  conversationKey: number,
-): Promise<PlanDocumentOutboxRecord[]> {
-  const rows = (await Zotero.DB.queryAsync(
-    `SELECT payload_json AS payloadJson FROM ${PLAN_DOCUMENT_OUTBOX_TABLE}
-     WHERE conversation_key = ? AND status = 'pending'
-     ORDER BY created_at ASC`,
-    [conversationKey],
-  ).catch((error) => {
-    if (/no such table|no table/i.test(String(error))) return [];
-    throw error;
-  })) as JsonRow[] | undefined;
-  return (rows || [])
-    .map((row) => parse(row, decodePlanDocumentOutbox))
-    .filter((entry): entry is PlanDocumentOutboxRecord => Boolean(entry));
-}
-
 export async function listPlanDocumentOutboxForConversation(
   conversationKey: number,
 ): Promise<PlanDocumentOutboxRecord[]> {

@@ -27,7 +27,7 @@
  * `alreadyReturned`, never read again and never recorded again), the failed
  * papers' retries, at most two, and the failures already reported (flagged
  * `alreadyReported`, so a repeat call adds no second ledger row). All reader calls of
- * the MCP host share one limit (`PAPER_DIGEST_READER_CALL_LIMIT`), however
+ * the MCP host share one limit (`HOST_READER_CALL_LIMIT`), however
  * many calls and papers run at once.
  */
 import type { AgentToolContext, AgentToolDefinition } from "../../types";
@@ -39,10 +39,7 @@ import {
   limitReaderCompletion,
   type ReaderCallLimiter,
 } from "../../../shared/readerCompletion";
-import {
-  HOST_READER_CALL_LIMIT,
-  hostReaderCallLimiter,
-} from "../../reader/readerLimiter";
+import { hostReaderCallLimiter } from "../../reader/readerLimiter";
 import {
   mapReaderCompletion,
   type ReaderAdapterFactories,
@@ -104,12 +101,6 @@ export const PAPER_DIGEST_MAX_ABSTRACTS_PER_CALL = 50;
 
 /** The most papers one call may name, as a digest part. */
 export const PAPER_DIGEST_MAX_TARGETS = 200;
-
-/**
- * Reader calls in flight at once across every paper_digest call (and the
- * native paper_read full reads): the host's one shared limit.
- */
-export const PAPER_DIGEST_READER_CALL_LIMIT = HOST_READER_CALL_LIMIT;
 
 /** Papers of one call read at once (bounded again by the shared limit). */
 const PAPER_DIGEST_CONCURRENCY = 4;
@@ -189,11 +180,6 @@ export function clearPaperDigestRunBounds(runId?: string): void {
   else
     for (const key of [...runBounds.keys()])
       if (key.endsWith(`\u0000${runId}`)) runBounds.delete(key);
-}
-
-/** Run ids whose bounds are held now (test seam). */
-export function trackedPaperDigestRuns(): string[] {
-  return [...runBounds.keys()].map((key) => key.split("\u0000")[1]);
 }
 
 function boundsFor(

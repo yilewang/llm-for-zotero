@@ -336,13 +336,6 @@ function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-export function mergeCapabilitySection<T extends Record<string, unknown>>(
-  base: T,
-  overlay: Partial<T> | undefined,
-): T {
-  return { ...base, ...(overlay ? cloneValue(overlay) : {}) };
-}
-
 function mergeNested(
   base: Record<string, unknown>,
   overlay: Record<string, unknown>,

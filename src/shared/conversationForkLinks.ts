@@ -163,14 +163,6 @@ function rowToForkLink(row: Record<string, unknown> | undefined | null) {
   } satisfies ConversationForkLink;
 }
 
-/**
- * Drop the cached schema pass so a test that swaps in a fresh database gets
- * its tables created again. Production code never calls this.
- */
-export function resetConversationForkLinksStoreInitForTests(): void {
-  initPromise = null;
-}
-
 export async function initConversationForkLinksStore(): Promise<void> {
   if (initPromise) {
     await initPromise;
@@ -357,23 +349,6 @@ export async function deleteConversationForkLink(
      WHERE target_conversation_key = ?`,
     [normalizedKey],
   );
-}
-
-/** Remove provenance edges touching the deleted instance on either side. */
-export async function deleteConversationForkLinksForInstance(params: {
-  conversationKey: number;
-  system: ConversationSystem;
-  conversationID?: string;
-}): Promise<void> {
-  const normalizedKey = normalizePositiveInt(params.conversationKey);
-  const conversationID = normalizeString(params.conversationID);
-  if (!normalizedKey) return;
-  await initConversationForkLinksStore();
-  await deleteConversationForkLinksForInstanceInTransaction({
-    ...params,
-    conversationKey: normalizedKey,
-    conversationID,
-  });
 }
 
 /**

@@ -909,46 +909,6 @@ function readRuntimeMenuEntries(
   }));
 }
 
-type GeometryRect = Pick<
-  DOMRect,
-  "left" | "right" | "top" | "bottom" | "width" | "height"
->;
-
-function rectsIntersect(
-  first: GeometryRect | null,
-  second: GeometryRect | null,
-): boolean {
-  if (
-    !first ||
-    !second ||
-    first.width <= 0 ||
-    first.height <= 0 ||
-    second.width <= 0 ||
-    second.height <= 0
-  ) {
-    return false;
-  }
-  return (
-    first.left < second.right &&
-    first.right > second.left &&
-    first.top < second.bottom &&
-    first.bottom > second.top
-  );
-}
-
-function rectWithinContainer(
-  rect: GeometryRect,
-  container: GeometryRect,
-): boolean {
-  const tolerance = 0.5;
-  return (
-    rect.left >= container.left - tolerance &&
-    rect.right <= container.right + tolerance &&
-    rect.top >= container.top - tolerance &&
-    rect.bottom <= container.bottom + tolerance
-  );
-}
-
 type PanelRecord = {
   id: string;
   body: HTMLElement;

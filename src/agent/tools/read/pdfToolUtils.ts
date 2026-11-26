@@ -7,11 +7,7 @@
  */
 import type { ChatAttachment, PaperContextRef } from "../../../shared/types";
 import { readAttachmentBytes } from "../../../services/attachmentStorage";
-import type {
-  AgentModelContentPart,
-  AgentRuntimeRequest,
-  AgentToolDefinition,
-} from "../../types";
+import type { AgentModelContentPart, AgentRuntimeRequest } from "../../types";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
 import { getTurnPaperScopeFromRequest } from "../../context/requestTurnPaperScope";
 import { getActiveTurnPaper } from "../../context/turnPaperScope";
@@ -138,18 +134,6 @@ export function normalizeTarget(value: unknown): PdfTarget | undefined {
     target.name
     ? target
     : undefined;
-}
-
-export function normalizeTargets(
-  value: unknown,
-  maxCount: number,
-): PdfTarget[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const targets = value
-    .map((entry) => normalizeTarget(entry))
-    .filter((entry): entry is PdfTarget => Boolean(entry))
-    .slice(0, maxCount);
-  return targets.length ? targets : undefined;
 }
 
 function invalidTargetSyntax(
@@ -532,28 +516,6 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 const preparedCache = new Map<number, PreparedPdfCache>();
 const capturedCache = new Map<number, CapturedPdfCache>();
 
-export function getCachedPrepared(
-  conversationKey: number,
-): PreparedPdfCache | null {
-  const entry = preparedCache.get(conversationKey);
-  if (!entry || Date.now() > entry.expiresAt) {
-    preparedCache.delete(conversationKey);
-    return null;
-  }
-  return entry;
-}
-
-export function getCachedCapture(
-  conversationKey: number,
-): CapturedPdfCache | null {
-  const entry = capturedCache.get(conversationKey);
-  if (!entry || Date.now() > entry.expiresAt) {
-    capturedCache.delete(conversationKey);
-    return null;
-  }
-  return entry;
-}
-
 export function setPreparedCache(
   conversationKey: number,
   pageIndexes: number[],
@@ -586,15 +548,6 @@ export function clearPdfToolCaches(conversationKey: number): void {
 // ---------------------------------------------------------------------------
 // Page selection helpers
 // ---------------------------------------------------------------------------
-
-export function samePageSet(
-  left: number[] | undefined,
-  right: number[] | undefined,
-): boolean {
-  const a = Array.from(new Set(left || [])).sort((x, y) => x - y);
-  const b = Array.from(new Set(right || [])).sort((x, y) => x - y);
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
 
 // ---------------------------------------------------------------------------
 // Multimodal followup for capture_active_view

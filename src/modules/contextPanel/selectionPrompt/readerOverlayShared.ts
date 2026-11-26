@@ -90,11 +90,6 @@ export function releaseReaderOverlay(
   }
 }
 
-/** The overlay open on `doc`, if any. */
-export function getReaderOverlay(doc: Document): ReaderOverlayHandle | null {
-  return (doc as DocWithOverlay)[OVERLAY_KEY] || null;
-}
-
 /** Closes any overlay open on `doc`. Safe when none is open. */
 export function closeReaderOverlay(doc: Document): void {
   (doc as DocWithOverlay)[OVERLAY_KEY]?.close();
@@ -133,11 +128,6 @@ export function closeAllReaderOverlays(): void {
     }
   }
   openOverlays.clear();
-}
-
-/** Test seam: how many overlays are open. */
-export function countOpenReaderOverlays(): number {
-  return openOverlays.size;
 }
 
 /**

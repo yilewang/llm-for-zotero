@@ -9,8 +9,6 @@ import { isReusableConversationDraft } from "./standaloneConversationResolution"
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import { getConversationKeyLedgerEntry } from "../../shared/conversationKeyLedger";
 
-declare const ztoolkit: any;
-
 export type FreshConversationDraftResult = {
   conversationKey: number;
   sessionVersion?: number;

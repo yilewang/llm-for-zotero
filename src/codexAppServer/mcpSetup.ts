@@ -644,12 +644,6 @@ export async function installOrUpdateCodexZoteroMcpConfig(
   return { ...status, connected: true };
 }
 
-export async function ensureCodexZoteroMcpConfig(
-  params: SetupParams = {},
-): Promise<void> {
-  await installOrUpdateCodexZoteroMcpConfig(params);
-}
-
 /**
  * The user-level Zotero MCP entry, turned off for one plugin thread.
  *

@@ -342,8 +342,3 @@ export async function runDeferredLegacyMigrations(): Promise<void> {
   // Run manifest build in background — non-blocking
   migrateMineruManifestBuild().catch(() => {});
 }
-
-export async function runLegacyMigrations(): Promise<void> {
-  runStartupPreferenceMigrations();
-  await runDeferredLegacyMigrations();
-}

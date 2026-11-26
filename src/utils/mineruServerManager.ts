@@ -214,17 +214,6 @@ let idleTimer: any = null;
 let inFlightStartPromise: Promise<boolean> | null = null;
 const statusListeners = new Set<StatusListener>();
 
-// Test overrides
-let subprocessLoaderOverride: (() => GeckoSubprocess) | null = null;
-let probeHealthyOverride:
-  | ((baseUrl: string, timeoutMs?: number) => Promise<boolean>)
-  | null = null;
-
-function getSubprocess(): GeckoSubprocess {
-  if (subprocessLoaderOverride) return subprocessLoaderOverride();
-  return loadGeckoSubprocess();
-}
-
 function notifyStatusChange(): void {
   for (const listener of statusListeners) {
     try {
@@ -247,9 +236,6 @@ export async function probeMineruServerHealthy(
   baseUrl = getMineruLocalApiBase(),
   timeoutMs = 2000,
 ): Promise<boolean> {
-  if (probeHealthyOverride) {
-    return probeHealthyOverride(baseUrl, timeoutMs);
-  }
   try {
     const fetchFn =
       (globalThis as any).fetch ??
@@ -307,10 +293,6 @@ export async function syncMineruServerStatus(
 
 export function getMineruServerStatus(): MineruServerState {
   return currentStatus;
-}
-
-export function isMineruServerProcessManaged(): boolean {
-  return managedProcess !== null;
 }
 
 export function onMineruServerStatusChange(
@@ -403,7 +385,7 @@ async function executeServerStartup(baseUrl: string): Promise<boolean> {
   // 2. Launch process through system shell
   setServerStatus("starting");
   broadcastReport(t("Starting local MinerU server…"));
-  const Subprocess = getSubprocess();
+  const Subprocess = loadGeckoSubprocess();
   const platform = getRuntimePlatformInfo();
   const command = getMineruLocalServerCommand();
   const workdir = resolveMineruServerWorkdir();
@@ -618,7 +600,7 @@ export async function stopMineruServer(reason = "manual"): Promise<void> {
   let ownedListenerPids: number[] = [];
   if (rootPid !== null && port !== null) {
     try {
-      const Subprocess = getSubprocess();
+      const Subprocess = loadGeckoSubprocess();
       const listenerPids = await listListenerPidsOnPort(port, Subprocess);
       if (listenerPids.length > 0) {
         const parentMap = await getProcessParentMap(Subprocess);
@@ -650,7 +632,7 @@ export async function stopMineruServer(reason = "manual"): Promise<void> {
   // Kill only descendant processes that were spawned by our managed process.
   if (ownedListenerPids.length > 0) {
     try {
-      const Subprocess = getSubprocess();
+      const Subprocess = loadGeckoSubprocess();
       await killPids(ownedListenerPids, Subprocess);
     } catch (err) {
       appLogger.debug(
@@ -669,41 +651,3 @@ registerAppQuitBlocker("mineru-local-server", async () => {
     await stopMineruServer("app_quit");
   }
 });
-
-/** Test helpers */
-export function resetMineruServerManagerForTests(): void {
-  if (idleTimer) {
-    clearTimeout(idleTimer);
-    idleTimer = null;
-  }
-  managedProcess = null;
-  managedPid = null;
-  managedListenerPort = null;
-  currentStatus = "stopped";
-  activeJobCount = 0;
-  inFlightStartPromise = null;
-  activeStartRequests.clear();
-  statusListeners.clear();
-  subprocessLoaderOverride = null;
-  probeHealthyOverride = null;
-}
-
-export function setSubprocessLoaderForTests(
-  loader: (() => GeckoSubprocess) | null,
-): void {
-  subprocessLoaderOverride = loader;
-}
-
-export function setProbeHealthyForTests(
-  fn: ((baseUrl: string, timeoutMs?: number) => Promise<boolean>) | null,
-): void {
-  probeHealthyOverride = fn;
-}
-
-export function getActiveJobCountForTests(): number {
-  return activeJobCount;
-}
-
-export function hasIdleTimerForTests(): boolean {
-  return idleTimer !== null;
-}

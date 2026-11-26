@@ -134,17 +134,8 @@ type MineruCloudPollDecisionInput = {
 
 type LocalFileParseGateRelease = () => void;
 
-type MineruCloudTimingForTests = {
-  now: () => number;
-  pollSleepMs: (ms: number) => number;
-  zipRetryDelaysMs: readonly number[];
-};
-
 let localFileParseGateHeld = false;
 let localFileParseGateQueue: Array<() => void> = [];
-let localBusyRetryDelaysOverrideForTests: readonly number[] | null = null;
-let cloudTimingOverrideForTests: Partial<MineruCloudTimingForTests> | null =
-  null;
 
 export class MineruRateLimitError extends Error {
   constructor(message: string) {
@@ -299,10 +290,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-function getLocalBusyRetryDelaysMs(): readonly number[] {
-  return localBusyRetryDelaysOverrideForTests ?? LOCAL_BUSY_RETRY_DELAYS_MS;
-}
-
 function createLocalFileParseGateRelease(): LocalFileParseGateRelease {
   let released = false;
   return () => {
@@ -349,42 +336,6 @@ function acquireLocalFileParseGate(
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted) onAbort();
   });
-}
-
-export function setMineruLocalBusyRetryDelaysForTests(
-  delays: readonly number[] | null,
-): void {
-  localBusyRetryDelaysOverrideForTests = delays;
-}
-
-export function setMineruCloudTimingForTests(
-  overrides: Partial<MineruCloudTimingForTests> | null,
-): void {
-  cloudTimingOverrideForTests = overrides;
-}
-
-export function describeMineruCurlExitForTests(exitCode: number): string {
-  return describeCurlExit(exitCode);
-}
-
-function cloudNow(): number {
-  return cloudTimingOverrideForTests?.now?.() ?? Date.now();
-}
-
-function cloudPollSleepMs(ms: number): number {
-  return cloudTimingOverrideForTests?.pollSleepMs?.(ms) ?? ms;
-}
-
-function getCloudZipRetryDelaysMs(): readonly number[] {
-  return (
-    cloudTimingOverrideForTests?.zipRetryDelaysMs ?? CLOUD_ZIP_RETRY_DELAYS_MS
-  );
-}
-
-export function resetMineruLocalFileParseGateForTests(): void {
-  localFileParseGateHeld = false;
-  localFileParseGateQueue = [];
-  localBusyRetryDelaysOverrideForTests = null;
 }
 
 // ── HTTP helpers using Zotero.HTTP (bypasses CORS) ────────────────────────────
@@ -884,7 +835,7 @@ async function downloadAndExtractZip(
   report(t("Downloading results…"));
   const fallbackUrl = getMineruZipFallbackUrl(zipUrl);
   const urls = fallbackUrl ? [zipUrl, fallbackUrl] : [zipUrl];
-  const retryDelaysMs = getCloudZipRetryDelaysMs();
+  const retryDelaysMs = CLOUD_ZIP_RETRY_DELAYS_MS;
   let lastRound: BinaryDownloadResult = { bytes: null, attempts: [] };
   for (let round = 0; round <= retryDelaysMs.length; round++) {
     if (round > 0) {
@@ -1073,20 +1024,6 @@ function buildMineruCloudProgressMessage(
     return t("Waiting for MinerU to start… (%ss)").replace("%s", elapsed);
   }
   return t("Waiting for MinerU status… (%ss)").replace("%s", elapsed);
-}
-
-export function getMineruCloudPollDecisionForTests(
-  params: MineruCloudPollDecisionInput,
-): MineruCloudPollDecision {
-  return getMineruCloudPollDecision(params);
-}
-
-export function buildMineruCloudProgressMessageForTests(
-  state: string,
-  elapsedSeconds: number,
-  progress?: { extracted_pages?: unknown; total_pages?: unknown },
-): string {
-  return buildMineruCloudProgressMessage(state, elapsedSeconds, progress);
 }
 
 async function fetchWithTimeout(
@@ -1345,7 +1282,7 @@ async function parsePdfViaLocalService(
   const releaseGate = await acquireLocalFileParseGate(signal, () => {
     report(t("Waiting for another local MinerU parse to finish…"));
   });
-  const retryDelays = getLocalBusyRetryDelaysMs();
+  const retryDelays = LOCAL_BUSY_RETRY_DELAYS_MS;
   throwIfAborted(signal);
 
   try {
@@ -1918,7 +1855,7 @@ async function parsePdfViaUpload(
   }
 
   report(t("Waiting for MinerU to start…"));
-  const pollStartMs = cloudNow();
+  const pollStartMs = Date.now();
   let lastStatusAtMs: number | null = null;
   let activeStartedAtMs: number | null = null;
   let rateLimitDelayMs = 0;
@@ -1927,7 +1864,7 @@ async function parsePdfViaUpload(
   while (true) {
     const waitDecision = getMineruCloudPollDecision({
       state: null,
-      nowMs: cloudNow(),
+      nowMs: Date.now(),
       pollStartMs,
       lastStatusAtMs,
       activeStartedAtMs,
@@ -1942,10 +1879,10 @@ async function parsePdfViaUpload(
     }
 
     await sleep(
-      cloudPollSleepMs(Math.max(waitDecision.pollIntervalMs, rateLimitDelayMs)),
+      Math.max(waitDecision.pollIntervalMs, rateLimitDelayMs),
       signal,
     );
-    const pollTimeMs = cloudNow();
+    const pollTimeMs = Date.now();
     const elapsed = Math.round((pollTimeMs - pollStartMs) / 1000);
 
     let pollResult: { status: number; data: unknown };

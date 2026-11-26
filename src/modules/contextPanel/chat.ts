@@ -3,7 +3,6 @@ import { noteHtmlToModelText } from "../../services/notes/noteRendering";
 import { runCodexNativePanelTurn } from "./codexNative/turnCallbacks";
 import { getPanelRequestUI, type PanelRequestUI } from "./panelRequestUI";
 import { isLiveDocument, isLivePanelBody } from "./panelLiveness";
-export type { PanelRequestUI } from "./panelRequestUI";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 import { syncTaskProgressPanel } from "./taskProgress/panel";
 import {
@@ -17,7 +16,6 @@ import { wireStartPageTipActions } from "./startPageTipActions";
 import { appendSelectedTextSections } from "./selectedTextPreviewSections";
 import {
   t,
-  getWelcomeHtml,
   getWebChatWelcomeHtml,
   getStandaloneLibraryChatStartPageHtml,
   getPaperChatStartPageHtml,
@@ -25,7 +23,6 @@ import {
 } from "../../utils/i18n";
 import {
   appendMessage as appendStoredMessage,
-  clearConversation as clearStoredConversation,
   pruneConversation,
   updateLatestUserMessage as updateStoredLatestUserMessage,
   updateLatestAssistantMessage as updateStoredLatestAssistantMessage,
@@ -69,7 +66,6 @@ import {
   captureClaudeSessionInfo,
   getClaudeBridgeRuntime,
   invalidateClaudeConversationSessionWithinWriteLock,
-  isClaudeConversationSystemActive,
   updateLatestClaudeConversationAssistantMessageWithinWriteLock,
   updateLatestClaudeConversationUserMessageWithinWriteLock,
 } from "../../claudeCode/runtime";
@@ -100,10 +96,6 @@ import {
   type BuildAgentRuntimeRequestParams,
   type EffectiveRequestConfig,
   type TurnRequestContext,
-} from "./requestContext";
-export type {
-  BuildAgentRuntimeRequestParams,
-  EffectiveRequestConfig,
 } from "./requestContext";
 import {
   bindClaudeBridgeConversationSystem,
@@ -219,10 +211,7 @@ import {
   getConversationForkLink,
   type ConversationForkLink,
 } from "../../shared/conversationForkLinks";
-import {
-  isRenderableGeneratedImageSrc,
-  normalizeGeneratedChatImages,
-} from "../../shared/generatedImages";
+import { normalizeGeneratedChatImages } from "../../shared/generatedImages";
 import { isEmbeddableGeneratedImage } from "../../services/images/generatedImageAssets";
 import { copyTextToClipboard } from "./clipboard";
 import {
@@ -247,17 +236,13 @@ import {
 import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
 import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
-export {
-  copyGeneratedImageToClipboard,
-  renderAssistantGeneratedImagesInto,
-} from "./generatedImageRender";
+export { copyGeneratedImageToClipboard } from "./generatedImageRender";
 import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
 import type {
   Message,
   ChatRuntimeMode,
   ReasoningProviderKind,
   ReasoningOption,
-  ReasoningLevelSelection,
   AdvancedModelParams,
   ChatAttachment,
   CollectionContextRef,
@@ -268,7 +253,6 @@ import type {
   ResolvedSelectedTextAnchor,
   SelectedTextSource,
   PaperContextRef,
-  PaperContextSendMode,
   ContextAssemblyStrategy,
   ResolvedContextSource,
 } from "./types";
@@ -310,7 +294,6 @@ import {
   isRequestActive,
   isRequestOwner,
   nextRequestId,
-  isRequestPending,
   setPendingRequestId,
   transferRequest,
   tryBeginRequest,
@@ -318,7 +301,6 @@ import {
   getResponseActionRunner,
   getForkSourceNavigationRunner,
   setPromptMenuTarget,
-  selectedRuntimeModeCache,
   type ResponseActionKind,
   type ResponseActionTarget,
 } from "./state";
@@ -392,7 +374,6 @@ import {
   getLastReasoningExpanded,
   getStringPref,
   setLastReasoningExpanded,
-  setLastUsedReasoningLevelForProvider,
 } from "./prefHelpers";
 import { resolveMultiContextPlan } from "./multiContextPlanner";
 import {
@@ -418,7 +399,6 @@ import {
 } from "./portalScope";
 import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { shouldShowForkActionForAssistantTurn } from "./forkActionVisibility";
-import { buildChatHistoryNotePayload } from "./notes";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import { extractManagedBlobHash } from "../../services/attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
@@ -427,7 +407,6 @@ import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, disposeAgentTrace } from "./agentTrace/render";
 import {
-  conversationHasStreamingMessage,
   finalizeAssistantMessageQuoteCitations,
   prewarmQuoteSourcePageText,
   resetAssistantQuoteDisplay,
@@ -473,14 +452,11 @@ import {
 } from "./citationContexts";
 import {
   buildSelectedTextQuoteCitations,
-  extractQuoteCitationsFromToolContent,
-  finalizeAssistantQuoteCitations,
   mergeQuoteCitations,
 } from "../../services/quotes/quoteCitations";
 import {
   buildQuoteExpandedMarkdown,
   getMessageQuoteDisplay,
-  QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
 import { getCoreAgentRuntime, initAgentSubsystem } from "../../agent/index";
 import {
@@ -505,7 +481,6 @@ import type {
   AgentRunEventRecord,
   AgentRuntimeRequestInput as AgentRuntimeRequest,
 } from "../../agent/types";
-import { getCodexNativeRawString } from "../../codexAppServer/nativeActivityStages";
 import { buildAgentStageEvent } from "../../agent/stageEvents";
 import {
   sendAgentTurn,
@@ -544,7 +519,6 @@ import {
   isEphemeralConversationKey,
 } from "../../shared/conversationKeySpace";
 import { buildEphemeralBackgroundContextBlock } from "../../shared/ephemeralBackgroundContext";
-export { renderAssistantMarkdownHtmlForChat } from "./renderedMarkdown";
 
 /** Get AbortController constructor from global scope */
 function getAbortControllerCtor(): (new () => AbortController) | undefined {
@@ -886,43 +860,6 @@ function appendReasoningPart(base: string | undefined, next?: string): string {
 
 function isReasoningExpandedByDefault(): boolean {
   return getLastReasoningExpanded();
-}
-
-function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
-  const historyNewBtn = body.querySelector(
-    "#llm-history-new",
-  ) as HTMLButtonElement | null;
-  if (historyNewBtn) {
-    historyNewBtn.disabled = disabled;
-    historyNewBtn.setAttribute("aria-disabled", disabled ? "true" : "false");
-    if (disabled) {
-      historyNewBtn.setAttribute("aria-expanded", "false");
-    }
-  }
-  const historyToggleBtn = body.querySelector(
-    "#llm-history-toggle",
-  ) as HTMLButtonElement | null;
-  if (historyToggleBtn) {
-    historyToggleBtn.disabled = disabled;
-    historyToggleBtn.setAttribute("aria-disabled", disabled ? "true" : "false");
-    if (disabled) {
-      historyToggleBtn.setAttribute("aria-expanded", "false");
-    }
-  }
-  if (disabled) {
-    const historyNewMenu = body.querySelector(
-      "#llm-history-new-menu",
-    ) as HTMLDivElement | null;
-    if (historyNewMenu) {
-      historyNewMenu.style.display = "none";
-    }
-    const historyMenu = body.querySelector(
-      "#llm-history-menu",
-    ) as HTMLDivElement | null;
-    if (historyMenu) {
-      historyMenu.style.display = "none";
-    }
-  }
 }
 
 function resolveMultimodalRetryHint(
@@ -1564,16 +1501,6 @@ export function invokeResponseMenuActionButton(params: {
   return true;
 }
 
-export function shouldDecorateInterleavedAgentTraceCitations(params: {
-  agentTraceEl: Element | null;
-  agentUsesInterleavedText: boolean;
-  streaming?: boolean;
-}): boolean {
-  return Boolean(
-    params.agentTraceEl && params.agentUsesInterleavedText && !params.streaming,
-  );
-}
-
 function attachAssistantResponseContextMenu(params: {
   body: Element;
   doc: Document;
@@ -2188,15 +2115,6 @@ function accumulateSessionTokens(
   return next;
 }
 
-export function getSessionTokenTotal(conversationKey: number): number {
-  return sessionTokenTotals.get(conversationKey) ?? 0;
-}
-
-export function resetSessionTokens(conversationKey: number): void {
-  sessionTokenTotals.delete(conversationKey);
-  contextUsageSnapshots.delete(conversationKey);
-}
-
 export function persistChatScrollSnapshot(
   item: Zotero.Item,
   chatBox: HTMLDivElement,
@@ -2416,9 +2334,6 @@ async function announceFinalizedMaterialForRun(
   );
   if (added.length) agentRunTraceCache.set(runId, [...cached, ...added]);
 }
-
-export const announceFinalizedMaterialForRunForTests =
-  announceFinalizedMaterialForRun;
 
 /**
  * Writes an assistant row through its system's store. Without `options` the
@@ -2802,9 +2717,6 @@ function normalizeStoredPaperContextRoutes(params: {
   };
 }
 
-export const normalizeStoredPaperContextRoutesForTests =
-  normalizeStoredPaperContextRoutes;
-
 function getMessageDisplayPaperContexts(
   message: Pick<
     Message,
@@ -2817,9 +2729,6 @@ function getMessageDisplayPaperContexts(
     ...(message.pdfPaperContexts || []),
   ]);
 }
-
-export const getMessageDisplayPaperContextsForTests =
-  getMessageDisplayPaperContexts;
 
 type ConversationComposeContextSnapshot = {
   paperContexts: PaperContextRef[];
@@ -2863,9 +2772,6 @@ function deriveConversationComposeContextSnapshot(
     tagContexts: normalizeTagContexts(latestUserMessage.selectedTagContexts),
   };
 }
-
-export const deriveConversationComposeContextSnapshotForTests =
-  deriveConversationComposeContextSnapshot;
 
 function clearPaperContinuationOverrides(itemId: number): void {
   composeContextStore.paperSendModes.clearOwner(itemId);
@@ -3441,14 +3347,6 @@ async function ensureAgentRunTraceLoaded(
   await task;
 }
 
-export function ensureAgentRunTraceLoadedForTests(
-  runId: string,
-  body: Element,
-  item: Zotero.Item,
-): Promise<void> {
-  return ensureAgentRunTraceLoaded(runId, body, item);
-}
-
 /**
  * Each run's web markers, read ahead of its full trace: an old chat's answers
  * show their markers after one small read of the runs' final events, not
@@ -3601,8 +3499,6 @@ export function getReasoningOptions(
     label: option.label,
   }));
 }
-
-export { QUOTE_RENDER_OCCURRENCE_PATTERN };
 
 /**
  * The copied form of a response, which is what the reader saw and no more.
@@ -4835,11 +4731,6 @@ function codexRetrySkillContext(
   return toCodexNativeSkillContext(codexRetryRequestContext(site));
 }
 
-export const codexSendRequestParamsForTests = codexSendRequestParams;
-export const codexSendSkillContextForTests = codexSendSkillContext;
-export const codexRetryRequestParamsForTests = codexRetryRequestParams;
-export const codexRetrySkillContextForTests = codexRetrySkillContext;
-
 type ContextPlanForRequest = {
   combinedContext: string;
   contextPlacement: DocumentContextPlacement;
@@ -5660,13 +5551,6 @@ function buildLLMHistoryMessages(history: Message[]): ChatMessage[] {
   return history.map((message) => buildHistoryMessageForLLM(message));
 }
 
-/** Stored messages as a loaded chat sends them to the model as history. */
-export function buildLLMHistoryFromStoredMessagesForTests(
-  messages: readonly StoredChatMessage[],
-): ChatMessage[] {
-  return buildLLMHistoryMessages(messages.map(toPanelMessage));
-}
-
 function normalizeModelFileAttachments(
   attachments?: ChatAttachment[],
   options?: {
@@ -6022,8 +5906,6 @@ async function resolveRetryModelInputs(params: {
   };
 }
 
-export const resolveRetryModelInputsForTests = resolveRetryModelInputs;
-
 function normalizeEditablePaperContexts(
   paperContexts?: PaperContextRef[],
 ): PaperContextRef[] {
@@ -6117,9 +5999,6 @@ function includeAutoLoadedPaperContext(
   };
 }
 
-export const includeAutoLoadedPaperContextForTests =
-  includeAutoLoadedPaperContext;
-
 function syncComposeContextForInlineEdit(
   body: Element,
   item: Zotero.Item,
@@ -6205,9 +6084,6 @@ function syncComposeContextForInlineEdit(
   composeContextStore.initializedConversations.mark(conversationKey);
   activeContextPanelStateSync.get(body)?.();
 }
-
-export const syncComposeContextForInlineEditForTests =
-  syncComposeContextForInlineEdit;
 
 export async function editLatestUserMessageAndRetry(
   opts: import("./types").EditRetryOptions,
@@ -8672,8 +8548,6 @@ async function buildAgentRuntimeRequest(
   };
 }
 
-export const buildAgentRuntimeRequestForTests = buildAgentRuntimeRequest;
-
 function buildAgentEngineDeps(
   currentItem?: Zotero.Item,
   conversationSystem?: ConversationSystem,
@@ -10917,10 +10791,6 @@ function updateMountedReasoningPanel(
   view.reasoningSummary = message.reasoningSummary;
   view.reasoningDetails = message.reasoningDetails;
 }
-
-export const createReasoningPanelForTests = createReasoningPanel;
-export const renderReasoningPartForTests = renderReasoningPart;
-export const disposeMountedAssistantViewForTests = disposeMountedAssistantView;
 
 /**
  * What the answer's web markers depend on. An old chat's answers are drawn

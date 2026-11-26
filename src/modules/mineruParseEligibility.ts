@@ -167,7 +167,3 @@ export async function getMineruParseEligibility(
     overrideAllowed: true,
   };
 }
-
-export function clearMineruEligibilityCacheForTests(): void {
-  pageCountCache.clear();
-}

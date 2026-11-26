@@ -117,12 +117,6 @@ export function isClaudePaperPortalItem(
   );
 }
 
-export function isClaudePortalItem(
-  item: unknown,
-): item is ClaudeGlobalPortalItem | ClaudePaperPortalItem {
-  return isClaudeGlobalPortalItem(item) || isClaudePaperPortalItem(item);
-}
-
 export function getClaudePaperPortalBaseItemID(item: unknown): number | null {
   if (!isClaudePaperPortalItem(item)) return null;
   const value = Number(item.__llmClaudePaperPortalBaseItemID);

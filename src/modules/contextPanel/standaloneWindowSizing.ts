@@ -142,33 +142,6 @@ export function computeStandaloneSidebarWidthLayout(
   };
 }
 
-export function computeStandaloneSidebarPanelWidth(
-  params: StandaloneSidebarWidthParams,
-): number {
-  return computeStandaloneSidebarWidthLayout(params).renderedWidth;
-}
-
-/**
- * Install the standalone History-pane divider. The preferred width is kept
- * separately from its responsive rendered width, so temporarily narrowing the
- * window does not overwrite the user's saved choice.
- */
-export function installStandaloneSidebarResizeBehavior(
-  win: Window,
-  container: HTMLElement,
-  sidebarPanel: HTMLElement,
-  separator: HTMLElement,
-  options: StandaloneSidebarResizeOptions = {},
-): () => void {
-  return installStandaloneColumnResizeBehavior(
-    win,
-    container,
-    sidebarPanel,
-    separator,
-    options,
-  ).dispose;
-}
-
 export type StandaloneColumnResizeBehavior = {
   dispose: () => void;
   /** Re-apply the preferred width (another column opened, closed or moved). */

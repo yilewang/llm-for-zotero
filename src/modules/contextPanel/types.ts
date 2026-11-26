@@ -10,7 +10,6 @@ import type {
   ActiveNoteSession,
   ActiveNoteContext,
   SelectedTextContext,
-  SelectedTextAnchorResolution,
   ResolvedSelectedTextAnchor,
   PaperContextRef,
   LocalDocumentResource,
@@ -20,8 +19,6 @@ import type {
   CollectionContextRef,
   TagContextRef,
   AttachedConversationRef,
-  GlobalConversationSummary,
-  PaperConversationSummary,
 } from "../../shared/types";
 import type {
   LibraryChatCoverageReceipt,
@@ -35,20 +32,15 @@ export type {
   PaperContentSourceMode,
   AdvancedModelParams,
   ActiveNoteSession,
-  ActiveNoteContext,
   SelectedTextContext,
-  SelectedTextAnchorResolution,
   ResolvedSelectedTextAnchor,
   PaperContextRef,
-  LocalDocumentResource,
   QuoteCitation,
   NoteContextRef,
   OtherContextRef,
   CollectionContextRef,
   TagContextRef,
   AttachedConversationRef,
-  GlobalConversationSummary,
-  PaperConversationSummary,
 } from "../../shared/types";
 
 export type QuoteDisplayOverride = {

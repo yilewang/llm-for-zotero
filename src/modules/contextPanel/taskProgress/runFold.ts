@@ -61,14 +61,6 @@ export const TASK_PROGRESS_REPLAY_EVENT_TYPES = [
   "execution_checkpoint_delta",
 ] as const;
 
-/** Event kinds that move Task progress only while the run is live. */
-export const TASK_PROGRESS_LIVE_EVENT_TYPES = [
-  "message_delta",
-  "confirmation_required",
-  "confirmation_resolved",
-  "final",
-] as const;
-
 const PLAN_EVENT_TYPES = new Set<string>([
   "plan_updated",
   "plan_ready",

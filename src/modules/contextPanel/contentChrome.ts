@@ -29,9 +29,6 @@ export function isInTabZoomScope(element: Element): boolean {
   return Boolean(element.closest?.(`[${CONTENT_TAB_ZOOM_ATTRIBUTE}="true"]`));
 }
 
-/** Both scope classes, as one class list for a standalone reading surface. */
-export const STANDALONE_FLAT_SCOPE_CLASSES = `${CONTENT_FLAT_SCOPE_CLASS} ${CONTENT_STANDALONE_SCOPE_CLASS}`;
-
 /** Gives a standalone reading surface the flat style. */
 export function markStandaloneFlatScope(element: Element): void {
   element.classList.add(

@@ -2,7 +2,6 @@ import {
   zoteroChangeDispatcher,
   type ZoteroChangeEvent,
 } from "./zoteroChangeDispatcher";
-import { patchMap, patchSet } from "./libraryIndex/readonlyCollections";
 import { SnapshotDraft } from "./libraryIndex/snapshotDraft";
 import { reconcileItems } from "./libraryIndex/itemReconciler";
 import { reconcileCollections } from "./libraryIndex/collectionReconciler";
@@ -10,30 +9,22 @@ import { libraryIndexTagItemIds } from "./libraryIndex/paperScope";
 import type {
   LibraryIndexAttachment,
   LibraryIndexChildNote,
-  LibraryIndexCollection,
   LibraryIndexItem,
   LibraryIndexMetrics,
   LibraryIndexSearchableFields,
   LibraryIndexSnapshot,
-  LibraryIndexTag,
 } from "./libraryIndex/contracts";
 import {
   normalizeLibraryIndexTagIdentity,
-  positiveIds,
   projectItem,
   rebuildDerived,
   resolveLibraryName,
-  sameNumberMembers,
-  sameStringMembers,
   searchable,
   text,
 } from "./libraryIndex/projection";
 
 export * from "./libraryIndex/contracts";
-export {
-  normalizeLibraryIndexTagIdentity,
-  normalizeLibraryIndexText,
-} from "./libraryIndex/projection";
+export { normalizeLibraryIndexText } from "./libraryIndex/projection";
 
 type MutableMetrics = {
   -readonly [K in keyof LibraryIndexMetrics]: number;

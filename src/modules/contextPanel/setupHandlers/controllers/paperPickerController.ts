@@ -37,7 +37,6 @@ import {
 } from "../../../mineruTagIndex";
 import type { PaperContextRef, TagContextRef } from "../../types";
 import {
-  buildReferenceSelectorTagIndexItems,
   buildReferenceSelectorTagViewModel,
   buildReferenceSelectorViewModel,
   collectReferenceSelectorCollectionGroups,
@@ -52,7 +51,6 @@ import {
   isReferenceSelectorDirectSelection,
   isReferenceSelectorGroupExpanded,
   isReferenceSelectorSelected,
-  referenceSelectorCollectionMatchesFilter,
   resetReferenceSelectorReferenceFilters,
   resolveReferenceSelectorAttachmentSelectionState,
   setReferenceSelectorCollections,
@@ -63,7 +61,6 @@ import {
   type ReferenceSelectionState,
   type ReferenceSelectorFolderScope,
   type ReferenceSelectorRow,
-  type ReferenceSelectorTagIndexItem,
   type ReferenceSelectorViewModel,
 } from "../../referenceSelector/model";
 import {
@@ -98,14 +95,7 @@ type PickerIconName =
   | "tag";
 type PaperPickerFolderScope = ReferenceSelectorFolderScope;
 type PaperPickerPanelKey = ReferenceSelectorPanelKey;
-export type PaperPickerTagIndexItem = ReferenceSelectorTagIndexItem;
 type PaperPickerRow = ReferenceSelectorRow;
-
-export function buildPaperPickerTagIndexItems(
-  groups: readonly PaperSearchGroupCandidate[],
-): PaperPickerTagIndexItem[] {
-  return buildReferenceSelectorTagIndexItems(groups);
-}
 
 export function filterPaperPickerGroupsForTagView(
   groups: readonly PaperSearchGroupCandidate[],

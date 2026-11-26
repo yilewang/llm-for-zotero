@@ -1292,19 +1292,6 @@ function formatCoverageEntry(entry: AgentCoverageEntry): string {
   return `- ${pieces.join("; ")}`;
 }
 
-/** Coverage entries visible to this request, newest first, deduplicated. */
-export function listVisibleAgentCoverageEntries(params: {
-  conversationKey: number;
-  request?: AgentRuntimeRequest;
-}): AgentCoverageEntry[] {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
-  if (!conversationKey) return [];
-  return getVisibleCoverageEntries({
-    conversationKey,
-    request: params.request,
-  });
-}
-
 export function buildAgentCoverageContextBlock(params: {
   conversationKey: number;
   request?: AgentRuntimeRequest;

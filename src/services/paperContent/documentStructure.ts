@@ -17,7 +17,7 @@ import type { PdfOutlineEntry } from "../../utils/pdfOutline";
 import type { DocumentStructureSection } from "./types";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 
-export type { DocumentStructureSection, PdfOutlineEntry };
+export type { PdfOutlineEntry };
 
 /** How the extracted text splits into the PDF's pages. */
 export type PdfPageLayout = {

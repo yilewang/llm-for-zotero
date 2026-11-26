@@ -699,12 +699,6 @@ export function syncTaskProgressPanelsForConversation(
   }
 }
 
-export function getTaskProgressPanelView(
-  body: Element,
-): TaskProgressView | null {
-  return panels.get(body)?.view || null;
-}
-
 /**
  * Re-sync every mounted panel and repaint it now (workflow harness): the
  * scope listing is re-resolved if the library index moved on.

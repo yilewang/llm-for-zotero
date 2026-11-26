@@ -1,11 +1,5 @@
 import { resolveTextAttachmentSourceModeFromMetadata } from "./textAttachmentExtraction";
 import type { ContextAttachmentSupport } from "./contextAttachmentTypes";
-export type {
-  ContextAttachmentReadableVia,
-  ContextAttachmentSupport,
-  SupportedContextAttachmentType,
-  TextAttachmentSourceMode,
-} from "./contextAttachmentTypes";
 
 function normalizeMetadataText(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";

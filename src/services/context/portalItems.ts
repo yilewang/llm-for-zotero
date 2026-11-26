@@ -52,12 +52,6 @@ export function getPaperPortalBaseItemID(item: unknown): number | null {
     : null;
 }
 
-export function getPaperPortalSessionVersion(item: unknown): number | null {
-  return isPaperPortalItem(item)
-    ? normalizePositiveInt(item.__llmPaperPortalSessionVersion)
-    : null;
-}
-
 export function isPaperChatBaseItem(
   item: Zotero.Item | null | undefined,
 ): item is Zotero.Item {

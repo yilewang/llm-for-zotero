@@ -31,26 +31,18 @@ import { getSidebarLayout } from "./sidebarLayout";
 
 import { getLocaleID } from "../../utils/locale";
 import { config, PANE_ID } from "./constants";
-import type { Message, PaperContextRef } from "./types";
-import type { ConversationSystem } from "../../shared/types";
+import type { PaperContextRef } from "./types";
 import { isRuntimeConversationSystem } from "../../core/conversations/conversationSystems";
 import {
   activeContextPanels,
   unregisterContextPanel,
   activeContextPanelRawItems,
   activeContextPanelStateSync,
-  chatHistory,
   loadedConversationKeys,
   readerContextPanelRegistered,
   setReaderContextPanelRegistered,
   recentReaderSelectionCache,
 } from "./state";
-import { clearConversation as clearStoredConversation } from "../../utils/chatStore";
-import {
-  ATTACHMENT_GC_MIN_AGE_MS,
-  clearOwnerAttachmentRefs,
-  collectAndDeleteUnreferencedBlobs,
-} from "../../utils/attachmentRefStore";
 import { normalizeSelectedText, setStatus } from "./textUtils";
 import { buildUI } from "./buildUI";
 import { setupHandlers } from "./setupHandlers";
@@ -76,16 +68,11 @@ import {
   getActiveContextAttachmentFromTabs,
   getItemSelectionCacheKeys,
   resolvePanelContextLifecycleState,
-  applySelectedTextPreview,
-  getSelectedTextContextEntries,
   getSelectedTextContextQueryForItem,
   updateSelectedTextContextQueryForItem,
   type SelectedTextPageLocation,
 } from "./contextResolution";
-import {
-  getActiveReaderForSelectedTab,
-  refreshLastKnownSelectedTabId,
-} from "../../services/pdf/zoteroReaderTabs";
+import { refreshLastKnownSelectedTabId } from "../../services/pdf/zoteroReaderTabs";
 import {
   clearNoteEditingSelectedText,
   getNoteFocusConversationKey,
@@ -1761,36 +1748,6 @@ function refreshPanelsForConversationKey(conversationKey: number): void {
   }
 }
 
-export function refreshNoteEditingPanelsForNote(noteId: number): number {
-  const normalizedNoteId = Math.floor(Number(noteId || 0));
-  if (!Number.isFinite(normalizedNoteId) || normalizedNoteId <= 0) return 0;
-  let refreshedPanels = 0;
-  for (const [activeBody, syncPanelState] of activeContextPanelStateSync) {
-    if (!(activeBody as Element).isConnected) {
-      unregisterContextPanel(activeBody);
-      continue;
-    }
-    const activeRoot = activeBody.querySelector(
-      "#llm-main",
-    ) as HTMLDivElement | null;
-    const panelNoteId = Number(activeRoot?.dataset.noteId || 0);
-    if (
-      !Number.isFinite(panelNoteId) ||
-      Math.floor(panelNoteId) !== normalizedNoteId
-    ) {
-      continue;
-    }
-    const activeConversationKey = Number(activeRoot?.dataset.itemId || 0);
-    if (Number.isFinite(activeConversationKey) && activeConversationKey > 0) {
-      applySelectedTextPreview(activeBody, Math.floor(activeConversationKey));
-    } else {
-      syncPanelState();
-    }
-    refreshedPanels += 1;
-  }
-  return refreshedPanels;
-}
-
 function refreshTrackedNoteEditingSelection(
   win: MainWindowWithNoteEditingTracker,
 ): void {
@@ -1894,30 +1851,4 @@ export function unregisterAllNoteEditingSelectionTracking(): void {
   for (const win of [...noteEditingSelectionTrackingWindows]) {
     unregisterNoteEditingSelectionTracking(win);
   }
-}
-
-export function clearConversation(itemId: number) {
-  chatHistory.set(itemId, []);
-  loadedConversationKeys.add(itemId);
-  void clearStoredConversation(itemId).catch((err) => {
-    appLogger.warn("LLM: Failed to clear persisted chat history", err);
-  });
-  void clearOwnerAttachmentRefs("conversation", itemId).catch((err) => {
-    appLogger.warn(
-      "LLM: Failed to clear persisted conversation attachment refs",
-      err,
-    );
-  });
-  void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
-    (err) => {
-      appLogger.warn(
-        "LLM: Failed to collect unreferenced attachment blobs",
-        err,
-      );
-    },
-  );
-}
-
-export function getConversationHistory(itemId: number): Message[] {
-  return chatHistory.get(itemId) || [];
 }

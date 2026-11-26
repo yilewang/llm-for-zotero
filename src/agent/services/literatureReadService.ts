@@ -163,33 +163,17 @@ type LiteratureReadClock = {
   sleep: (ms: number) => Promise<void>;
 };
 
-const defaultClock: LiteratureReadClock = {
+const clock: LiteratureReadClock = {
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
-let clock = defaultClock;
 const nextRequestAt = new Map<string, number>();
 const cache = new Map<
   string,
   { expiresAt: number; record: LiteratureReadRecord }
 >();
 const inflight = new Map<string, Promise<LiteratureReadRecord>>();
-
-export const literatureReadTesting = {
-  reset(): void {
-    clock = defaultClock;
-    nextRequestAt.clear();
-    cache.clear();
-    inflight.clear();
-  },
-  setClock(next: Partial<LiteratureReadClock>): void {
-    clock = { ...defaultClock, ...next };
-  },
-  cacheSize: () => cache.size,
-  CACHE_TTL_MS,
-  CACHE_MAX_ENTRIES,
-};
 
 function hostGroup(url: string): string {
   const host = /^https?:\/\/([^/]+)/i.exec(url)?.[1]?.toLowerCase() || "";

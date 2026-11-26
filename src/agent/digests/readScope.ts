@@ -38,8 +38,6 @@ export type ReadScope = Readonly<{
   pages?: readonly ReadScopePageRange[];
 }>;
 
-export const FULL_READ_SCOPE: ReadScope = Object.freeze({ source: "full" });
-
 /**
  * A read scope as a tool's input schema names it, kept small: it is sent
  * with every turn. Every object names its properties, because Gemini's

@@ -723,17 +723,6 @@ export function persistPendingChatScrollRestoreForConversationKey(
   });
 }
 
-export function persistChatScrollSnapshotFromBody(body: Element): void {
-  const root = body.querySelector("#llm-main") as HTMLElement | null;
-  const conversationKey = normalizeConversationKey(
-    Number(root?.dataset?.itemId || 0),
-  );
-  if (!conversationKey) return;
-  const chatBox = body.querySelector("#llm-chat-box") as HTMLDivElement | null;
-  if (!chatBox || !chatBox.childElementCount) return;
-  persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
-}
-
 export function persistPendingChatScrollRestoreFromBody(body: Element): void {
   const root = body.querySelector("#llm-main") as HTMLElement | null;
   const conversationKey = normalizeConversationKey(
@@ -782,9 +771,6 @@ export function consumePendingChatScrollRestore(
   return pending.snapshot;
 }
 
-export const consumePendingChatScrollRestoreForTests =
-  consumePendingChatScrollRestore;
-
 /** The same precedence applies to full redraws and targeted renderer fallback. */
 export function captureChatScrollForRender(
   key: number,
@@ -823,17 +809,6 @@ export function applyChatScrollSnapshot(
   }
 }
 
-export function restoreChatScrollSnapshotForConversationKey(
-  conversationKey: number,
-  chatBox: HTMLDivElement,
-): boolean {
-  const snapshot = getChatScrollSnapshot(conversationKey, chatBox);
-  if (!snapshot) return false;
-  applyChatScrollSnapshot(chatBox, snapshot);
-  persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
-  return true;
-}
-
 export function withScrollGuard(
   chatBox: HTMLDivElement | null,
   conversationKey: number | null,
@@ -863,16 +838,6 @@ export function withScrollGuard(
     panelScrollSnapshots.set(chatBox, { key: conversationKey, snapshot });
     persistChatScrollSnapshotForConversationKey(conversationKey, chatBox);
   }
-}
-
-/** Forget the saved scroll position of one conversation. */
-export function clearChatScrollSnapshotForConversationKey(
-  conversationKey: number,
-): void {
-  const normalized = Math.floor(Number(conversationKey));
-  if (!Number.isFinite(normalized) || normalized <= 0) return;
-  chatScrollSnapshots.delete(normalized);
-  pendingChatScrollRestores.delete(normalized);
 }
 
 export type SavedChatScrollState = {

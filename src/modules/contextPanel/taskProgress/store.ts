@@ -1648,8 +1648,3 @@ export function clearAllTaskProgress(): void {
   liveOutsideEvents.clear();
   for (const key of keys) notify(key);
 }
-
-/** Conversation keys kept, least recently written first (tests, diagnostics). */
-export function listTaskProgressConversations(): number[] {
-  return Array.from(records.keys());
-}

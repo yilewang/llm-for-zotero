@@ -1,5 +1,3 @@
-import { parseDocumentReferences } from "../../shared/documentReferences";
-
 import type { MineruContentListEntry } from "../../utils/mineruZip";
 export type { MineruContentListEntry } from "../../utils/mineruZip";
 
@@ -22,11 +20,6 @@ export type MineruFigureBlock = {
   ambiguous: boolean;
 };
 
-export type MineruFigureBlockQueryResult = {
-  blocks: MineruFigureBlock[];
-  panelHint?: string;
-};
-
 type MarkdownImageRef = {
   alt: string;
   path: string;
@@ -41,11 +34,6 @@ type ImageMeta = {
   labelHints: string[];
   page?: number;
   sectionHeading: string | null;
-};
-
-type FigureQueryRef = {
-  baseLabel: string;
-  panelHint?: string;
 };
 
 const MD_IMAGE_PATTERN = /!\[([^\]]*)\]\(([^)\n]+)\)/g;
@@ -111,20 +99,6 @@ export function getManifestFigureBaseLabel(label: string): string {
   const kind = /^table$/i.test(match[2]) ? "Table" : "Figure";
   const number = match[3].toUpperCase();
   return `${prefix}${kind} ${number}`;
-}
-
-function parseBaseLabel(
-  value: string,
-): { kind: "Figure" | "Table"; number: string; supplementary: boolean } | null {
-  const match = value
-    .trim()
-    .match(/^(Supplementary\s+)?(Figure|Table)\s+([sS]?\d+)$/i);
-  if (!match) return null;
-  return {
-    kind: /^table$/i.test(match[2]) ? "Table" : "Figure",
-    number: match[3].toUpperCase(),
-    supplementary: Boolean(match[1]),
-  };
 }
 
 function isCaptionLikeText(text: string): boolean {
@@ -431,114 +405,5 @@ export function buildMineruFigureBlocks(source: {
   const hasContentList = Boolean(source.contentList?.length);
   return groups.map((group, index) =>
     buildBlock(group, index, source.fullMd, metaByPath, hasContentList),
-  );
-}
-
-function labelMentionPattern(baseLabel: string): RegExp | null {
-  const parsed = parseBaseLabel(baseLabel);
-  if (!parsed) return null;
-  const number = parsed.number.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const kind = parsed.kind === "Figure" ? "Fig(?:ure)?s?\\.?" : "Tables?";
-  const supplementary = parsed.supplementary
-    ? "Supplementary\\s+"
-    : "(?:Supplementary\\s+)?";
-  return new RegExp(`\\b${supplementary}${kind}\\s*${number}[a-z]?\\b`, "i");
-}
-
-function extractQueryRefs(query: string): FigureQueryRef[] {
-  const refs: FigureQueryRef[] = parseDocumentReferences(query).map(
-    (reference) => ({
-      baseLabel: `${reference.kind === "table" ? "Table" : "Figure"} ${reference.id}`,
-      ...(reference.panel ? { panelHint: reference.panel } : {}),
-    }),
-  );
-  const pattern =
-    /\b(Supplementary\s+)?(Fig(?:ure)?s?\.?|Tables?)\s*([sS]?\d+)([a-z])?/gi;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(query)) !== null) {
-    const kind = /^table/i.test(match[2]) ? "Table" : "Figure";
-    const prefix = match[1] ? "Supplementary " : "";
-    refs.push({
-      baseLabel: `${prefix}${kind} ${match[3].toUpperCase()}`,
-      ...(match[4] ? { panelHint: match[4].toLowerCase() } : {}),
-    });
-    const tail = query.slice(pattern.lastIndex);
-    const tailPattern = /^\s*(?:,|and|&)\s*([sS]?\d+)([a-z])?/i;
-    let tailMatch = tail.match(tailPattern);
-    let consumed = 0;
-    while (tailMatch) {
-      refs.push({
-        baseLabel: `${prefix}${kind} ${tailMatch[1].toUpperCase()}`,
-        ...(tailMatch[2] ? { panelHint: tailMatch[2].toLowerCase() } : {}),
-      });
-      consumed += tailMatch[0].length;
-      tailMatch = tail.slice(consumed).match(tailPattern);
-    }
-  }
-  const seen = new Set<string>();
-  return refs.filter((reference) => {
-    const key = `${reference.baseLabel}:${reference.panelHint || ""}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function blockMatchesBaseLabel(
-  block: MineruFigureBlock,
-  baseLabel: string,
-): boolean {
-  if (
-    block.labelHints.some(
-      (label) => getManifestFigureBaseLabel(label) === baseLabel,
-    )
-  ) {
-    return true;
-  }
-  const pattern = labelMentionPattern(baseLabel);
-  if (!pattern) return false;
-  return block.captionHints.some((caption) => pattern.test(caption));
-}
-
-export function resolveMineruFigureBlocksForQuery(
-  query: string,
-  blocks: MineruFigureBlock[],
-): MineruFigureBlockQueryResult {
-  const refs = extractQueryRefs(query);
-  const matched: MineruFigureBlock[] = [];
-  let panelHint: string | undefined;
-  for (const ref of refs) {
-    if (!panelHint && ref.panelHint) panelHint = ref.panelHint;
-    for (const block of blocks) {
-      if (blockMatchesBaseLabel(block, ref.baseLabel)) {
-        matched.push(block);
-      }
-    }
-  }
-  return {
-    blocks: uniqueBlocks(matched),
-    ...(panelHint ? { panelHint } : {}),
-  };
-}
-
-function uniqueBlocks(blocks: MineruFigureBlock[]): MineruFigureBlock[] {
-  const seen = new Set<string>();
-  const out: MineruFigureBlock[] = [];
-  for (const block of blocks) {
-    if (seen.has(block.blockId)) continue;
-    seen.add(block.blockId);
-    out.push(block);
-  }
-  return out;
-}
-
-export function findMineruFigureBlockByImagePath(
-  path: string,
-  blocks: MineruFigureBlock[],
-): MineruFigureBlock | null {
-  return (
-    blocks.find((block) =>
-      block.imagePaths.some((imagePath) => pathsMatch(imagePath, path)),
-    ) || null
   );
 }

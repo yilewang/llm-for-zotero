@@ -661,16 +661,6 @@ export function modelRetryDelayMs(
 
 // ── Resume ──────────────────────────────────────────────────────────────────
 
-/** Stops after which "continue" gets a resume note. */
-export const RESUMABLE_STOP_RULES: ReadonlySet<RunStopRule> =
-  new Set<RunStopRule>([
-    "search_exhausted",
-    "budget_reached",
-    "connection_lost",
-    "prompt_budget_exceeded",
-    "empty_answer",
-  ]);
-
 const RESUME_REASONS: Partial<Record<RunStopRule, string>> = {
   search_exhausted: "its search ended without confirming the paper",
   budget_reached: "it reached its per-turn safety limit",

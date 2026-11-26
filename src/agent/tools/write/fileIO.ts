@@ -321,20 +321,6 @@ async function fileExists(filePath: string): Promise<boolean | null> {
   return null;
 }
 
-async function removeFileIfExists(filePath: string): Promise<void> {
-  const IOUtils = (globalThis as any).IOUtils;
-  if (IOUtils?.remove) {
-    await IOUtils.remove(filePath, { ignoreAbsent: true });
-    return;
-  }
-  const OSFile = (globalThis as any).OS?.File;
-  if (OSFile?.remove) {
-    await OSFile.remove(filePath, { ignoreAbsent: true });
-    return;
-  }
-  throw new Error("File removal is not available in this Zotero environment");
-}
-
 async function ensureDirectoryExists(directoryPath: string): Promise<void> {
   const IOUtils = (globalThis as any).IOUtils;
   let ioUtilsError: unknown = null;

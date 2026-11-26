@@ -4,7 +4,6 @@ import {
   closeAllReaderOverlays,
   closeReaderOverlay,
   collectPointerDocuments,
-  countOpenReaderOverlays,
   createReaderOverlayEditor,
   createReaderOverlayElementFactory,
   isDarkReaderDocument,
@@ -284,11 +283,6 @@ export function closeReaderSelectionPromptOverlay(doc: Document): void {
 /** Closes every open overlay (plugin shutdown). */
 export function closeAllReaderSelectionPromptOverlays(): void {
   closeAllReaderOverlays();
-}
-
-/** Test seam: how many overlays are open. */
-export function countOpenReaderSelectionPromptOverlays(): number {
-  return countOpenReaderOverlays();
 }
 
 /**

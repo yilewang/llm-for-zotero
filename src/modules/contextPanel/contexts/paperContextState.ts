@@ -16,8 +16,6 @@ import type {
   PaperContentSourceMode,
 } from "../types";
 import { composeContextStore } from "./composeContextStore";
-import { normalizePaperContextRefs } from "../../../services/context/normalizers";
-import { sanitizeText } from "../../../utils/textSanitization";
 
 // ── Send mode overrides ────────────────────────────────────────────────────
 
@@ -74,16 +72,6 @@ export function clearPaperContentSourceOverrides(itemId: number): void {
   composeContextStore.paperSourceModes.clearOwner(itemId);
 }
 
-export function getNextContentSourceMode(
-  current: PaperContentSourceMode,
-  hasMinerU: boolean,
-): PaperContentSourceMode {
-  if (hasMinerU) {
-    return current === "pdf" ? "mineru" : "pdf";
-  }
-  return current === "pdf" ? "text" : "pdf";
-}
-
 // ── State clearing ──────────────────────────────────────────────────────────
 
 export function clearSelectedPaperState(itemId: number): void {
@@ -103,9 +91,3 @@ export function clearAllRefContextState(itemId: number): void {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-export function normalizePaperContextEntries(
-  value: unknown,
-): PaperContextRef[] {
-  return normalizePaperContextRefs(value, { sanitizeText });
-}

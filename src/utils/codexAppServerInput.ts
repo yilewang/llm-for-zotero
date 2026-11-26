@@ -1,4 +1,3 @@
-import type { AgentModelContentPart, AgentModelMessage } from "../agent/types";
 import { parseDataUrl } from "../shared/dataUrl";
 import type { ChatMessage, MessageContent } from "../shared/llm";
 import { fileUrlToPath } from "./pathFileUrl";
@@ -412,73 +411,6 @@ function extractChatDeveloperInstructions(
   return instructionParts.length ? instructionParts.join("\n\n") : undefined;
 }
 
-function splitAgentContent(content: AgentModelMessage["content"]): {
-  text: string;
-  imageUrls: string[];
-} {
-  if (typeof content === "string") {
-    return { text: content, imageUrls: [] };
-  }
-
-  const lines: string[] = [];
-  const imageUrls: string[] = [];
-  for (const part of content) {
-    if (part.type === "text") {
-      const text = part.text.trim();
-      if (text) lines.push(text);
-      continue;
-    }
-    if (part.type === "image_url") {
-      imageUrls.push(part.image_url.url);
-      continue;
-    }
-    lines.push(`[Prepared file: ${part.file_ref.name}]`);
-  }
-
-  return {
-    text: lines.join("\n\n"),
-    imageUrls,
-  };
-}
-
-function extractAgentSystemInstructions(
-  messages: readonly AgentModelMessage[],
-): string | undefined {
-  const instructionParts: string[] = [];
-  for (const message of messages) {
-    if (message.role !== "system") continue;
-    const { text } = splitAgentContent(message.content);
-    const normalized = text.trim();
-    if (normalized) instructionParts.push(normalized);
-  }
-  return instructionParts.length ? instructionParts.join("\n\n") : undefined;
-}
-
-function getAgentRoleLabel(
-  role: Exclude<AgentModelMessage, { role: "tool" }>["role"],
-): "System" | "Assistant" | "User" {
-  return role === "system"
-    ? "System"
-    : role === "assistant"
-      ? "Assistant"
-      : "User";
-}
-
-async function buildLegacyAgentMessageInput(
-  message: Exclude<AgentModelMessage, { role: "tool" }>,
-): Promise<CodexAppServerUserInput[]> {
-  const { text, imageUrls } = splitAgentContent(message.content);
-  const fallbackText = imageUrls.length
-    ? `[${imageUrls.length} image(s) attached]`
-    : "";
-  const input: CodexAppServerUserInput[] = [];
-  pushTextInput(input, text || fallbackText, getAgentRoleLabel(message.role));
-  for (const url of imageUrls) {
-    input.push(await buildImageInput(url));
-  }
-  return input;
-}
-
 export async function prepareCodexAppServerChatTurn(
   messages: ChatMessage[],
 ): Promise<CodexAppServerPreparedTurn> {
@@ -534,86 +466,6 @@ export async function buildLegacyCodexAppServerChatInput(
     input.push(...(await buildLegacyChatMessageInput(message)));
   }
   return input.length ? input : [{ type: "text", text: "" }];
-}
-
-export async function extractLatestCodexAppServerUserInput(
-  messages: AgentModelMessage[],
-): Promise<CodexAppServerUserInput[]> {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message.role !== "user") continue;
-    return buildTurnInput(splitAgentContent(message.content));
-  }
-  return [{ type: "text", text: "" }];
-}
-
-export async function prepareCodexAppServerAgentTurn(
-  messages: AgentModelMessage[],
-): Promise<CodexAppServerPreparedTurn> {
-  const seededMessages = messages.filter(
-    (message): message is Exclude<AgentModelMessage, { role: "tool" }> =>
-      message.role !== "tool",
-  );
-  const developerInstructions = extractAgentSystemInstructions(messages);
-  const visibleHistoryMessages = seededMessages.filter(
-    (message) => message.role !== "system",
-  );
-
-  let latestUserIndex = -1;
-  for (let i = visibleHistoryMessages.length - 1; i >= 0; i -= 1) {
-    if (visibleHistoryMessages[i]?.role === "user") {
-      latestUserIndex = i;
-      break;
-    }
-  }
-
-  const historyItemsToInject: CodexAppServerHistoryItem[] = [];
-  const historyMessages =
-    latestUserIndex >= 0
-      ? visibleHistoryMessages.slice(0, latestUserIndex)
-      : visibleHistoryMessages;
-  for (const message of historyMessages) {
-    const { text, imageUrls } = splitAgentContent(message.content);
-    historyItemsToInject.push(
-      await buildHistoryMessageItem({
-        role: message.role,
-        text,
-        imageUrls,
-      }),
-    );
-  }
-
-  const latestUserMessage =
-    latestUserIndex >= 0 ? visibleHistoryMessages[latestUserIndex] : undefined;
-  const turnInput = latestUserMessage
-    ? await buildTurnInput(splitAgentContent(latestUserMessage.content))
-    : [{ type: "text" as const, text: "" }];
-
-  return {
-    developerInstructions,
-    historyItemsToInject,
-    turnInput,
-  };
-}
-
-export async function buildLegacyCodexAppServerAgentInitialInput(
-  messages: AgentModelMessage[],
-  options: { includeSystem?: boolean } = {},
-): Promise<CodexAppServerUserInput[]> {
-  const includeSystem = options.includeSystem !== false;
-  const input: CodexAppServerUserInput[] = [];
-  for (const message of messages) {
-    if (message.role === "tool") continue;
-    if (!includeSystem && message.role === "system") continue;
-    input.push(...(await buildLegacyAgentMessageInput(message)));
-  }
-  return input.length ? input : [{ type: "text", text: "" }];
-}
-
-export function isCodexAppServerImageInput(
-  input: CodexAppServerUserInput,
-): input is Extract<CodexAppServerUserInput, { type: "image" | "localImage" }> {
-  return input.type === "image" || input.type === "localImage";
 }
 
 /**

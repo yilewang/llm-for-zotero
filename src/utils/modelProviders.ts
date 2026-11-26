@@ -1260,16 +1260,3 @@ export function getLastUsedModelEntryId(): string {
 export function setLastUsedModelEntryId(entryId: string): void {
   setPref(LAST_USED_MODEL_ENTRY_ID_PREF_KEY, entryId.trim());
 }
-
-export function getCodexDirectProviderGroup(): CodexDirectProviderGroup | null {
-  return (
-    getModelProviderGroups().find(
-      (group): group is CodexDirectProviderGroup =>
-        group.authMode === "codex_auth",
-    ) || null
-  );
-}
-
-export function getModelProviderGroupsPrefKey(): string {
-  return MODEL_PROVIDER_GROUPS_PREF_KEY;
-}

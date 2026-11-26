@@ -931,14 +931,6 @@ async function shutdownPlugin(reason: PluginLifecycleReason): Promise<void> {
   });
 }
 
-/**
- * This function is just an example of dispatcher for Notify events.
- * Any operations should be placed in a function to keep this funcion clear.
- */
-export async function flushPaperSearchInvalidationForTests(): Promise<void> {
-  await zoteroChangeDispatcher.flush();
-}
-
 async function onNotify(
   event: string,
   type: string,

@@ -124,8 +124,6 @@ export type LivePdfSelectionLocateResult = {
   debugSummary?: string[];
 };
 
-export type LivePdfQuoteCertificate = PdfQuoteCertificate;
-
 export type LivePdfQuoteVerification = PdfQuoteVerification;
 
 export type ExactQuoteJumpQueryAttempt = {
@@ -189,13 +187,6 @@ type PageMatch = {
   excerpt?: string;
 };
 
-type PageTextIndexEntry = {
-  pageIndex: number;
-  pageLabel?: string;
-  text: string;
-  normalizedText: string;
-};
-
 const PAGE_CONTAINER_SELECTOR = [
   ".page[data-page-number]",
   ".page[data-page-index]",
@@ -208,53 +199,6 @@ const PAGE_CONTAINER_SELECTOR = [
 // "the152"). The marker is removed only when reconstructing the literal query
 // that FindController will normalize and search.
 const PDF_TEXT_ITEM_BOUNDARY = "\u0003";
-
-function buildPageTextIndex(pages: LivePdfPageText[]): PageTextIndexEntry[] {
-  return pages.map((page) => ({
-    pageIndex: page.pageIndex,
-    pageLabel: page.pageLabel,
-    text: page.text,
-    normalizedText: normalizeLocatorText(page.text),
-  }));
-}
-
-function searchPageIndexEntries(
-  pageIndexEntries: PageTextIndexEntry[],
-  query: string,
-): {
-  matchedPageIndexes: number[];
-  totalMatches: number;
-  excerpt?: string;
-} {
-  const normalizedQuery = normalizeLocatorText(query);
-  if (!normalizedQuery) {
-    return {
-      matchedPageIndexes: [],
-      totalMatches: 0,
-    };
-  }
-
-  const matchedPageIndexes: number[] = [];
-  let totalMatches = 0;
-  let excerpt: string | undefined;
-  for (const page of pageIndexEntries) {
-    const matchIndexes = findAllMatchIndexes(
-      page.normalizedText,
-      normalizedQuery,
-    );
-    if (!matchIndexes.length) continue;
-    matchedPageIndexes.push(page.pageIndex);
-    totalMatches += matchIndexes.length;
-    if (!excerpt) {
-      excerpt = buildExcerpt(
-        page.normalizedText,
-        matchIndexes[0],
-        normalizedQuery.length,
-      );
-    }
-  }
-  return { matchedPageIndexes, totalMatches, excerpt };
-}
 
 function findAllMatchIndexes(haystack: string, needle: string): number[] {
   if (!haystack || !needle) return [];
@@ -1002,21 +946,6 @@ function locateQuoteInIndexedPageTexts(
     sourceMatchQuoteTokenCoverage: 1,
     reason: "The complete quote matched a single PDF page.",
   };
-}
-
-export function locateQuoteInPageTexts(
-  pages: LivePdfPageText[],
-  quoteText: string,
-  expectedPageIndex?: number | null,
-): LivePdfSelectionLocateResult {
-  return locateQuoteInIndexedPageTexts(
-    pages.map((page) => ({
-      page,
-      textIndex: buildQuoteTextIndex(page.text),
-    })),
-    quoteText,
-    expectedPageIndex,
-  );
 }
 
 function unwrapGeckoJsObject(value: any): any {
@@ -3858,9 +3787,6 @@ async function waitForFindControllerPageMatches(params: {
   }
 }
 
-export const waitForFindControllerPageMatchesForTests =
-  waitForFindControllerPageMatches;
-
 function summarizeFindControllerMatches(pageMatches: unknown[]): {
   matchedPageIndexes: number[];
   totalMatches: number;
@@ -4073,14 +3999,6 @@ function normalizePageNativeFindControllerLiteral(
       "$1",
     )
     .replace(/\r\n?|\n/g, " ");
-}
-
-export function normalizePageNativeFindControllerComparableText(
-  value: string,
-): string {
-  return normalizeLocatorText(
-    normalizePageNativeFindControllerLiteral(value, ""),
-  );
 }
 
 export function resolvePageNativeFindControllerQuery(

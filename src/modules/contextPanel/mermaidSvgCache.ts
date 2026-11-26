@@ -69,10 +69,6 @@ export function invalidateMermaidSvg(key: string): void {
   mermaidSvgCacheBytes -= estimateEntryBytes(key, existing);
 }
 
-export function getMermaidSvgCacheSizeForTests(): number {
-  return mermaidSvgCache.size;
-}
-
 /** Release all cached SVGs; called from clearAllState on plugin shutdown. */
 export function clearMermaidSvgCache(): void {
   mermaidSvgCache.clear();

@@ -141,10 +141,6 @@ export function setAppLogSink(sink: AppLogSink | null): void {
   configuredSink = sink;
 }
 
-export function setAppLogSinkForTests(sink: AppLogSink | null): void {
-  setAppLogSink(sink);
-}
-
 /** Narrow Zotero.DB query option seam shared by maintenance owners. */
 export function getMaintenanceQueryOptions(): { debug: boolean } {
   return { debug: isAppLogLevelEnabled("trace") };
