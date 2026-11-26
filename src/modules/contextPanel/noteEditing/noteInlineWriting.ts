@@ -169,8 +169,9 @@ type OpenPopup = {
 };
 
 const openPopups = new WeakMap<Window, OpenPopup>();
-/** The selection whose popup the user closed: it does not open again until
- *  the selection changes. */
+/** The selection whose popup the user closed (not the tracker, on a
+ *  selection that went away): it does not open again until the selection
+ *  changes. */
 const dismissedSelections = new WeakMap<Document, string>();
 const pressedDocuments = new WeakSet<Document>();
 /** Editors an answer was just written into: until the written text is
@@ -361,8 +362,16 @@ function selectWrittenText(
   win.setTimeout(attempt, 50);
 }
 
+/**
+ * Closes the window's popup for the tracker (the selection went away, the
+ * note changed). The popup leaves openPopups first, so its close does not
+ * dismiss the selection: the same text opens it again.
+ */
 function closePopup(win: Window): void {
-  openPopups.get(win)?.handle.close();
+  const popup = openPopups.get(win);
+  if (!popup) return;
+  openPopups.delete(win);
+  popup.handle.close();
 }
 
 function openPopup(params: {
@@ -540,7 +549,10 @@ function openPopup(params: {
       return Controller ? new Controller() : null;
     },
     onClose: () => {
-      if (openPopups.get(win)?.handle === handle) openPopups.delete(win);
+      // Still registered: the user closed it (Escape, Discard, a used
+      // answer), which dismisses this selection until it changes.
+      if (openPopups.get(win)?.handle !== handle) return;
+      openPopups.delete(win);
       dismissedSelections.set(doc, selectedText);
     },
   });

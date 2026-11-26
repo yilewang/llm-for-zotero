@@ -393,6 +393,27 @@ describe("workflow: inline writing popup in the note editor", function () {
     await until(() => !editor.card(), "the popup to close");
   });
 
+  it("opens again on the same text after the selection went away, but not after Escape", async function () {
+    const editor = await openEditor(fixture.noteItemId);
+    editor.select(SOURCE);
+    await until(() => editor.card(), "the popup");
+    // Clicking elsewhere in the note closes the popup without dismissing
+    // the text: selecting it again opens the popup again.
+    editor.collapse();
+    await until(() => !editor.card(), "the popup to close");
+    editor.select(SOURCE);
+    await until(() => editor.card(), "the popup on the same text again");
+
+    // Escape is the user's own dismissal: the same selection stays closed.
+    editor.doc.dispatchEvent(
+      new editor.doc.defaultView!.KeyboardEvent("keydown", { key: "Escape" }),
+    );
+    await until(() => !editor.card(), "the popup to close on Escape");
+    editor.select(SOURCE);
+    await delay(400);
+    assert.isNull(editor.card(), "Escape dismisses the same selection");
+  });
+
   it("keeps the popup and the selection while the user types an instruction", async function () {
     const editor = await openEditor(fixture.noteItemId);
     editor.select(SOURCE);
