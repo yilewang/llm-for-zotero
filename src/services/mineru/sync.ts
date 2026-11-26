@@ -25,6 +25,9 @@ import {
   writeMineruSourceProvenanceForAttachment,
   withMineruCacheWrite,
   type MineruCacheFile,
+  getAttachmentFilename,
+  getParentItem,
+  getItemKey,
 } from "./mineruCache";
 import { paperTextStore } from "../paperContent/paperTextStore";
 import { escapeRegExp, positiveIntOrNull } from "../../core/values";
@@ -430,18 +433,6 @@ async function listCacheFiles(
   return out;
 }
 
-function getItemKey(item: Zotero.Item | null | undefined): string {
-  const value = (item as unknown as { key?: unknown } | null | undefined)?.key;
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function getAttachmentFilename(item: Zotero.Item): string {
-  return String(
-    (item as unknown as { attachmentFilename?: unknown }).attachmentFilename ||
-      "",
-  ).trim();
-}
-
 function getAttachmentTitle(item: Zotero.Item): string {
   try {
     const title = item.getField?.("title");
@@ -452,13 +443,7 @@ function getAttachmentTitle(item: Zotero.Item): string {
   return getAttachmentFilename(item) || `Attachment ${item.id}`;
 }
 
-function getParentItem(item: Zotero.Item): Zotero.Item | null {
-  const parentId = Number(item.parentID);
-  if (!Number.isFinite(parentId) || parentId <= 0) return null;
-  return Zotero.Items.get(Math.floor(parentId)) || null;
-}
-
-function isPdfAttachment(item: Zotero.Item | null | undefined): boolean {
+export function isPdfAttachment(item: Zotero.Item | null | undefined): boolean {
   return Boolean(
     item?.isAttachment?.() && item.attachmentContentType === "application/pdf",
   );

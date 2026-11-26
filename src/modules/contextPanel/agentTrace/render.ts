@@ -114,6 +114,7 @@ import {
 import {
   buildToolResultTraceInfo,
   type ToolResultTraceInfo,
+  omitLargeTraceString,
 } from "./toolResultTraceInfo";
 import {
   isTruncatedToolResultContent,
@@ -144,6 +145,7 @@ import {
   type AgentTraceEventScan,
 } from "./traceEventScan";
 import { isRecord } from "../../../core/values";
+import { compactCodexNativePathBasename } from "../../../codexAppServer/nativeActivityStages";
 
 type AgentTraceSummaryKind = "plan" | "tool" | "ok" | "skip" | "done";
 
@@ -537,14 +539,6 @@ function normalizeAgentTraceDetail(
     value: cleanValue,
     ...(kind ? { kind } : {}),
   };
-}
-
-function omitLargeTraceString(value: string): string {
-  if (/^data:(?:image|application)\//i.test(value) && value.length > 160) {
-    const marker = value.slice(0, 96);
-    return `${marker}...[omitted ${value.length - marker.length} chars]`;
-  }
-  return value;
 }
 
 function stringifyAgentTraceJson(value: unknown): string | null {
@@ -4183,14 +4177,12 @@ function normalizeImageArtifacts(artifacts: unknown): ImageAgentToolArtifact[] {
   return images;
 }
 
-function basenameFromLocalPath(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).pop() || path;
-}
-
 function imageArtifactLabel(artifact: ImageAgentToolArtifact): string {
   const title = sanitizeText(artifact.title || "").trim();
   if (title) return title;
-  const basename = sanitizeText(basenameFromLocalPath(artifact.storedPath));
+  const basename = sanitizeText(
+    compactCodexNativePathBasename(artifact.storedPath),
+  );
   if (basename) return basename;
   const pageLabel = sanitizeText(artifact.pageLabel || "").trim();
   return pageLabel ? `Page ${pageLabel}` : "Image artifact";

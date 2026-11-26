@@ -11,6 +11,7 @@ import {
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
 import { positiveIntOrUndefined } from "../../core/values";
+import { stableJson } from "./stableJson";
 
 export type AgentToolResultHandleRecord = {
   handle: string;
@@ -71,23 +72,6 @@ function normalizeText(value: unknown, maxChars = 4096): string | undefined {
   return normalized.length > maxChars
     ? normalized.slice(0, maxChars)
     : normalized;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
 }
 
 function hashText(value: string): string {

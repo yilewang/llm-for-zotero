@@ -1040,7 +1040,7 @@ export function countTaskOutside(
 // DOM
 // ---------------------------------------------------------------------------
 
-function el<K extends keyof HTMLElementTagNameMap>(
+export function el<K extends keyof HTMLElementTagNameMap>(
   doc: Document,
   tag: K,
   className: string,

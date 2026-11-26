@@ -1,6 +1,3 @@
-declare const Zotero: any;
-
-import { config } from "../../package.json";
 import {
   isRuntimeConversationSystemEnabled,
   setRuntimeConversationSystemEnabled,
@@ -26,86 +23,29 @@ import {
   getPaperRestoreTarget,
   rememberPaperRestoreTarget,
 } from "../shared/paperConversationRestore";
-
-type ZoteroPrefsAPI = {
-  get?: (key: string, global?: boolean) => unknown;
-  set?: (key: string, value: unknown, global?: boolean) => void;
-};
-
-function getZoteroPrefs(): ZoteroPrefsAPI | null {
-  return (
-    (Zotero as unknown as { Prefs?: ZoteroPrefsAPI } | undefined)?.Prefs || null
-  );
-}
-
-function prefKey(key: string): string {
-  return `${config.prefsPrefix}.${key}`;
-}
-
-function getStringPref(key: string): string {
-  const value = getZoteroPrefs()?.get?.(prefKey(key), true);
-  return typeof value === "string" ? value : "";
-}
-
-function getNumberPref(key: string): number | null {
-  const value = getZoteroPrefs()?.get?.(prefKey(key), true);
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
-function setPref(key: string, value: unknown): void {
-  getZoteroPrefs()?.set?.(prefKey(key), value, true);
-}
-
-function getJsonPref(key: string): Record<string, number> {
-  const raw = getStringPref(key).trim();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const normalized: Record<string, number> = {};
-    for (const [entryKey, entryValue] of Object.entries(parsed)) {
-      const n = Number(entryValue);
-      if (!Number.isFinite(n) || n <= 0) continue;
-      normalized[entryKey] = Math.floor(n);
-    }
-    return normalized;
-  } catch {
-    return {};
-  }
-}
+import {
+  getZoteroPrefs,
+  prefKey,
+  readPositiveIntMapPref,
+  readPositiveIntPref,
+  readStringMapPref,
+  readStringPref,
+  writePref,
+} from "../utils/pluginPrefs";
 
 function setJsonPref(key: string, value: Record<string, number>): void {
-  setPref(key, JSON.stringify(value));
-}
-
-function getJsonStringPref(key: string): Record<string, string> {
-  const raw = getStringPref(key).trim();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const normalized: Record<string, string> = {};
-    for (const [entryKey, entryValue] of Object.entries(parsed)) {
-      if (typeof entryValue !== "string") continue;
-      const trimmed = entryValue.trim();
-      if (!trimmed) continue;
-      normalized[entryKey] = trimmed;
-    }
-    return normalized;
-  } catch {
-    return {};
-  }
+  writePref(key, JSON.stringify(value));
 }
 
 function setJsonStringPref(key: string, value: Record<string, string>): void {
-  setPref(key, JSON.stringify(value));
+  writePref(key, JSON.stringify(value));
 }
 
 export function getLastUsedClaudeConversationMode(
   libraryID: number,
 ): "global" | "paper" | null {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
-  const map = getJsonStringPref("claudeCodeConversationModeMap");
+  const map = readStringMapPref("claudeCodeConversationModeMap");
   const value = map[buildGlobalConversationMapKey(libraryID)];
   return value === "global" || value === "paper" ? value : null;
 }
@@ -116,14 +56,14 @@ export function setLastUsedClaudeConversationMode(
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   const normalizedMode = mode === "global" ? "global" : "paper";
-  const map = getJsonStringPref("claudeCodeConversationModeMap");
+  const map = readStringMapPref("claudeCodeConversationModeMap");
   map[buildGlobalConversationMapKey(libraryID)] = normalizedMode;
   setJsonStringPref("claudeCodeConversationModeMap", map);
 }
 
 export function removeLastUsedClaudeConversationMode(libraryID: number): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
-  const map = getJsonStringPref("claudeCodeConversationModeMap");
+  const map = readStringMapPref("claudeCodeConversationModeMap");
   delete map[buildGlobalConversationMapKey(libraryID)];
   setJsonStringPref("claudeCodeConversationModeMap", map);
 }
@@ -164,26 +104,28 @@ function isDefaultClaudeBridgeUrl(raw: string): boolean {
  * other than the old default keeps their own bridge.
  */
 export function getClaudeBridgeMode(): ClaudeBridgeMode {
-  const explicit = getStringPref("claudeCodeBridgeMode").trim();
+  const explicit = readStringPref("claudeCodeBridgeMode").trim();
   if (explicit === "managed" || explicit === "custom") return explicit;
-  return isDefaultClaudeBridgeUrl(getStringPref("agentBackendBridgeUrl"))
+  return isDefaultClaudeBridgeUrl(readStringPref("agentBackendBridgeUrl"))
     ? "managed"
     : "custom";
 }
 
 /** True while the user has not chosen a mode and it comes from the URL. */
 export function isClaudeBridgeModeImplicit(): boolean {
-  const explicit = getStringPref("claudeCodeBridgeMode").trim();
+  const explicit = readStringPref("claudeCodeBridgeMode").trim();
   return explicit !== "managed" && explicit !== "custom";
 }
 
 export function setClaudeBridgeMode(mode: ClaudeBridgeMode): void {
-  setPref("claudeCodeBridgeMode", mode);
+  writePref("claudeCodeBridgeMode", mode);
 }
 
 /** The Bridge URL the user typed, used only in "custom" mode. */
 export function getCustomClaudeBridgeUrl(): string {
-  return normalizeCustomClaudeBridgeUrl(getStringPref("agentBackendBridgeUrl"));
+  return normalizeCustomClaudeBridgeUrl(
+    readStringPref("agentBackendBridgeUrl"),
+  );
 }
 
 export function getClaudeBridgeUrl(): string {
@@ -194,28 +136,28 @@ export function getClaudeBridgeUrl(): string {
 }
 
 export function getClaudeBridgeNodePathPref(): string {
-  return getStringPref("claudeCodeNodePath").trim();
+  return readStringPref("claudeCodeNodePath").trim();
 }
 
 export function setClaudeBridgeNodePathPref(path: string): void {
-  setPref("claudeCodeNodePath", path.trim());
+  writePref("claudeCodeNodePath", path.trim());
 }
 
 export function getClaudeCliPathPref(): string {
-  return getStringPref("claudeCodeCliPath").trim();
+  return readStringPref("claudeCodeCliPath").trim();
 }
 
 export function setClaudeCliPathPref(path: string): void {
-  setPref("claudeCodeCliPath", path.trim());
+  writePref("claudeCodeCliPath", path.trim());
 }
 
 /** Extra command-line options passed to the managed bridge unchanged. */
 export function getClaudeBridgeExtraArgsPref(): string {
-  return getStringPref("claudeCodeBridgeExtraArgs").trim();
+  return readStringPref("claudeCodeBridgeExtraArgs").trim();
 }
 
 export function setClaudeBridgeExtraArgsPref(value: string): void {
-  setPref("claudeCodeBridgeExtraArgs", value.trim());
+  writePref("claudeCodeBridgeExtraArgs", value.trim());
 }
 
 export function hasShownClaudeLegacyDaemonNotice(): boolean {
@@ -236,27 +178,27 @@ export function isClaudeLegacyDaemonCheckEnabled(): boolean {
 }
 
 export function markClaudeLegacyDaemonNoticeShown(): void {
-  setPref("claudeCodeLegacyDaemonNoticeShown", true);
+  writePref("claudeCodeLegacyDaemonNoticeShown", true);
 }
 
 export function setClaudeBridgeUrl(url: string): void {
   // While no mode is saved, the mode comes from the URL. Save the current
   // mode first so that typing a URL never changes it.
-  if (!getStringPref("claudeCodeBridgeMode").trim()) {
+  if (!readStringPref("claudeCodeBridgeMode").trim()) {
     setClaudeBridgeMode(getClaudeBridgeMode());
   }
-  setPref("agentBackendBridgeUrl", url.trim());
+  writePref("agentBackendBridgeUrl", url.trim());
 }
 
 export function getClaudeCustomInstructionPref(): string {
-  return getStringPref("systemPrompt").trim();
+  return readStringPref("systemPrompt").trim();
 }
 
 export function getClaudeConfigSourcePref():
   | "default"
   | "user-only"
   | "zotero-only" {
-  const raw = getStringPref("agentClaudeConfigSource").trim().toLowerCase();
+  const raw = readStringPref("agentClaudeConfigSource").trim().toLowerCase();
   if (raw === "user-level" || raw === "user-only") return "user-only";
   if (raw === "zotero-specific" || raw === "zotero-only") return "zotero-only";
   return "default";
@@ -277,28 +219,28 @@ export function getClaudeSettingSourcesCsvByPref(): string {
 
 export function getClaudePermissionModePref(): ClaudePermissionMode {
   return normalizeClaudePermissionMode(
-    getStringPref("claudeCodePermissionMode"),
+    readStringPref("claudeCodePermissionMode"),
   );
 }
 
 export function setClaudePermissionModePref(mode: ClaudePermissionMode): void {
-  setPref("claudeCodePermissionMode", normalizeClaudePermissionMode(mode));
+  writePref("claudeCodePermissionMode", normalizeClaudePermissionMode(mode));
 }
 
 export function getClaudeRuntimeModelPref(): ClaudeRuntimeModel {
   return (
-    getStringPref("claudeCodeModel").trim() || DEFAULT_CLAUDE_RUNTIME_MODEL
+    readStringPref("claudeCodeModel").trim() || DEFAULT_CLAUDE_RUNTIME_MODEL
   );
 }
 
 export function setClaudeRuntimeModelPref(model: string): void {
   const normalized = model.trim();
   if (!normalized) return;
-  setPref("claudeCodeModel", normalized);
+  writePref("claudeCodeModel", normalized);
 }
 
 export function getClaudeReasoningModePref(): ClaudeReasoningMode {
-  const raw = getStringPref("claudeCodeReasoning").trim().toLowerCase();
+  const raw = readStringPref("claudeCodeReasoning").trim().toLowerCase();
   return CLAUDE_REASONING_OPTIONS.includes(raw as ClaudeReasoningMode)
     ? (raw as ClaudeReasoningMode)
     : "auto";
@@ -306,7 +248,7 @@ export function getClaudeReasoningModePref(): ClaudeReasoningMode {
 
 export function setClaudeReasoningModePref(mode: ClaudeReasoningMode): void {
   if (!CLAUDE_REASONING_OPTIONS.includes(mode)) return;
-  setPref("claudeCodeReasoning", mode);
+  writePref("claudeCodeReasoning", mode);
 }
 
 export function isClaudeBlockStreamingEnabled(): boolean {
@@ -324,7 +266,7 @@ export function isClaudeBlockStreamingEnabled(): boolean {
 }
 
 export function setClaudeBlockStreamingEnabled(enabled: boolean): void {
-  setPref("claudeCodeBlockStreaming", Boolean(enabled));
+  writePref("claudeCodeBlockStreaming", Boolean(enabled));
 }
 
 export function isClaudeAutoCompactEnabled(): boolean {
@@ -339,7 +281,7 @@ export function isClaudeAutoCompactEnabled(): boolean {
 }
 
 export function setClaudeAutoCompactEnabled(enabled: boolean): void {
-  setPref("claudeCodeAutoCompact", Boolean(enabled));
+  writePref("claudeCodeAutoCompact", Boolean(enabled));
 }
 
 export function getClaudeAutoCompactThresholdPercent(): number {
@@ -354,11 +296,11 @@ export function getClaudeAutoCompactThresholdPercent(): number {
 
 export function setClaudeAutoCompactThresholdPercent(value: number): void {
   const normalized = Math.min(80, Math.max(30, Math.round(value)));
-  setPref("claudeCodeAutoCompactThreshold", normalized);
+  writePref("claudeCodeAutoCompactThreshold", normalized);
 }
 
 export function getClaudeManagedInstructionTemplatePref(): string {
-  return getStringPref("claudeCodeManagedInstructionTemplate").replace(
+  return readStringPref("claudeCodeManagedInstructionTemplate").replace(
     /\r\n?/g,
     "\n",
   );
@@ -368,7 +310,7 @@ export function setClaudeManagedInstructionTemplatePref(value: string): string {
   const normalized = String(value || "")
     .replace(/\r\n?/g, "\n")
     .trim();
-  setPref("claudeCodeManagedInstructionTemplate", normalized);
+  writePref("claudeCodeManagedInstructionTemplate", normalized);
   return normalized;
 }
 
@@ -404,7 +346,7 @@ function isConversationKeyInAllocatedRange(
 function getScopedLegacyAllocatedConversationKey(
   kind: "global" | "paper",
 ): number | null {
-  const value = getNumberPref(
+  const value = readPositiveIntPref(
     kind === "global"
       ? "claudeCodeLastAllocatedGlobalConversationKey"
       : "claudeCodeLastAllocatedPaperConversationKey",
@@ -416,7 +358,7 @@ export function getLastUsedClaudeGlobalConversationKey(
   libraryID: number,
 ): number | null {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
-  const map = getJsonPref("claudeCodeGlobalConversationMap");
+  const map = readPositiveIntMapPref("claudeCodeGlobalConversationMap");
   const scopedValue = Number(map[buildGlobalConversationMapKey(libraryID)]);
   if (Number.isFinite(scopedValue) && scopedValue > 0) {
     return isConversationKeyInRange(scopedValue, "global")
@@ -439,7 +381,7 @@ export function setLastUsedClaudeGlobalConversationKey(
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
   if (!isConversationKeyInRange(conversationKey, "global")) return;
-  const map = getJsonPref("claudeCodeGlobalConversationMap");
+  const map = readPositiveIntMapPref("claudeCodeGlobalConversationMap");
   map[buildGlobalConversationMapKey(libraryID)] = Math.floor(conversationKey);
   setJsonPref("claudeCodeGlobalConversationMap", map);
 }
@@ -448,7 +390,7 @@ export function removeLastUsedClaudeGlobalConversationKey(
   libraryID: number,
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
-  const map = getJsonPref("claudeCodeGlobalConversationMap");
+  const map = readPositiveIntMapPref("claudeCodeGlobalConversationMap");
   const scopedKey = buildGlobalConversationMapKey(libraryID);
   const removed = Number(map[scopedKey]);
   delete map[scopedKey];
@@ -507,7 +449,9 @@ function buildLastAllocatedMapKey(kind: "global" | "paper"): string {
 }
 
 export function getLastAllocatedClaudeGlobalConversationKey(): number | null {
-  const map = getJsonPref("claudeCodeLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "claudeCodeLastAllocatedConversationKeyMap",
+  );
   const value = Number(map[buildLastAllocatedMapKey("global")]);
   if (
     Number.isFinite(value) &&
@@ -526,14 +470,18 @@ export function setLastAllocatedClaudeGlobalConversationKey(
   const current = getLastAllocatedClaudeGlobalConversationKey() || 0;
   const normalized = Math.floor(conversationKey);
   if (normalized <= current) return;
-  const map = getJsonPref("claudeCodeLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "claudeCodeLastAllocatedConversationKeyMap",
+  );
   map[buildLastAllocatedMapKey("global")] = normalized;
   setJsonPref("claudeCodeLastAllocatedConversationKeyMap", map);
-  setPref("claudeCodeLastAllocatedGlobalConversationKey", normalized);
+  writePref("claudeCodeLastAllocatedGlobalConversationKey", normalized);
 }
 
 export function getLastAllocatedClaudePaperConversationKey(): number | null {
-  const map = getJsonPref("claudeCodeLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "claudeCodeLastAllocatedConversationKeyMap",
+  );
   const value = Number(map[buildLastAllocatedMapKey("paper")]);
   if (
     Number.isFinite(value) &&
@@ -552,8 +500,10 @@ export function setLastAllocatedClaudePaperConversationKey(
   const current = getLastAllocatedClaudePaperConversationKey() || 0;
   const normalized = Math.floor(conversationKey);
   if (normalized <= current) return;
-  const map = getJsonPref("claudeCodeLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "claudeCodeLastAllocatedConversationKeyMap",
+  );
   map[buildLastAllocatedMapKey("paper")] = normalized;
   setJsonPref("claudeCodeLastAllocatedConversationKeyMap", map);
-  setPref("claudeCodeLastAllocatedPaperConversationKey", normalized);
+  writePref("claudeCodeLastAllocatedPaperConversationKey", normalized);
 }

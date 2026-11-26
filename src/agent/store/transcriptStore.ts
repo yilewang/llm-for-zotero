@@ -11,6 +11,7 @@ import {
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
 import { positiveIntOrUndefined } from "../../core/values";
+import { stableJson } from "./stableJson";
 
 type ZoteroDb = {
   queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
@@ -55,23 +56,6 @@ function logTranscriptStoreError(message: string, error: unknown): void {
     }
   ).ztoolkit;
   toolkit?.log?.(message, error);
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
 }
 
 function segmentKey(conversationKey: number, compatibilityKey: string): string {

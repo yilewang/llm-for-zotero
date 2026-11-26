@@ -27,6 +27,7 @@ import {
   getMineruAvailabilityForAttachment,
   publishMineruCachePackageForAttachment,
   type MineruAvailabilityStatus,
+  isPdfAttachment,
 } from "../services/mineru/sync";
 import { normalizeMineruTagName } from "./mineruTagIndex";
 import {
@@ -39,6 +40,7 @@ import {
   getMineruMaxAutoPages,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
+import { getAbortControllerCtor, getPdfAttachments } from "./mineruAutoWatch";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,20 +91,6 @@ let queueBuilt = false;
 const listeners = new Set<(s: MineruBatchState) => void>();
 let currentAbort: AbortController | null = null;
 
-function getAbortControllerCtor(): (new () => AbortController) | null {
-  return (
-    (ztoolkit.getGlobal("AbortController") as
-      | (new () => AbortController)
-      | undefined) ||
-    (
-      globalThis as typeof globalThis & {
-        AbortController?: new () => AbortController;
-      }
-    ).AbortController ||
-    null
-  );
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function snapshot(): MineruBatchState {
@@ -118,27 +106,6 @@ function notify(): void {
       /* ignore */
     }
   }
-}
-
-function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
-  const out: Zotero.Item[] = [];
-  if (!item?.isRegularItem?.()) return out;
-  for (const attId of item.getAttachments()) {
-    const att = Zotero.Items.get(attId);
-    if (
-      att?.isAttachment?.() &&
-      att.attachmentContentType === "application/pdf"
-    ) {
-      out.push(att);
-    }
-  }
-  return out;
-}
-
-function isPdfAttachment(item: Zotero.Item | null | undefined): boolean {
-  return Boolean(
-    item?.isAttachment?.() && item.attachmentContentType === "application/pdf",
-  );
 }
 
 function getParentItemForPdf(pdfAtt: Zotero.Item): Zotero.Item | null {

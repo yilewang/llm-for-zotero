@@ -10,6 +10,7 @@ import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
 import {
   getClaudeBridgeUrl,
   getClaudeCustomInstructionPref,
+  getClaudeSettingSourcesCsvByPref,
 } from "../claudeCode/prefs";
 import {
   fetchClaudeModelCatalog,
@@ -88,6 +89,7 @@ import type {
 import {
   normalizeExcludedItemIds,
   synthesizeSelectedTextContexts,
+  normalizePaperContentSourceMode,
 } from "../services/context/normalizers";
 import { formatSelectedTextLocator } from "../services/context/selectedTextAnchorFormatting";
 import {
@@ -622,10 +624,6 @@ function getClaudeSettingSourcesByPref(): Array<"user" | "project" | "local"> {
   if (source === "user-only") return ["user"];
   if (source === "zotero-only") return ["project", "local"];
   return ["user", "project", "local"];
-}
-
-function getClaudeSettingSourcesCsvByPref(): string {
-  return getClaudeSettingSourcesByPref().join(",");
 }
 
 function buildAgentPermissionMetadata(): {
@@ -1477,25 +1475,6 @@ export function buildExternalRuntimeZoteroMcpScope(
     turnPaperScope: request.turnPaperScope,
     turnPaperScopeWarnings: request.turnPaperScopeWarnings,
   };
-}
-
-function normalizePaperContentSourceMode(
-  value: unknown,
-): PaperContentSourceMode | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "text":
-    case "mineru":
-    case "pdf":
-    case "markdown":
-    case "html":
-    case "txt":
-    case "docx":
-      return normalized;
-    default:
-      return undefined;
-  }
 }
 
 function normalizePaperRefs(list: unknown, limit = 8): PaperContextRef[] {

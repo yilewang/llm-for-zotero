@@ -234,7 +234,10 @@ import {
   surfaceChoices,
 } from "./surfaceChoices";
 import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
-import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
+import {
+  renderAssistantGeneratedImagesInto,
+  openGeneratedImageFileUrl,
+} from "./generatedImageRender";
 export { copyTextToClipboard } from "./clipboard";
 export { copyGeneratedImageToClipboard } from "./generatedImageRender";
 import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
@@ -375,7 +378,10 @@ import {
   getStringPref,
   setLastReasoningExpanded,
 } from "./prefHelpers";
-import { resolveMultiContextPlan } from "./multiContextPlanner";
+import {
+  resolveMultiContextPlan,
+  limitFullTextPaperContexts,
+} from "./multiContextPlanner";
 import {
   formatPaperCitationLabel,
   resolvePaperContextDisplayRef,
@@ -520,6 +526,7 @@ import {
 } from "../../shared/conversationKeySpace";
 import { buildEphemeralBackgroundContextBlock } from "../../shared/ephemeralBackgroundContext";
 import { positiveIntOrNull } from "../../core/values";
+import { isPdfAttachment } from "./setupHandlers/controllers/pdfPaperModelInputController";
 
 /** Get AbortController constructor from global scope */
 function getAbortControllerCtor(): (new () => AbortController) | undefined {
@@ -895,33 +902,7 @@ function resolveMultimodalRetryHint(
 function openStoredAttachmentFromMessage(attachment: ChatAttachment): boolean {
   const fileUrl = toFileUrl(attachment.storedPath);
   if (!fileUrl) return false;
-  return openFileUrl(fileUrl);
-}
-
-function openFileUrl(fileUrl: string): boolean {
-  try {
-    const launch = (Zotero as any).launchURL as
-      | ((url: string) => void)
-      | undefined;
-    if (typeof launch === "function") {
-      launch(fileUrl);
-      return true;
-    }
-  } catch (_err) {
-    void _err;
-  }
-  try {
-    const win = Zotero.getMainWindow?.() as
-      | (Window & { open?: (url?: string, target?: string) => unknown })
-      | null;
-    if (win?.open) {
-      win.open(fileUrl, "_blank");
-      return true;
-    }
-  } catch (_err) {
-    void _err;
-  }
-  return false;
+  return openGeneratedImageFileUrl(fileUrl);
 }
 
 function normalizeSelectedTexts(
@@ -5655,19 +5636,6 @@ function getPdfPaperAttachmentContextItemId(
     : null;
 }
 
-function isPdfChatAttachment(attachment: ChatAttachment): boolean {
-  const name = typeof attachment.name === "string" ? attachment.name : "";
-  const mime =
-    typeof attachment.mimeType === "string"
-      ? attachment.mimeType.trim().toLowerCase()
-      : "";
-  return (
-    attachment.category === "pdf" ||
-    mime === "application/pdf" ||
-    /\.pdf$/i.test(name)
-  );
-}
-
 function isSameRetryModelTarget(params: {
   userMessage: Message;
   previousAssistant?: Pick<
@@ -5784,8 +5752,8 @@ async function resolveRetryModelInputs(params: {
   if (
     params.effectiveRequestConfig.providerProtocol !== "web_sync" &&
     pdfSupport !== "native" &&
-    (visibleAttachments.some(isPdfChatAttachment) ||
-      (modelAttachmentsOverride || []).some(isPdfChatAttachment))
+    (visibleAttachments.some(isPdfAttachment) ||
+      (modelAttachmentsOverride || []).some(isPdfAttachment))
   ) {
     throw new Error(FULL_PDF_UNSUPPORTED_MESSAGE);
   }
@@ -5911,12 +5879,6 @@ function normalizeEditableFullTextPaperContexts(
   return limitFullTextPaperContexts(
     normalizePaperContexts(fullTextPaperContexts),
   );
-}
-
-function limitFullTextPaperContexts(
-  paperContexts: PaperContextRef[],
-): PaperContextRef[] {
-  return paperContexts.slice(0, MAX_FULL_TEXT_PAPER_CONTEXTS);
 }
 
 function includeAutoLoadedPaperContext(

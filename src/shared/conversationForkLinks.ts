@@ -8,6 +8,7 @@ import {
 } from "./conversationKeyLedger";
 import { isConversationSystem } from "../core/conversations/conversationSystems";
 import { positiveIntOrZero, trimmedStringOrUndefined } from "../core/values";
+import { isAlreadyExistingColumnError } from "../core/conversations/conversationCleanupJobs";
 
 export type ConversationForkScopeKind = "global" | "paper";
 
@@ -34,12 +35,6 @@ const CONVERSATION_FORK_LINKS_SOURCE_INDEX =
   "llm_for_zotero_conversation_fork_links_source_idx";
 
 let initPromise: Promise<void> | null = null;
-
-function isAlreadyExistingColumnError(error: unknown): boolean {
-  return /duplicate column|already exists/i.test(
-    String(error instanceof Error ? error.message : error || ""),
-  );
-}
 
 function normalizeSystem(value: unknown): ConversationSystem | null {
   return isConversationSystem(value) ? value : null;

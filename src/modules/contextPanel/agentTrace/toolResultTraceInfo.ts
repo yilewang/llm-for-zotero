@@ -39,7 +39,7 @@ function normalizeTraceDetail(
   };
 }
 
-function omitLargeTraceString(value: string): string {
+export function omitLargeTraceString(value: string): string {
   if (/^data:(?:image|application)\//i.test(value) && value.length > 160) {
     const marker = value.slice(0, 96);
     return `${marker}...[omitted ${value.length - marker.length} chars]`;

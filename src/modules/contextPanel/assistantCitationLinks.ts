@@ -54,6 +54,7 @@ import {
   parseStandaloneCitationLabel,
   stripCitationControlChars,
   stripCitationKeyFromLabel,
+  stripLeadingInlineCitationCue,
 } from "../../services/quotes/citationLabelParser";
 import {
   buildAutoNavigableCitationCandidateKeys as buildResolverAutoNavigableCitationCandidateKeys,
@@ -349,9 +350,6 @@ type CitationMatchBuffer = {
   cleanText: string;
   cleanToOriginalIndex: number[];
 };
-
-const INLINE_CITATION_LEADING_CUE_PATTERN =
-  /^(?:e\.?\s*g\.?|i\.?\s*e\.?|see(?:\s+also)?|cf\.?|compare|for\s+example|for\s+instance|such\s+as|as\s+in|and\b|&)\s*[:,]?\s*/i;
 
 function buildCitationMatchBuffer(source: string): CitationMatchBuffer {
   const cleanToOriginalIndex: number[] = [];
@@ -1090,24 +1088,6 @@ export function extractMarkdownBlockquoteTextsForCitationDecoration(
   }
   flush();
   return out;
-}
-
-function stripLeadingInlineCitationCue(value: string): {
-  stripped: string;
-  consumed: number;
-} {
-  let remaining = String(value || "");
-  let consumed = 0;
-  while (remaining) {
-    const cueMatch = remaining.match(INLINE_CITATION_LEADING_CUE_PATTERN);
-    if (!cueMatch) break;
-    consumed += cueMatch[0].length;
-    remaining = remaining.slice(cueMatch[0].length);
-  }
-  return {
-    stripped: remaining,
-    consumed,
-  };
 }
 
 function parseGroupedInlineCitationMatch(

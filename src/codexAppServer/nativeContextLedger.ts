@@ -6,6 +6,13 @@ import {
 } from "../shared/conversationWriteFence";
 import { SINGLE_PAPER_READ_TOOL_NAMES } from "../agent/context/toolNames";
 import { positiveIntOrUndefined, recordOrEmpty } from "../core/values";
+import {
+  buildReadDetail,
+  fileNameForPath,
+  formatTargetLabel,
+  isLikelyMineruReadPath,
+  truncateMiddle,
+} from "../agent/context/cacheManagement";
 
 const MAX_LEDGER_ENTRIES = 12;
 const MAX_RENDERED_LEDGER_ENTRIES = 8;
@@ -63,20 +70,6 @@ function ledgerKey(params: {
     normalizeText(params.instanceID, 128),
     normalizeText(params.threadId, 256),
   ].join(":");
-}
-
-function formatTargetLabel(target: {
-  title?: string;
-  itemId?: number;
-  contextItemId?: number;
-}): string {
-  const parts: string[] = [];
-  if (target.itemId) parts.push(`itemId=${target.itemId}`);
-  if (target.contextItemId) parts.push(`contextItemId=${target.contextItemId}`);
-  const title = normalizeText(target.title, 100);
-  if (title) return `${title}${parts.length ? ` [${parts.join(", ")}]` : ""}`;
-  if (parts.length) return parts.join(", ");
-  return "";
 }
 
 function normalizePaperContext(
@@ -152,37 +145,6 @@ function extractTargets(
   return fallback.itemId || fallback.contextItemId || fallback.title
     ? [fallback]
     : [];
-}
-
-function fileNameForPath(filePath: string): string {
-  return filePath.split(/[\\/]/).pop() || filePath;
-}
-
-function isLikelyMineruReadPath(filePath: string): boolean {
-  const normalized = filePath.toLowerCase();
-  if (!normalized.includes("mineru")) return false;
-  return (
-    /\.(?:md|json)$/i.test(filePath) ||
-    /\.(?:png|jpe?g|gif|webp|svg)$/i.test(filePath)
-  );
-}
-
-function buildReadDetail(toolName: string, args: unknown): string | undefined {
-  const record = recordOrEmpty(args);
-  if (toolName === "paper_read") {
-    const mode = normalizeText(record.mode, 40) || "overview";
-    const pieces = [`mode=${mode}`];
-    const query = normalizeText(record.query, 120);
-    if (query) pieces.push(`query="${query}"`);
-    if (Array.isArray(record.pages) && record.pages.length) {
-      pieces.push(`pages=${record.pages.join(", ")}`);
-    }
-    return pieces.join(", ");
-  }
-  if (toolName === "read_attachment") {
-    return record.attachFile === true ? "attached full file" : undefined;
-  }
-  return undefined;
 }
 
 function buildFileIoEntry(params: {
@@ -355,13 +317,6 @@ export function recordCodexNativeReadActivity(params: {
     readLedger.set(key, ledger);
   }
   for (const entry of entries) upsertEntry(ledger, entry);
-}
-
-function truncateMiddle(value: string, maxLength = 96): string {
-  if (value.length <= maxLength) return value;
-  const head = value.slice(0, Math.floor(maxLength / 2) - 2);
-  const tail = value.slice(value.length - Math.floor(maxLength / 2) + 1);
-  return `${head}...${tail}`;
 }
 
 function formatLedgerLine(entry: NativeReadLedgerEntry): string {

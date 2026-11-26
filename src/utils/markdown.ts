@@ -595,7 +595,7 @@ function renderCodeHtml(code: string, lang: string): string {
   return html;
 }
 
-function trimSvgLeadingMetadata(svg: string): string {
+export function trimSvgLeadingMetadata(svg: string): string {
   let result = svg.trim().replace(/^\uFEFF/, "");
   let previous = "";
   while (previous !== result) {
@@ -625,7 +625,7 @@ function hasUnsafeSvgUrl(svg: string): boolean {
   return false;
 }
 
-function encodeBase64Utf8(value: string): string {
+export function encodeBase64Utf8(value: string): string {
   const bytes = new TextEncoder().encode(value);
   let binary = "";
   const chunkSize = 0x8000;

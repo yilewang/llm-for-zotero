@@ -1,43 +1,16 @@
-import { config } from "../../package.json";
 import {
   isConversationKeyForKind,
   isRuntimeAllocatedConversationKeyForKind,
 } from "./conversationKeySpace";
-
-type ZoteroPrefsAPI = {
-  get?: (key: string, global?: boolean) => unknown;
-  set?: (key: string, value: unknown, global?: boolean) => void;
-};
-
-function getZoteroPrefs(): ZoteroPrefsAPI | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { Prefs?: ZoteroPrefsAPI } })
-      .Zotero?.Prefs || null
-  );
-}
-
-function prefKey(key: string): string {
-  return `${config.prefsPrefix}.${key}`;
-}
-
-function getStringPref(key: string): string {
-  const value = getZoteroPrefs()?.get?.(prefKey(key), true);
-  return typeof value === "string" ? value : "";
-}
-
-function setPref(key: string, value: unknown): void {
-  getZoteroPrefs()?.set?.(prefKey(key), value, true);
-}
-
-function getNumberPref(key: string): number | null {
-  const value = getZoteroPrefs()?.get?.(prefKey(key), true);
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
+import {
+  getZoteroPrefs,
+  readPositiveIntPref,
+  readStringPref,
+  writePref,
+} from "../utils/pluginPrefs";
 
 function getJsonNumberMapPref(key: string): Record<string, number> {
-  const raw = getStringPref(key).trim();
+  const raw = readStringPref(key).trim();
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -57,7 +30,7 @@ function setJsonNumberMapPref(
   key: string,
   value: Record<string, number>,
 ): void {
-  setPref(key, JSON.stringify(value));
+  writePref(key, JSON.stringify(value));
 }
 
 function cleanJsonNumberMapPref(
@@ -83,9 +56,9 @@ function cleanScalarConversationKeyPref(
   key: string,
   keep: (value: number) => boolean,
 ): void {
-  const value = getNumberPref(key);
+  const value = readPositiveIntPref(key);
   if (value && !keep(value)) {
-    setPref(key, 0);
+    writePref(key, 0);
   }
 }
 

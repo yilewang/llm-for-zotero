@@ -12,6 +12,7 @@ import {
   type AgentPurgeDb,
 } from "../store/inTransactionDelete";
 import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
+import { stabilizeForJson } from "../store/stableJson";
 
 export type AgentCoverageSourceKind =
   | "zotero_metadata"
@@ -155,19 +156,6 @@ function stableJson(value: unknown): string {
   // JSON.stringify(undefined) is undefined, not a string; a visual paper_read
   // redirect with neither pages nor artifacts hashes exactly that value.
   return JSON.stringify(stabilizeForJson(value)) ?? "";
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
 }
 
 function hashText(value: string): string {

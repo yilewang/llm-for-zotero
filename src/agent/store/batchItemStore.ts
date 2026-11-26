@@ -14,6 +14,7 @@
  */
 import type { MaterialRef } from "../documents/materialRef";
 import { BATCH_JOBS_TABLE } from "./batchJobStore";
+import { isAgentChangeJournalAvailable } from "./changeJournal";
 
 export const BATCH_ITEMS_TABLE = "llm_for_zotero_agent_batch_items";
 
@@ -94,19 +95,6 @@ function getDb(): DbLike | null {
   }
 }
 
-/**
- * Whether these rows can be read or written at all.
- *
- * The table itself has to exist, not merely a database: the agent runtime
- * asks for resumable batches at the start of every turn, and a query against
- * a table that was never created would throw there and cost the user the
- * whole turn. The change journal guards its own reads the same way.
- */
-function hasDb(): boolean {
-  const db = getDb();
-  return db !== null && db === initializedDb;
-}
-
 function normalizeStatus(value: unknown): BatchItemStatus {
   return value === "saved" || value === "failed" ? value : "pending";
 }
@@ -184,7 +172,7 @@ export async function createBatchItems(
   rows: readonly NewBatchItem[],
   now: number = Date.now(),
 ): Promise<void> {
-  if (!hasDb() || !rows.length) return;
+  if (!isAgentChangeJournalAvailable() || !rows.length) return;
   await Zotero.DB.executeTransaction(async () => {
     for (const row of rows) {
       await Zotero.DB.queryAsync(
@@ -221,7 +209,7 @@ export async function markBatchItemSaved(
     now?: number;
   },
 ): Promise<void> {
-  if (!hasDb()) return;
+  if (!isAgentChangeJournalAvailable()) return;
   await Zotero.DB.queryAsync(
     `UPDATE ${BATCH_ITEMS_TABLE}
      SET status = 'saved', action_id = ?, step_sequence = ?, note_id = ?,
@@ -258,7 +246,7 @@ export async function linkBatchItemsToAction(
   actionId: string,
   now: number = Date.now(),
 ): Promise<void> {
-  if (!hasDb() || !itemKeys.length) return;
+  if (!isAgentChangeJournalAvailable() || !itemKeys.length) return;
   await Zotero.DB.queryAsync(
     `UPDATE ${BATCH_ITEMS_TABLE}
      SET action_id = ?, step_sequence = NULL, updated_at = ?
@@ -279,7 +267,7 @@ export async function markBatchItemFailed(
     now?: number;
   },
 ): Promise<void> {
-  if (!hasDb()) return;
+  if (!isAgentChangeJournalAvailable()) return;
   await Zotero.DB.queryAsync(
     `UPDATE ${BATCH_ITEMS_TABLE}
      SET status = 'failed', action_id = ?, step_sequence = ?, error = ?,
@@ -309,7 +297,7 @@ export async function markBatchItemSettled(
   itemKey: string,
   params: { noteId: number; now?: number },
 ): Promise<void> {
-  if (!hasDb()) return;
+  if (!isAgentChangeJournalAvailable()) return;
   await Zotero.DB.queryAsync(
     `UPDATE ${BATCH_ITEMS_TABLE}
      SET status = 'saved', note_id = ?, error = NULL, updated_at = ?
@@ -321,7 +309,7 @@ export async function markBatchItemSettled(
 export async function listBatchItems(
   batchId: string,
 ): Promise<BatchItemRecord[]> {
-  if (!hasDb()) return [];
+  if (!isAgentChangeJournalAvailable()) return [];
   const rows = (await Zotero.DB.queryAsync(
     `SELECT * FROM ${BATCH_ITEMS_TABLE}
      WHERE batch_id = ? ORDER BY position ASC`,
@@ -361,7 +349,7 @@ export function itemSetSignature(itemKeys: string): string {
 export async function listResumableBatches(
   conversationKey: number,
 ): Promise<ResumableBatch[]> {
-  if (!hasDb()) return [];
+  if (!isAgentChangeJournalAvailable()) return [];
   const rows = (await Zotero.DB.queryAsync(
     `SELECT items.batch_id AS batchId,
             jobs.conversation_key AS conversationKey,

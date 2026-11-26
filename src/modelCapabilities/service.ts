@@ -46,6 +46,7 @@ import {
   removeControlRoots,
   validateRegistry,
   validateReasoning,
+  cloneValue,
 } from "./registry";
 import {
   classifyModelDiscoveryHttpError,
@@ -136,10 +137,6 @@ function getFetch(): typeof fetch | undefined {
     | typeof fetch
     | undefined;
   return toolkitFetch;
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function notify(): void {
@@ -514,7 +511,7 @@ function mergeReasoning(
     return { reasoning: { kind: "none", options: [] }, source: "live" };
   }
   if (live?.reasoning && protocol !== "ollama_native") {
-    return { reasoning: clone(live.reasoning), source: "live" };
+    return { reasoning: cloneValue(live.reasoning), source: "live" };
   }
   // A recognized family may keep its level set, but never its request body,
   // when the model is served over Ollama's native protocol: `qwen3` there
@@ -538,7 +535,7 @@ function mergeReasoning(
   }
   if (entry?.reasoning) {
     return {
-      reasoning: clone(entry.reasoning),
+      reasoning: cloneValue(entry.reasoning),
       source: activeRegistrySource,
     };
   }
@@ -715,7 +712,7 @@ export function getModelCapabilities(
     limits: mergedLimits.limits,
     reasoning: mergedReasoning.reasoning,
     sampling: entry?.sampling
-      ? { ...defaultSampling(), ...clone(entry.sampling) }
+      ? { ...defaultSampling(), ...cloneValue(entry.sampling) }
       : defaultSampling(),
     inputs: {
       ...defaultInputs(provider, model),
@@ -776,7 +773,7 @@ function applyProfileOverride(
     provenance.limits = "user";
   }
   if (override.reasoning) {
-    next.reasoning = clone(override.reasoning);
+    next.reasoning = cloneValue(override.reasoning);
     provenance.reasoning = "user";
   }
   next.provenance = provenance;
@@ -936,7 +933,7 @@ export function publishModelCapabilityCatalog(
   models: DiscoveredModel[],
 ): void {
   catalogSnapshots.set(buildCatalogKey(identity), {
-    models: clone(models),
+    models: cloneValue(models),
     fetchedAt: now(),
     stale: false,
   });
@@ -1184,7 +1181,7 @@ function parseDiscoveredModels(
         ? { reasoningSupported }
         : {}),
       ...(validateReasoning(row.reasoning)
-        ? { reasoning: clone(row.reasoning) }
+        ? { reasoning: cloneValue(row.reasoning) }
         : {}),
       source: "live",
     });
@@ -1460,7 +1457,7 @@ export function getModelCatalogStatus(
   const snapshot =
     catalogSnapshots.get(buildCatalogKey(identity)) ??
     getCatalogSnapshot(identity);
-  return snapshot ? clone(snapshot) : null;
+  return snapshot ? cloneValue(snapshot) : null;
 }
 
 export function isModelCatalogExpired(identity: ModelCatalogIdentity): boolean {

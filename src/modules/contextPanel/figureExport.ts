@@ -1,4 +1,4 @@
-import { buildSafeSvgMarkup } from "../../utils/markdown";
+import { buildSafeSvgMarkup, encodeBase64Utf8 } from "../../utils/markdown";
 import { escapeNoteHtml } from "../../utils/textSanitization";
 import { buildSvgExportMarkup } from "../../utils/previewTheme";
 import {
@@ -32,18 +32,6 @@ const FIGURE_EXPORT_MIN_DIMENSION = 1;
 const FIGURE_EXPORT_MIN_LONG_EDGE = 1600;
 const FIGURE_EXPORT_BASE_SCALE = 2;
 const PNG_DATA_URL_PREFIX = "data:image/png;base64,";
-
-function encodeBase64Utf8(value: string): string {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    binary += String.fromCharCode(
-      ...bytes.subarray(offset, offset + chunkSize),
-    );
-  }
-  return btoa(binary);
-}
 
 function decodeBase64Bytes(base64: string): Uint8Array | null {
   try {

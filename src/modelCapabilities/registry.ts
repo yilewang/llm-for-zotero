@@ -329,7 +329,7 @@ export function findRegistryEntry(
   return best?.entry || null;
 }
 
-function cloneValue<T>(value: T): T {
+export function cloneValue<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 

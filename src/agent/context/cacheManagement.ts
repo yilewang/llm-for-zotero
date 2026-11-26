@@ -21,6 +21,7 @@ import {
 } from "../store/inTransactionDelete";
 import { normalizeQuoteTokenId } from "../../services/quotes/quoteTokenIds";
 import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
+import { stableJson } from "../store/stableJson";
 
 export type AgentCacheEvidenceActivity = {
   toolName: string;
@@ -158,23 +159,6 @@ function normalizeEvidenceText(value: unknown): string {
 function normalizeNumber(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
 }
 
 function ledgerForConversation(
@@ -327,7 +311,7 @@ function extractTargets(
     : [];
 }
 
-function formatTargetLabel(target: {
+export function formatTargetLabel(target: {
   title?: string;
   itemId?: number;
   contextItemId?: number;
@@ -341,7 +325,10 @@ function formatTargetLabel(target: {
   return "";
 }
 
-function buildReadDetail(toolName: string, args: unknown): string | undefined {
+export function buildReadDetail(
+  toolName: string,
+  args: unknown,
+): string | undefined {
   const record = recordOrEmpty(args);
   if (toolName === "paper_read") {
     const mode = normalizeText(record.mode, 40) || "overview";
@@ -359,7 +346,7 @@ function buildReadDetail(toolName: string, args: unknown): string | undefined {
   return undefined;
 }
 
-function fileNameForPath(filePath: string): string {
+export function fileNameForPath(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath;
 }
 
@@ -367,7 +354,7 @@ function normalizePathForPrefix(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+$/g, "");
 }
 
-function isLikelyMineruReadPath(filePath: string): boolean {
+export function isLikelyMineruReadPath(filePath: string): boolean {
   const normalized = filePath.toLowerCase();
   if (!normalized.includes("mineru")) return false;
   return (
@@ -905,7 +892,7 @@ export function clearAgentEvidenceCache(): void {
   hydratedConversations.clear();
 }
 
-function truncateMiddle(value: string, maxLength = 96): string {
+export function truncateMiddle(value: string, maxLength = 96): string {
   if (value.length <= maxLength) return value;
   const head = value.slice(0, Math.floor(maxLength / 2) - 2);
   const tail = value.slice(value.length - Math.floor(maxLength / 2) + 1);

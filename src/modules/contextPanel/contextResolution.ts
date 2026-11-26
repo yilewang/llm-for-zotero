@@ -249,7 +249,7 @@ export function resolvePanelContextLifecycleState(
   };
 }
 
-function getFirstPdfChildAttachment(
+export function getFirstPdfChildAttachment(
   item: Zotero.Item | null | undefined,
 ): Zotero.Item | null {
   if (!item || item.isAttachment()) return null;

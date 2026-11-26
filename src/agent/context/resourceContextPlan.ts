@@ -19,6 +19,7 @@ import {
 } from "./cacheManagement";
 import { getSelectedPassagePaper } from "./turnPaperScope";
 import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
+import { stableJson } from "../store/stableJson";
 
 export { hydrateAgentEvidenceCache };
 
@@ -63,23 +64,6 @@ function normalizeText(value: unknown, maxLength = 160): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, maxLength);
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
 }
 
 function hashText(value: string): string {

@@ -89,6 +89,7 @@ import {
   toLocalDateKey,
   type UsageEventMode,
   type UsageEventRuntime,
+  normalizePositiveInt,
 } from "./usageStore";
 import {
   isRuntimeConversationSystem,
@@ -219,11 +220,6 @@ function getDb(): BackfillDb | null {
 
 function log(message: string, error?: unknown): void {
   appLogger.warn(`LLM: ${message}`, error);
-}
-
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
 /** Column names a table actually has; empty means the table is not there. */

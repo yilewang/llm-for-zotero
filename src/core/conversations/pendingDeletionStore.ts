@@ -12,6 +12,7 @@ import {
   isRuntimeConversationSystem,
   type RuntimeConversationSystem,
 } from "./conversationSystems";
+import { isAlreadyExistingColumnError } from "./conversationCleanupJobs";
 
 /**
  * Whether deleting a runtime conversation leaves provider-side state to clean
@@ -170,12 +171,6 @@ export type PendingDeletionStoreEnv = {
 type ZoteroDbLike = {
   queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
 };
-
-function isAlreadyExistingColumnError(error: unknown): boolean {
-  return /duplicate column|already exists/i.test(
-    String(error instanceof Error ? error.message : error || ""),
-  );
-}
 
 function getZoteroDb(): ZoteroDbLike | null {
   const db = (globalThis as { Zotero?: { DB?: ZoteroDbLike } }).Zotero?.DB;

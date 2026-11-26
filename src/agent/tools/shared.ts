@@ -4,6 +4,7 @@ import type {
   PaperContentSourceMode,
   PaperContextRef,
 } from "../../shared/types";
+import { normalizePaperContentSourceMode } from "../../services/context/normalizers";
 
 export function validateObject<T extends Record<string, unknown>>(
   value: unknown,
@@ -56,25 +57,6 @@ function normalizeBracketedArray(value: unknown): unknown[] | null {
     return Array.isArray(parsed) ? parsed : null;
   } catch (_error) {
     return null;
-  }
-}
-
-function normalizePaperContentSourceMode(
-  value: unknown,
-): PaperContentSourceMode | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "text":
-    case "mineru":
-    case "pdf":
-    case "markdown":
-    case "html":
-    case "txt":
-    case "docx":
-      return normalized;
-    default:
-      return undefined;
   }
 }
 

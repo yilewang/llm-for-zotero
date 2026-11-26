@@ -677,7 +677,7 @@ function parseCitationOnlyLine(value: string): string | null {
   return null;
 }
 
-function stripBlockquoteMarker(line: string): string {
+export function stripBlockquoteMarker(line: string): string {
   return line.replace(/^[ \t]*(?:>[ \t]?)+/, "");
 }
 

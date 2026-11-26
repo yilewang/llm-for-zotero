@@ -29,6 +29,8 @@ import {
   toLocalDateKey,
   type StoredUsageEvent,
   type UsageTokenSource,
+  getUsageDb,
+  normalizePositiveInt,
 } from "./usageStore";
 import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
 
@@ -185,17 +187,7 @@ export type UsageConversationUsage = {
   totalTokens: number;
 };
 
-type UsageDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
 type Row = Record<string, unknown>;
-
-function getUsageDb(): UsageDb | null {
-  const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
-    .Zotero?.DB;
-  return typeof db?.queryAsync === "function" ? (db as UsageDb) : null;
-}
 
 function logUsageStatsWarning(message: string, error?: unknown): void {
   appLogger.warn(`LLM: ${message}`, error);
@@ -722,12 +714,6 @@ export async function loadUsageHistoryBounds(): Promise<UsageHistoryBounds> {
   };
 }
 
-/** Null rather than 0 for an absent id column, so an export shows it as blank. */
-function toOptionalId(value: unknown): number | null {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
 /**
  * The user's own rows, for the CSV export.
  *
@@ -770,8 +756,8 @@ export async function loadUsageEventsForExport(
     mode: row.mode === "paper" ? "paper" : "library",
     conversationKey: positiveIntOrZero(row.conversationKey),
     conversationInstanceID: trimmedStringOrNull(row.conversationInstanceID),
-    libraryID: toOptionalId(row.libraryID),
-    paperItemID: toOptionalId(row.paperItemID),
+    libraryID: normalizePositiveInt(row.libraryID),
+    paperItemID: normalizePositiveInt(row.paperItemID),
     model: trimmedStringOrNull(row.model),
     provider: trimmedStringOrNull(row.provider),
     runtime: trimmedStringOrNull(row.runtime),

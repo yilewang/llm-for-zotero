@@ -3709,7 +3709,9 @@ function sectionLabelForDigest(candidate: PaperContextCandidate): string {
   );
 }
 
-function candidateHasBodyEvidence(candidate: PaperContextCandidate): boolean {
+export function candidateHasBodyEvidence(
+  candidate: PaperContextCandidate,
+): boolean {
   return isBodyEvidenceSection(candidate.sectionLabel, candidate.chunkKind);
 }
 

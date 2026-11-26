@@ -29,7 +29,7 @@ function buildCitationPageCacheKey(
   return `${Math.floor(contextItemId)}\u241f${quoteHash}`;
 }
 
-function normalizePageIndex(value: unknown): number | null {
+export function normalizePageIndex(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return Math.floor(parsed);

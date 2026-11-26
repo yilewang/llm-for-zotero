@@ -212,7 +212,7 @@ const USAGE_INDEXES: Array<{ name: string; columns: string }> = [
 
 let initPromise: Promise<void> | null = null;
 
-function getUsageDb(): UsageDb | null {
+export function getUsageDb(): UsageDb | null {
   const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
     .Zotero?.DB;
   return typeof db?.queryAsync === "function" ? (db as UsageDb) : null;
@@ -222,7 +222,7 @@ function logUsageStoreWarning(message: string, error?: unknown): void {
   appLogger.warn(`LLM: ${message}`, error);
 }
 
-function normalizePositiveInt(value: unknown): number | null {
+export function normalizePositiveInt(value: unknown): number | null {
   const parsed = Math.floor(Number(value));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }

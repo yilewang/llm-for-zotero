@@ -68,18 +68,7 @@ import {
   rememberPaperRestoreTarget,
 } from "../../shared/paperConversationRestore";
 import { collapseWhitespace } from "../../core/values";
-
-type ZoteroPrefsAPI = {
-  get?: (key: string, global?: boolean) => unknown;
-  set?: (key: string, value: unknown, global?: boolean) => void;
-  clear?: (key: string, global?: boolean) => void;
-};
-
-function getZoteroPrefs(): ZoteroPrefsAPI | null {
-  return (
-    (Zotero as unknown as { Prefs?: ZoteroPrefsAPI } | undefined)?.Prefs || null
-  );
-}
+import { getZoteroPrefs } from "../../utils/pluginPrefs";
 
 export function getStringPref(key: string): string {
   const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);

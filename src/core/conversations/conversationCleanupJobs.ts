@@ -199,7 +199,7 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
 
 let initPromise: Promise<void> | null = null;
 
-function isAlreadyExistingColumnError(error: unknown): boolean {
+export function isAlreadyExistingColumnError(error: unknown): boolean {
   return /duplicate column|already exists/i.test(
     String(error instanceof Error ? error.message : error || ""),
   );

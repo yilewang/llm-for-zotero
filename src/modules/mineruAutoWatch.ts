@@ -80,7 +80,7 @@ const readinessRetryTimers = new Map<
   { timer: ReturnType<typeof setTimeout>; entry: QueueEntry }
 >();
 
-function getAbortControllerCtor(): (new () => AbortController) | null {
+export function getAbortControllerCtor(): (new () => AbortController) | null {
   return (
     (ztoolkit.getGlobal("AbortController") as
       | (new () => AbortController)
@@ -137,7 +137,7 @@ function showNotification(title: string, message: string): void {
   }
 }
 
-function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
+export function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
   const out: Zotero.Item[] = [];
   if (!item?.isRegularItem?.()) return out;
   for (const attId of item.getAttachments()) {

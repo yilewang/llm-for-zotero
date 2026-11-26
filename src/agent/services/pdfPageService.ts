@@ -39,6 +39,7 @@ import {
   type PdfFigureExtractionRuntime,
 } from "./pdfFigureRuntimeService";
 import { collapseWhitespace, positiveIntOrUndefined } from "../../core/values";
+import { getReaderDocument } from "../../services/pdf/pdfPageCapture";
 
 export type PdfVisualMode = "general" | "figure" | "equation";
 
@@ -922,15 +923,6 @@ async function waitForPdfDocument(
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
   return null;
-}
-
-function getReaderDocument(reader: any): Document | null {
-  return (
-    reader?._iframeWindow?.document ||
-    reader?._iframe?.contentDocument ||
-    reader?._internalReader?._lastView?._iframeWindow?.document ||
-    null
-  );
 }
 
 async function canvasToBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {

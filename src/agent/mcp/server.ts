@@ -4,7 +4,10 @@ import { noteHtmlToModelText } from "../../services/notes/noteRendering";
 import { NOTE_EMBED_PLACEHOLDER_GUIDANCE } from "../../utils/noteEmbeds";
 import { createJournalId } from "../store/changeJournal";
 import { createAbortController } from "../../utils/apiHelpers";
-import { normalizeExcludedItemIds } from "../../services/context/normalizers";
+import {
+  normalizeExcludedItemIds,
+  normalizePaperContentSourceMode,
+} from "../../services/context/normalizers";
 /**
  * MCP (Model Context Protocol) server for the llm-for-zotero plugin.
  *
@@ -766,25 +769,6 @@ function normalizeText(value: unknown, maxLength = 240): string | undefined {
   }).join("");
   const normalized = withoutControlChars.replace(/\s+/g, " ").trim();
   return normalized ? normalized.slice(0, maxLength) : undefined;
-}
-
-function normalizePaperContentSourceMode(
-  value: unknown,
-): PaperContentSourceMode | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "text":
-    case "mineru":
-    case "pdf":
-    case "markdown":
-    case "html":
-    case "txt":
-    case "docx":
-      return normalized;
-    default:
-      return undefined;
-  }
 }
 
 function normalizePaperContext(

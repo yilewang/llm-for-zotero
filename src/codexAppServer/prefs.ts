@@ -8,7 +8,6 @@ import {
   isRuntimeConversationSystemEnabled,
   setRuntimeConversationSystemEnabled,
 } from "../shared/conversationSystemPrefs";
-import { config } from "../../package.json";
 import {
   DEFAULT_CODEX_RUNTIME_MODEL,
   getCodexAllocatedConversationKeyRange,
@@ -31,41 +30,17 @@ import {
   serializeCodexPermissionState,
   type CodexPermissionState,
 } from "./permissionState";
+import {
+  getZoteroPrefs,
+  prefKey,
+  readPositiveIntMapPref,
+  readPositiveIntPref,
+  readStringMapPref,
+  readStringPref,
+  writePref,
+} from "../utils/pluginPrefs";
 
 export type CodexNativeSkillMode = "native" | "legacy" | "off";
-
-type ZoteroPrefsAPI = {
-  get?: (key: string, global?: boolean) => unknown;
-  set?: (key: string, value: unknown, global?: boolean) => void;
-  prefHasUserValue?: (key: string) => boolean;
-};
-
-function getZoteroPrefs(): ZoteroPrefsAPI | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { Prefs?: ZoteroPrefsAPI } })
-      .Zotero?.Prefs || null
-  );
-}
-
-function prefKey(key: string): string {
-  return `${config.prefsPrefix}.${key}`;
-}
-
-function getStringPref(key: string): string {
-  const value = getZoteroPrefs()?.get?.(prefKey(key), true);
-  return typeof value === "string" ? value : "";
-}
-
-function getNumberPref(key: string): number | null {
-  const value = getZoteroPrefs()?.get?.(prefKey(key), true);
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
-function setPref(key: string, value: unknown): void {
-  getZoteroPrefs()?.set?.(prefKey(key), value, true);
-}
 
 export function codexPrefHasUserValue(key: string): boolean {
   try {
@@ -81,47 +56,12 @@ export function codexPrefHasUserValue(key: string): boolean {
   return false;
 }
 
-function getJsonPref(key: string): Record<string, number> {
-  const raw = getStringPref(key).trim();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const normalized: Record<string, number> = {};
-    for (const [entryKey, entryValue] of Object.entries(parsed)) {
-      const n = Number(entryValue);
-      if (!Number.isFinite(n) || n <= 0) continue;
-      normalized[entryKey] = Math.floor(n);
-    }
-    return normalized;
-  } catch {
-    return {};
-  }
-}
-
 function setJsonPref(key: string, value: Record<string, number>): void {
-  setPref(key, JSON.stringify(value));
-}
-
-function getJsonStringPref(key: string): Record<string, string> {
-  const raw = getStringPref(key).trim();
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const normalized: Record<string, string> = {};
-    for (const [entryKey, entryValue] of Object.entries(parsed)) {
-      if (typeof entryValue !== "string") continue;
-      const trimmed = entryValue.trim();
-      if (!trimmed) continue;
-      normalized[entryKey] = trimmed;
-    }
-    return normalized;
-  } catch {
-    return {};
-  }
+  writePref(key, JSON.stringify(value));
 }
 
 function setJsonStringPref(key: string, value: Record<string, string>): void {
-  setPref(key, JSON.stringify(value));
+  writePref(key, JSON.stringify(value));
 }
 
 export function isCodexAppServerModeEnabled(): boolean {
@@ -134,40 +74,40 @@ export function setCodexAppServerModeEnabled(enabled: boolean): void {
 
 export function getCodexRuntimeModelPref(): CodexRuntimeModel {
   return (
-    getStringPref("codexAppServerModel").trim() || DEFAULT_CODEX_RUNTIME_MODEL
+    readStringPref("codexAppServerModel").trim() || DEFAULT_CODEX_RUNTIME_MODEL
   );
 }
 
 export function setCodexRuntimeModelPref(model: string): void {
   const normalized = model.trim() || DEFAULT_CODEX_RUNTIME_MODEL;
-  setPref("codexAppServerModel", normalized);
+  writePref("codexAppServerModel", normalized);
 }
 
 export function getCodexReasoningModePref(): CodexReasoningMode {
-  const raw = getStringPref("codexAppServerReasoning").trim();
+  const raw = readStringPref("codexAppServerReasoning").trim();
   return !raw || raw.toLowerCase() === "auto" ? "auto" : raw;
 }
 
 export function setCodexReasoningModePref(mode: CodexReasoningMode): void {
   const normalized = mode.trim();
-  setPref(
+  writePref(
     "codexAppServerReasoning",
     !normalized || normalized.toLowerCase() === "auto" ? "auto" : normalized,
   );
 }
 
 export function getCodexBinaryPathPref(): string {
-  return getStringPref("codexAppServerPath").trim();
+  return readStringPref("codexAppServerPath").trim();
 }
 
 export function setCodexBinaryPathPref(path: string): void {
-  setPref("codexAppServerPath", String(path || "").trim());
+  writePref("codexAppServerPath", String(path || "").trim());
 }
 
 export { getCodexHomePref } from "../utils/codexHomePref";
 
 export function setCodexHomePref(path: string): void {
-  setPref("codexHome", String(path || "").trim());
+  writePref("codexHome", String(path || "").trim());
 }
 
 export type CodexPermissionStatePreference = {
@@ -179,7 +119,7 @@ export type CodexPermissionStatePreference = {
 
 export function readCodexPermissionStatePref(): CodexPermissionStatePreference {
   const hasUserValue = codexPrefHasUserValue("codexAppServerPermissionState");
-  const raw = getStringPref("codexAppServerPermissionState").trim();
+  const raw = readStringPref("codexAppServerPermissionState").trim();
   if (!raw) {
     return {
       state: cloneCodexPermissionState(CODEX_ASK_PERMISSION_STATE),
@@ -206,7 +146,7 @@ export function readCodexPermissionStatePref(): CodexPermissionStatePreference {
 }
 
 export function setCodexPermissionStatePref(state: CodexPermissionState): void {
-  setPref(
+  writePref(
     "codexAppServerPermissionState",
     serializeCodexPermissionState(state),
   );
@@ -227,7 +167,7 @@ export function isCodexZoteroMcpToolsEnabled(): boolean {
 }
 
 export function setCodexZoteroMcpToolsEnabled(enabled: boolean): void {
-  setPref("codexAppServerZoteroMcpToolsEnabled", Boolean(enabled));
+  writePref("codexAppServerZoteroMcpToolsEnabled", Boolean(enabled));
 }
 
 export function isNativeZoteroMcpToolsEnabled(): boolean {
@@ -239,7 +179,7 @@ export function setNativeZoteroMcpToolsEnabled(enabled: boolean): void {
 }
 
 export function getCodexNativeSkillModePref(): CodexNativeSkillMode {
-  const raw = getStringPref("codexNativeSkillMode").trim().toLowerCase();
+  const raw = readStringPref("codexNativeSkillMode").trim().toLowerCase();
   if (raw === "legacy" || raw === "off") return raw;
   return "native";
 }
@@ -248,7 +188,7 @@ export function getLastUsedCodexConversationMode(
   libraryID: number,
 ): "global" | "paper" | null {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
-  const map = getJsonStringPref("codexAppServerConversationModeMap");
+  const map = readStringMapPref("codexAppServerConversationModeMap");
   const value = map[buildGlobalConversationMapKey(libraryID)];
   return value === "global" || value === "paper" ? value : null;
 }
@@ -258,7 +198,7 @@ export function setLastUsedCodexConversationMode(
   mode: "global" | "paper",
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
-  const map = getJsonStringPref("codexAppServerConversationModeMap");
+  const map = readStringMapPref("codexAppServerConversationModeMap");
   map[buildGlobalConversationMapKey(libraryID)] =
     mode === "paper" ? "paper" : "global";
   setJsonStringPref("codexAppServerConversationModeMap", map);
@@ -266,7 +206,7 @@ export function setLastUsedCodexConversationMode(
 
 export function removeLastUsedCodexConversationMode(libraryID: number): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
-  const map = getJsonStringPref("codexAppServerConversationModeMap");
+  const map = readStringMapPref("codexAppServerConversationModeMap");
   delete map[buildGlobalConversationMapKey(libraryID)];
   setJsonStringPref("codexAppServerConversationModeMap", map);
 }
@@ -300,7 +240,7 @@ export function getLastUsedCodexGlobalConversationKey(
   libraryID: number,
 ): number | null {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return null;
-  const map = getJsonPref("codexAppServerGlobalConversationMap");
+  const map = readPositiveIntMapPref("codexAppServerGlobalConversationMap");
   const value = Number(map[buildGlobalConversationMapKey(libraryID)]);
   if (!Number.isFinite(value) || value <= 0) return null;
   return isConversationKeyInRange(value, "global") ? Math.floor(value) : null;
@@ -313,7 +253,7 @@ export function setLastUsedCodexGlobalConversationKey(
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
   if (!Number.isFinite(conversationKey) || conversationKey <= 0) return;
   if (!isConversationKeyInRange(conversationKey, "global")) return;
-  const map = getJsonPref("codexAppServerGlobalConversationMap");
+  const map = readPositiveIntMapPref("codexAppServerGlobalConversationMap");
   map[buildGlobalConversationMapKey(libraryID)] = Math.floor(conversationKey);
   setJsonPref("codexAppServerGlobalConversationMap", map);
 }
@@ -322,7 +262,7 @@ export function removeLastUsedCodexGlobalConversationKey(
   libraryID: number,
 ): void {
   if (!Number.isFinite(libraryID) || libraryID <= 0) return;
-  const map = getJsonPref("codexAppServerGlobalConversationMap");
+  const map = readPositiveIntMapPref("codexAppServerGlobalConversationMap");
   delete map[buildGlobalConversationMapKey(libraryID)];
   setJsonPref("codexAppServerGlobalConversationMap", map);
 }
@@ -369,7 +309,7 @@ function buildLastAllocatedMapKey(kind: "global" | "paper"): string {
 function getScopedLegacyAllocatedConversationKey(
   kind: "global" | "paper",
 ): number | null {
-  const value = getNumberPref(
+  const value = readPositiveIntPref(
     kind === "global"
       ? "codexAppServerLastAllocatedGlobalConversationKey"
       : "codexAppServerLastAllocatedPaperConversationKey",
@@ -378,7 +318,9 @@ function getScopedLegacyAllocatedConversationKey(
 }
 
 export function getLastAllocatedCodexGlobalConversationKey(): number | null {
-  const map = getJsonPref("codexAppServerLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "codexAppServerLastAllocatedConversationKeyMap",
+  );
   const value = Number(map[buildLastAllocatedMapKey("global")]);
   if (
     Number.isFinite(value) &&
@@ -397,14 +339,18 @@ export function setLastAllocatedCodexGlobalConversationKey(
   const current = getLastAllocatedCodexGlobalConversationKey() || 0;
   const normalized = Math.floor(conversationKey);
   if (normalized <= current) return;
-  const map = getJsonPref("codexAppServerLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "codexAppServerLastAllocatedConversationKeyMap",
+  );
   map[buildLastAllocatedMapKey("global")] = normalized;
   setJsonPref("codexAppServerLastAllocatedConversationKeyMap", map);
-  setPref("codexAppServerLastAllocatedGlobalConversationKey", normalized);
+  writePref("codexAppServerLastAllocatedGlobalConversationKey", normalized);
 }
 
 export function getLastAllocatedCodexPaperConversationKey(): number | null {
-  const map = getJsonPref("codexAppServerLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "codexAppServerLastAllocatedConversationKeyMap",
+  );
   const value = Number(map[buildLastAllocatedMapKey("paper")]);
   if (
     Number.isFinite(value) &&
@@ -423,8 +369,10 @@ export function setLastAllocatedCodexPaperConversationKey(
   const current = getLastAllocatedCodexPaperConversationKey() || 0;
   const normalized = Math.floor(conversationKey);
   if (normalized <= current) return;
-  const map = getJsonPref("codexAppServerLastAllocatedConversationKeyMap");
+  const map = readPositiveIntMapPref(
+    "codexAppServerLastAllocatedConversationKeyMap",
+  );
   map[buildLastAllocatedMapKey("paper")] = normalized;
   setJsonPref("codexAppServerLastAllocatedConversationKeyMap", map);
-  setPref("codexAppServerLastAllocatedPaperConversationKey", normalized);
+  writePref("codexAppServerLastAllocatedPaperConversationKey", normalized);
 }

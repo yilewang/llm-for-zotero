@@ -3,7 +3,6 @@
  * the panel uses, and whether each runtime's mode is turned on.
  */
 
-import { config } from "../../package.json";
 import {
   RUNTIME_CONVERSATION_SYSTEMS,
   RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
@@ -11,22 +10,7 @@ import {
   type ConversationSystem,
   type RuntimeConversationSystem,
 } from "../core/conversations/conversationSystems";
-
-type ZoteroPrefsAPI = {
-  get?: (key: string, global?: boolean) => unknown;
-  set?: (key: string, value: unknown, global?: boolean) => void;
-};
-
-function getZoteroPrefs(): ZoteroPrefsAPI | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { Prefs?: ZoteroPrefsAPI } })
-      .Zotero?.Prefs || null
-  );
-}
-
-function prefKey(key: string): string {
-  return `${config.prefsPrefix}.${key}`;
-}
+import { getZoteroPrefs, prefKey } from "../utils/pluginPrefs";
 
 const CONVERSATION_SYSTEM_PREF = "conversationSystem";
 
