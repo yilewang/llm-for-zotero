@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs";
 import { cp } from "node:fs/promises";
+import { join } from "node:path";
 import { defineConfig } from "zotero-plugin-scaffold";
 import pkg from "./package.json";
 import { writeClaudeBridgeNotices } from "./scripts/claude-bridge-notices.mjs";
+import { writeVendorAssets } from "./scripts/vendor-assets.mjs";
 import { patchGeneratedFileTracker } from "./scripts/workflow-test-file-tracker.mjs";
 import { patchGeneratedWorkflowTestReporter } from "./scripts/workflow-test-reporter.mjs";
 import { applyWorkflowTestSelection } from "./scripts/workflow-test-selection.mjs";
@@ -42,6 +44,10 @@ export default defineConfig({
 
   build: {
     hooks: {
+      // Runs once the files under addon/ are copied to the build folder.
+      "build:copyAssets": async (ctx) => {
+        await writeVendorAssets(join(ctx.dist, "addon/content/vendor"));
+      },
       // Runs before the XPI is packed, so the notices ship inside it.
       "build:bundle": async () => {
         await writeClaudeBridgeNotices();
