@@ -487,6 +487,44 @@ export function buildAgentResourceContextPlan(
   };
 }
 
+/**
+ * The rules for a selected collection or tag scope. The original agent sends
+ * all of them; a runtime reached over Zotero MCP (turnPromptBlocks.ts) sends
+ * only COLLECTION_SCOPE_RULES / TAG_SCOPE_RULES, because the skill and digest
+ * rules declare parts with task_update, which MCP does not list.
+ */
+const COLLECTION_RETRIEVAL_RULE =
+  "Reviews and summaries stay within the collection unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ scope:{ collectionIds:[<collectionId>] }, query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) for broad comprehensive evidence search when variants would improve recall, library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) for catalog listing, or collection-scoped actions when the user asks to operate on them. Do not assume all full text has already been read.";
+const SCOPE_CATALOG_NOT_EVIDENCE_RULE =
+  "Catalog rows and manifest rows are navigation context, not evidence. Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.";
+const COLLECTION_STAGED_READ_RULE =
+  "When reading papers from a collection, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit collection member.";
+const SCOPE_SKILL_BEFORE_PARTS_RULE =
+  "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.";
+const COLLECTION_DIGEST_RULE =
+  "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole collection, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large collection, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.";
+const COLLECTION_CHILD_ATTACHMENTS_RULE =
+  "If the user explicitly asks to include or only read child attachments in this collection, enumerate item attachments with library_search plus library_read sections:['attachments']; otherwise ignore sibling attachments for primary-document workflows.";
+const TAG_RETRIEVAL_RULE =
+  "Reviews and summaries stay within the tag unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) to search the selected tag pool by default, library_retrieve({ scope:{ tagNames:['<tag>'] }, query:'...', intent:'enumerate' }) for an explicit named tag scope, or library_search({ entity:'items', mode:'list', filters:{ tag:'<tag>' } }) for catalog listing. Do not ask which tag the user means when a selected tag scope is listed here.";
+const TAG_STAGED_READ_RULE =
+  "When reading papers from a tag, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text inside the tag where possible, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit tag member.";
+const TAG_DIGEST_RULE =
+  "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole tag, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large tag, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.";
+
+export const COLLECTION_SCOPE_RULES: readonly string[] = [
+  COLLECTION_RETRIEVAL_RULE,
+  SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+  COLLECTION_STAGED_READ_RULE,
+  COLLECTION_CHILD_ATTACHMENTS_RULE,
+];
+
+export const TAG_SCOPE_RULES: readonly string[] = [
+  TAG_RETRIEVAL_RULE,
+  SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+  TAG_STAGED_READ_RULE,
+];
+
 function buildScopeIdentityLines(request: AgentRuntimeRequest): string[] {
   // No conversation key here: this block sits in the system prompt, so a
   // per-conversation value would make the prompt differ for every new chat
@@ -565,12 +603,12 @@ export function buildAgentStableResourceContextBlock(
         (entry, index) =>
           `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
       ),
-      "Reviews and summaries stay within the collection unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ scope:{ collectionIds:[<collectionId>] }, query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) for broad comprehensive evidence search when variants would improve recall, library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) for catalog listing, or collection-scoped actions when the user asks to operate on them. Do not assume all full text has already been read.",
-      "Catalog rows and manifest rows are navigation context, not evidence. Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.",
-      "When reading papers from a collection, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit collection member.",
-      "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.",
-      "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole collection, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large collection, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.",
-      "If the user explicitly asks to include or only read child attachments in this collection, enumerate item attachments with library_search plus library_read sections:['attachments']; otherwise ignore sibling attachments for primary-document workflows.",
+      COLLECTION_RETRIEVAL_RULE,
+      SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+      COLLECTION_STAGED_READ_RULE,
+      SCOPE_SKILL_BEFORE_PARTS_RULE,
+      COLLECTION_DIGEST_RULE,
+      COLLECTION_CHILD_ATTACHMENTS_RULE,
     );
   }
   if (request.turnPaperScope.tags.length) {
@@ -579,11 +617,11 @@ export function buildAgentStableResourceContextBlock(
       ...request.turnPaperScope.tags.map((entry, index) =>
         formatTagScopeLine(entry, index),
       ),
-      "Reviews and summaries stay within the tag unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) to search the selected tag pool by default, library_retrieve({ scope:{ tagNames:['<tag>'] }, query:'...', intent:'enumerate' }) for an explicit named tag scope, or library_search({ entity:'items', mode:'list', filters:{ tag:'<tag>' } }) for catalog listing. Do not ask which tag the user means when a selected tag scope is listed here.",
-      "Catalog rows and manifest rows are navigation context, not evidence. Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.",
-      "When reading papers from a tag, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text inside the tag where possible, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit tag member.",
-      "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.",
-      "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole tag, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large tag, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.",
+      TAG_RETRIEVAL_RULE,
+      SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+      TAG_STAGED_READ_RULE,
+      SCOPE_SKILL_BEFORE_PARTS_RULE,
+      TAG_DIGEST_RULE,
     );
   }
 

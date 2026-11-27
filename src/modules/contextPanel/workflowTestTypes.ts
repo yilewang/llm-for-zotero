@@ -1337,6 +1337,14 @@ export type WorkflowTestApi = {
     providerProtocol: ProviderProtocol;
   }) => Promise<{ text: string; textDeltas: string[]; reasoning: string[] }>;
   /**
+   * Renders one turn's prompt for the original agent and every external
+   * runtime from the same request, through each runtime's own prompt
+   * assembly (runtimePromptParity.workflow.test.ts).
+   */
+  renderRuntimePromptParity: (
+    params: RuntimePromptParityInput,
+  ) => Promise<RuntimePromptParityResult>;
+  /**
    * Sends one plain-chat request that carries document context, the way a
    * paper chat does, once through callLLM and once through callLLMStream.
    */
@@ -2774,4 +2782,55 @@ export type WorkflowTestApi = {
     entryId: string,
     inputTokenCap: number,
   ) => Promise<WorkflowTestDiagnostics>;
+};
+
+/** One turn for the runtime prompt parity check. */
+export type RuntimePromptParityInput = {
+  userText: string;
+  conversationKind: "global" | "paper";
+  /** The paper chat's item, or the reader's attachment. */
+  activeItemId?: number;
+  selectedTextContexts?: import("../../shared/types").SelectedTextContext[];
+  selectedPaperContexts?: import("../../shared/types").PaperContextRef[];
+  selectedCollectionContexts?: import("../../shared/types").CollectionContextRef[];
+  activeNoteContext?: import("../../shared/types").ActiveNoteContext;
+  clarificationHistory?: Array<{ question: string; answer: string }>;
+  /** The user's custom instructions (the systemPrompt pref). */
+  systemPrompt?: string;
+  /** Sets the notes directory for this render; restored after. */
+  notesDirectoryPath?: string;
+  /** Renders the turn in a temporary side chat. */
+  sideChat?: boolean;
+  /** A raw-PDF turn on this PDF. */
+  localPdf?: {
+    itemId: number;
+    contextItemId: number;
+    title: string;
+    path: string;
+  };
+};
+
+/** A runtime's decision about one block (turnPromptBlocks.ts). */
+export type RuntimePromptParityDelivery = {
+  kind: "send" | "transport" | "replaced" | "notApplicable";
+  placement?: "standing" | "turn";
+  /** For a text block: the shared renderer has text for external runtimes. */
+  rendered?: boolean;
+};
+
+export type RuntimePromptParityRuntime = {
+  deliveries: Record<string, RuntimePromptParityDelivery>;
+  /** Each `send` block's text for this turn. */
+  blocks: Record<string, string>;
+  /** The standing instructions the runtime's transport sends. */
+  standing: string;
+  /** The text the runtime's transport sends with the turn. */
+  turn: string;
+};
+
+export type RuntimePromptParityResult = {
+  textBlockIds: string[];
+  transportBlockIds: string[];
+  native: { system: string; turn: string };
+  runtimes: Record<RuntimeConversationSystem, RuntimePromptParityRuntime>;
 };

@@ -1,4 +1,8 @@
-import type { AgentToolGuidance } from "../types";
+import type {
+  AgentRuntimeRequest,
+  AgentToolDefinition,
+  AgentToolGuidance,
+} from "../types";
 
 type GuidanceRequest = Parameters<AgentToolGuidance["matches"]>[0];
 
@@ -50,4 +54,37 @@ export function skillGuidance(
       ),
     instruction,
   };
+}
+
+/** The guidance of the given tools that matches this turn. */
+export function collectMatchingToolGuidance(
+  request: AgentRuntimeRequest,
+  tools: readonly Pick<AgentToolDefinition<any, any>, "guidance">[],
+  matchedSkillIds: ReadonlyArray<string>,
+): string[] {
+  const instructions = new Set<string>();
+  const {
+    userText: _userText,
+    history: _history,
+    clarificationHistory: _clarifications,
+    ...guidanceContext
+  } = request;
+  for (const tool of tools) {
+    for (const guidance of toolGuidanceItems(tool.guidance)) {
+      if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
+      const instruction = guidance.instruction.trim();
+      if (instruction) instructions.add(instruction);
+    }
+  }
+  return [...instructions];
+}
+
+export function renderToolGuidanceLines(
+  instructions: readonly string[],
+): string[] {
+  if (!instructions.length) return [];
+  return [
+    "Tool guidance for this turn: call a tool only when it serves the user's request, never just because its guidance appears here.",
+    ...instructions,
+  ];
 }

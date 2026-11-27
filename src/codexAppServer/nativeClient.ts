@@ -13,6 +13,7 @@ import type {
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentPendingField,
+  AgentRuntimeRequest,
 } from "../agent/types";
 import type { CodexConversationKind, PaperContextRef } from "../shared/types";
 import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../shared/quoteGuidance";
@@ -25,6 +26,7 @@ import {
 } from "../shared/instructionContracts";
 import {
   addZoteroMcpToolActivityObserver,
+  collectZoteroMcpTurnToolGuidance,
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   getZoteroMcpServerName,
@@ -110,8 +112,12 @@ import {
   type ExternalRuntimeEffect,
   type ExternalRuntimeEffectOutcome,
 } from "../agent/contracts/externalRuntimeEffects";
-import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
-import { renderSelectedTextAnchorContext } from "../services/context/selectedTextAnchorFormatting";
+import {
+  renderRuntimePromptBlocks,
+  type RuntimePromptInput,
+} from "../agent/context/turnPromptBlocks";
+import { resolveTurnUserRequestText } from "../agent/context/turnMaterial";
+import { renderAttachedFilesPromptBlocks } from "../shared/attachedFilesPromptText";
 import {
   CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
   resolveCodexNativeRuntimeCwd,
@@ -1636,52 +1642,71 @@ function formatPaperContextLine(
   return `- Active paper context: ${pieces.join(", ")}`;
 }
 
-function buildCodexNativeVisibleTurnContextBlock(params: {
-  scope: CodexNativeConversationScope;
-  skillContext?: CodexNativeSkillContext;
-  /** A raw-PDF turn has no paper_read: selection hints name no call. */
-  rawPdfMode?: boolean;
-}): string {
-  const { scope, skillContext } = params;
-  const visibleContext = buildVisibleTurnContextBlock({
-    conversationKind: scope.kind === "paper" ? "paper" : "global",
-    libraryID: scope.libraryID,
-    libraryName: scope.libraryName,
-    activeItemId: scope.activeItemId,
-    activePaperTitle: scope.paperTitle,
-    activePaperContext: scope.paperContext,
-    selectedPaperContexts: skillContext?.selectedPaperContexts,
-    pdfPaperContexts: skillContext?.pdfPaperContexts,
-    localDocuments: skillContext?.localDocuments,
-    fullTextPaperContexts: skillContext?.fullTextPaperContexts,
-    pinnedPaperContexts: skillContext?.pinnedPaperContexts,
-    selectedCollectionContexts: skillContext?.selectedCollectionContexts,
-    selectedTagContexts: skillContext?.selectedTagContexts,
-    selectedTextContexts: skillContext?.selectedTextContexts,
-    resolvedSelectedTextAnchors: skillContext?.resolvedSelectedTextAnchors,
-    selectedTexts: skillContext?.selectedTexts,
-    selectedTextSources: skillContext?.selectedTextSources,
-    selectedTextPaperContexts: skillContext?.selectedTextPaperContexts,
-    selectedTextNoteContexts: skillContext?.selectedTextNoteContexts,
-    screenshots: skillContext?.screenshots,
-    attachments: skillContext?.attachments,
-    activeNoteContext: scope.activeNoteId
-      ? {
-          noteId: scope.activeNoteId,
-          title: scope.activeNoteTitle || "Active note",
-          noteKind:
-            scope.activeNoteKind === "standalone" ? "standalone" : "item",
-          parentItemId: scope.activeNoteParentItemId,
-          noteText: "",
-        }
-      : undefined,
-  });
-  const anchorContext = renderSelectedTextAnchorContext({
-    selectedTextContexts: skillContext?.selectedTextContexts || [],
-    anchors: skillContext?.resolvedSelectedTextAnchors || [],
-    readCalls: !params.rawPdfMode,
-  });
-  return [visibleContext, anchorContext].filter(Boolean).join("\n\n");
+/**
+ * The text of a Codex turn's latest user message: the prompt's turn blocks
+ * (turnPromptBlocks.ts, Codex's delivery table: the Zotero context the turn
+ * refers to, the material the user attached, the scope rules and the
+ * matching tool guidance), then the user's words, then the attached files'
+ * text. Built from the prepared request, as the original agent builds its
+ * turn message, so a quote or an open note reaches Codex as it reaches
+ * every other runtime.
+ */
+export function buildCodexTurnUserText(
+  request: AgentRuntimeRequest,
+  rawPdfMode: boolean,
+): string {
+  const { turn } = renderRuntimePromptBlocks(
+    "codex",
+    buildCodexRuntimePromptInput(request, rawPdfMode),
+  );
+  const userRequest = `User request:\n${resolveTurnUserRequestText(request)}`;
+  return [
+    [turn, userRequest].filter(Boolean).join("\n\n"),
+    ...renderAttachedFilesPromptBlocks(
+      (request.attachments || []).filter(
+        (attachment) => attachment.category !== "image",
+      ),
+    ),
+  ].join("\n");
+}
+
+/** What the shared block renderers read for a Codex turn. */
+export function buildCodexRuntimePromptInput(
+  request: AgentRuntimeRequest,
+  rawPdfMode: boolean,
+): RuntimePromptInput {
+  return {
+    request,
+    rawPdfMode,
+    // Codex's manifest carries the standing blocks (CODEX_DELIVERY).
+    agentFilesInstruction: "",
+    toolGuidance: collectZoteroMcpTurnToolGuidance(request, { rawPdfMode }),
+  };
+}
+
+/**
+ * The messages with the latest user message's text replaced; its images
+ * stay, after the text.
+ */
+function replaceLatestUserText(
+  messages: ChatMessage[],
+  text: string,
+): ChatMessage[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    const images =
+      typeof message.content === "string"
+        ? []
+        : message.content.filter((part) => part.type !== "text");
+    const next = messages.slice();
+    next[index] = {
+      ...message,
+      content: images.length ? [{ type: "text", text }, ...images] : text,
+    };
+    return next;
+  }
+  return messages;
 }
 
 function buildCodexNativeScopedMcpScope(params: {
@@ -1758,7 +1783,6 @@ export function buildZoteroEnvironmentManifest(params: {
   mcpWarning?: string;
   skillInstructionBlock?: string;
   priorReadContextBlock?: string;
-  resourceContextBlock?: string;
   rawPdfMode?: boolean;
   /** Where saved files go and when to show a page in the answer instead. */
   agentFilesInstruction?: string;
@@ -1840,7 +1864,6 @@ export function buildZoteroEnvironmentManifest(params: {
       lines.join("\n"),
       notesDirectoryConfig,
       agentFilesInstruction,
-      params.resourceContextBlock || "",
       priorReadContextBlock,
       params.skillInstructionBlock || "",
       finalRawPdfPolicy,
@@ -1857,7 +1880,6 @@ export function buildZoteroEnvironmentManifest(params: {
       lines.join("\n"),
       notesDirectoryConfig,
       agentFilesInstruction,
-      params.resourceContextBlock || "",
       priorReadContextBlock,
       params.skillInstructionBlock || "",
       finalRawPdfPolicy,
@@ -1892,7 +1914,6 @@ export function buildZoteroEnvironmentManifest(params: {
     lines.join("\n"),
     notesDirectoryConfig,
     agentFilesInstruction,
-    params.resourceContextBlock || "",
     priorReadContextBlock,
     params.skillInstructionBlock || "",
     finalRawPdfPolicy,
@@ -1910,7 +1931,8 @@ function prefixUserContentWithContext(
   const contextBlock = /^Zotero context for this turn:/i.test(prefix)
     ? prefix
     : `Zotero context for this turn:\n${prefix}`;
-  const textPrefix = `${contextBlock}\n\nUser request:\n`;
+  // The content already names the user's request (buildCodexTurnUserText).
+  const textPrefix = `${contextBlock}\n\n`;
   if (typeof content === "string") {
     return `${textPrefix}${content}`;
   }
@@ -3807,20 +3829,17 @@ export async function runCodexAppServerNativeTurn(input: {
           params.onSkillActivated?.(skillId);
         }
         const rawPdfMode = currentTurnHasLocalPdfs;
-        const visibleTurnContextBlock = buildCodexNativeVisibleTurnContextBlock(
-          {
-            scope: scopeWithProfile,
-            skillContext,
-            rawPdfMode,
-          },
-        );
         const optimisticMcpReady = mcpEnabled;
+        const turnMessages = replaceLatestUserText(
+          params.messages,
+          buildCodexTurnUserText(params.executionRequest, rawPdfMode),
+        );
         const messagesForNativeTurn = rawPdfMode
           ? ensureLatestUserNativeSkillMentions(
-              params.messages,
+              turnMessages,
               skillContext?.forcedSkillIds || [],
             )
-          : params.messages;
+          : turnMessages;
         const developerEnvironmentText = buildZoteroEnvironmentManifest({
           scope: scopeWithProfile,
           mcpEnabled,
@@ -3828,7 +3847,6 @@ export async function runCodexAppServerNativeTurn(input: {
           mcpWarning,
           skillInstructionBlock,
           priorReadContextBlock,
-          resourceContextBlock: visibleTurnContextBlock,
           rawPdfMode,
           agentFilesInstruction: await buildAgentFilesInstructionForScope({
             conversationKind:
@@ -3994,21 +4012,15 @@ export async function runCodexAppServerNativeTurn(input: {
           }
         }
         const contextPlacement = resolveNativeContextPlacement(thread);
-        const latestUserFallbackContextText = [
-          visibleTurnContextBlock,
-          buildZoteroEnvironmentManifest({
-            scope: scopeWithProfile,
-            mcpEnabled,
-            mcpReady,
-            mcpWarning,
-            skillInstructionBlock,
-            priorReadContextBlock,
-            resourceContextBlock: "",
-            rawPdfMode,
-          }),
-        ]
-          .filter(Boolean)
-          .join("\n\n");
+        const latestUserFallbackContextText = buildZoteroEnvironmentManifest({
+          scope: scopeWithProfile,
+          mcpEnabled,
+          mcpReady,
+          mcpWarning,
+          skillInstructionBlock,
+          priorReadContextBlock,
+          rawPdfMode,
+        });
         const nativeMessages = buildNativeMessages({
           messages: messagesForNativeTurn,
           includeVisibleHistory: true,
@@ -4019,7 +4031,6 @@ export async function runCodexAppServerNativeTurn(input: {
             mcpWarning,
             skillInstructionBlock: "",
             priorReadContextBlock: "",
-            resourceContextBlock: "",
             rawPdfMode,
           }),
           prefixLatestUserWithContext:

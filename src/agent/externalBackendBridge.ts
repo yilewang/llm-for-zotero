@@ -9,7 +9,6 @@ import {
 import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
 import {
   getClaudeBridgeUrl,
-  getClaudeCustomInstructionPref,
   getClaudeSettingSourcesCsvByPref,
 } from "../claudeCode/prefs";
 import {
@@ -35,8 +34,6 @@ import {
   REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES,
 } from "../codexAppServer/mcpSetup";
 import { dbg, dbgError } from "../utils/debugLogger";
-import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
-import { buildAgentFilesInstructionForScope } from "../utils/agentFilesDirectory";
 import {
   externalRuntimeCommandEffect,
   externalRuntimeFileEffect,
@@ -54,10 +51,9 @@ import {
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
-import { AGENT_PERSONA_INSTRUCTIONS } from "./model/agentPersona";
 import {
   makeProfilingEvent,
-  renderExternalRuntimeTurnContext,
+  renderExternalRuntimePrompt,
   requestLocalDocuments,
   requestPaperRefs,
   runExternalRuntimeTurn,
@@ -95,7 +91,6 @@ import {
   getActiveTurnPaper,
   getSelectedPassagePaper,
 } from "./context/turnPaperScope";
-import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
 import { resolveAgentPromptBudgetLimits } from "./context/promptBudget";
 import {
   renderAgentPastChatMessageText,
@@ -612,68 +607,6 @@ function buildAgentPermissionMetadata(): {
   return { permissionMode };
 }
 
-/**
- * The Claude Code bridge's map from the search-routing source families
- * (SEARCH_ROUTING_CONTRACT) to its own tools: the Zotero MCP tools for the
- * turn's papers, the library and scholarly sources, and Claude Code's
- * WebSearch and WebFetch for the web (user decision 2a, 2026-10-20). The
- * bridge allows WebFetch and WebSearch by default (start-bridge-server.ts
- * --default-allowed-tools), but extra bridge arguments, the user's Claude
- * settings or the model provider can remove them, so the line says "when
- * available". Native web search has no tool description that carries the
- * query-language rule, so the line states it.
- */
-export const CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES =
-  "Search tools: the Zotero MCP tools, when listed, read the turn's papers (paper_read), search the library (library_retrieve, library_search) search scholarly sources (literature_search) and read a found paper's abstract and open-access text (literature_read); Claude Code's WebSearch and WebFetch search and read the web when available. Write web search queries in the user's language by default.";
-
-function buildOriginalAgentModeInstructionBlock(): string {
-  return [
-    "## Original agent-mode Zotero behavior",
-    ...AGENT_PERSONA_INSTRUCTIONS,
-  ].join("\n\n");
-}
-
-function buildClaudeBridgeNotesDirectoryInstruction(): string {
-  const configSection = buildNotesDirectoryConfigSection().trim();
-  if (!configSection) return "";
-  return [
-    configSection,
-    "Claude Code note-directory rules:",
-    "- The notes directory is already configured by the user. Do not use Bash, Glob, Find, LS, or Read to rediscover the vault path, inspect likely note folders, or probe write access when this section is present.",
-    "- When the user asks to save a file-based note into the configured notes directory, use the configured Default target path unless the user explicitly names a different folder or absolute path.",
-    "- Do not create a Papers, papers, Notes, or other alternate subfolder unless the user explicitly requested that exact folder.",
-    "- For a requested file-based note, finalize it with submit_document and call the Zotero MCP file_io tool with its documentId, exact visibleMarkdown, and a `.md` path under the configured Default target path. file_io exports and verifies the complete figure bundle without native shell or Write access.",
-  ].join("\n");
-}
-
-function buildClaudeBridgeCustomInstruction(
-  options: {
-    rawPdfMode?: boolean;
-    /** Where saved files go and when to show a page in the answer instead. */
-    agentFilesInstruction?: string;
-  } = {},
-): string {
-  return [
-    getClaudeCustomInstructionPref(),
-    buildOriginalAgentModeInstructionBlock(),
-    options.rawPdfMode
-      ? "Claude Code receives Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
-      : "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
-    CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES,
-    'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", "inside this folder", and "this tag" against those selected Zotero scopes. Do not ask the user which folder or tag they mean unless no selected scope is present or multiple selected scopes make the reference genuinely ambiguous.',
-    // Unconditional on purpose: where notes belong is a property of Zotero, not
-    // of whether this user happens to have configured a notes directory. The
-    // directory block below only carves out the file writes that are not notes.
-    "A note you are asked to write is a Zotero note: use the Zotero note_write tool, not Claude Code's Write tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note, so a note written straight to disk leaves the host with no record of what changed.",
-    buildClaudeBridgeNotesDirectoryInstruction(),
-    options.rawPdfMode ? "" : options.agentFilesInstruction || "",
-    options.rawPdfMode ? RAW_PDF_TRANSPORT_POLICY_BLOCK : "",
-  ]
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .join("\n\n");
-}
-
 function isClaudeCodeModeEnabled(): boolean {
   try {
     const enabled = Zotero.Prefs.get(
@@ -1064,6 +997,8 @@ async function runExternalBridgeTurn(
     pastConversationSource?: PastConversationSource;
     contextEnvelope?: ContextEnvelope;
     runtimeRequest?: BridgeRuntimeRequest;
+    /** The prompt's standing blocks (renderExternalRuntimePrompt). */
+    standingInstructions?: string;
     allowedTools?: string[];
     mcpServers?: ClaudeMcpServersConfig;
     scope?: BridgeScope;
@@ -1112,15 +1047,6 @@ async function runExternalBridgeTurn(
     params.request.metadata && typeof params.request.metadata === "object"
       ? params.request.metadata
       : undefined;
-  const agentFilesInstruction = await buildAgentFilesInstructionForScope({
-    conversationKind:
-      params.request.conversationKind === "paper" ? "paper" : "global",
-    libraryID: resolveFallbackLibraryId(params.request),
-    paperItemId: (
-      getActiveTurnPaper(params.request.turnPaperScope) ||
-      params.request.turnPaperScope.papers[0]?.paper
-    )?.itemId,
-  });
   const providerIdentityStack = await buildClaudeProviderIdentityStack();
   const providerIdentity = hashProviderIdentityStack(providerIdentityStack);
   const providerSessionIdHint = await resolveClaudeProviderSessionHint(
@@ -1144,10 +1070,7 @@ async function runExternalBridgeTurn(
       claudeSettingSources: getClaudeSettingSourcesByPref(),
       settingSources: getClaudeSettingSourcesCsvByPref(),
       ...buildAgentPermissionMetadata(),
-      customInstruction: buildClaudeBridgeCustomInstruction({
-        rawPdfMode: requestLocalDocuments(params.request).length > 0,
-        agentFilesInstruction,
-      }),
+      customInstruction: params.standingInstructions,
       providerIdentity,
       providerIdentityStack,
       model: resolveClaudeBridgeModelForMetadata(params.request.model),
@@ -1717,6 +1640,8 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
 
 async function buildBridgeRuntimeRequest(
   request: AgentRuntimeRequest,
+  /** The prompt's turn blocks (renderExternalRuntimePrompt). */
+  turnContext: string,
 ): Promise<BridgeRuntimeRequest> {
   const joinPath = (base: string, segment: string): string => {
     if (!base) return segment;
@@ -1922,7 +1847,7 @@ async function buildBridgeRuntimeRequest(
     authMode: request.authMode,
     providerProtocol: request.providerProtocol,
     executionContext: request.executionContext,
-    turnContext: renderExternalRuntimeTurnContext(request) || undefined,
+    turnContext: turnContext || undefined,
     selectedPaperContexts,
     fullTextPaperContexts,
     pinnedPaperContexts,
@@ -2358,6 +2283,8 @@ type ClaudeBridgeTurnPrepared = {
   bridgeUrl: string;
   contextEnvelope: ContextEnvelope;
   runtimeRequest: BridgeRuntimeRequest;
+  /** The prompt's standing blocks, the Claude system-prompt append. */
+  standingInstructions: string;
   scope: BridgeScope;
 };
 
@@ -2474,7 +2401,14 @@ export function createExternalBackendBridgeRuntime(options: {
       }
       const contextEnvelope = buildContextEnvelope(request);
       await recordProfiling("frontend.context_envelope.ready");
-      const runtimeRequest = await buildBridgeRuntimeRequest(request);
+      const runtimePrompt = await renderExternalRuntimePrompt(
+        "claude_code",
+        request,
+      );
+      const runtimeRequest = await buildBridgeRuntimeRequest(
+        request,
+        runtimePrompt.turn,
+      );
       await recordProfiling("frontend.bridge_runtime_request.ready");
       const scope = resolveBridgeScope(request);
       await withConversationWriteLock(request.conversationKey, async () => {
@@ -2500,7 +2434,13 @@ export function createExternalBackendBridgeRuntime(options: {
           signatureForContextEnvelope(contextEnvelope),
         );
       });
-      return { bridgeUrl, contextEnvelope, runtimeRequest, scope };
+      return {
+        bridgeUrl,
+        contextEnvelope,
+        runtimeRequest,
+        standingInstructions: runtimePrompt.standing,
+        scope,
+      };
     },
     createStageTracker: createClaudeTurnStageTracker,
     zoteroMcp: {
@@ -2539,6 +2479,7 @@ export function createExternalBackendBridgeRuntime(options: {
         onEvent: ctx.emit,
         contextEnvelope: ctx.prepared.contextEnvelope,
         runtimeRequest: ctx.prepared.runtimeRequest,
+        standingInstructions: ctx.prepared.standingInstructions,
         allowedTools: ctx.zoteroMcp?.allowedTools,
         mcpServers: ctx.zoteroMcp?.servers,
         scope: ctx.prepared.scope,

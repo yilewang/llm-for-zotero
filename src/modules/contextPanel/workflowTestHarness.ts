@@ -12013,6 +12013,160 @@ export function installWorkflowTestHarness(targetAddon: {
       }
       return { text: step.text, textDeltas, reasoning };
     },
+    async renderRuntimePromptParity(input) {
+      assertWorkflowTestEnabled();
+      const [
+        blocksModule,
+        { renderAgentPromptEnvelope, stringifyMessageContent },
+        { renderExternalRuntimePrompt, buildExternalRuntimePromptInput },
+        { buildExternalRuntimeUserText },
+        { buildAntigravityPromptInput },
+        { buildCodexTurnUserText, buildCodexRuntimePromptInput },
+        { RUNTIME_CONVERSATION_SYSTEMS },
+        { allocateEphemeralPaperConversationKey },
+        notesDirectory,
+      ] = await Promise.all([
+        import("../../agent/context/turnPromptBlocks"),
+        import("../../agent/model/messageBuilder"),
+        import("../../agent/externalRuntimeTurnHost"),
+        import("../../agent/externalBackendBridge"),
+        import("../../antigravity/promptInput"),
+        import("../../codexAppServer/nativeClient"),
+        import("../../core/conversations/conversationSystems"),
+        import("../../shared/conversationKeySpace"),
+        import("../../utils/notesDirectoryConfig"),
+      ]);
+      const savedNotesPath = notesDirectory.getNotesDirectoryPath();
+      if (input.notesDirectoryPath !== undefined) {
+        notesDirectory.setNotesDirectoryPath(input.notesDirectoryPath);
+      }
+      try {
+        const localPdf = input.localPdf;
+        const request = resolveAgentRuntimeRequest({
+          conversationKey: input.sideChat
+            ? allocateEphemeralPaperConversationKey()
+            : 9_000_000_000_001,
+          localDocuments: localPdf
+            ? [
+                {
+                  kind: "local_pdf",
+                  sourceKey: `zotero-pdf:${localPdf.itemId}:${localPdf.contextItemId}`,
+                  itemId: localPdf.itemId,
+                  contextItemId: localPdf.contextItemId,
+                  title: localPdf.title,
+                  name: `${localPdf.title}.pdf`,
+                  mimeType: "application/pdf",
+                  absolutePath: localPdf.path,
+                },
+              ]
+            : undefined,
+          pdfPaperContexts: localPdf
+            ? [
+                {
+                  itemId: localPdf.itemId,
+                  contextItemId: localPdf.contextItemId,
+                  title: localPdf.title,
+                },
+              ]
+            : undefined,
+          mode: "agent",
+          userText: input.userText,
+          libraryID: Zotero.Libraries.userLibraryID,
+          conversationKind: input.conversationKind,
+          activeItemId: input.activeItemId,
+          selectedTextContexts: input.selectedTextContexts,
+          selectedPaperContexts: input.selectedPaperContexts,
+          selectedCollectionContexts: input.selectedCollectionContexts,
+          activeNoteContext: input.activeNoteContext,
+          clarificationHistory: input.clarificationHistory,
+          systemPrompt: input.systemPrompt,
+        });
+        const rendered = await renderAgentPromptEnvelope(request, [], []);
+        const runtimes = {} as Record<
+          (typeof RUNTIME_CONVERSATION_SYSTEMS)[number],
+          import("./workflowTestTypes").RuntimePromptParityRuntime
+        >;
+        for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+          const table = blocksModule.RUNTIME_PROMPT_DELIVERY[system];
+          const deliveries: Record<
+            string,
+            import("./workflowTestTypes").RuntimePromptParityDelivery
+          > = {};
+          for (const id of blocksModule.TEXT_PROMPT_BLOCK_IDS) {
+            const delivery = table[id];
+            deliveries[id] = {
+              kind: delivery.kind,
+              placement:
+                delivery.kind === "send" ? delivery.placement : undefined,
+              rendered: blocksModule.isRenderedTextPromptBlock(id),
+            };
+          }
+          for (const id of blocksModule.TRANSPORT_PROMPT_BLOCK_IDS) {
+            deliveries[id] = { kind: table[id].kind };
+          }
+          // Each runtime's own assembly: what its transport actually sends.
+          let standing = "";
+          let turn = "";
+          const rawPdfMode = Boolean(localPdf);
+          switch (system) {
+            case "claude_code": {
+              const prompt = await renderExternalRuntimePrompt(system, request);
+              standing = prompt.standing;
+              // The bridge puts the turn context before the user's words
+              // (buildPromptText in the bridge package).
+              turn = [prompt.turn, await buildExternalRuntimeUserText(request)]
+                .filter(Boolean)
+                .join("\n\n");
+              break;
+            }
+            case "antigravity": {
+              const prompt = await renderExternalRuntimePrompt(system, request);
+              standing = prompt.standing;
+              const promptInput = await buildAntigravityPromptInput(
+                request,
+                prompt.turn,
+              );
+              turn = promptInput.blocks
+                .map((block) => (block.type === "text" ? block.text : ""))
+                .join("\n\n");
+              break;
+            }
+            case "codex":
+              turn = buildCodexTurnUserText(request, rawPdfMode);
+              break;
+          }
+          const blocks = blocksModule.renderRuntimePromptBlocksById(
+            system,
+            system === "codex"
+              ? buildCodexRuntimePromptInput(request, rawPdfMode)
+              : await buildExternalRuntimePromptInput(request),
+          );
+          runtimes[system] = {
+            deliveries,
+            blocks: Object.fromEntries(
+              Object.entries(blocks).map(([id, text]) => [id, text || ""]),
+            ),
+            standing,
+            turn,
+          };
+        }
+        return {
+          textBlockIds: [...blocksModule.TEXT_PROMPT_BLOCK_IDS],
+          transportBlockIds: [...blocksModule.TRANSPORT_PROMPT_BLOCK_IDS],
+          native: {
+            system: rendered.envelope.systemMessages
+              .map((message) => stringifyMessageContent(message.content))
+              .join("\n\n"),
+            turn: stringifyMessageContent(
+              rendered.envelope.turnMessage.content,
+            ),
+          },
+          runtimes,
+        };
+      } finally {
+        notesDirectory.setNotesDirectoryPath(savedNotesPath);
+      }
+    },
     async sendDocumentContextRequest(input) {
       const params = documentContextRequestParams(input);
       const chat = await callLLM(params);

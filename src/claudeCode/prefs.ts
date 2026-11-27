@@ -190,10 +190,6 @@ export function setClaudeBridgeUrl(url: string): void {
   writePref("agentBackendBridgeUrl", url.trim());
 }
 
-export function getClaudeCustomInstructionPref(): string {
-  return readStringPref("systemPrompt").trim();
-}
-
 export function getClaudeConfigSourcePref():
   | "default"
   | "user-only"

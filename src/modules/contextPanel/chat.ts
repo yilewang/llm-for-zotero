@@ -4631,7 +4631,12 @@ type CodexRetryRequestSite = {
     >;
   };
   item: Zotero.Item;
-  question: string;
+  /**
+   * The request's user text: the user's own words, as the send's request
+   * has them, or the continue instruction. The Codex turn renders the
+   * quotes and files itself (buildCodexTurnUserText).
+   */
+  userText: string;
   retrySelectedTextContexts: SelectedTextContext[];
   retryResolvedSelectedTextAnchors: ResolvedSelectedTextAnchor[];
   contextPlan: Pick<
@@ -4692,7 +4697,7 @@ function codexRetryRequestParams(
     conversationGeneration: site.conversationGeneration,
     sourceMessageTimestamp: site.retryPair.userMessage.timestamp,
     item: site.item,
-    userText: site.question,
+    userText: site.userText,
     effectiveRequestConfig: site.effectiveRequestConfig,
     history: site.llmHistory,
   });
@@ -5423,6 +5428,8 @@ function reconstructRetryPayload(
   },
 ): {
   question: string;
+  /** The user's own words, without the quotes and files `question` adds. */
+  promptText: string;
   screenshotImages: string[];
   attachments: ChatAttachment[];
   paperContexts: PaperContextRef[];
@@ -5496,6 +5503,7 @@ function reconstructRetryPayload(
   );
   return {
     question,
+    promptText,
     screenshotImages,
     attachments: fileAttachments,
     paperContexts,
@@ -6689,6 +6697,7 @@ export async function retryLatestAssistantResponse(
   }
   const {
     question,
+    promptText: retryPromptText,
     screenshotImages,
     attachments,
     paperContexts,
@@ -7179,7 +7188,7 @@ export async function retryLatestAssistantResponse(
       conversationGeneration,
       retryPair,
       item,
-      question,
+      userText: continueIncomplete ? dispatchQuestion : retryPromptText,
       retrySelectedTextContexts,
       retryResolvedSelectedTextAnchors,
       contextPlan,

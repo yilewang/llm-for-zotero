@@ -21,8 +21,7 @@ import {
   loadAgentTurnMemory,
   type AgentTurnMemory,
 } from "../store/conversationMemory";
-import { buildSkillInventory, getAllSkills } from "../skills";
-import { toolGuidanceItems } from "../tools/guidance";
+import { getAllSkills } from "../skills";
 import type { AgentSkill } from "../skills";
 import { getSkillCustomizationNotice } from "../skills/managedBlock";
 import { SKILL_SCOPE_GUARD } from "../skills/scopeGuard";
@@ -53,6 +52,17 @@ import {
   resolveTurnUserRequestText,
 } from "../context/turnMaterial";
 import { renderLongJobResume } from "../loop/longJob";
+import {
+  collectMatchingToolGuidance,
+  renderToolGuidanceLines,
+} from "../tools/guidance";
+import {
+  renderClarificationsBlock,
+  renderSkillInventoryBlock,
+  SINGLE_PAPER_HINT,
+  type TextPromptBlockId,
+  type TurnPromptBlockId,
+} from "../context/turnPromptBlocks";
 import { resolveAgentLimits } from "./limits";
 import { OUTCOME_REASONS } from "../loop/outcomes";
 import {
@@ -197,25 +207,23 @@ function buildFullUserMessage(
     selectionLocations?: PaperPromptContext["selectionLocations"];
   } = {},
 ): AgentUserMessage {
-  const contextLines: string[] = [];
+  // Each block names its id in the shared block list (turnPromptBlocks.ts),
+  // so a new block here must also be decided for every external runtime.
+  const contextBlocks: { id: TextPromptBlockId; text: string }[] = [];
+  const push = (id: TextPromptBlockId, text: string | undefined) => {
+    if (text) contextBlocks.push({ id, text });
+  };
   // Volatile by nature (collection ids and counts change as the agent works),
   // so it lives here rather than in the cached system prefix.
-  const libraryOverview = renderLibraryOverviewSection(request.libraryID);
-  if (libraryOverview) {
-    contextLines.push(libraryOverview);
+  push("libraryOverview", renderLibraryOverviewSection(request.libraryID));
+  push("visibleTurnContext", buildVisibleTurnContextBlock(request));
+  push("executionCheckpoint", renderExecutionCheckpointBlock(request));
+  for (const block of renderTurnMaterialForModel(request, {
+    selectionLocations: options.selectionLocations,
+    readCalls: true,
+  })) {
+    push("turnMaterial", block);
   }
-  const visibleTurnContext = buildVisibleTurnContextBlock(request);
-  if (visibleTurnContext) {
-    contextLines.push(visibleTurnContext);
-  }
-  const executionCheckpoint = renderExecutionCheckpointBlock(request);
-  if (executionCheckpoint) contextLines.push(executionCheckpoint);
-  contextLines.push(
-    ...renderTurnMaterialForModel(request, {
-      selectionLocations: options.selectionLocations,
-      readCalls: true,
-    }),
-  );
   const pdfAttachments = (request.attachments || []).filter(
     (a) =>
       a.category === "pdf" &&
@@ -226,32 +234,19 @@ function buildFullUserMessage(
     (a) => a.category !== "pdf",
   );
   if (nonPdfAttachments.length) {
-    contextLines.push(
+    push(
+      "attachmentsNotice",
       "Current uploaded attachments are available through the registered document tools.",
     );
   }
-  if (options.priorReadBlock) {
-    contextLines.push(options.priorReadBlock);
-  }
-  if (options.coverageBlock) {
-    contextLines.push(options.coverageBlock);
-  }
-  if (options.earlierSourcesBlock) {
-    contextLines.push(options.earlierSourcesBlock);
-  }
-  if (request.clarificationHistory?.length) {
-    contextLines.push(
-      [
-        "Clarifications supplied for this request:",
-        ...request.clarificationHistory.map(
-          (entry) => `- ${entry.question}: ${entry.answer}`,
-        ),
-      ].join("\n"),
-    );
-  }
-  if (options.turnGuidanceBlock) {
-    contextLines.push(options.turnGuidanceBlock);
-  }
+  push("priorReads", options.priorReadBlock);
+  push("coverage", options.coverageBlock);
+  push("earlierSources", options.earlierSourcesBlock);
+  push("clarifications", renderClarificationsBlock(request));
+  // One block that carries permissionMode, singlePaperHint,
+  // workingDirectory, toolGuidance and activeSkills (renderAgentPromptEnvelope).
+  push("toolGuidance", options.turnGuidanceBlock);
+  const contextLines = contextBlocks.map((block) => block.text);
 
   const userRequestText = resolveTurnUserRequestText(request);
   const promptText = `${
@@ -324,8 +319,11 @@ function buildUserMessage(
 }
 
 type PromptSection = {
-  /** Identifies the section in code; not emitted into the prompt text */
-  id: string;
+  /**
+   * The section's block in the shared block list (turnPromptBlocks.ts); not
+   * emitted into the prompt text.
+   */
+  id: TurnPromptBlockId;
   lines: string[];
 };
 
@@ -410,36 +408,6 @@ function buildSystemPrompt(sections: PromptSection[]): string {
     .flatMap(({ lines }) => lines)
     .filter(Boolean)
     .join("\n\n");
-}
-
-function collectMatchingToolGuidance(
-  request: AgentRuntimeRequest,
-  tools: AgentToolDefinition<any, any>[],
-  matchedSkillIds: ReadonlyArray<string>,
-): string[] {
-  const instructions = new Set<string>();
-  const {
-    userText: _userText,
-    history: _history,
-    clarificationHistory: _clarifications,
-    ...guidanceContext
-  } = request;
-  for (const tool of tools) {
-    for (const guidance of toolGuidanceItems(tool.guidance)) {
-      if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
-      const instruction = guidance.instruction.trim();
-      if (instruction) instructions.add(instruction);
-    }
-  }
-  return [...instructions];
-}
-
-function buildToolGuidanceSection(instructions: readonly string[]): string[] {
-  if (!instructions.length) return [];
-  return [
-    "Tool guidance for this turn: call a tool only when it serves the user's request, never just because its guidance appears here.",
-    ...instructions,
-  ];
 }
 
 function formatSkillGuidanceBlock(
@@ -533,13 +501,11 @@ export async function renderAgentPromptEnvelope(
     matchedSkillIds,
   );
   const dynamicGuidanceInstructions = [
-    isSinglePaperConversation(request)
-      ? "Single-paper chat: answer directly using the supplied paper context; questions about the paper need no skill, so do not load evidence-based-qa for them. You may freely choose additional snippet, section, full, figure, or targeted reads of this paper when useful. For whole-paper explanations, consider the argument, methods, results, and limitations throughout the available source."
-      : "",
+    isSinglePaperConversation(request) ? SINGLE_PAPER_HINT : "",
     request.workingDirectory
       ? `Command working directory retained from this conversation: ${request.workingDirectory}. run_command uses it when cwd is omitted; pass cwd explicitly to change it. This directory does not confer filesystem permission.`
       : "",
-    ...buildToolGuidanceSection(toolGuidanceInstructions),
+    ...renderToolGuidanceLines(toolGuidanceInstructions),
   ];
   const matchedSkillInstructions = collectSkillGuidanceInstructions(
     request,
@@ -557,7 +523,7 @@ export async function renderAgentPromptEnvelope(
 
   const sections: PromptSection[] = [
     {
-      id: "system-override",
+      id: "customInstructions",
       lines: [(request.systemPrompt || "").trim()],
     },
     {
@@ -565,11 +531,11 @@ export async function renderAgentPromptEnvelope(
       lines: AGENT_PERSONA_INSTRUCTIONS,
     },
     {
-      id: "search-tools",
+      id: "searchRoutes",
       lines: [AGENT_SEARCH_TOOL_ROUTES],
     },
     {
-      id: "direct-agent-workflow",
+      id: "directAgentWorkflow",
       lines: [
         [
           "## Direct agent workflow",
@@ -589,7 +555,7 @@ export async function renderAgentPromptEnvelope(
       ],
     },
     {
-      id: "side-chat-read-only",
+      id: "sideChatReadOnly",
       lines: [
         isEphemeralConversationKey(request.conversationKey)
           ? SIDE_CHAT_READ_ONLY_INSTRUCTION
@@ -597,38 +563,27 @@ export async function renderAgentPromptEnvelope(
       ],
     },
     {
-      id: "skill-inventory",
-      lines: [
-        `Installed skill inventory (workflow playbooks for multi-step tasks: notes, comparisons, reviews, imports, figure work; ordinary paper questions need no skill. When one matches and its guidance is not already active, call load_skill with its id): ${JSON.stringify(
-          // Manual skills apply only when the user selects them.
-          buildSkillInventory(getAllSkills())
-            .filter(
-              (skill) =>
-                skill.activation !== "manual" &&
-                !isSkillWithheldForEphemeralRequest(skill.id, request),
-            )
-            .map(({ id, description }) => ({ id, description })),
-        )}`,
-      ],
+      id: "skillInventory",
+      lines: [renderSkillInventoryBlock(request)],
     },
     {
-      id: "runtime-platform",
+      id: "runtimePlatform",
       lines: [buildRuntimePlatformSection()],
     },
     {
-      id: "model-limitations",
+      id: "modelLimitations",
       lines: [buildTextOnlyModelInstruction(request)],
     },
     {
-      id: "custom-instructions",
+      id: "customInstructions",
       lines: [(request.customInstructions || "").trim()],
     },
     {
-      id: "notes-directory-config",
+      id: "notesFolder",
       lines: [buildNotesDirectoryConfigSection()],
     },
     {
-      id: "agent-files",
+      id: "agentFiles",
       lines: [agentFilesInstruction],
     },
   ];

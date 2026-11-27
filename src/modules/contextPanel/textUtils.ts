@@ -30,6 +30,10 @@ import {
 import { t } from "../../utils/i18n";
 import { sanitizeText } from "../../utils/textSanitization";
 import {
+  renderAttachedFilesPromptBlocks,
+  type PromptAttachedFile,
+} from "../../shared/attachedFilesPromptText";
+import {
   selectionFragmentToMarkdown,
   stripSelectionChrome,
 } from "./selectionMarkdown";
@@ -337,45 +341,14 @@ export function resolvePromptText(
   return "";
 }
 
-type FileContextAttachment = {
-  id?: string;
-  name: string;
-  mimeType?: string;
-  sizeBytes: number;
-  textContent?: string;
-};
-
 export function buildModelPromptWithFileContext(
   baseQuestion: string,
-  fileAttachments: FileContextAttachment[],
+  fileAttachments: PromptAttachedFile[],
 ): string {
-  if (!fileAttachments.length) return baseQuestion;
-  const textBlocks: string[] = [];
-  const metaBlocks: string[] = [];
-  for (const attachment of fileAttachments) {
-    // PDF-paper attachments are sent as binary file_ref — skip text metadata
-    if (
-      typeof attachment.id === "string" &&
-      (attachment.id.startsWith("pdf-paper-") ||
-        attachment.id.startsWith("pdf-page-"))
-    )
-      continue;
-    metaBlocks.push(
-      `- ${attachment.name} (${attachment.mimeType || "application/octet-stream"}, ${(attachment.sizeBytes / 1024 / 1024).toFixed(2)} MB)`,
-    );
-    if (attachment.textContent) {
-      const clipped = attachment.textContent.slice(0, 12000);
-      textBlocks.push(`### ${attachment.name}\n${clipped}`);
-    }
-  }
-  const blocks: string[] = [baseQuestion];
-  if (metaBlocks.length) {
-    blocks.push(`\nAttached files:\n${metaBlocks.join("\n")}`);
-  }
-  if (textBlocks.length) {
-    blocks.push(`\nAttached file contents:\n${textBlocks.join("\n\n")}`);
-  }
-  return blocks.join("\n");
+  return [
+    baseQuestion,
+    ...renderAttachedFilesPromptBlocks(fileAttachments),
+  ].join("\n");
 }
 
 export function formatTime(timestamp: number) {

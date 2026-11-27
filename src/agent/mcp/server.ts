@@ -110,7 +110,10 @@ import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
 import { OUTSIDE_SEARCH_NEED_SENTENCE } from "../tools/read/outsideSearchNeed";
 import { LITERATURE_SOURCE_SENTENCE } from "../tools/read/literatureSearch";
 import { SCOPELESS_MCP_RUN_PREFIX } from "../tools/read/outsideSearchLedger";
-import { toolGuidanceItems } from "../tools/guidance";
+import {
+  collectMatchingToolGuidance,
+  toolGuidanceItems,
+} from "../tools/guidance";
 import {
   PAST_CHAT_ATTACH_TOOL_NAME,
   PAST_CHAT_READ_TOOL_NAME,
@@ -681,6 +684,45 @@ export function getZoteroMcpDirectPdfToolNames(): string[] {
     (name) =>
       !RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES.has(name) &&
       !RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES.has(name),
+  );
+}
+
+/**
+ * The guidance of the Zotero MCP tools that matches a turn, for an external
+ * runtime's turn prompt (turnPromptBlocks.ts, block `toolGuidance`).
+ *
+ * The original agent receives a tool's guidance only on the turns it
+ * matches. An MCP catalog is static, so the tools in MCP_GUIDANCE_TOOL_NAMES
+ * carry theirs on the description instead and are left out here; every
+ * other listed tool's matching guidance goes with the turn, as it does for
+ * the original agent. An external runtime routes no skills before the turn,
+ * so only the skills the user selected count as matched.
+ */
+export function collectZoteroMcpTurnToolGuidance(
+  request: AgentRuntimeRequest,
+  options: { rawPdfMode: boolean },
+): string[] {
+  const deps = registeredMcpDeps;
+  if (!deps) return [];
+  const listed = new Set(
+    options.rawPdfMode
+      ? getZoteroMcpDirectPdfToolNames()
+      : getZoteroMcpAllowedToolNames(),
+  );
+  const tools = deps.toolRegistry
+    .listTools()
+    .filter(
+      (tool) =>
+        isMcpExposedTool(tool) &&
+        listed.has(tool.name) &&
+        !MCP_GUIDANCE_TOOL_NAMES.has(tool.name),
+    )
+    .map((tool) => deps.toolRegistry.getTool(tool.name))
+    .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool));
+  return collectMatchingToolGuidance(
+    request,
+    tools,
+    request.forcedSkillIds || [],
   );
 }
 
