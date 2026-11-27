@@ -40,10 +40,6 @@ Documentation:
     </video>
 </div>
 
-
-
-
-
 ## Table of Contents
 
 - [At a Glance](#at-a-glance)
