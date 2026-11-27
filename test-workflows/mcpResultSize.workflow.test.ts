@@ -334,6 +334,32 @@ describe("workflow: MCP tool result size", function () {
     }
   });
 
+  it("returns a rendered page as an image the client's model sees, after the JSON text", async function () {
+    const response = await rpc("tools/call", {
+      name: "paper_read",
+      arguments: {
+        mode: "visual",
+        target: { itemId: fixtures[0].parentItemId },
+        pages: [1],
+      },
+    });
+    const [text, ...rest] = response.content as Array<Record<string, any>>;
+    assert.equal(text.type, "text");
+    const payload = JSON.parse(text.text);
+    assert.isTrue(payload.ok, text.text.slice(0, 500));
+    const imageArtifacts = (payload.artifacts || []).filter(
+      (artifact: { kind: string }) => artifact.kind === "image",
+    );
+    assert.isNotEmpty(imageArtifacts, "the page render is an image artifact");
+    // One image block per image artifact, as the plugin Agent's model gets.
+    assert.lengthOf(rest, imageArtifacts.length);
+    for (const [index, part] of rest.entries()) {
+      assert.equal(part.type, "image");
+      assert.equal(part.mimeType, imageArtifacts[index].mimeType);
+      assert.isAbove(String(part.data).length, 100);
+    }
+  });
+
   it("shows a targeted paper_read's passages once, with their quote records", async function () {
     const { payload } = await call("paper_read", {
       mode: "targeted",
