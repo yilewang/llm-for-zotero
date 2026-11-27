@@ -57,6 +57,7 @@ import {
 import { AGENT_PERSONA_INSTRUCTIONS } from "./model/agentPersona";
 import {
   makeProfilingEvent,
+  renderExternalRuntimeTurnContext,
   requestLocalDocuments,
   requestPaperRefs,
   runExternalRuntimeTurn,
@@ -80,11 +81,8 @@ import type {
 } from "./types";
 import type {
   LocalDocumentResource,
-  NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
-  ResolvedSelectedTextAnchor,
-  SelectedTextContext,
 } from "../shared/types";
 import {
   normalizeExcludedItemIds,
@@ -92,10 +90,7 @@ import {
   normalizePaperContentSourceMode,
 } from "../services/context/normalizers";
 import { formatSelectedTextLocator } from "../services/context/selectedTextAnchorFormatting";
-import {
-  buildTurnContextEnvelope,
-  renderTurnContextEnvelopeForModel,
-} from "./context/turnContextEnvelope";
+import { resolveTurnUserRequestText } from "./context/turnMaterial";
 import {
   getActiveTurnPaper,
   getSelectedPassagePaper,
@@ -283,7 +278,6 @@ type ContextEnvelope = {
   pinnedPaperCount: number;
   attachmentCount: number;
   screenshotCount: number;
-  visibleContext?: string;
   selectedTexts: Array<{
     source: string;
     text: string;
@@ -368,20 +362,6 @@ type BridgePaperContext = {
   contextFilePath?: string;
 };
 
-type BridgeCollectionContext = {
-  collectionId?: number;
-  name?: string;
-  libraryID?: number;
-};
-
-type BridgeTagContext = {
-  name?: string;
-  libraryID?: number;
-  normalizedName?: string;
-  scope?: "allTagged" | "untagged";
-  includeAutomatic?: boolean;
-};
-
 type BridgeScopeType =
   | "paper"
   | "open"
@@ -442,27 +422,19 @@ type BridgeRuntimeRequest = {
   authMode?: string;
   providerProtocol?: string;
   executionContext?: AgentRuntimeRequest["executionContext"];
-  selectedTextContexts?: SelectedTextContext[];
-  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts?: string[];
-  selectedTextSources?: unknown[];
-  selectedTextNoteContexts?: NoteContextRef[];
+  /**
+   * The Zotero context and the material the user attached (the open note,
+   * the selected passages), rendered as the original agent's prompt states
+   * them; the bridge places it before the user's words.
+   */
+  turnContext?: string;
   selectedPaperContexts?: BridgePaperContext[];
   fullTextPaperContexts?: BridgePaperContext[];
   pinnedPaperContexts?: BridgePaperContext[];
-  selectedCollectionContexts?: BridgeCollectionContext[];
-  selectedTagContexts?: BridgeTagContext[];
   localDocuments?: readonly LocalDocumentResource[];
   attachments?: BridgeAttachment[];
   screenshots?: string[];
   history?: Array<{ role: string; content: string }>;
-  activeNoteContext?: {
-    noteId: number;
-    title: string;
-    noteKind: string;
-    parentItemId?: number;
-    noteText?: string;
-  };
 };
 
 const lastRunBridgeContextByConversationKey = new Map<
@@ -1030,7 +1002,10 @@ async function streamBridgeLines(
  * message. The block is the built-in agent's past-chat message, rendered
  * under the same memo key as the resume-fallback history
  * (agentMode/pastChatHistory.ts), so a later replay sends the same bytes.
- * The bridge needs no change: it reads userText as the prompt.
+ * The bridge needs no change: it reads userText as the prompt. A send from
+ * an empty composer carries only the questions attached to the selections,
+ * which the turn context already shows under each quote, so a short
+ * instruction stands in for them (resolveTurnUserRequestText).
  *
  * request.userText itself stays unchanged, for the MCP scope and skill
  * routing. Never fails the turn.
@@ -1039,7 +1014,7 @@ export async function buildExternalRuntimeUserText(
   request: AgentRuntimeRequest,
   source?: PastConversationSource,
 ): Promise<string> {
-  const userText = request.userText || "";
+  const userText = resolveTurnUserRequestText(request) || "";
   const refs = normalizeAttachedConversationScope(
     request.deliveredConversations,
   );
@@ -1623,9 +1598,6 @@ function normalizeTagRefs(
 }
 
 function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
-  const turnContextEnvelope = buildTurnContextEnvelope(request);
-  const visibleContext =
-    renderTurnContextEnvelopeForModel(turnContextEnvelope) || undefined;
   const selectedTextContexts = synthesizeSelectedTextContexts({
     selectedTextContexts: request.selectedTextContexts,
     selectedTexts: request.selectedTexts,
@@ -1732,7 +1704,6 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     screenshotCount: Array.isArray(request.screenshots)
       ? request.screenshots.length
       : 0,
-    visibleContext,
     selectedTexts: selectedTextRows,
     selectedPapers,
     selectedCollections,
@@ -1951,47 +1922,15 @@ async function buildBridgeRuntimeRequest(
     authMode: request.authMode,
     providerProtocol: request.providerProtocol,
     executionContext: request.executionContext,
-    selectedTextContexts: Array.isArray(request.selectedTextContexts)
-      ? request.selectedTextContexts
-      : undefined,
-    resolvedSelectedTextAnchors: Array.isArray(
-      request.resolvedSelectedTextAnchors,
-    )
-      ? request.resolvedSelectedTextAnchors
-      : undefined,
-    selectedTexts: Array.isArray(request.selectedTexts)
-      ? request.selectedTexts
-      : undefined,
-    selectedTextSources: Array.isArray(request.selectedTextSources)
-      ? request.selectedTextSources
-      : undefined,
-    selectedTextNoteContexts: Array.isArray(request.selectedTextNoteContexts)
-      ? request.selectedTextNoteContexts.filter(
-          (entry): entry is NoteContextRef => Boolean(entry),
-        )
-      : undefined,
+    turnContext: renderExternalRuntimeTurnContext(request) || undefined,
     selectedPaperContexts,
     fullTextPaperContexts,
     pinnedPaperContexts,
-    selectedCollectionContexts: normalizeCollectionRefs(
-      request.turnPaperScope.collections,
-      20,
-    ),
-    selectedTagContexts: normalizeTagRefs(request.turnPaperScope.tags, 20),
     localDocuments: requestLocalDocuments(request).length
       ? requestLocalDocuments(request)
       : undefined,
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
-    activeNoteContext: request.activeNoteContext
-      ? {
-          noteId: request.activeNoteContext.noteId,
-          title: request.activeNoteContext.title,
-          noteKind: request.activeNoteContext.noteKind,
-          parentItemId: request.activeNoteContext.parentItemId,
-          noteText: request.activeNoteContext.noteText,
-        }
-      : undefined,
     history: Array.isArray(request.history)
       ? request.history.map((entry) => ({
           role: typeof entry.role === "string" ? entry.role : "user",

@@ -15,11 +15,10 @@
 import type { AcpContentBlock } from "../shared/acpProtocol";
 import type { AgentRuntimeRequest } from "../agent/types";
 import { buildExternalRuntimeUserText } from "../agent/externalBackendBridge";
-import { requestLocalDocuments } from "../agent/externalRuntimeTurnHost";
 import {
-  buildTurnContextEnvelope,
-  renderTurnContextEnvelopeForModel,
-} from "../agent/context/turnContextEnvelope";
+  renderExternalRuntimeTurnContext,
+  requestLocalDocuments,
+} from "../agent/externalRuntimeTurnHost";
 import { isSlashCommandText } from "../services/pastConversations/pastConversationText";
 import { parseDataUrl } from "../shared/dataUrl";
 import { readFileBytes } from "../utils/geckoFs";
@@ -88,21 +87,22 @@ function fileUri(path: string): string {
 
 /**
  * The turn's content blocks. A slash message goes alone, so agy reads it as
- * a command; otherwise the turn context comes before the user's text.
+ * a command; otherwise the turn context and the material the user attached
+ * (the open note, the selected passages) come before the user's text.
  */
 export async function buildAntigravityPromptInput(
   request: AgentRuntimeRequest,
 ): Promise<AntigravityPromptInput> {
-  const userText = await buildExternalRuntimeUserText(request);
   if (isSlashCommandText(request.userText)) {
     return {
-      blocks: [{ type: "text", text: userText }],
+      blocks: [
+        { type: "text", text: await buildExternalRuntimeUserText(request) },
+      ],
       attachedPaths: [],
     };
   }
-  const context = renderTurnContextEnvelopeForModel(
-    buildTurnContextEnvelope(request),
-  );
+  const context = renderExternalRuntimeTurnContext(request);
+  const userText = await buildExternalRuntimeUserText(request);
   const blocks: AcpContentBlock[] = [
     { type: "text", text: [context, userText].filter(Boolean).join("\n\n") },
   ];

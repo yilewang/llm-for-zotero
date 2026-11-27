@@ -29,6 +29,7 @@ import { getAgentRunTrace } from "../../agent/store/traceStore";
 import { createAbortController } from "../../utils/apiHelpers";
 import { getAbortController, setAbortController } from "./state";
 import type { AgentEvent, AgentRuntimeOutcome } from "../../agent/types";
+import type { SelectedTextContext } from "../../shared/types";
 import {
   isNativeZoteroMcpToolsEnabled,
   setNativeZoteroMcpToolsEnabled,
@@ -59,6 +60,8 @@ export type ExternalTurnScenario = {
   mcp?: boolean;
   /** Answers every review card the turn shows; unset leaves them open. */
   approve?: boolean;
+  /** Passages the user selected or quoted for the turn. */
+  selectedTextContexts?: SelectedTextContext[];
 };
 
 export type ExternalTurnResult = {
@@ -76,6 +79,10 @@ export type ExternalTurnResult = {
     mcpHeaderNames: string[];
     allowedTools: string[];
     scopeToken: string;
+    /** The prompt text the bridge received as the user's words. */
+    userText: string;
+    /** The turn context the bridge places before the user's words. */
+    turnContext: string;
   } | null;
   /** Answers the plugin sent to `/resolve-confirmation`. */
   confirmationAnswers: Array<{ requestId: string; approved: boolean }>;
@@ -402,7 +409,14 @@ export async function exerciseClaudeBridgeTurn(
   setAbortController(key, createAbortController());
   try {
     await sendAgentTurn(
-      { body, item, question: scenario.question },
+      {
+        body,
+        item,
+        question: scenario.question,
+        ...(scenario.selectedTextContexts
+          ? { selectedTextContexts: scenario.selectedTextContexts }
+          : {}),
+      },
       deps,
     ).catch((error) => {
       threw ||= error instanceof Error ? error.message : String(error);
@@ -441,6 +455,11 @@ export async function exerciseClaudeBridgeTurn(
               ? (state.payload.allowedTools as string[])
               : [],
             scopeToken: token,
+            userText: String(state.payload.userText ?? ""),
+            turnContext: String(
+              (state.payload.runtimeRequest as { turnContext?: unknown })
+                ?.turnContext ?? "",
+            ),
           }
         : null,
       confirmationAnswers: state.confirmationAnswers,

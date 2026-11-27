@@ -39,18 +39,7 @@ import { resolveProviderCapabilities } from "../../providers";
 import type { ProviderCapabilities } from "../../providers";
 import { buildNotesDirectoryConfigSection } from "../../utils/notesDirectoryConfig";
 import { buildAgentFilesInstructionForScope } from "../../utils/agentFilesDirectory";
-import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../../shared/quoteGuidance";
-import {
-  findNoteEmbedTokensInSelection,
-  hasNoteEmbedTokens,
-  NOTE_EMBED_PLACEHOLDER_GUIDANCE,
-} from "../../utils/noteEmbeds";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
-import { formatPaperSourceLabel } from "../../services/paperContent/paperAttribution";
-import {
-  buildQuoteAnchorPromptBlock,
-  buildSelectedTextQuoteCitations,
-} from "../../services/quotes/quoteCitations";
 import {
   buildAgentStableResourceContextBlock,
   type AgentResourceContextPlan,
@@ -58,10 +47,11 @@ import {
 import { buildAgentCoverageContextBlock } from "../context/coverageLedger";
 import type { PaperPromptContext } from "../context/paperPromptContext";
 import { buildVisibleTurnContextBlock } from "../context/turnContextEnvelope";
+import { getActiveTurnPaper } from "../context/turnPaperScope";
 import {
-  getActiveTurnPaper,
-  getSelectedPassagePaper,
-} from "../context/turnPaperScope";
+  renderTurnMaterialForModel,
+  resolveTurnUserRequestText,
+} from "../context/turnMaterial";
 import { renderLongJobResume } from "../loop/longJob";
 import { resolveAgentLimits } from "./limits";
 import { OUTCOME_REASONS } from "../loop/outcomes";
@@ -69,14 +59,6 @@ import {
   hasAgentContentInputs,
   normalizeAgentContentInputs,
 } from "./contentCapabilities";
-import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
-import {
-  formatSelectedTextLocator,
-  formatSelectedTextQuestionSuffix,
-  isPromptOnlySelectedTextQuestions,
-  renderSelectedTextAnchorContext,
-  SELECTED_TEXT_QUESTIONS_INSTRUCTION,
-} from "../../services/context/selectedTextAnchorFormatting";
 import {
   buildInstructionInventory,
   type InstructionInventory,
@@ -228,123 +210,12 @@ function buildFullUserMessage(
   }
   const executionCheckpoint = renderExecutionCheckpointBlock(request);
   if (executionCheckpoint) contextLines.push(executionCheckpoint);
-  if (request.activeNoteContext) {
-    const note = request.activeNoteContext;
-    contextLines.push(
-      `Current note content for this turn:\n"""\n${note.noteText}\n"""`,
-    );
-    contextLines.push(NOTE_EDITING_QUOTE_BLOCK_GUIDANCE);
-    if (hasNoteEmbedTokens(note.noteText))
-      contextLines.push(NOTE_EMBED_PLACEHOLDER_GUIDANCE);
-    if (note.noteHtml) {
-      contextLines.push(`Original note HTML:\n"""\n${note.noteHtml}\n"""`);
-    }
-  }
-  const selectedTextContexts = synthesizeSelectedTextContexts({
-    selectedTextContexts: request.selectedTextContexts,
-    selectedTexts: request.selectedTexts,
-    selectedTextSources: request.selectedTextSources,
-    selectedTextPaperContexts: (request.selectedTextContexts || []).map(
-      (_context, index) =>
-        getSelectedPassagePaper(request.turnPaperScope, index),
-    ),
-    selectedTextNoteContexts: request.selectedTextNoteContexts,
-  });
-  const selectedTexts = selectedTextContexts.map((context) => context.text);
-  const selectedTextSources = selectedTextContexts.map(
-    (context) => context.source,
-  );
-  const selectedTextPaperContexts = selectedTextContexts.map(
-    (_context, index) => getSelectedPassagePaper(request.turnPaperScope, index),
-  );
-  const anchorsByIndex = new Map(
-    (request.resolvedSelectedTextAnchors || []).map((anchor) => [
-      anchor.contextIndex,
-      anchor,
-    ]),
-  );
-  if (selectedTexts.length) {
-    const selectedTextQuoteAnchors = buildQuoteAnchorPromptBlock(
-      buildSelectedTextQuoteCitations(
-        selectedTexts,
-        selectedTextSources,
-        selectedTextPaperContexts,
-      ),
-    );
-    const selectedTextBlock = selectedTexts
-      .map((entry, index) => {
-        const source = selectedTextSources[index];
-        const paperContext = selectedTextPaperContexts[index];
-        const sourceLabel =
-          source === "model"
-            ? "model response"
-            : source === "note"
-              ? "Zotero note"
-              : source === "note-edit"
-                ? "active note editing focus"
-                : source === "sidechat"
-                  ? "side chat transcript"
-                  : source === "inlineask"
-                    ? "Inline Ask transcript"
-                    : "PDF reader";
-        const noteContext = selectedTextContexts[index]?.noteContext;
-        const sourceMeta =
-          source === "pdf" && paperContext
-            ? `, paper=${paperContext.title}, source_label=${formatPaperSourceLabel(paperContext)}`
-            : source === "note-edit" && noteContext
-              ? [
-                  `, note=${noteContext.title}`,
-                  noteContext.noteItemId
-                    ? `note_id=${noteContext.noteItemId}`
-                    : "",
-                  `note_kind=${noteContext.noteKind}`,
-                  noteContext.parentItemId
-                    ? `parent_item_id=${noteContext.parentItemId}`
-                    : "",
-                ]
-                  .filter(Boolean)
-                  .join(", ")
-              : "";
-        const locator = formatSelectedTextLocator(
-          selectedTextContexts[index],
-          anchorsByIndex.get(index),
-        );
-        const question = formatSelectedTextQuestionSuffix(
-          selectedTextContexts[index]?.userQuery,
-        );
-        const embedTokens =
-          source === "note-edit" && request.activeNoteContext
-            ? findNoteEmbedTokensInSelection(
-                request.activeNoteContext.noteText,
-                entry,
-              )
-            : [];
-        const embedHint = embedTokens.length
-          ? `\nThis selection contains embedded note items. Keep each placeholder in your replacement where its item belongs: ${embedTokens.join(" ")}`
-          : "";
-        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]${locator ? ` ${locator}` : ""}:\n"""\n${entry}\n"""${question}${embedHint}`;
-      })
-      .join("\n\n");
-    contextLines.push(
-      [...selectedTextQuoteAnchors, selectedTextBlock]
-        .filter(Boolean)
-        .join("\n\n"),
-    );
-    const anchorContext = renderSelectedTextAnchorContext({
-      selectedTextContexts,
-      // The turn scope holds each passage's paper; the page hint's read
-      // call names it when it owns the anchor's attachment.
-      anchors: (request.resolvedSelectedTextAnchors || []).map((anchor) => {
-        const paper = selectedTextPaperContexts[anchor.contextIndex];
-        return paper?.contextItemId === anchor.contextItemId
-          ? { ...anchor, paperContext: paper }
-          : anchor;
-      }),
-      locations: options.selectionLocations,
+  contextLines.push(
+    ...renderTurnMaterialForModel(request, {
+      selectionLocations: options.selectionLocations,
       readCalls: true,
-    });
-    if (anchorContext) contextLines.push(anchorContext);
-  }
+    }),
+  );
   const pdfAttachments = (request.attachments || []).filter(
     (a) =>
       a.category === "pdf" &&
@@ -382,14 +253,7 @@ function buildFullUserMessage(
     contextLines.push(options.turnGuidanceBlock);
   }
 
-  // A request that is only the chip questions (empty composer) already shows
-  // each question under its selection above; do not repeat them here.
-  const userRequestText = isPromptOnlySelectedTextQuestions(
-    request.userText,
-    selectedTextContexts,
-  )
-    ? SELECTED_TEXT_QUESTIONS_INSTRUCTION
-    : request.userText;
+  const userRequestText = resolveTurnUserRequestText(request);
   const promptText = `${
     contextLines.length ? `${contextLines.join("\n")}\n\n` : ""
   }User request:\n${userRequestText}`;
