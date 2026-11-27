@@ -44,7 +44,11 @@ import {
   startAgyClient,
   type AgyLaunchOptions,
 } from "../../antigravity/agyProcess";
-import type { ChatAttachment, SelectedTextContext } from "../../shared/types";
+import type {
+  AttachedConversationRef,
+  ChatAttachment,
+  SelectedTextContext,
+} from "../../shared/types";
 import {
   encodeReaderSelection,
   READER_RUNTIME_KEYS,
@@ -89,6 +93,8 @@ export type AntigravityTurnScenario = {
   readerSelections?: Partial<Record<ReaderRuntimeKey, ReaderSelection>>;
   /** Retries the turn after it ends, as the panel's Retry does. */
   retry?: boolean;
+  /** Past chats attached to the turn ("Add past conversation"). */
+  attachedConversations?: AttachedConversationRef[];
 };
 
 export type AntigravityTurnResult = {
@@ -288,6 +294,9 @@ export async function exerciseAntigravityTurn(
         ...(scenario.attachments ? { attachments: scenario.attachments } : {}),
         ...(scenario.selectedTextContexts
           ? { selectedTextContexts: scenario.selectedTextContexts }
+          : {}),
+        ...(scenario.attachedConversations
+          ? { attachedConversations: scenario.attachedConversations }
           : {}),
         ...(scenario.model ? { model: scenario.model } : {}),
         ...(scenario.thoughtLevel

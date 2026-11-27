@@ -379,6 +379,72 @@ describe("workflow: Antigravity turns", function () {
     assert.include(asked[0], "Say hello again.");
   });
 
+  it("sends agy a past chat the user attached, before the question", async function () {
+    const pastPaper = await api.createPaperWithPdfFixture({
+      title: "Antigravity past chat source",
+      pages: ["A disposable paper with a past chat."],
+    });
+    try {
+      const pastPanel = await api.renderPanelForItem(pastPaper.parentItemId);
+      const seeded = await api.seedPanelStoredTurn(
+        pastPanel.panelId,
+        "PASTAGY what was the lab rat called?",
+        "The lab rat was named BISCUIT.",
+      );
+      const result = await run({
+        question: "What was the rat called in my earlier chat?",
+        attachedConversations: [
+          {
+            system: "upstream",
+            conversationKey: seeded.conversationKey,
+            title: "PASTAGY",
+            libraryID: Zotero.Libraries.userLibraryID,
+            kind: "paper",
+            paperItemID: pastPaper.parentItemId,
+          },
+        ],
+      });
+      assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+      const sent = (
+        store.get(String(result.storedSessionId))?.history || []
+      ).flatMap((update) =>
+        update.sessionUpdate === "user_message_chunk" &&
+        update.content.type === "text"
+          ? [update.content.text]
+          : [],
+      );
+      assert.lengthOf(sent, 1, JSON.stringify(sent));
+      assert.include(sent[0], "Attached past conversations");
+      assert.include(sent[0], "The lab rat was named BISCUIT.");
+      assert.isBelow(
+        sent[0].indexOf("BISCUIT"),
+        sent[0].indexOf("What was the rat called in my earlier chat?"),
+      );
+    } finally {
+      await api.cleanupFixture(pastPaper);
+    }
+  });
+
+  it("lists an Antigravity chat in Add past conversation", async function () {
+    const first = await run({ question: "AGYPAST say hello." });
+    assert.equal(first.outcomeKind, "completed", JSON.stringify(first));
+    const other = await api.createPaperWithPdfFixture({
+      title: "Antigravity picker panel",
+      pages: ["A disposable paper."],
+    });
+    try {
+      const otherPanel = await api.renderPanelForItem(other.parentItemId);
+      const picker = await api.pickPastConversationInPanel(otherPanel.panelId);
+      assert.include(
+        picker.rowRuntimeLabels,
+        "Antigravity",
+        JSON.stringify(picker),
+      );
+    } finally {
+      await api.cleanupFixture(other);
+    }
+  });
+
   it("shows agy's permission request as a review card and passes the answer on", async function () {
     const allowed = await run({
       question: "Please run the build.",

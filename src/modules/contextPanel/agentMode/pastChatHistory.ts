@@ -33,6 +33,10 @@ import {
 } from "../../../services/pastConversations/pastConversationLoader";
 import { resolveDeliveredPastChatRefs } from "../../../services/pastConversations/pastConversationText";
 import type { AttachedConversationRef } from "../../../shared/types";
+import {
+  isRuntimeConversationSystem,
+  usesExternalTurnHost,
+} from "../../../core/conversations/conversationSystems";
 import type { ChatMessage } from "../../../utils/llmClient";
 import type { EffectiveRequestConfig } from "../requestContext";
 
@@ -74,8 +78,8 @@ function resolveAgentPastChatContextWindow(
 export async function injectAttachedPastChatsIntoAgentHistory(params: {
   conversationKey: number;
   /**
-   * The turn's conversation system; "upstream" and "claude_code" get past
-   * chats.
+   * The turn's conversation system; "upstream" and the runtimes run by the
+   * external turn host (Claude Code, Antigravity) get past chats.
    */
   conversationSystem: string;
   libraryID: number | undefined;
@@ -86,7 +90,8 @@ export async function injectAttachedPastChatsIntoAgentHistory(params: {
   source?: PastConversationSource;
 }): Promise<ChatMessage[]> {
   const system = params.conversationSystem;
-  if (system !== "upstream" && system !== "claude_code") return params.history;
+  if (system !== "upstream" && !usesExternalTurnHostSystem(system))
+    return params.history;
   const delivered = params.messages.map((_message, index) =>
     resolveDeliveredPastChatRefs(params.messages, index, system),
   );
@@ -125,22 +130,28 @@ export async function injectAttachedPastChatsIntoAgentHistory(params: {
 }
 
 /**
- * The past chats a Claude Code turn puts in front of its text, or undefined
- * for another system or when there are none. `history` is the turn's own
+ * The past chats a Claude Code or Antigravity turn puts in front of its
+ * text (buildExternalRuntimeUserText), or undefined for another system or
+ * when there are none. `history` is the turn's own
  * history source (the messages before this turn); `current.text` is the
  * runtime userText (question), which is what reaches the bridge's slash
  * check, while stored history rows hold displayQuestion || question.
  */
+/** True for Claude Code and Antigravity: the external turn host's runtimes. */
+function usesExternalTurnHostSystem(system: string): boolean {
+  return isRuntimeConversationSystem(system) && usesExternalTurnHost(system);
+}
+
 export function resolveCurrentTurnDeliveredPastChats(params: {
   conversationSystem: string;
   history: readonly HistorySourceMessage[];
   current: { text: string; attachedConversations?: AttachedConversationRef[] };
 }): AttachedConversationRef[] | undefined {
-  if (params.conversationSystem !== "claude_code") return undefined;
+  if (!usesExternalTurnHostSystem(params.conversationSystem)) return undefined;
   const refs = resolveDeliveredPastChatRefs(
     [...params.history, { role: "user", ...params.current }],
     params.history.length,
-    "claude_code",
+    params.conversationSystem,
     { excludeAgentAttached: true },
   );
   return refs.length ? refs : undefined;

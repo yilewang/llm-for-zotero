@@ -21,6 +21,7 @@ import {
   isConversationSystem,
   isRuntimeConversationSystem,
   RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+  usesExternalTurnHost,
 } from "../../core/conversations/conversationSystems";
 
 /** First line of every past-chat message; the compactor recognises it. */
@@ -208,8 +209,9 @@ export function isSlashCommandText(text: unknown): boolean {
  * it, so the two always agree on which turn carries which chat.
  *
  * - "upstream" and "codex": the message's own chats.
- * - "claude_code": a slash message delivers nothing, because Claude Code
- *   takes it as a command. The next non-slash user message carries the chats
+ * - A runtime run by the external turn host (Claude Code, Antigravity): a
+ *   slash message delivers nothing, because the runtime takes it as a
+ *   command. The next non-slash user message carries the chats
  *   of that run of slash messages: its own chats first, then those of the
  *   slash messages since the previous non-slash user message, oldest first,
  *   one entry per chat.
@@ -239,7 +241,7 @@ export function resolveDeliveredPastChatRefs(
     options.excludeAgentAttached
       ? withoutAgentAttachedConversationRefs(refs)
       : refs;
-  if (system !== "claude_code") {
+  if (!isRuntimeConversationSystem(system) || !usesExternalTurnHost(system)) {
     return pick(collectConversationAttachedRefs([message]));
   }
   if (isSlashCommandText(message.text)) return [];
