@@ -30,12 +30,7 @@ export {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
-import {
-  areConversationWritesFrozen,
-  bumpConversationWriteGeneration,
-  getConversationWriteGeneration,
-  isConversationWriteGenerationCurrent,
-} from "../../shared/conversationWriteFence";
+import { bumpConversationWriteGeneration } from "../../shared/conversationWriteFence";
 import { positiveIntOrZero } from "../../core/values";
 // =============================================================================
 // Module State

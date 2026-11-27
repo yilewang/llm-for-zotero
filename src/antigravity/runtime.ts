@@ -22,7 +22,6 @@
 
 import {
   ACP_METHOD_NOT_FOUND_ERROR_CODE,
-  type AcpContentBlock,
   type AcpPermissionOption,
   type AcpRequestPermissionParams,
   type AcpRequestPermissionResult,
@@ -38,7 +37,6 @@ import type {
   AgentRuntimeRequest,
 } from "../agent/types";
 import {
-  buildExternalRuntimeUserText,
   buildExternalRuntimeZoteroMcpScope,
   resolveClaudeBridgeMcpScopeToken,
   type AgentRuntimeLike,
@@ -52,10 +50,6 @@ import {
 } from "../agent/externalRuntimeTurnHost";
 import { buildAgentModelCapabilities } from "../agent/model/contentCapabilities";
 import { AGENT_PERSONA_INSTRUCTIONS } from "../agent/model/agentPersona";
-import {
-  buildTurnContextEnvelope,
-  renderTurnContextEnvelopeForModel,
-} from "../agent/context/turnContextEnvelope";
 import {
   ZOTERO_MCP_HOST_ACCESS_TOOL_NAMES,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,

@@ -21,13 +21,7 @@ import {
   sha256Bytes,
 } from "../src/agent/store/journalRecoveryBlobStore";
 import { catalog, selectSteps } from "./catalog";
-import {
-  check,
-  redact,
-  runSteps,
-  reportExitCode,
-  type StepResult,
-} from "./core";
+import { check, runSteps, reportExitCode, type StepResult } from "./core";
 import { createFixtures, snapshot } from "./native";
 import { LiveDriver, type Writer } from "./driver";
 import { executeJourneyStep, type JourneyContext } from "./journeys";

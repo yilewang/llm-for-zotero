@@ -20,7 +20,6 @@ import { config } from "../../../package.json";
 import type {
   AttachedConversationRef,
   CollectionContextRef,
-  PaperContentSourceMode,
   PaperContextRef,
   QuoteCitation,
   TagContextRef,

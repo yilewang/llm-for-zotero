@@ -947,9 +947,6 @@ async function lookupSemanticScholar(params: {
       .map((author) => trimmedString(author.name))
       .filter(Boolean);
     const externalIds = (result.externalIds || {}) as Record<string, string>;
-    const publicationTypes = Array.isArray(result.publicationTypes)
-      ? (result.publicationTypes as string[]).join(", ")
-      : undefined;
 
     const title = trimmedString(result.title) || undefined;
     const doi = externalIds.DOI || externalIds.doi || params.doi || undefined;

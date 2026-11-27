@@ -2,12 +2,10 @@ import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient"
 import type { ContextAttachmentSupport } from "../../services/paperContent/contextAttachmentTypes";
 import type {
   SelectedTextSource,
-  ChatAttachmentCategory,
   ChatAttachment,
   GeneratedChatImage,
   PaperContentSourceMode,
   AdvancedModelParams,
-  ActiveNoteSession,
   ActiveNoteContext,
   SelectedTextContext,
   ResolvedSelectedTextAnchor,
@@ -15,7 +13,6 @@ import type {
   LocalDocumentResource,
   QuoteCitation,
   NoteContextRef,
-  OtherContextRef,
   CollectionContextRef,
   TagContextRef,
   AttachedConversationRef,

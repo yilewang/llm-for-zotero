@@ -49,7 +49,6 @@ type FloatingMenuInteractionControllerDeps = {
   closeModelMenu: () => void;
   openReasoningMenu: () => void;
   closeReasoningMenu: () => void;
-  clearRetryMenuAnchor: () => void;
   isElementNode: (value: unknown) => value is Element;
 };
 
@@ -450,7 +449,6 @@ export function attachFloatingMenuInteractionController(
             RETRY_MODEL_MENU_OPEN_CLASS,
             false,
           );
-          deps.clearRetryMenuAnchor();
         }
       }
 

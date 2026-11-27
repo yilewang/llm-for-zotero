@@ -661,7 +661,6 @@ export class CollectionCapability {
   }): Promise<void> {
     const collection = this.deps.getCollection(params.collectionId);
     if (!collection) return;
-    const libraryID = Number(collection.libraryID) || 0;
     if (params.permanent) {
       await (
         collection as unknown as {
@@ -1088,7 +1087,6 @@ export class CollectionCapability {
     }
     item.removeFromCollection(params.collectionId);
     await item.saveTx();
-    const collection = this.deps.getCollection(params.collectionId);
     return { removed: true };
   }
 

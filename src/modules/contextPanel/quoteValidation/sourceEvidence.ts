@@ -27,7 +27,6 @@ import {
 import { normalizePaperContextRefs } from "../../../services/context/normalizers";
 import { isPdfContextAttachment } from "../../../services/paperContent/contextAttachmentSupport";
 import type { QuoteCitation } from "../../../shared/types";
-import { t } from "../../../utils/i18n";
 import { sanitizeText } from "../../../utils/textSanitization";
 import { fnv1a32Raw } from "../../../utils/fnv1a";
 import {

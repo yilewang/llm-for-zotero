@@ -144,7 +144,6 @@ import { inferLegacyProviderProtocol } from "../../utils/providerProtocol";
 import { isLocalModelApiBase } from "../../utils/providerPresets";
 import {
   PERSISTED_HISTORY_LIMIT,
-  MAX_FULL_TEXT_PAPER_CONTEXTS,
   MAX_SELECTED_IMAGES,
   formatFigureCountLabel,
   formatPaperCountLabel,
@@ -6178,11 +6177,6 @@ export async function editLatestUserMessageAndRetry(
   );
   const selectedTextPaperContextsForMessage =
     selectedTextContextsForMessage.map((context) => context.paperContext);
-  const selectedTextQuoteCitationsForMessage = buildSelectedTextQuoteCitations(
-    selectedTextsForMessage,
-    selectedTextSourcesForMessage,
-    selectedTextPaperContextsForMessage,
-  );
   const selectedTextNoteContextsForMessage = selectedTextContextsForMessage.map(
     (context) => context.noteContext,
   );
@@ -7559,7 +7553,6 @@ export async function editUserTurnAndRetry(opts: {
     onProviderDispatch,
     contextSource,
     userTimestamp,
-    assistantTimestamp,
     newText,
     selectedTextContexts,
     selectedTexts,

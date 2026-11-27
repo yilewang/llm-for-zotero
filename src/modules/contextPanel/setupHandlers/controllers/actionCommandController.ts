@@ -163,42 +163,11 @@ export function createActionCommandController(
   let actionPickerItems: ActionPickerItem[] = [];
   let actionPickerActiveIndex = 0;
   let forcedSkillId: string | null = null;
-  let forcedSkillBadge: HTMLElement | null = null;
   let activeCommandAction: ActionPickerItem | null = null;
-  let activeCommandBadge: HTMLElement | null = null;
 
   const setStatus = (message: string, level: StatusLevel) => {
     deps.setStatusMessage?.(message, level);
   };
-
-  const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-    Boolean(value && typeof value === "object" && !Array.isArray(value));
-
-  const getActionSchemaProperties = (
-    action: Pick<ActionPickerItem, "inputSchema">,
-  ): Record<string, unknown> => {
-    const schema = action.inputSchema;
-    if (!isPlainObject(schema) || !isPlainObject(schema.properties)) return {};
-    return schema.properties;
-  };
-
-  const getActionScopeEnum = (
-    action: Pick<ActionPickerItem, "inputSchema">,
-  ): string[] => {
-    const scope = getActionSchemaProperties(action).scope;
-    if (!isPlainObject(scope) || !Array.isArray(scope.enum)) return [];
-    return scope.enum.filter(
-      (entry): entry is string => typeof entry === "string",
-    );
-  };
-
-  const actionSupportsCollectionScope = (action: ActionPickerItem): boolean =>
-    Boolean(action.paperScopeProfile?.allowedScopes.includes("collection")) ||
-    (Boolean(getActionSchemaProperties(action).collectionId) &&
-      getActionScopeEnum(action).includes("collection"));
-
-  const actionSupportsTagScope = (action: ActionPickerItem): boolean =>
-    Boolean(action.paperScopeProfile?.allowedScopes.includes("tag"));
 
   const consumeActiveActionToken = (): boolean => {
     const token = deps.getActiveActionToken();
@@ -785,13 +754,11 @@ export function createActionCommandController(
 
   const clearForcedSkill = (): void => {
     forcedSkillId = null;
-    forcedSkillBadge = null;
     clearCommandRowState({ body, inputBox });
   };
 
   const clearCommandChip = (): void => {
     activeCommandAction = null;
-    activeCommandBadge = null;
     clearCommandRowState({ body, inputBox });
   };
 
@@ -799,12 +766,6 @@ export function createActionCommandController(
     const EventCtor =
       (inputBox.ownerDocument?.defaultView as any)?.Event ?? Event;
     inputBox.dispatchEvent(new EventCtor("input", { bubbles: true }));
-  };
-
-  const clearSubmittedActionDraft = (): void => {
-    inputBox.value = "";
-    dispatchComposerInput();
-    deps.persistDraftInputForCurrentConversation();
   };
 
   const handleSkillSelection = (skill: AgentSkill): void => {
@@ -820,7 +781,7 @@ export function createActionCommandController(
     ) {
       deps.setCurrentRuntimeMode("agent");
     }
-    forcedSkillBadge = activateCommandRowState({
+    activateCommandRowState({
       body,
       inputBox,
       label: `/${skill.id}`,
@@ -833,7 +794,7 @@ export function createActionCommandController(
     clearForcedSkill();
     clearCommandChip();
     activeCommandAction = action;
-    activeCommandBadge = activateCommandRowState({
+    activateCommandRowState({
       body,
       inputBox,
       label: `/${action.name}`,

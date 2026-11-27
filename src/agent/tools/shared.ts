@@ -1,9 +1,5 @@
 import type { AgentToolInputValidation } from "../types";
-import type {
-  ChatAttachment,
-  PaperContentSourceMode,
-  PaperContextRef,
-} from "../../shared/types";
+import type { ChatAttachment, PaperContextRef } from "../../shared/types";
 import { normalizePaperContentSourceMode } from "../../services/context/normalizers";
 
 export function validateObject<T extends Record<string, unknown>>(
