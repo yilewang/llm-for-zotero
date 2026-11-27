@@ -14,6 +14,7 @@
  * shape and the two projections, never a shared assembler.
  */
 import type { SelectionSurface } from "./conversationSelection";
+import type { ConversationSystem } from "../../core/conversations/conversationSystems";
 import type {
   AdvancedModelParams,
   AttachedConversationRef,
@@ -90,6 +91,12 @@ export type BuildAgentRuntimeRequestParams = {
    * when omitted.
    */
   surface?: SelectionSurface;
+  /**
+   * The runtime the turn runs on, which picks the reader model slot the
+   * composer's model menu stores the user's pick in; resolved from the item
+   * and the request config when omitted.
+   */
+  conversationSystem?: ConversationSystem;
 };
 
 /**

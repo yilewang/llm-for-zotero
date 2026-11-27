@@ -8465,11 +8465,14 @@ async function buildAgentRuntimeRequest(
     readerSelection:
       getReaderSelectionForSurface(
         readerRuntimeKeyForSystem(
-          params.effectiveRequestConfig.authMode === "codex_app_server"
-            ? "codex"
-            : params.effectiveRequestConfig.modelProviderLabel === "Claude Code"
-              ? "claude_code"
-              : "upstream",
+          params.conversationSystem ||
+            resolveEffectiveConversationSystem({
+              item: params.item,
+              authMode: params.effectiveRequestConfig.authMode,
+              providerProtocol: params.effectiveRequestConfig.providerProtocol,
+              modelProviderLabel:
+                params.effectiveRequestConfig.modelProviderLabel,
+            }),
         ),
         params.surface || resolveSurfaceForMountedItem(params.item),
       ) || undefined,
@@ -8561,14 +8564,13 @@ function buildAgentEngineDeps(
     getConversationKey,
     buildLLMHistoryMessages,
     buildAgentRuntimeRequest: async (requestParams) => {
-      const runtimeRequest = await buildAgentRuntimeRequest(
-        panelBody && !requestParams.surface
-          ? {
-              ...requestParams,
-              surface: resolveSelectionSurfaceForBody(panelBody),
-            }
-          : requestParams,
-      );
+      const runtimeRequest = await buildAgentRuntimeRequest({
+        ...requestParams,
+        conversationSystem: effectiveConversationSystem,
+        ...(panelBody && !requestParams.surface
+          ? { surface: resolveSelectionSurfaceForBody(panelBody) }
+          : {}),
+      });
       // The agent turn's papers are final here: read their PDF page text
       // while the agent works, so its quote cards can be checked at the end.
       void prewarmQuoteSourcePageText({

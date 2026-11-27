@@ -642,6 +642,59 @@ describe("workflow: Antigravity turns", function () {
     });
   });
 
+  it("sends each quoted passage with its source and question, not only a count", async function () {
+    const quote = "Attention lets every token weigh every other token.";
+    const result = await run({
+      question: "I don't get this sentence.",
+      selectedTextContexts: [
+        { text: quote, source: "model" },
+        {
+          text: "Positional encodings add order information.",
+          source: "model",
+          userQuery: "Why sinusoids?",
+        },
+      ],
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    const sent = (
+      store.get(String(result.storedSessionId))?.history || []
+    ).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" &&
+      update.content.type === "text"
+        ? [update.content.text]
+        : [],
+    );
+    assert.lengthOf(sent, 1, JSON.stringify(sent));
+    assert.include(
+      sent[0],
+      `Selected text 1 [source=model response]:\n"""\n${quote}\n"""`,
+    );
+    assert.include(
+      sent[0],
+      'Positional encodings add order information.\n"""\nQuestion about this text:\nWhy sinusoids?',
+    );
+    // The user's own words follow the passages they ask about.
+    assert.isAbove(
+      sent[0].indexOf("I don't get this sentence."),
+      sent[0].indexOf(quote),
+    );
+  });
+
+  it("carries the reader model picked for Antigravity, not the agent's", async function () {
+    const result = await run({
+      question: "Say hello.",
+      readerSelections: {
+        agent: { kind: "model", model: "agent-reader" },
+        antigravity: { kind: "model", model: "antigravity-reader" },
+      },
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.deepEqual(result.readerSelection, {
+      kind: "model",
+      model: "antigravity-reader",
+    });
+  });
+
   it("still asks before agy reads a file the user did not attach", async function () {
     const result = await run({
       question: "Please read the attached notes.",

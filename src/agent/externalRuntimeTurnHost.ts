@@ -24,6 +24,8 @@
 import { appLogger } from "../core/logging";
 import { resolveAgentRuntimeRequest } from "./context/resolvedAgentRequest";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
+import { buildVisibleTurnContextBlock } from "./context/turnContextEnvelope";
+import { renderTurnMaterialForModel } from "./context/turnMaterial";
 import { loadLatestDocumentForRun } from "./documents/store";
 import { rememberOutsidePapers } from "./context/outsidePaperRecords";
 import { paperLedgerUpdateFromMcpActivity } from "./context/taskPaperLedgerRecorder";
@@ -118,6 +120,27 @@ export function requestLocalDocuments(
   request: AgentRuntimeRequest,
 ): readonly LocalDocumentResource[] {
   return (request.localDocuments || []).map((entry) => entry.resource);
+}
+
+/**
+ * What an external runtime's prompt states about the turn before the user's
+ * words: the Zotero context the turn refers to, then the material the user
+ * attached (the open note, the selected passages). Claude Code and
+ * Antigravity both send this, so each sees the same turn the original agent
+ * sees.
+ */
+export function renderExternalRuntimeTurnContext(
+  request: AgentRuntimeRequest,
+): string {
+  return [
+    buildVisibleTurnContextBlock(request),
+    ...renderTurnMaterialForModel(request, {
+      // A raw-PDF turn has no paper_read, so a page hint names no call.
+      readCalls: !requestLocalDocuments(request).length,
+    }),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /**
