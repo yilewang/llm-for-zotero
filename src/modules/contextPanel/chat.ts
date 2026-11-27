@@ -76,6 +76,7 @@ import { resolveConversationStorageSystem } from "../../shared/conversationStora
 import {
   assertNeverConversationSystem,
   isRuntimeConversationSystem,
+  sendsLocalPdfFiles,
 } from "../../core/conversations/conversationSystems";
 import { normalizeForcedSkillIds } from "../../shared/skillIds";
 import {
@@ -6964,8 +6965,12 @@ export async function retryLatestAssistantResponse(
   }
 
   try {
+    // As the first send does (sendsLocalPdfFiles); a Codex conversation runs
+    // on the Codex runtime only through the app server.
     const usesLocalPdfTransport =
-      effectiveConversationSystem === "claude_code" || isCodexNativeTurn;
+      isRuntimeConversationSystem(effectiveConversationSystem) &&
+      (effectiveConversationSystem !== "codex" || isCodexNativeTurn) &&
+      sendsLocalPdfFiles(effectiveConversationSystem);
     const retryLocalDocuments =
       usesLocalPdfTransport && pdfPaperContexts.length
         ? await createLocalPdfResourceResolver().resolve(pdfPaperContexts)

@@ -334,6 +334,23 @@ describe("workflow: Antigravity turns", function () {
       (update) => update.sessionUpdate === "user_message_chunk",
     );
     assert.lengthOf(asked, 1, JSON.stringify(session?.history));
+    // The new session holds none of the chat, so its first prompt carries
+    // the chat so far before the turn (A7).
+    const sentText = asked
+      .map((update) =>
+        update.sessionUpdate === "user_message_chunk" &&
+        update.content.type === "text"
+          ? update.content.text
+          : "",
+      )
+      .join("\n");
+    assert.include(sentText, "Local Zotero conversation history");
+    assert.include(sentText, "1. user: Say hello.");
+    assert.include(sentText, "2. assistant: Hello from Antigravity.");
+    assert.isBelow(
+      sentText.indexOf("Local Zotero conversation history"),
+      sentText.indexOf("Say hello again."),
+    );
   });
 
   it("shows agy's permission request as a review card and passes the answer on", async function () {
@@ -603,6 +620,8 @@ describe("workflow: Antigravity turns", function () {
     );
     assert.lengthOf(sent, 1, JSON.stringify(sent));
     assert.notInclude(sent[0], "Original agent-mode Zotero behavior");
+    // A chat's first turn has no history to carry.
+    assert.notInclude(sent[0], "Local Zotero conversation history");
     assert.include(sent[0], "Say hello.");
   });
 

@@ -1,6 +1,9 @@
 import type { PaperContentSourceMode } from "../../types";
 import type { PdfSupport } from "../../../../providers";
-import type { RuntimeConversationSystem } from "../../../../core/conversations/conversationSystems";
+import {
+  sendsLocalPdfFiles,
+  type RuntimeConversationSystem,
+} from "../../../../core/conversations/conversationSystems";
 import { resolveContextAttachmentSupport } from "../../../../services/paperContent/contextAttachmentSupport";
 import {
   getContextSourceModeBadgeLabel,
@@ -53,7 +56,9 @@ export function resolvePaperPdfSupportForConversation(params: {
   basePdfSupport: PdfSupport;
   runtimeSystem: RuntimeConversationSystem | null;
 }): PdfSupport {
-  return params.runtimeSystem ? "local_path" : params.basePdfSupport;
+  return sendsLocalPdfFiles(params.runtimeSystem)
+    ? "local_path"
+    : params.basePdfSupport;
 }
 
 export function shouldDowngradePdfSourceForConversation(params: {

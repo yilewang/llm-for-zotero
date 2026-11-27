@@ -52,6 +52,10 @@ import {
 import { buildAgentModelCapabilities } from "../agent/model/contentCapabilities";
 import type { RenderedRuntimePrompt } from "../agent/context/turnPromptBlocks";
 import {
+  renderRuntimeHistoryTranscript,
+  selectRuntimeHistory,
+} from "../agent/context/runtimeHistory";
+import {
   ZOTERO_MCP_HOST_ACCESS_TOOL_NAMES,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
 } from "../agent/mcp/server";
@@ -689,9 +693,17 @@ export function createAntigravityTransport(
         mapping = mapping.then(() => mapper.handle(notification));
       },
     );
+    // A new session holds none of the chat: the history goes first, chosen
+    // to fit the model (A7 in the runtime parity plan).
+    const historyTranscript = session.isNew
+      ? renderRuntimeHistoryTranscript(
+          selectRuntimeHistory(request),
+          "this Antigravity session starts without it",
+        )
+      : "";
     const input = await buildAntigravityPromptInput(
       request,
-      prepared.prompt.turn,
+      [historyTranscript, prepared.prompt.turn].filter(Boolean).join("\n\n"),
     );
     const stopPermissions = client.setPermissionHandler(
       session.sessionId,

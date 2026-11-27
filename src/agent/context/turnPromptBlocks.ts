@@ -211,7 +211,7 @@ const CLAUDE_CODE_DELIVERY: RuntimePromptDeliveryTable = {
   continuityNotes: { kind: "replaced", by: RUNTIME_SESSION_MEMORY },
   history: {
     kind: "transport",
-    how: "the Claude session (resume), or the bridge's fallback history",
+    how: "the Claude session (resume), or the bridge's fallback history (runtimeHistory.ts)",
   },
   pastChats: {
     kind: "transport",
@@ -293,7 +293,7 @@ const ANTIGRAVITY_DELIVERY: RuntimePromptDeliveryTable = {
   continuityNotes: { kind: "replaced", by: RUNTIME_SESSION_MEMORY },
   history: {
     kind: "transport",
-    how: "the agy session (load or resume); a fresh session starts without it (A7, open)",
+    how: "the agy session (load or resume); a new session gets the chat history before its first turn (runtimeHistory.ts)",
   },
   pastChats: {
     kind: "transport",

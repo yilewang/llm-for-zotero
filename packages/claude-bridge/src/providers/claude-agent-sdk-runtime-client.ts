@@ -281,6 +281,7 @@ type RuntimeRequestShape = {
   attachments?: unknown;
   screenshots?: unknown;
   history?: unknown;
+  historyOmitted?: unknown;
   localDocuments?: unknown;
 };
 
@@ -593,6 +594,11 @@ function formatPaperPathLines(entries: RuntimePaperPathEntry[]): string[] {
     return `- ${entry.title}${pathHints.length ? ` [${pathHints.join(" | ")}]` : ""}`;
   });
 }
+/**
+ * The plugin's history for a session that cannot be resumed. The plugin
+ * chooses what fits the model (agent/context/runtimeHistory.ts) and counts
+ * what it left out; every entry it sends is replayed whole.
+ */
 function formatFallbackHistory(
   runtimeRequest: RuntimeRequestShape | undefined,
 ): string[] {
@@ -612,21 +618,24 @@ function formatFallbackHistory(
       const content =
         typeof record.content === "string" ? record.content.trim() : "";
       if (!role || !content) return null;
-      return {
-        role,
-        content:
-          content.length > 2000
-            ? `${content.slice(0, 1999).trimEnd()}...`
-            : content,
-      };
+      return { role, content };
     })
     .filter((entry): entry is { role: "assistant" | "user"; content: string } =>
       Boolean(entry),
-    )
-    .slice(-24);
+    );
   if (!entries.length) return [];
+  const omitted =
+    typeof runtimeRequest.historyOmitted === "number" &&
+    runtimeRequest.historyOmitted > 0
+      ? Math.floor(runtimeRequest.historyOmitted)
+      : 0;
   return [
     "Local Zotero conversation history for continuity because the prior Claude session could not be resumed:",
+    ...(omitted
+      ? [
+          `(${omitted} earlier message${omitted === 1 ? "" : "s"} did not fit and are not shown.)`,
+        ]
+      : []),
     ...entries.map(
       (entry, index) => `${index + 1}. ${entry.role}: ${entry.content}`,
     ),

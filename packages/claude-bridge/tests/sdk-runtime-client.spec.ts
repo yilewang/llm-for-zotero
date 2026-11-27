@@ -2019,6 +2019,39 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(String(seenPrompt)).toContain("notes.txt");
   });
 
+  it("replays the plugin's fallback history whole and says what it left out", async () => {
+    let prompt: unknown;
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        prompt = args.prompt;
+        return makeStream([
+          { type: "result", session_id: "s", result: "ok", is_error: false },
+        ]);
+      },
+    });
+    const longAnswer = `${"evidence ".repeat(600)}END-OF-ANSWER`;
+    const history = Array.from({ length: 30 }, (_value, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content: index === 1 ? longAnswer : `message ${index}`,
+    }));
+    const stream = await runtime.startTurn({
+      conversationKey: "conv-fallback-whole",
+      userMessage: "continue",
+      metadata: { claudeResumeFallbackHistory: true },
+      runtimeRequest: { history, historyOmitted: 4 } as Record<string, unknown>,
+    });
+    for await (const _event of stream.events) void _event;
+
+    const text = String(prompt);
+    // Every entry the plugin chose, including the first and a long one.
+    expect(text).toContain("1. user: message 0");
+    expect(text).toContain("END-OF-ANSWER");
+    expect(text).toContain("30. assistant: message 29");
+    expect(text).toContain(
+      "(4 earlier messages did not fit and are not shown.)",
+    );
+  });
+
   it("injects local Zotero history only for resume fallback turns", async () => {
     let fallbackPrompt: unknown;
     let normalPrompt: unknown;

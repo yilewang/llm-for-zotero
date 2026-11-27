@@ -107,6 +107,11 @@ export type RuntimeConversationSystemDescriptor = {
    * its own commands. `codex_app_server`: Codex's native app-server path.
    */
   engine: "external_turn_host" | "codex_app_server";
+  /**
+   * A paper the user set to raw-PDF mode goes to the runtime as its local
+   * file, which the runtime reads itself, on the first send and on a retry.
+   */
+  localPdfFiles: boolean;
 };
 
 export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
@@ -125,6 +130,7 @@ export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
     permissionProvider: "claude",
     usageSource: "claude-code",
     engine: "external_turn_host",
+    localPdfFiles: true,
   },
   codex: {
     system: "codex",
@@ -139,6 +145,7 @@ export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
     permissionProvider: "codex",
     usageSource: "codex",
     engine: "codex_app_server",
+    localPdfFiles: true,
   },
   antigravity: {
     system: "antigravity",
@@ -154,6 +161,7 @@ export const RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS: Readonly<
     permissionProvider: "antigravity",
     usageSource: "antigravity",
     engine: "external_turn_host",
+    localPdfFiles: true,
   },
 };
 
@@ -165,6 +173,15 @@ export function usesExternalTurnHost(
     system &&
     RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].engine ===
       "external_turn_host",
+  );
+}
+
+/** True for a runtime that reads a raw-PDF paper from its local file. */
+export function sendsLocalPdfFiles(
+  system: RuntimeConversationSystem | null | undefined,
+): boolean {
+  return Boolean(
+    system && RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].localPdfFiles,
   );
 }
 
