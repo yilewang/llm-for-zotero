@@ -11,7 +11,7 @@ import {
   createStandaloneNoteFromChatHistory,
 } from "../../notes";
 import { isGlobalPortalItem } from "../../../../services/context/portalItems";
-import { isClaudeGlobalPortalItem } from "../../../../claudeCode/portal";
+import { isRuntimeGlobalPortalItem } from "../../../../services/context/runtimePortalItems";
 import { positionMenuBelowButton } from "../../menuPositioning";
 import { renderMermaidSourceToSvg } from "../../renderedMarkdown";
 import { setStatus } from "../../textUtils";
@@ -286,7 +286,7 @@ async function saveResponseTargetAsNoteOnce(
     if (
       deps.isGlobalMode() ||
       isGlobalPortalItem(targetItem) ||
-      isClaudeGlobalPortalItem(targetItem) ||
+      isRuntimeGlobalPortalItem("claude_code", targetItem) ||
       targetNoteSession?.noteKind === "standalone"
     ) {
       const libraryID =
