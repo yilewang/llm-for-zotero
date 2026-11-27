@@ -2038,7 +2038,11 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       conversationKey: "conv-fallback-whole",
       userMessage: "continue",
       metadata: { claudeResumeFallbackHistory: true },
-      runtimeRequest: { history, historyOmitted: 4 } as Record<string, unknown>,
+      runtimeRequest: {
+        history,
+        historyOmitted: 4,
+        historyChatId: "claude_code:3000000000000042",
+      } as Record<string, unknown>,
     });
     for await (const _event of stream.events) void _event;
 
@@ -2048,7 +2052,7 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(text).toContain("END-OF-ANSWER");
     expect(text).toContain("30. assistant: message 29");
     expect(text).toContain(
-      "(4 earlier messages did not fit and are not shown.)",
+      '(4 earlier messages did not fit and are not shown. Read them with past_chat_read({ chat: "claude_code:3000000000000042" })',
     );
   });
 

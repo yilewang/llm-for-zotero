@@ -433,6 +433,8 @@ type BridgeRuntimeRequest = {
   history?: Array<{ role: string; content: string }>;
   /** Earlier messages left out of `history` by its budget. */
   historyOmitted?: number;
+  /** With `historyOmitted`: the chat id past_chat_read opens to read them. */
+  historyChatId?: string;
 };
 
 const lastRunBridgeContextByConversationKey = new Map<
@@ -1864,7 +1866,12 @@ async function buildBridgeRuntimeRequest(
     ...(history.entries.length
       ? {
           history: history.entries,
-          ...(history.omitted ? { historyOmitted: history.omitted } : {}),
+          ...(history.omitted
+            ? {
+                historyOmitted: history.omitted,
+                ...(history.chatId ? { historyChatId: history.chatId } : {}),
+              }
+            : {}),
         }
       : {}),
   };

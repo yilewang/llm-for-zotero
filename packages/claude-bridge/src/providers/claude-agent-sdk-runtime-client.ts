@@ -282,6 +282,7 @@ type RuntimeRequestShape = {
   screenshots?: unknown;
   history?: unknown;
   historyOmitted?: unknown;
+  historyChatId?: unknown;
   localDocuments?: unknown;
 };
 
@@ -629,11 +630,19 @@ function formatFallbackHistory(
     runtimeRequest.historyOmitted > 0
       ? Math.floor(runtimeRequest.historyOmitted)
       : 0;
+  const chatId =
+    typeof runtimeRequest.historyChatId === "string"
+      ? runtimeRequest.historyChatId.trim()
+      : "";
+  const omittedLabel = `${omitted} earlier message${omitted === 1 ? "" : "s"}`;
   return [
     "Local Zotero conversation history for continuity because the prior Claude session could not be resumed:",
+    // Worded as the plugin's renderOmittedHistoryNote (runtimeHistory.ts).
     ...(omitted
       ? [
-          `(${omitted} earlier message${omitted === 1 ? "" : "s"} did not fit and are not shown.)`,
+          chatId
+            ? `(${omittedLabel} did not fit and are not shown. Read them with past_chat_read({ chat: "${chatId}" }), which lists this conversation's questions, then with message: <number>.)`
+            : `(${omittedLabel} did not fit and are not shown.)`,
         ]
       : []),
     ...entries.map(

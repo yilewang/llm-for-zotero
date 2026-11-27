@@ -18,6 +18,7 @@ import type {
 import { normalizeAttachedConversationRefs } from "../context/normalizers";
 import { estimateTextTokens } from "../../utils/modelInputCap";
 import {
+  isConversationSystem,
   isRuntimeConversationSystem,
   RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
 } from "../../core/conversations/conversationSystems";
@@ -104,11 +105,11 @@ export function parsePastConversationId(
   value: unknown,
 ): { system: ConversationSystem; conversationKey: number } | null {
   if (typeof value !== "string") return null;
-  const match = /^(upstream|claude_code|codex):([1-9]\d*)$/.exec(value.trim());
-  if (!match) return null;
+  const match = /^([a-z_]+):([1-9]\d*)$/.exec(value.trim());
+  if (!match || !isConversationSystem(match[1])) return null;
   const conversationKey = Number(match[2]);
   if (!Number.isSafeInteger(conversationKey)) return null;
-  return { system: match[1] as ConversationSystem, conversationKey };
+  return { system: match[1], conversationKey };
 }
 
 /** User-visible name of the system a past chat belongs to. */

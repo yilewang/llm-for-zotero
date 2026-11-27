@@ -7,13 +7,15 @@
  * The budget is the model's: the newest messages are kept whole while they
  * fit in half of the model's input budget (resolveAgentPromptBudgetLimits),
  * so the turn's own prompt keeps the other half. Older messages that do not
- * fit are left out and counted, and the rendering says so. No message is
- * cut in the middle.
+ * fit are left out and counted, and the rendering names this chat's id,
+ * which past_chat_read opens to read them. No message is cut in the middle.
  */
 
 import type { AgentRuntimeRequest } from "../types";
 import { resolveAgentPromptBudgetLimits } from "./promptBudget";
 import { estimateTextTokens } from "../../utils/modelInputCap";
+import { classifyConversationKey } from "../../shared/conversationKeySpace";
+import { pastConversationId } from "../../services/pastConversations/pastConversationText";
 
 export type RuntimeHistoryEntry = {
   role: "user" | "assistant";
@@ -24,6 +26,8 @@ export type RuntimeHistory = {
   entries: RuntimeHistoryEntry[];
   /** Earlier messages left out because they did not fit the budget. */
   omitted: number;
+  /** With `omitted`: this chat's id, which past_chat_read opens. */
+  chatId?: string;
 };
 
 function messageText(content: unknown): string {
@@ -82,7 +86,32 @@ export function selectRuntimeHistory(
     used += cost;
     start -= 1;
   }
-  return { entries: all.slice(start), omitted: start };
+  const classified = start
+    ? classifyConversationKey(request.conversationKey)
+    : null;
+  return {
+    entries: all.slice(start),
+    omitted: start,
+    ...(classified
+      ? {
+          chatId: pastConversationId({
+            system: classified.system,
+            conversationKey: request.conversationKey,
+          }),
+        }
+      : {}),
+  };
+}
+
+/** The note on the messages a history left out, and how to read them. */
+export function renderOmittedHistoryNote(
+  omitted: number,
+  chatId: string | undefined,
+): string {
+  const count = `${omitted} earlier message${omitted === 1 ? "" : "s"}`;
+  return chatId
+    ? `(${count} did not fit and are not shown. Read them with past_chat_read({ chat: "${chatId}" }), which lists this conversation's questions, then with message: <number>.)`
+    : `(${count} did not fit and are not shown.)`;
 }
 
 /**
@@ -97,9 +126,7 @@ export function renderRuntimeHistoryTranscript(
   return [
     `Local Zotero conversation history for continuity because ${reason}:`,
     ...(history.omitted
-      ? [
-          `(${history.omitted} earlier message${history.omitted === 1 ? "" : "s"} did not fit and are not shown.)`,
-        ]
+      ? [renderOmittedHistoryNote(history.omitted, history.chatId)]
       : []),
     ...history.entries.map(
       (entry, index) => `${index + 1}. ${entry.role}: ${entry.content}`,

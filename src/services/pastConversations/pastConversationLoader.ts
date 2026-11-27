@@ -174,7 +174,12 @@ export async function findPastConversationCatalogEntry(
  */
 export async function loadPastConversation(
   ref: AttachedConversationRef,
-  options: { libraryID: number | undefined; source?: PastConversationSource },
+  options: {
+    libraryID: number | undefined;
+    source?: PastConversationSource;
+    /** Only the messages stored before this time (ms), when set. */
+    beforeTimestamp?: number;
+  },
 ): Promise<PastConversationLoadResult> {
   const source = options.source || defaultPastConversationSource;
   const id = pastConversationId(ref);
@@ -205,7 +210,12 @@ export async function loadPastConversation(
       conversationKey: ref.conversationKey,
       limit: PAST_CHAT_LOAD_MESSAGE_LIMIT,
     });
-    const messages = cleanPastConversationMessages(stored);
+    const before = options.beforeTimestamp;
+    const messages = cleanPastConversationMessages(
+      before === undefined
+        ? stored
+        : stored.filter((row) => Number(row.timestamp) < before),
+    );
     const paperItemID = entry.paperItemID || ref.paperItemID;
     const paperLabel =
       entry.kind === "paper"
