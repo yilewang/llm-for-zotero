@@ -181,7 +181,6 @@ import {
   assertNeverConversationSystem,
   isRuntimeConversationSystem as isRuntimeSystem,
   mapRuntimeConversationSystems,
-  type RuntimeConversationSystem,
 } from "../../core/conversations/conversationSystems";
 import { getLastUsedClaudeGlobalConversationKey } from "../../claudeCode/prefs";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
@@ -197,23 +196,13 @@ import {
   STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
 } from "./standaloneWindowSizing";
 import {
-  createClaudeGlobalPortalItem,
-  createClaudePaperPortalItem,
-} from "../../claudeCode/portal";
-import { loadAllClaudeConversationHistory } from "../../claudeCode/historyLoader";
-import { loadAllAntigravityConversationHistory } from "../../antigravity/historyLoader";
-import {
-  createAntigravityGlobalPortalItem,
-  createAntigravityPaperPortalItem,
-} from "../../antigravity/portal";
+  createRuntimeGlobalPortalItem,
+  createRuntimePaperPortalItem,
+} from "../../services/context/runtimePortalItems";
+import { loadAllRuntimeConversationHistory } from "../../core/conversations/runtimeHistory";
 import { isAntigravityModeEnabled } from "../../antigravity/prefs";
 import { buildDefaultCodexGlobalConversationKey } from "../../codexAppServer/constants";
-import {
-  createCodexGlobalPortalItem,
-  createCodexPaperPortalItem,
-} from "../../codexAppServer/portal";
 import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
-import { loadAllCodexConversationHistory } from "../../codexAppServer/historyLoader";
 import { clearActiveConversationForPendingDeletion } from "./conversationDeletionActivation";
 import {
   createSerializedConversationDeletionEventQueue,
@@ -312,11 +301,9 @@ function createGlobalPortalItemForSystem(
 ): Zotero.Item {
   switch (system) {
     case "claude_code":
-      return createClaudeGlobalPortalItem(libraryID, conversationKey);
     case "codex":
-      return createCodexGlobalPortalItem(libraryID, conversationKey);
     case "antigravity":
-      return createAntigravityGlobalPortalItem(libraryID, conversationKey);
+      return createRuntimeGlobalPortalItem(system, libraryID, conversationKey);
     case "upstream":
       return createGlobalPortalItem(libraryID, conversationKey);
     default:
@@ -336,11 +323,9 @@ function createPaperPortalItemForSystem(
 ): Zotero.Item {
   switch (system) {
     case "claude_code":
-      return createClaudePaperPortalItem(paperItem, conversationKey);
     case "codex":
-      return createCodexPaperPortalItem(paperItem, conversationKey);
     case "antigravity":
-      return createAntigravityPaperPortalItem(paperItem, conversationKey);
+      return createRuntimePaperPortalItem(system, paperItem, conversationKey);
     case "upstream":
       return createPaperPortalItem(
         paperItem,
@@ -351,13 +336,6 @@ function createPaperPortalItemForSystem(
       return assertNeverConversationSystem(system);
   }
 }
-
-/** Each runtime's loader for its chats across the library. */
-const RUNTIME_CONVERSATION_HISTORY_LOADERS = {
-  claude_code: loadAllClaudeConversationHistory,
-  codex: loadAllCodexConversationHistory,
-  antigravity: loadAllAntigravityConversationHistory,
-} satisfies Record<RuntimeConversationSystem, unknown>;
 
 function buildTornWindowFeatures(placement?: {
   screenX: number;
@@ -4072,9 +4050,10 @@ function openChatWindowInstance(
           system: ConversationSystem,
         ): Promise<SidebarConv[]> => {
           if (isRuntimeSystem(system)) {
-            const summaries = await RUNTIME_CONVERSATION_HISTORY_LOADERS[
-              system
-            ]({ libraryID, limit });
+            const summaries = await loadAllRuntimeConversationHistory(system, {
+              libraryID,
+              limit,
+            });
             return summaries.map((entry) => ({
               conversationKey: entry.conversationKey,
               conversationID: entry.conversationID,

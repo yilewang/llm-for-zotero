@@ -1,14 +1,19 @@
+/**
+ * History rows of the runtime conversation systems (Claude Code, Codex,
+ * Antigravity), read from the conversation catalog. The three share one
+ * shape and one set of title and draft rules; only the system and the name
+ * in a default title differ.
+ */
+import {
+  RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
+  type RuntimeConversationSystem,
+} from "./conversationSystems";
 import {
   conversationRepository,
   type ConversationCatalogEntry,
-} from "../core/conversations/repository";
+} from "./repository";
 
-/**
- * Antigravity history rows from the conversation catalog, with the same title
- * and draft rules as Claude Code's (src/claudeCode/historyLoader.ts).
- */
-
-export type AntigravityConversationHistoryEntry = {
+export type RuntimeConversationHistoryEntry = {
   conversationID: string;
   conversationKey: number;
   kind: "global" | "paper";
@@ -22,12 +27,16 @@ export type AntigravityConversationHistoryEntry = {
   scopedConversationKey?: string;
 };
 
-function normalizeTitle(summary: ConversationCatalogEntry): string {
+function normalizeTitle(
+  system: RuntimeConversationSystem,
+  summary: ConversationCatalogEntry,
+): string {
   const title = (summary.title || "").trim();
   if (title) return title;
+  const name = RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS[system].shortLabel;
   return summary.kind === "paper"
-    ? "New Antigravity paper chat"
-    : "New Antigravity chat";
+    ? `New ${name} paper chat`
+    : `New ${name} chat`;
 }
 
 function isDraftSummary(summary: ConversationCatalogEntry): boolean {
@@ -40,16 +49,17 @@ function isDraftSummary(summary: ConversationCatalogEntry): boolean {
   );
 }
 
-/** One catalog row as this runtime's history row (title and draft rules). */
-export function toAntigravityConversationHistoryEntry(
+/** One catalog row as its runtime's history row (title and draft rules). */
+export function toRuntimeConversationHistoryEntry(
+  system: RuntimeConversationSystem,
   summary: ConversationCatalogEntry,
-): AntigravityConversationHistoryEntry {
+): RuntimeConversationHistoryEntry {
   const isDraft = isDraftSummary(summary);
   return {
     conversationID: summary.conversationID,
     conversationKey: summary.conversationKey,
     kind: summary.kind,
-    title: normalizeTitle(summary),
+    title: normalizeTitle(system, summary),
     createdAt: summary.createdAt,
     lastActivityAt: summary.lastActivityAt,
     userTurnCount: summary.userTurnCount,
@@ -60,10 +70,14 @@ export function toAntigravityConversationHistoryEntry(
   };
 }
 
-export async function loadAllAntigravityConversationHistory(params: {
-  libraryID: number;
-  limit?: number | null;
-}): Promise<AntigravityConversationHistoryEntry[]> {
+/**
+ * The conversations of one runtime in a library, in the order the catalog
+ * lists them. `limit` defaults to 100; null means no limit.
+ */
+export async function loadAllRuntimeConversationHistory(
+  system: RuntimeConversationSystem,
+  params: { libraryID: number; limit?: number | null },
+): Promise<RuntimeConversationHistoryEntry[]> {
   const normalizedLimit =
     params.limit === null
       ? null
@@ -72,9 +86,9 @@ export async function loadAllAntigravityConversationHistory(params: {
         : 100;
   return (
     await conversationRepository.listAllCatalogEntries({
-      system: "antigravity",
+      system,
       libraryID: params.libraryID,
       limit: normalizedLimit,
     })
-  ).map(toAntigravityConversationHistoryEntry);
+  ).map((summary) => toRuntimeConversationHistoryEntry(system, summary));
 }

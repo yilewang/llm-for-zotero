@@ -668,19 +668,10 @@ import {
   retainClaudeRuntimeForBody,
   releaseClaudeRuntimeForBody,
 } from "../../claudeCode/runtimeRetention";
-import { isClaudePaperPortalItem } from "../../claudeCode/portal";
 import { touchClaudeConversationTitle } from "../../claudeCode/store";
 import { antigravityConversationStore } from "../../antigravity/store";
 import { openPluginPreferencesTab } from "../../utils/preferencesStartTab";
-import {
-  createClaudeGlobalPortalItem,
-  createClaudePaperPortalItem,
-} from "../../claudeCode/portal";
 import { touchCodexConversationTitle } from "../../codexAppServer/store";
-import {
-  createCodexGlobalPortalItem,
-  createCodexPaperPortalItem,
-} from "../../codexAppServer/portal";
 import { installChatShellResizeBehavior } from "./chatShellResize";
 import type { CodexReasoningChoice } from "../../codex/catalogSelection";
 import {

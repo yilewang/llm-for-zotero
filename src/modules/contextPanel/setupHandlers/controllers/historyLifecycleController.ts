@@ -6,7 +6,6 @@ import type { ConversationSystem } from "../../../../shared/types";
 import {
   assertNeverConversationSystem,
   isRuntimeConversationSystem as isRuntimeSystem,
-  type RuntimeConversationSystem,
 } from "../../../../core/conversations/conversationSystems";
 import { isEphemeralConversationKey } from "../../../../shared/conversationKeySpace";
 import { isConversationKeyForKind } from "../../../../shared/conversationKeySpace";
@@ -63,34 +62,18 @@ import {
   toUpstreamHistoryRowShape,
 } from "../../historyLoader";
 import {
-  loadAllClaudeConversationHistory,
-  toClaudeConversationHistoryEntry,
-} from "../../../../claudeCode/historyLoader";
-import {
-  loadAllCodexConversationHistory,
-  toCodexConversationHistoryEntry,
-} from "../../../../codexAppServer/historyLoader";
+  loadAllRuntimeConversationHistory,
+  toRuntimeConversationHistoryEntry,
+} from "../../../../core/conversations/runtimeHistory";
 import {
   isUnifiedHistoryRowListed,
   listUnifiedHistoryEntries,
 } from "../../unifiedHistorySource";
 import { touchClaudeConversation } from "../../../../claudeCode/runtime";
 import {
-  createClaudeGlobalPortalItem,
-  createClaudePaperPortalItem,
-} from "../../../../claudeCode/portal";
-import {
-  loadAllAntigravityConversationHistory,
-  toAntigravityConversationHistoryEntry,
-} from "../../../../antigravity/historyLoader";
-import {
-  createAntigravityGlobalPortalItem,
-  createAntigravityPaperPortalItem,
-} from "../../../../antigravity/portal";
-import {
-  createCodexGlobalPortalItem,
-  createCodexPaperPortalItem,
-} from "../../../../codexAppServer/portal";
+  createRuntimeGlobalPortalItem,
+  createRuntimePaperPortalItem,
+} from "../../../../services/context/runtimePortalItems";
 import {
   createGlobalPortalItem,
   createPaperPortalItem,
@@ -212,22 +195,6 @@ export function shouldFallbackToLoadedConversationHistorySearch(
 }
 
 type StatusLevel = "ready" | "warning" | "error";
-
-function loadAllRuntimeConversationHistory(
-  system: RuntimeConversationSystem,
-  params: { libraryID: number; limit: number | null },
-) {
-  switch (system) {
-    case "claude_code":
-      return loadAllClaudeConversationHistory(params);
-    case "codex":
-      return loadAllCodexConversationHistory(params);
-    case "antigravity":
-      return loadAllAntigravityConversationHistory(params);
-    default:
-      return assertNeverConversationSystem(system);
-  }
-}
 
 const pendingDeletionSubscriptionsByBody = new WeakMap<Element, () => void>();
 const catalogChangeSubscriptionsByBody = new WeakMap<Element, () => void>();
@@ -1833,13 +1800,9 @@ export function createHistoryLifecycleController(
     let shape: { title: string; isDraft: boolean };
     switch (row.system) {
       case "codex":
-        shape = toCodexConversationHistoryEntry(row);
-        break;
       case "claude_code":
-        shape = toClaudeConversationHistoryEntry(row);
-        break;
       case "antigravity":
-        shape = toAntigravityConversationHistoryEntry(row);
+        shape = toRuntimeConversationHistoryEntry(row.system, row);
         break;
       case "upstream":
         // An upstream paper chat without a session version cannot be opened.
@@ -2192,26 +2155,14 @@ export function createHistoryLifecycleController(
       return false;
     }
     let nextItem: ReturnType<
-      | typeof createClaudeGlobalPortalItem
-      | typeof createCodexGlobalPortalItem
-      | typeof createAntigravityGlobalPortalItem
-      | typeof createGlobalPortalItem
+      typeof createRuntimeGlobalPortalItem | typeof createGlobalPortalItem
     >;
     switch (system) {
       case "claude_code":
-        nextItem = createClaudeGlobalPortalItem(
-          libraryID,
-          normalizedConversationKey,
-        );
-        break;
       case "codex":
-        nextItem = createCodexGlobalPortalItem(
-          libraryID,
-          normalizedConversationKey,
-        );
-        break;
       case "antigravity":
-        nextItem = createAntigravityGlobalPortalItem(
+        nextItem = createRuntimeGlobalPortalItem(
+          system,
           libraryID,
           normalizedConversationKey,
         );
@@ -2398,44 +2349,11 @@ export function createHistoryLifecycleController(
     // deletion intent.
     forgetRecentlyDeletedConversation(resolvedConversationKey);
     switch (system) {
-      case "claude_code": {
-        const nextItem = createClaudePaperPortalItem(
-          paperItem,
-          resolvedConversationKey,
-        ) as any;
-        if (
-          !canCommitPanelConversation(
-            body,
-            nextItem,
-            "switch-paper-conversation-commit",
-            hostLease,
-          ) ||
-          !setCurrentItem(nextItem)
-        ) {
-          return false;
-        }
-        break;
-      }
-      case "codex": {
-        const nextItem = createCodexPaperPortalItem(
-          paperItem,
-          resolvedConversationKey,
-        ) as any;
-        if (
-          !canCommitPanelConversation(
-            body,
-            nextItem,
-            "switch-paper-conversation-commit",
-            hostLease,
-          ) ||
-          !setCurrentItem(nextItem)
-        ) {
-          return false;
-        }
-        break;
-      }
+      case "claude_code":
+      case "codex":
       case "antigravity": {
-        const nextItem = createAntigravityPaperPortalItem(
+        const nextItem = createRuntimePaperPortalItem(
+          system,
           paperItem,
           resolvedConversationKey,
         ) as any;
