@@ -148,6 +148,19 @@ class PdfCase:
     mineru_dir: Path
 
 
+def poppler_tool_path(poppler_bin: Path, tool: str) -> str:
+    """The full path of a Poppler tool in poppler_bin.
+
+    Tools are started by full path because Windows searches for a program on
+    the launching process's own PATH, not the PATH handed to the child, so a
+    bare name can miss poppler_bin (issue #588).
+    """
+    path = poppler_bin / f"{tool}{'.exe' if os.name == 'nt' else ''}"
+    if not path.is_file():
+        raise FileNotFoundError(f"Poppler tool not found: {path}")
+    return str(path)
+
+
 def run(
     cmd: list[str],
     *,
@@ -155,10 +168,11 @@ def run(
     poppler_bin: Path,
     timeout: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
 ) -> str:
+    """Run the Poppler tool named by cmd[0] from poppler_bin."""
     env = os.environ.copy()
     env["PATH"] = f"{poppler_bin}{os.pathsep}{env.get('PATH', '')}"
     proc = subprocess.run(
-        cmd,
+        [poppler_tool_path(poppler_bin, cmd[0]), *cmd[1:]],
         cwd=str(cwd or REPO_ROOT),
         env=env,
         check=True,
