@@ -641,14 +641,6 @@ function buildPromptText(
   const trimmedUserMessage = userMessage.trim();
   const localPdfs = collectLocalPdfs(runtimeRequest);
   const includeFallbackHistory = metadata?.claudeResumeFallbackHistory === true;
-  if (/^\/compact(?:\s|$)/i.test(trimmedUserMessage)) return "/compact";
-  if (
-    trimmedUserMessage.startsWith("/") &&
-    !localPdfs.length &&
-    !includeFallbackHistory
-  ) {
-    return trimmedUserMessage;
-  }
   if (!runtimeRequest) return trimmedUserMessage;
   const turnContext =
     typeof runtimeRequest.turnContext === "string"
@@ -700,12 +692,53 @@ function buildPromptText(
   if (localPdfs.length) lines.push(renderLocalPdfPrompt(localPdfs));
   return lines.filter(Boolean).join("\n\n");
 }
+/**
+ * The prompt's text parts, in order. A slash command goes as the last part,
+ * alone, with the turn's context (quotes, papers, local PDFs, fallback
+ * history) in a part before it: Claude Code then runs the command with its
+ * own arguments and the model still sees the context (probed on Claude
+ * Agent SDK 0.3.220: a command inside a longer text gets the context as
+ * arguments). `/compact` takes no context.
+ */
+function buildPromptParts(
+  userMessage: string,
+  runtimeRequest: RuntimeRequestShape | undefined,
+  metadata?: Record<string, unknown>,
+): string[] {
+  const trimmedUserMessage = userMessage.trim();
+  if (/^\/compact(?:\s|$)/i.test(trimmedUserMessage)) return ["/compact"];
+  if (!trimmedUserMessage.startsWith("/")) {
+    return [buildPromptText(userMessage, runtimeRequest, metadata)];
+  }
+  const context = buildPromptText("", runtimeRequest, metadata);
+  return context ? [context, trimmedUserMessage] : [trimmedUserMessage];
+}
+
+/** The user message's content: its text parts, then the images. */
+function buildUserContent(
+  parts: string[],
+  imagePayloads: NonNullable<ReturnType<typeof parseImageDataUrl>>[],
+): string | SDKUserMessage["message"]["content"] {
+  if (parts.length === 1 && !imagePayloads.length) return parts[0];
+  return [
+    ...parts.map((text) => ({ type: "text" as const, text })),
+    ...imagePayloads.map((entry) => ({
+      type: "image" as const,
+      source: {
+        type: "base64" as const,
+        media_type: entry.mediaType,
+        data: entry.data,
+      },
+    })),
+  ];
+}
+
 async function buildPromptInput(
   request: RuntimeTurnRequest,
   metadata: Record<string, unknown>,
 ): Promise<string | AsyncIterable<SDKUserMessage>> {
   const runtimeRequest = toRuntimeRequest(request, metadata);
-  const promptText = buildPromptText(
+  const promptParts = buildPromptParts(
     request.userMessage,
     runtimeRequest,
     metadata,
@@ -724,24 +757,12 @@ async function buildPromptInput(
     ...screenshotPayloads,
     ...attachmentImagePayloads,
   ].slice(0, 8);
-  if (!imagePayloads.length) return promptText;
+  const content = buildUserContent(promptParts, imagePayloads);
+  if (typeof content === "string") return content;
   const userEvent: SDKUserMessage = {
     type: "user",
     parent_tool_use_id: null,
-    message: {
-      role: "user",
-      content: [
-        { type: "text", text: promptText },
-        ...imagePayloads.map((entry) => ({
-          type: "image" as const,
-          source: {
-            type: "base64" as const,
-            media_type: entry.mediaType,
-            data: entry.data,
-          },
-        })),
-      ],
-    },
+    message: { role: "user", content },
   };
   return (async function* () {
     yield userEvent;
@@ -2128,7 +2149,7 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
   ): Promise<SDKUserMessage> {
     const metadata = parseMetadata(request.metadata, this.options);
     const runtimeRequest = toRuntimeRequest(request, metadata);
-    const promptText = buildPromptText(
+    const promptParts = buildPromptParts(
       request.userMessage,
       runtimeRequest,
       metadata,
@@ -2147,31 +2168,13 @@ export class ClaudeAgentSdkRuntimeClient implements ClaudeCodeRuntimeClient {
       ...screenshotPayloads,
       ...attachmentImagePayloads,
     ].slice(0, 8);
-    if (!imagePayloads.length) {
-      return {
-        type: "user",
-        parent_tool_use_id: null,
-        session_id: request.providerSessionId,
-        message: { role: "user", content: promptText },
-      };
-    }
     return {
       type: "user",
       parent_tool_use_id: null,
       session_id: request.providerSessionId,
       message: {
         role: "user",
-        content: [
-          { type: "text", text: promptText },
-          ...imagePayloads.map((entry) => ({
-            type: "image" as const,
-            source: {
-              type: "base64" as const,
-              media_type: entry.mediaType,
-              data: entry.data,
-            },
-          })),
-        ],
+        content: buildUserContent(promptParts, imagePayloads),
       },
     };
   }
