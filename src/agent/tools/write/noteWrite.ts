@@ -12,7 +12,6 @@ import {
 import {
   readNoteSnapshot,
   stripNoteHtml,
-  type NoteSnapshot,
 } from "../../../services/notes/noteSnapshot";
 import { resolveParentItemForNoteTarget } from "../../../services/notes/noteTarget";
 import {
@@ -58,14 +57,10 @@ import {
 import type { MaterialRef } from "../../documents/materialRef";
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import type { ZoteroGateway } from "../../services/zoteroGateway";
-import {
-  sha256Text,
-  storeRecoveryText,
-} from "../../store/journalRecoveryBlobStore";
+import { sha256Text } from "../../store/journalRecoveryBlobStore";
 import { WRITE_NOTE_SKILL_ID } from "../../skills/noteIntent";
 import type {
   AgentToolContext,
-  AgentToolDefinition,
   AgentWriteToolDefinition,
   AgentToolGuidance,
 } from "../../types";

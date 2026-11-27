@@ -2864,15 +2864,6 @@ export function mountTaskProgressView(params: {
     renderDockedQuestions(sections);
   };
 
-  /** A question's scholarly papers and web pages, for its counts. */
-  const outsideCountsOf = (section: TaskProgressSection) => {
-    const sources = record()?.outside?.[section.question.turn]?.sources || [];
-    return {
-      papers: sources.filter((source) => source.kind === "paper").length,
-      pages: sources.filter((source) => source.kind === "web").length,
-    };
-  };
-
   /** A question's groups, when its run searched or cited outside sources. */
   const groupsFor = (
     section: TaskProgressSection,

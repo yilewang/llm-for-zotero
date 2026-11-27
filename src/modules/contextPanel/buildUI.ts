@@ -6,7 +6,6 @@ import {
   getScreenshotExpandedLabel,
   SCREENSHOT_COMPACT_LABEL,
   SELECT_TEXT_COMPACT_LABEL,
-  UPLOAD_FILE_EXPANDED_LABEL,
   formatFigureCountLabel,
   formatFileCountLabel,
 } from "./constants";
@@ -108,7 +107,6 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
           ? Number(resolveConversationBaseItem(item)?.id || 0)
           : 0
       : 0;
-  const hasPaperContext = basePaperItemId > 0;
 
   // Disable CSS scroll anchoring on the Zotero-provided panel body so that
   // Gecko doesn't fight with our programmatic scroll management.
@@ -1102,11 +1100,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
   const uploadSlot = createElement(doc, "div", "llm-action-slot");
   uploadSlot.append(uploadBtn, uploadInput);
 
-  const {
-    slot: modelDropdown,
-    button: modelBtn,
-    menu: modelMenu,
-  } = createActionDropdown(doc, {
+  const { slot: modelDropdown } = createActionDropdown(doc, {
     slotId: "llm-model-dropdown",
     slotClassName: "llm-model-dropdown",
     buttonId: "llm-model-toggle",
@@ -1118,11 +1112,7 @@ function buildUI(body: Element, item?: Zotero.Item | null) {
     disabled: !hasItem,
   });
 
-  const {
-    slot: reasoningDropdown,
-    button: reasoningBtn,
-    menu: reasoningMenu,
-  } = createActionDropdown(doc, {
+  const { slot: reasoningDropdown } = createActionDropdown(doc, {
     slotId: "llm-reasoning-dropdown",
     slotClassName: "llm-reasoning-dropdown",
     buttonId: "llm-reasoning-toggle",

@@ -1,9 +1,6 @@
 import { attachmentImportExecutors } from "./attachmentImportExecutors";
 import { collectionSearchExecutors } from "./collectionSearchExecutors";
-import type {
-  ForwardExecution,
-  ForwardExecutorRegistry,
-} from "./forwardExecutionContracts";
+import type { ForwardExecutorRegistry } from "./forwardExecutionContracts";
 import { itemMetadataTagRelationExecutors } from "./itemMetadataTagRelationExecutors";
 import { noteLifecycleExecutors } from "./noteLifecycleExecutors";
 

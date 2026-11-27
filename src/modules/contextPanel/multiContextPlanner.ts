@@ -41,10 +41,7 @@ import {
   buildEvidencePack,
   candidateHasBodyEvidence,
 } from "../../services/paperContent/pdfContext";
-import {
-  isPdfContextAttachment,
-  isSupportedContextAttachment,
-} from "../../services/paperContent/contextAttachmentSupport";
+import { isSupportedContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { mergeQuoteCitations } from "../../services/quotes/quoteCitations";
 import { paperTextStore } from "../../services/paperContent/paperTextStore";
 import { sanitizeText } from "../../utils/textSanitization";
@@ -66,10 +63,7 @@ import {
   resolveLibraryChatReadStrategy,
   type LibraryChatReadStrategyDiagnostics,
 } from "../../shared/libraryChatReadStrategy";
-import {
-  compareEvidenceCandidatesForSections,
-  isBodyEvidenceSection,
-} from "../../shared/libraryChatEvidencePolicy";
+import { compareEvidenceCandidatesForSections } from "../../shared/libraryChatEvidencePolicy";
 import { createSectionIntent } from "../../services/retrieval/sectionIntent";
 import {
   readDocumentsExhaustively,

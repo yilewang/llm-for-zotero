@@ -4,7 +4,6 @@ import type {
   BatchTagAssignment,
   CollectionSummary,
   EditableArticleMetadataSnapshot,
-  ZoteroGateway,
 } from "../zoteroGateway";
 import type {
   ApplyTagsOperation,

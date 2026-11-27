@@ -1512,21 +1512,4 @@ export class ZoteroGateway {
       targetCollectionId,
     );
   }
-
-  /** See `ImportCapability.parseImportIdentifier`. */
-  private parseImportIdentifier(rawIdentifier: string): Record<string, string> {
-    return this.importCapability.parseImportIdentifier(rawIdentifier);
-  }
-
-  /** See `ImportCapability.describeUnresolvableIdentifier`. */
-  private describeUnresolvableIdentifier(raw: string): string | null {
-    return this.importCapability.describeUnresolvableIdentifier(raw);
-  }
-
-  /** See `ImportCapability.translatorJsonToPatch`. */
-  private translatorJsonToPatch(
-    raw: Record<string, unknown>,
-  ): EditableArticleMetadataPatch | null {
-    return this.importCapability.translatorJsonToPatch(raw);
-  }
 }

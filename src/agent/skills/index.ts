@@ -12,7 +12,6 @@
  *   {Zotero profile runtime root}/.agents/skills/<skill-id>/SKILL.md
  */
 import { parseSkill } from "./skillLoader";
-import type { AgentSkill } from "./skillLoader";
 import { getAllSkills } from "./catalog";
 export { getAllSkills, setUserSkills } from "./catalog";
 import type { SkillRoutingRequest } from "./contextEligibility";

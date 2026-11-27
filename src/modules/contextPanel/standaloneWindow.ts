@@ -40,7 +40,6 @@ import {
   getStandaloneSidebarSectionOptionsPref,
   getStandaloneSidebarPinnedCollapsedPref,
   getLockedGlobalConversationKey,
-  setLockedGlobalConversationKey,
   setStandaloneSidebarWidthPref,
   setStandalonePinnedPapersPref,
   setStandaloneSidebarCollapsedGroupsPref,
@@ -114,10 +113,6 @@ import {
   type ConversationCatalogEntry,
 } from "../../core/conversations/repository";
 import {
-  ATTACHMENT_GC_MIN_AGE_MS,
-  collectAndDeleteUnreferencedBlobs,
-} from "../../utils/attachmentRefStore";
-import {
   chatHistory,
   isAnyRequestPending,
   isRequestPending,
@@ -134,7 +129,6 @@ import {
 } from "./unifiedHistorySource";
 import {
   formatGlobalHistoryTimestamp,
-  getHistoryRowRuntimeLabel,
   isOrphanHistoryEntry,
   maybeSelectPaperHistoryTarget,
   normalizeConversationTitleSeed,
@@ -182,7 +176,6 @@ import {
   isRuntimeConversationSystem as isRuntimeSystem,
   mapRuntimeConversationSystems,
 } from "../../core/conversations/conversationSystems";
-import { getLastUsedClaudeGlobalConversationKey } from "../../claudeCode/prefs";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 import { showConversationRenameDialog } from "./conversationRenameDialog";
 import {
@@ -1289,23 +1282,6 @@ function openChatWindowInstance(
     newWin.addEventListener("unload", cleanupWindow, { once: true });
     appLogger.debug("LLM: standalone initWindow start");
 
-    const scheduleStandaloneAttachmentGc = (delayMs = 5_000) => {
-      const clearTimer = () => {
-        if (standaloneAttachmentGcTimer === null) return;
-        newWin.clearTimeout(standaloneAttachmentGcTimer);
-        standaloneAttachmentGcTimer = null;
-      };
-      clearTimer();
-      standaloneAttachmentGcTimer = newWin.setTimeout(() => {
-        standaloneAttachmentGcTimer = null;
-        void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
-          (err) => {
-            appLogger.warn("LLM: standalone attachment GC failed", err);
-          },
-        );
-      }, delayMs);
-    };
-
     try {
       const doc = newWin.document;
       // The →| ("Move to side panel") buttons exist only where this host is
@@ -1764,8 +1740,6 @@ function openChatWindowInstance(
       let iconFollowerMore: HTMLButtonElement | null = null;
       // The follower's kind line under its title: an icon, then "Paper chat
       // · Klaus et al., 2017" or "Library chat · My Library".
-      let followerKindIcon: HTMLSpanElement | null = null;
-      let followerKindText: HTMLSpanElement | null = null;
       let followerKindLine: HTMLDivElement | null = null;
       // The second row under the divider: the kind line at the left, the four
       // actions at the right.
@@ -2960,8 +2934,6 @@ function openChatWindowInstance(
             main.setAttribute("aria-label", label);
           }
           main.append(icon, text);
-          followerKindIcon = icon;
-          followerKindText = text;
           followerKindLine.replaceChildren(main);
           followerKindLine.dataset.kind = kindLine.kind;
         }

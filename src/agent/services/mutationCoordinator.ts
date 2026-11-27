@@ -15,11 +15,9 @@ import type {
   AgentLibraryMutationEvidence,
   AgentToolContext,
   AgentToolEffect,
-  AgentWriteToolOutput,
 } from "../types";
 import {
   claimJournalAction,
-  claimJournalStep,
   createJournalId,
   freezeJournalActionOperations,
   inJournalTransaction,
@@ -27,9 +25,7 @@ import {
   listJournalActions,
   listJournalSteps,
   prepareJournalAction,
-  prepareJournalStep,
   readFrozenJournalActionOperations,
-  registerJournalRecoveryPayloads,
   updateJournalAction,
   updateJournalStep,
   type JournalReversibility,

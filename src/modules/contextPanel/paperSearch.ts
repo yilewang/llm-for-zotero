@@ -6,7 +6,6 @@ import {
 } from "../../services/libraryIndexService";
 import type {
   PaperBrowseCollectionCandidate,
-  PaperSearchAttachmentCandidate,
   PaperSearchGroupCandidate,
   PaperSearchTagCandidate,
 } from "../../services/libraryIndexDtos";

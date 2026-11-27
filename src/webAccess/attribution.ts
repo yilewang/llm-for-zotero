@@ -13,11 +13,7 @@ import {
   translateWebSourceLinks,
 } from "./sourceLinks";
 import { normalizePublicWebUrl } from "./tavilyClient";
-import type {
-  WebSourceAnchor,
-  WebSourceDisplay,
-  WebSourceRecord,
-} from "./types";
+import type { WebSourceAnchor, WebSourceDisplay } from "./types";
 
 const MARKER_PREFIX = "<!--llm-web-source:";
 const COMPLETE_MARKER_PATTERN = /<!--llm-web-source:([^<>]*?)-->/g;
