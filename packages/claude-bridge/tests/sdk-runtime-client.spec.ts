@@ -2115,6 +2115,73 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(String(normalPrompt)).not.toContain("old answer");
   });
 
+  it("gives a new Claude session the chat's history after its session was dropped", async () => {
+    const prompts: unknown[] = [];
+    const resumed: Array<string | undefined> = [];
+    let calls = 0;
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        calls += 1;
+        prompts.push(args.prompt);
+        resumed.push((args.options as { resume?: string }).resume);
+        return makeStream([
+          {
+            type: "result",
+            session_id: `session-${calls}`,
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const sessionMapper = new InMemorySessionMapper();
+    const adapter = new ClaudeCodeRuntimeAdapter({
+      runtimeClient: runtime,
+      sessionMapper,
+    });
+    await adapter.runTurn({
+      conversationKey: "conv-retry",
+      userMessage: "Pick a number.",
+      runtimeRequest: { history: [] },
+    });
+    // A retry of that turn: the plugin dropped the session first.
+    await adapter.invalidateConversationSession("conv-retry");
+    await adapter.runTurn({
+      conversationKey: "conv-retry",
+      userMessage: "Pick a number.",
+      runtimeRequest: {
+        history: [
+          { role: "user", content: "Hello." },
+          { role: "assistant", content: "Hi there." },
+        ],
+      },
+    });
+    // A follow-up continues the new session, without the history again.
+    await adapter.runTurn({
+      conversationKey: "conv-retry",
+      userMessage: "And another?",
+      runtimeRequest: {
+        history: [
+          { role: "user", content: "Hello." },
+          { role: "assistant", content: "Hi there." },
+          { role: "user", content: "Pick a number." },
+          { role: "assistant", content: "ok" },
+        ],
+      },
+    });
+
+    expect(String(prompts[0])).not.toContain(
+      "Local Zotero conversation history",
+    );
+    expect(resumed[1]).toBeUndefined();
+    expect(String(prompts[1])).toContain("Local Zotero conversation history");
+    expect(String(prompts[1])).toContain("2. assistant: Hi there.");
+    expect(resumed[2]).toBe("session-2");
+    expect(String(prompts[2])).not.toContain(
+      "Local Zotero conversation history",
+    );
+  });
+
   it("preserves history-gap continuity across compact and skill commands", async () => {
     const pdfPath = await createPdfFile();
     const seenPrompts: unknown[] = [];

@@ -353,6 +353,32 @@ describe("workflow: Antigravity turns", function () {
     );
   });
 
+  it("retries in a new agy session that has the chat so far but not the replaced answer", async function () {
+    const first = await run({ question: "Say hello." });
+    assert.equal(first.outcomeKind, "completed", JSON.stringify(first));
+    const retried = await run({
+      question: "Say hello again.",
+      conversationKey: first.conversationKey,
+      retry: true,
+    });
+    assert.equal(retried.outcomeKind, "completed", JSON.stringify(retried));
+    // The old session holds the answer the retry replaces.
+    assert.isString(retried.sessionIdBeforeRetry);
+    assert.notEqual(retried.storedSessionId, retried.sessionIdBeforeRetry);
+    const session = store.get(String(retried.storedSessionId));
+    const asked = (session?.history || []).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" &&
+      update.content.type === "text"
+        ? [update.content.text]
+        : [],
+    );
+    assert.lengthOf(asked, 1, JSON.stringify(asked));
+    assert.include(asked[0], "1. user: Say hello.");
+    assert.include(asked[0], "2. assistant: Hello from Antigravity.");
+    assert.notInclude(asked[0], "3. user:");
+    assert.include(asked[0], "Say hello again.");
+  });
+
   it("shows agy's permission request as a review card and passes the answer on", async function () {
     const allowed = await run({
       question: "Please run the build.",

@@ -1400,6 +1400,11 @@ export type AgentEngineDeps = {
     activePaperContext?: PaperContextRef;
   };
   findLatestRetryPair: (history: Message[]) => LatestRetryPairShape | null;
+  /**
+   * Detaches the conversation's runtime session before a retry re-sends the
+   * turn it holds (runtimeSessionReset.ts); false when it could not be.
+   */
+  detachRuntimeSessionForResend: (conversationKey: number) => Promise<boolean>;
   reconstructRetryPayload: (userMessage: Message) => ReconstructedRetryPayload;
   isReasoningExpandedByDefault: () => boolean;
   createQueuedRefresh: (refresh: () => void) => () => void;
@@ -2264,6 +2269,22 @@ export async function retryAgentTurn(
       // Best-effort status update without full createPanelUpdateHelpers
       ui.status.textContent = "No retryable response found";
     }
+    releaseRequest();
+    return;
+  }
+  // The runtime's session holds the turn this retry replaces.
+  if (
+    isRuntimeConversationSystem(deps.getConversationSystem()) &&
+    !(await deps.detachRuntimeSessionForResend(conversationKey))
+  ) {
+    if (ui.status) {
+      ui.status.textContent =
+        "Could not reset the conversation's session for the retry.";
+    }
+    releaseRequest();
+    return;
+  }
+  if (!requestIsActive()) {
     releaseRequest();
     return;
   }

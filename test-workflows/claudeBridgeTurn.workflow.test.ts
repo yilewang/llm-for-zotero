@@ -120,6 +120,30 @@ describe("workflow: Claude Code turn host", function () {
     );
   });
 
+  it("a retry starts Claude without the answer it replaces", async function () {
+    const firstRun = `claude-run-${Date.now()}`;
+    const retryRun = `${firstRun}-retry`;
+    const result = await run({
+      question: "Pick a random whole number between 1 and 1000.",
+      steps: [start(firstRun), completed(firstRun, "417")],
+      retry: { steps: [start(retryRun), completed(retryRun, "88")] },
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.isNotNull(result.retryTurnPayload, JSON.stringify(result));
+    // The Claude session holds the replaced question and answer, so the
+    // retry has the bridge drop it before the new answer starts.
+    assert.isAtLeast(
+      result.invalidateSessionCalls.afterRetry,
+      1,
+      JSON.stringify(result),
+    );
+    assert.equal(result.retryTurnPayload!.providerSessionId, "");
+    assert.equal(
+      result.retryTurnPayload!.userText,
+      "Pick a random whole number between 1 and 1000.",
+    );
+  });
+
   it("shows a bridge permission request as a review card and sends the answer back", async function () {
     const runId = `claude-run-${Date.now()}`;
     const requestId = `confirm-${Date.now()}`;

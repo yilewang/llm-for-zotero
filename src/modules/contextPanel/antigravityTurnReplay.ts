@@ -11,7 +11,7 @@
  */
 
 import { config } from "../../../package.json";
-import { sendAgentTurn } from "./agentMode/agentEngine";
+import { retryAgentTurn, sendAgentTurn } from "./agentMode/agentEngine";
 import { buildAgentEngineDepsForTests } from "./chat";
 import { bindProvisionedConversationKey } from "./conversationIdentity";
 import { getAbortController, setAbortController } from "./state";
@@ -87,6 +87,8 @@ export type AntigravityTurnScenario = {
   selectedTextContexts?: SelectedTextContext[];
   /** The reader model picked in the composer for each runtime. */
   readerSelections?: Partial<Record<ReaderRuntimeKey, ReaderSelection>>;
+  /** Retries the turn after it ends, as the panel's Retry does. */
+  retry?: boolean;
 };
 
 export type AntigravityTurnResult = {
@@ -102,6 +104,8 @@ export type AntigravityTurnResult = {
   runId: string;
   /** The chat's messages as the Antigravity store saved them. */
   storedMessages: Array<{ role: string; text: string; agentRunId?: string }>;
+  /** With `retry`: the chat's agy session before the retry. */
+  sessionIdBeforeRetry?: string;
   /** Review cards the turn showed. */
   confirmations: number;
   /** The agy session saved on the conversation after the turn. */
@@ -299,6 +303,30 @@ export async function exerciseAntigravityTurn(
     ).catch((error) => {
       threw ||= error instanceof Error ? error.message : String(error);
     });
+    const sessionIdBeforeRetry = scenario.retry
+      ? (await antigravityConversationStore.getSummary(conversationKey))
+          ?.providerSessionId
+      : undefined;
+    if (scenario.retry) {
+      setAbortController(conversationKey, createAbortController());
+      await retryAgentTurn(
+        body,
+        item,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deps,
+      ).catch((error) => {
+        threw ||= error instanceof Error ? error.message : String(error);
+      });
+    }
     const message = deps.chatHistory.get(conversationKey)?.at(-1);
     const runId = startedRunId;
     const trace = runId ? await getAgentRunTrace(runId) : null;
@@ -334,6 +362,7 @@ export async function exerciseAntigravityTurn(
       })),
       confirmations,
       storedSessionId: summary?.providerSessionId,
+      ...(scenario.retry ? { sessionIdBeforeRetry } : {}),
       storedCwd: summary?.cwd,
       launches,
       processes: processCount,

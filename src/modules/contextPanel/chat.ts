@@ -45,7 +45,7 @@ import {
   updateLatestCodexUserMessage,
 } from "../../codexAppServer/store";
 import { updateClaudeAssistantMessageQuoteLocations } from "../../claudeCode/store";
-import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
+import { detachRuntimeSessionForResend } from "./runtimeSessionReset";
 import { antigravityConversationStore } from "../../antigravity/store";
 import {
   appendAntigravityConversationMessageWithinWriteLock,
@@ -6964,6 +6964,31 @@ export async function retryLatestAssistantResponse(
     return;
   }
 
+  // The runtime's session holds the turn this retry replaces; continuing an
+  // incomplete answer keeps it (runtimeSessionReset.ts).
+  if (
+    !continueIncomplete &&
+    isRuntimeConversationSystem(effectiveConversationSystem)
+  ) {
+    const detached = await detachRuntimeSessionForResend({
+      conversationKey,
+      conversationGeneration,
+      storageSystem: effectiveStorageSystem,
+      kind:
+        resolveDisplayConversationKind(item) === "paper" ? "paper" : "global",
+    });
+    if (await stopRetryPreparation()) return;
+    if (!detached) {
+      await restorePreparedTurn();
+      releaseRequest();
+      setStatusSafely(
+        "Could not reset the conversation's session for the retry.",
+        "error",
+      );
+      return;
+    }
+  }
+
   try {
     // As the first send does (sendsLocalPdfFiles); a Codex conversation runs
     // on the Codex runtime only through the app server.
@@ -7408,113 +7433,6 @@ export async function retryLatestAssistantResponse(
 }
 
 /**
- * Detach provider history before an edit truncates local turns. Provider
- * threads/sessions contain the deleted trailing turns even after their local
- * rows are gone; retrying on the old session would silently reintroduce that
- * context. The cleanup obligation is persisted before the provider call so an
- * outage cannot turn the edit into an untracked provider leak.
- */
-async function detachProviderForEdit(
-  conversationKey: number,
-  catalog: Awaited<ReturnType<typeof conversationRepository.getCatalogEntry>>,
-): Promise<boolean> {
-  if (!catalog) return false;
-  const providerSessionId = String(catalog.providerSessionId || "").trim();
-  switch (catalog.system) {
-    case "codex": {
-      if (!providerSessionId) return true;
-      const job = await enqueueConversationCleanupJob({
-        operation: "codex_archive",
-        system: "codex",
-        conversationKey,
-        instanceID: catalog.instanceID,
-        conversationKind: catalog.kind,
-        libraryID: catalog.libraryID,
-        paperItemID: catalog.paperItemID,
-        providerSessionId,
-      });
-      if (!job) return false;
-      const attempt = await performConversationCleanupJobAttempt(
-        job,
-        async () => {
-          try {
-            await archiveCodexAppServerThread({ threadId: providerSessionId });
-          } catch (error) {
-            if (
-              !/not found|unknown thread|does not exist/i.test(String(error))
-            ) {
-              throw error;
-            }
-          }
-        },
-      );
-      if (!attempt.ok) return false;
-      await clearCodexConversationSessionMetadata(
-        conversationKey,
-        providerSessionId,
-        catalog.instanceID,
-      );
-      return true;
-    }
-    case "claude_code": {
-      const scope = buildClaudeScope({
-        libraryID: catalog.libraryID,
-        kind: catalog.kind,
-        paperItemID: catalog.paperItemID,
-      });
-      if (!catalog.instanceID || (!providerSessionId && !scope.scopeId)) {
-        return !providerSessionId;
-      }
-      const job = await enqueueConversationCleanupJob({
-        operation: "claude_invalidate",
-        system: "claude_code",
-        conversationKey,
-        instanceID: catalog.instanceID,
-        conversationKind: catalog.kind,
-        libraryID: catalog.libraryID,
-        paperItemID: catalog.paperItemID,
-        providerScope: scope,
-        providerSessionId,
-      });
-      if (!job) return false;
-      const attempt = await performConversationCleanupJobAttempt(
-        job,
-        async () =>
-          invalidateClaudeConversationSessionWithinWriteLock(
-            await initAgentSubsystem(),
-            {
-              conversationKey,
-              scope,
-              metadata: {
-                ...(providerSessionId ? { providerSessionId } : {}),
-                instanceID: catalog.instanceID,
-              },
-            },
-          ),
-      );
-      if (!attempt.ok) return false;
-      return true;
-    }
-    case "antigravity": {
-      // ACP cannot delete a session or its turns, so there is no provider
-      // job; detaching the catalog from the session makes the next turn
-      // start a fresh session that never saw the truncated turns.
-      if (!providerSessionId) return true;
-      await antigravityConversationStore.clearConversationSessionMetadata(
-        conversationKey,
-        providerSessionId,
-        catalog.instanceID,
-      );
-      return true;
-    }
-    case "upstream":
-      return true;
-    default:
-      return assertNeverConversationSystem(catalog.system);
-  }
-}
-
-/**
  * Edit the user message in any turn (not just the latest) and retry.
  * Truncates all subsequent turns from memory and storage, updates the
  * user message text, then retries using the currently selected model.
@@ -7712,40 +7630,13 @@ export async function editUserTurnAndRetry(opts: {
   }
 
   if (subsequentPairs.length) {
-    const providerReset = await withConversationWriteLock(
+    const providerReset = await detachRuntimeSessionForResend({
       conversationKey,
-      async () => {
-        if (
-          areConversationWritesFrozen(conversationKey) ||
-          !isConversationWriteGenerationCurrent(
-            conversationKey,
-            conversationGeneration,
-          )
-        ) {
-          return false;
-        }
-        const catalog = await conversationRepository.getCatalogEntry({
-          system: retryStorageSystem,
-          kind:
-            resolveDisplayConversationKind(item) === "paper"
-              ? "paper"
-              : "global",
-          conversationKey,
-        });
-        const detached = await detachProviderForEdit(conversationKey, catalog);
-        if (!detached) return false;
-        if (retryStorageSystem === "codex") {
-          clearCodexNativeReadLedgerForConversation({
-            conversationKey,
-            instanceID: catalog?.instanceID,
-          });
-        }
-        return isConversationWriteGenerationCurrent(
-          conversationKey,
-          conversationGeneration,
-        );
-      },
-    );
+      conversationGeneration,
+      storageSystem: retryStorageSystem,
+      kind:
+        resolveDisplayConversationKind(item) === "paper" ? "paper" : "global",
+    });
     if (!providerReset) {
       appLogger.warn(
         "LLM: editUserTurnAndRetry — provider history could not be detached",
@@ -8626,6 +8517,24 @@ function buildAgentEngineDeps(
     normalizePaperContexts,
     includeAutoLoadedPaperContext,
     findLatestRetryPair,
+    detachRuntimeSessionForResend: (conversationKey: number) =>
+      currentItem
+        ? detachRuntimeSessionForResend({
+            conversationKey,
+            conversationGeneration:
+              conversationGeneration ??
+              getConversationWriteGeneration(conversationKey),
+            storageSystem:
+              resolveConversationStorageSystemForItem({
+                item: currentItem,
+                conversationSystem: effectiveConversationSystem,
+              }) || effectiveConversationSystem,
+            kind:
+              resolveDisplayConversationKind(currentItem) === "paper"
+                ? "paper"
+                : "global",
+          })
+        : Promise.resolve(false),
     reconstructRetryPayload,
     isReasoningExpandedByDefault,
     createQueuedRefresh: (refresh) => createQueuedRefresh(refresh, panelBody),
