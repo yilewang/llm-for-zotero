@@ -18,6 +18,7 @@ import { retryAgentTurn, sendAgentTurn } from "./agentMode/agentEngine";
 import { buildAgentEngineDepsForTests, getConversationKey } from "./chat";
 import { bindProvisionedConversationKey } from "./conversationIdentity";
 import { createClaudePaperConversation } from "../../claudeCode/store";
+import { panelPaperPdfContext } from "./antigravityTurnReplay";
 import { getCoreAgentRuntime } from "../../agent";
 import {
   bindClaudeBridgeConversationSystem,
@@ -70,6 +71,11 @@ export type ExternalTurnScenario = {
    * panel's Retry does, against these bridge steps.
    */
   retry?: { steps: FakeBridgeStep[] };
+  /**
+   * Sends the panel paper's PDF file with the turn, as the paper chip's
+   * "PDF file" source does.
+   */
+  localPdf?: boolean;
 };
 
 export type ExternalTurnResult = {
@@ -110,6 +116,8 @@ export type ExternalTurnResult = {
   } | null;
   /** How many times the runtime's runTurn was called. */
   runtimeCalls: number;
+  /** The local PDF files each `/run-turn` payload carried, in order. */
+  localDocumentPaths: string[][];
 };
 
 type ScriptState = {
@@ -117,6 +125,7 @@ type ScriptState = {
   runTurnCalls: number;
   invalidateSessionCalls: number;
   payload: Record<string, unknown> | null;
+  localDocumentPaths: string[][];
   confirmationAnswers: Array<{ requestId: string; approved: boolean }>;
   confirmationWaiters: Array<() => void>;
   mcpCallResults: Array<{ ok: boolean; text: string }>;
@@ -309,6 +318,17 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     if (path === "/run-turn") {
       state.runTurnCalls += 1;
       state.payload = body;
+      const runtimeRequest = (body.runtimeRequest || {}) as {
+        localDocuments?: unknown;
+      };
+      state.localDocumentPaths.push(
+        (Array.isArray(runtimeRequest.localDocuments)
+          ? runtimeRequest.localDocuments
+          : []
+        ).map((document: { absolutePath?: unknown }) =>
+          String(document?.absolutePath || ""),
+        ),
+      );
       return streamScript(state, init?.signal || undefined);
     }
     if (path.startsWith("/session-info?")) {
@@ -325,6 +345,14 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
           scopeId: query.get("scopeId") || undefined,
           scopeLabel: query.get("scopeLabel") || undefined,
         },
+      });
+    }
+    if (path === "/healthz") {
+      // A bridge that reads local PDF paths, as the bundled one does.
+      return jsonResponse(200, {
+        ok: true,
+        protocolVersion: 2,
+        capabilities: ["local_pdf_paths"],
       });
     }
     if (path === "/invalidate-session") {
@@ -378,6 +406,7 @@ export async function exerciseClaudeBridgeTurn(
     steps: scenario.steps,
     runTurnCalls: 0,
     invalidateSessionCalls: 0,
+    localDocumentPaths: [],
     payload: null,
     confirmationAnswers: [],
     confirmationWaiters: [],
@@ -456,6 +485,13 @@ export async function exerciseClaudeBridgeTurn(
   const previousController = getAbortController(key);
   setAbortController(key, createAbortController());
   try {
+    // As the send flow does: the PDF paper, and its file resolved for the turn.
+    const pdfPaperContexts = scenario.localPdf
+      ? [panelPaperPdfContext(item)]
+      : undefined;
+    const localDocuments = pdfPaperContexts
+      ? await deps.resolveLocalPdfResources(pdfPaperContexts)
+      : undefined;
     await sendAgentTurn(
       {
         body,
@@ -464,6 +500,7 @@ export async function exerciseClaudeBridgeTurn(
         ...(scenario.selectedTextContexts
           ? { selectedTextContexts: scenario.selectedTextContexts }
           : {}),
+        ...(pdfPaperContexts ? { pdfPaperContexts, localDocuments } : {}),
       },
       deps,
     ).catch((error) => {
@@ -553,6 +590,7 @@ export async function exerciseClaudeBridgeTurn(
       },
       retryTurnPayload,
       runtimeCalls,
+      localDocumentPaths: state.localDocumentPaths,
     };
   } finally {
     setAbortController(key, previousController);

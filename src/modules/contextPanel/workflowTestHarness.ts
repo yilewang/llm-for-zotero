@@ -12588,6 +12588,13 @@ export function installWorkflowTestHarness(targetAddon: {
     sendLiveChatTurn,
     startPanelChatSend,
     retryLatestPanelResponse,
+    passPanelSendsThrough: () => {
+      assertWorkflowTestEnabled();
+      setWorkflowTestSendInterceptor((opts) => {
+        lastSend = opts;
+        return true;
+      });
+    },
     readChatTurnLifecycle,
     seedPanelStoredUserMessage,
     pickPastConversationInPanel,
@@ -12842,6 +12849,12 @@ export function installWorkflowTestHarness(targetAddon: {
       modelCatalogRequestHeaders.map((headers) => ({ ...headers })),
     getCodexDirectCatalogRequests: () => [...codexDirectCatalogRequests],
     configureCodexModelCatalogs,
+    useCodexAppServerChildForTests: async (launch) => {
+      assertWorkflowTestEnabled();
+      const appServer = await import("../../utils/codexAppServerProcess");
+      await appServer.destroyAllCachedCodexAppServerProcesses();
+      appServer.setCodexAppServerChildForTests(launch);
+    },
     configureAntigravityModelCatalog,
     loadAntigravityModelCatalogForTests: async () => {
       assertWorkflowTestEnabled();

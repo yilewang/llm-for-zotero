@@ -379,6 +379,34 @@ describe("workflow: Antigravity turns", function () {
     assert.include(asked[0], "Say hello again.");
   });
 
+  it("sends the paper's PDF file again when a turn that sent it is retried", async function () {
+    const pdfPath = String(
+      Zotero.Items.get(fixture.pdfAttachmentId).getFilePath() || "",
+    );
+    assert.isNotEmpty(pdfPath, "the fixture has a PDF file");
+    const retried = await run({
+      question: "What does the PDF say?",
+      localPdf: true,
+      retry: true,
+    });
+    assert.equal(retried.outcomeKind, "completed", JSON.stringify(retried));
+    assert.deepEqual(
+      retried.localDocumentPaths,
+      [[pdfPath], [pdfPath]],
+      "the first turn and its retry both carry the PDF file",
+    );
+    // The retry's new agy session is given the file in its prompt.
+    const session = store.get(String(retried.storedSessionId));
+    const asked = (session?.history || []).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" &&
+      update.content.type === "text"
+        ? [update.content.text]
+        : [],
+    );
+    assert.lengthOf(asked, 1, JSON.stringify(asked));
+    assert.include(asked[0], pdfPath);
+  });
+
   it("sends agy a past chat the user attached, before the question", async function () {
     const pastPaper = await api.createPaperWithPdfFixture({
       title: "Antigravity past chat source",

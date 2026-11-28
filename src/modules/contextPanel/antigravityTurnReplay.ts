@@ -47,6 +47,7 @@ import {
 import type {
   AttachedConversationRef,
   ChatAttachment,
+  PaperContextRef,
   SelectedTextContext,
 } from "../../shared/types";
 import {
@@ -95,6 +96,11 @@ export type AntigravityTurnScenario = {
   retry?: boolean;
   /** Past chats attached to the turn ("Add past conversation"). */
   attachedConversations?: AttachedConversationRef[];
+  /**
+   * Sends the panel paper's PDF file with the turn, as the paper chip's
+   * "PDF file" source does.
+   */
+  localPdf?: boolean;
 };
 
 export type AntigravityTurnResult = {
@@ -125,6 +131,8 @@ export type AntigravityTurnResult = {
   slashCommands: string[];
   /** The reader model the turn's request carried. */
   readerSelection?: ReaderSelection;
+  /** The local PDF files each runtime turn's request carried, in order. */
+  localDocumentPaths: string[][];
 };
 
 let replayClient: AcpClient | null = null;
@@ -144,6 +152,22 @@ function setPref(name: string, value: unknown): void {
   const key = `${config.prefsPrefix}.${name}`;
   if (value === undefined) Zotero.Prefs.clear(key, true);
   else Zotero.Prefs.set(key, value as boolean, true);
+}
+
+/** The panel paper with its first PDF, as the chip's "PDF file" source names it. */
+export function panelPaperPdfContext(item: Zotero.Item): PaperContextRef {
+  const paper = item.isAttachment() && item.parentItem ? item.parentItem : item;
+  const pdf = paper
+    .getAttachments()
+    .map((id) => Zotero.Items.get(id))
+    .find((attachment) => attachment?.isPDFAttachment?.());
+  if (!pdf) throw new Error("The panel paper has no PDF attachment");
+  return {
+    itemId: paper.id,
+    contextItemId: pdf.id,
+    title: String(paper.getField("title") || "Paper"),
+    contentSourceMode: "pdf",
+  };
 }
 
 export async function exerciseAntigravityTurn(
@@ -204,11 +228,17 @@ export async function exerciseAntigravityTurn(
   let triggered = false;
   let startedRunId = "";
   let readerSelection: ReaderSelection | undefined;
+  const localDocumentPaths: string[][] = [];
   deps.getAgentRuntime = () =>
     ({
       ...runtime,
       runTurn: async (params: Parameters<typeof runtime.runTurn>[0]) => {
         readerSelection = params.request.readerSelection;
+        localDocumentPaths.push(
+          (params.request.localDocuments || []).map(
+            (document) => document.absolutePath,
+          ),
+        );
         try {
           outcome = await runtime.runTurn({
             ...params,
@@ -285,6 +315,13 @@ export async function exerciseAntigravityTurn(
   const previousController = getAbortController(conversationKey);
   setAbortController(conversationKey, createAbortController());
   try {
+    // As the send flow does: the PDF paper, and its file resolved for the turn.
+    const pdfPaperContexts = scenario.localPdf
+      ? [panelPaperPdfContext(item)]
+      : undefined;
+    const localDocuments = pdfPaperContexts
+      ? await deps.resolveLocalPdfResources(pdfPaperContexts)
+      : undefined;
     await sendAgentTurn(
       {
         body,
@@ -298,6 +335,7 @@ export async function exerciseAntigravityTurn(
         ...(scenario.attachedConversations
           ? { attachedConversations: scenario.attachedConversations }
           : {}),
+        ...(pdfPaperContexts ? { pdfPaperContexts, localDocuments } : {}),
         ...(scenario.model ? { model: scenario.model } : {}),
         ...(scenario.thoughtLevel
           ? {
@@ -379,6 +417,7 @@ export async function exerciseAntigravityTurn(
         (command) => command.name,
       ),
       ...(readerSelection ? { readerSelection } : {}),
+      localDocumentPaths,
     };
   } finally {
     setAbortController(conversationKey, previousController);

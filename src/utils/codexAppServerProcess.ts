@@ -227,6 +227,17 @@ export class CodexAppServerProcessRetiredError extends Error {
   }
 }
 
+let launchChildForTests: (() => unknown) | undefined;
+
+/**
+ * Workflow-test seam: while set, every app-server spawn talks to the child
+ * this returns (a scripted app server) instead of launching codex. The
+ * protocol handshake and everything after it run as they do for codex.
+ */
+export function setCodexAppServerChildForTests(launch?: () => unknown): void {
+  launchChildForTests = launch;
+}
+
 export class CodexAppServerProcess {
   private readonly connection: StdioJsonRpcConnection;
   private requestHandlers = new Map<string, Set<RequestRegistration>>();
@@ -281,6 +292,12 @@ export class CodexAppServerProcess {
   static async spawn(
     options: CodexAppServerProcessOptions = {},
   ): Promise<CodexAppServerProcess> {
+    if (launchChildForTests) {
+      return CodexAppServerProcess.startAndInitialize(
+        launchChildForTests(),
+        "codex app-server (workflow test)",
+      );
+    }
     const Subprocess = await CodexAppServerProcess.loadSubprocessModule();
     const info = getRuntimePlatformInfo();
     const binary = await resolveCodexBinary(options.codexPath);
@@ -305,10 +322,17 @@ export class CodexAppServerProcess {
       );
     }
 
-    const instance = new CodexAppServerProcess(
+    return CodexAppServerProcess.startAndInitialize(
       proc,
       formatLaunchDescription(command, args),
     );
+  }
+
+  private static async startAndInitialize(
+    proc: unknown,
+    launchDescription: string,
+  ): Promise<CodexAppServerProcess> {
+    const instance = new CodexAppServerProcess(proc, launchDescription);
     instance.connection.start();
     try {
       await instance.initialize();
