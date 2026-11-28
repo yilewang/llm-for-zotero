@@ -1,12 +1,10 @@
+import { resolveSharedCodexAppServerPath } from "./binaryPath";
 import type {
   CodexPermissionProfile,
   PermissionOption,
 } from "../shared/permissionOptions";
 import type { CodexAppServerProcess } from "../utils/codexAppServerProcess";
-import {
-  getOrCreateCodexAppServerProcess,
-  resolveCodexAppServerBinaryPath,
-} from "../utils/codexAppServerProcess";
+import { getOrCreateCodexAppServerProcess } from "../utils/codexAppServerProcess";
 import {
   CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
   resolveCodexNativeRuntimeCwd,
@@ -272,7 +270,7 @@ export async function getCodexPermissionCapabilities(
     params.proc ??
     (await getOrCreateCodexAppServerProcess(
       params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
-      { codexPath: resolveCodexAppServerBinaryPath(params.codexPath) },
+      { codexPath: resolveSharedCodexAppServerPath(params.codexPath) },
     ));
   const cwd = params.cwd ?? resolveCodexNativeRuntimeCwd();
   const cacheKey = cwd || "";

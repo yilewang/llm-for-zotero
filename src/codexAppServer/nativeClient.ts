@@ -1,4 +1,5 @@
 import { appLogger } from "../core/logging";
+import { resolveSharedCodexAppServerPath } from "./binaryPath";
 import { createAbortController } from "../utils/apiHelpers";
 import { readNativeQuestions } from "./nativeQuestions";
 import type {
@@ -49,7 +50,6 @@ import {
   extractCodexAppServerTurnId,
   getOrCreateCodexAppServerProcess,
   isCodexAppServerThreadStartInstructionsUnsupportedError,
-  resolveCodexAppServerBinaryPath,
   resolveCodexAppServerReasoningParams,
   resolveCodexAppServerTurnInputWithFallback,
   retireCodexAppServerProcessAfterTurnFailure,
@@ -2822,7 +2822,7 @@ export async function listCodexAppServerModels(
     processKey?: string;
   } = {},
 ): Promise<unknown> {
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
+  const codexPath = resolveSharedCodexAppServerPath(params.codexPath);
   const proc = await getOrCreateCodexAppServerProcess(
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },
@@ -2908,7 +2908,7 @@ export async function forkCodexAppServerThreadWithRecord(params: {
   codexPath?: string;
   processKey?: string;
 }): Promise<CodexForkedThread> {
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
+  const codexPath = resolveSharedCodexAppServerPath(params.codexPath);
   const proc = await getOrCreateCodexAppServerProcess(
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },
@@ -2982,7 +2982,7 @@ export async function archiveCodexAppServerThread(params: {
   codexPath?: string;
   processKey?: string;
 }): Promise<void> {
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
+  const codexPath = resolveSharedCodexAppServerPath(params.codexPath);
   const proc = await getOrCreateCodexAppServerProcess(
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },
@@ -3000,7 +3000,7 @@ export async function compactCodexAppServerThread(params: {
   if (params.signal?.aborted) {
     throw createNativeClientAbortError();
   }
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
+  const codexPath = resolveSharedCodexAppServerPath(params.codexPath);
   const proc = await getOrCreateCodexAppServerProcess(
     params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },
@@ -3207,7 +3207,7 @@ export async function runCodexAppServerNativeTurn(input: {
   const redactText = (value: string): string =>
     turnPathRedactor.redactTerminalText(value);
   const redactTerminalText = redactText;
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
+  const codexPath = resolveSharedCodexAppServerPath(params.codexPath);
   const processKey = params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY;
   try {
     const skillContext = params.skillContext;

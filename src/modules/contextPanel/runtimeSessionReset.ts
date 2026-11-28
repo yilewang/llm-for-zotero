@@ -27,6 +27,7 @@ import {
 } from "../../core/conversations/conversationSystems";
 import { clearCodexConversationSessionMetadata } from "../../codexAppServer/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
+import { isProviderNotFoundError } from "./conversationDeletion";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
 import { antigravityConversationStore } from "../../antigravity/store";
 import {
@@ -66,11 +67,8 @@ async function detachRuntimeProviderSession(
           try {
             await archiveCodexAppServerThread({ threadId: providerSessionId });
           } catch (error) {
-            if (
-              !/not found|unknown thread|does not exist/i.test(String(error))
-            ) {
-              throw error;
-            }
+            // A thread Codex no longer has is already detached.
+            if (!isProviderNotFoundError(error)) throw error;
           }
         },
       );
