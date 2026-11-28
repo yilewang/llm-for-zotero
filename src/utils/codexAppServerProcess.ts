@@ -1162,6 +1162,12 @@ export function waitForCodexAppServerTurnCompletion(params: {
   }) => void | Promise<void>;
   signal?: AbortSignal;
   interruptOnAbort?: boolean;
+  /**
+   * Called when a stop sends `turn/interrupt`; the result is called once the
+   * interrupt settled. The caller keeps the conversation's turn in flight
+   * that long: codex runs on the thread until then.
+   */
+  holdWhileInterrupting?: () => () => void;
   cacheKey?: string;
   processOptions?: CodexAppServerProcessOptions;
   timeoutMs?: number;
@@ -1514,6 +1520,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
         // The interrupted turn stays live on the server until the interrupt
         // answers, so it keeps its own hold for the decision below.
         const releaseHold = proc.holdActiveTurn();
+        const releaseCaller = params.holdWhileInterrupting?.();
         void proc
           .sendRequest(
             "turn/interrupt",
@@ -1532,7 +1539,10 @@ export function waitForCodexAppServerTurnCompletion(params: {
             );
             retireProcess();
           })
-          .finally(releaseHold);
+          .finally(() => {
+            releaseHold();
+            releaseCaller?.();
+          });
       } else {
         retireProcess();
       }

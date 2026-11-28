@@ -41,6 +41,8 @@ export type FakeCodexAppServer = {
   releaseTurns: () => void;
   /** The next `count` thread starts fail, as when codex cannot start one. */
   failThreadStarts: (count: number) => void;
+  /** `turn/interrupt` answers after this many ms (0: at once). */
+  setInterruptDelayMs: (ms: number) => void;
 };
 
 const USER_AGENT = "codex_cli_rs/0.164.0 (Mac OS 15.0.0; arm64) workflow-test";
@@ -59,6 +61,7 @@ export function createFakeCodexAppServer(script: {
   let archiveDelayMs = 0;
   let holdTurns = false;
   let failingThreadStarts = 0;
+  let interruptDelayMs = 0;
   const heldTurns: Array<() => void> = [];
 
   const answerFor = (index: number) =>
@@ -159,6 +162,10 @@ export function createFakeCodexAppServer(script: {
         else answer();
         return;
       }
+      case "turn/interrupt":
+        if (interruptDelayMs) setTimeout(() => respond({}), interruptDelayMs);
+        else respond({});
+        return;
       case "permissionProfile/list":
         // The built-in profiles a current codex lists.
         respond({
@@ -212,6 +219,9 @@ export function createFakeCodexAppServer(script: {
     },
     failThreadStarts: (count) => {
       failingThreadStarts = count;
+    },
+    setInterruptDelayMs: (ms) => {
+      interruptDelayMs = ms;
     },
   };
 }

@@ -12637,7 +12637,9 @@ export function installWorkflowTestHarness(targetAddon: {
          WHERE conversation_key = ?`,
         [conversationKey],
       );
-      await processPendingConversationCleanupJobs();
+      await processPendingConversationCleanupJobs({
+        onlyConversationKey: conversationKey,
+      });
     },
     enqueueSessionCleanupJobForTests: async ({
       system,

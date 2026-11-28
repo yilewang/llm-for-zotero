@@ -488,4 +488,34 @@ describe("workflow: Claude Code turn host", function () {
     assert.isNull(race.bridgeMapping, JSON.stringify(race));
     assert.equal(race.savedSessionId, "", JSON.stringify(race));
   });
+  it("does not offer a session whose drop is still pending to keep warm", async function () {
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude pending drop fixture",
+      pages: ["A disposable paper for a pending session drop."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const run = `claude-run-${Date.now()}`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(run), completed(run, "417")],
+          // The bridge did not confirm the drop: the chat still names it.
+          retry: {
+            steps: [start(`${run}-r`), completed(`${run}-r`, "1")],
+            invalidateFails: true,
+          },
+          retainAfterRetries: true,
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    assert.isNull(result.retries[0].payload, JSON.stringify(result.retries));
+    assert.equal(
+      result.retainHint,
+      "",
+      "no hint for the session on its way out",
+    );
+  });
 });

@@ -177,10 +177,11 @@ export async function detachRuntimeSessionForResend(params: {
   kind: "paper" | "global";
 }): Promise<boolean> {
   const { conversationKey, conversationGeneration } = params;
-  // A turn still winding down (a Stop the runtime has not finished) would
-  // keep or write back the session being reset.
-  if (isRuntimeTurnInFlight(conversationKey)) return false;
   return withConversationWriteLock(conversationKey, async () => {
+    // A turn still winding down (a Stop the runtime has not finished) would
+    // keep or write back the session being reset. Checked under the lock,
+    // as the reset's own writes are.
+    if (isRuntimeTurnInFlight(conversationKey)) return false;
     if (
       areConversationWritesFrozen(conversationKey) ||
       !isConversationWriteGenerationCurrent(
@@ -238,26 +239,23 @@ export async function finishPendingRuntimeSessionResets(params: {
         : null;
   if (!operation) return true;
   return withConversationWriteLock(conversationKey, async () => {
-    if (isRuntimeTurnInFlight(conversationKey)) {
-      // Only a reset that is still pending has to wait for the turn.
-      const pending = await listPendingSessionCleanupJobs({
-        conversationKey,
-        operation,
-      });
-      if (pending.length) return false;
-    }
     const catalog = await conversationRepository.getCatalogEntry({
       system: storageSystem,
       conversationKey,
     });
     const sessionId = String(catalog?.providerSessionId || "").trim();
     if (!sessionId) return true;
-    const jobs = await listPendingSessionCleanupJobs({
-      conversationKey,
-      operation,
-    });
+    const jobs = (
+      await listPendingSessionCleanupJobs({ conversationKey, operation })
+    ).filter(
+      (job) =>
+        job.providerSessionId === sessionId &&
+        (!catalog?.instanceID || job.instanceID === catalog.instanceID),
+    );
+    if (!jobs.length) return true;
+    // A reset of the chat's own session waits for a turn still winding down.
+    if (isRuntimeTurnInFlight(conversationKey)) return false;
     for (const job of jobs) {
-      if (job.providerSessionId !== sessionId) continue;
       if (!(await attemptSessionCleanup(job))) return false;
     }
     return true;

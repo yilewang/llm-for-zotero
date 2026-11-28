@@ -547,6 +547,34 @@ export async function listDueConversationCleanupJobs(
 }
 
 /**
+ * Whether a cleanup to drop exactly this session of the conversation is still
+ * pending, whatever its purpose (a reset, a deleted turn). Such a session is
+ * on its way out: it must not be offered to the provider to resume or keep
+ * warm, even while the chat still records it as the job's witness.
+ */
+export async function hasPendingSessionCleanupJob(params: {
+  conversationKey: number;
+  operation: "codex_archive" | "claude_invalidate";
+  providerSessionId: string;
+}): Promise<boolean> {
+  const db = getZoteroDb();
+  const conversationKey = positiveIntOrZero(params.conversationKey);
+  const sessionId = String(params.providerSessionId || "").trim();
+  if (!db || !conversationKey || !sessionId) return false;
+  await initConversationCleanupJobs();
+  const rows = (await queryCleanupDb(
+    db,
+    `SELECT 1 FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+     WHERE operation = ? AND conversation_key = ? AND provider_session_id = ?
+       AND (provider_cleanup_state = 'pending'
+            OR provider_cleanup_state = 'attention_required')
+     LIMIT 1`,
+    [params.operation, conversationKey, sessionId],
+  )) as unknown[] | undefined;
+  return Boolean(rows?.length);
+}
+
+/**
  * A conversation's pending resend resets (purpose "resend_reset": a Retry or
  * Edit whose reset did not reach the provider), whatever their retry delay:
  * the next turn of the conversation finishes them first

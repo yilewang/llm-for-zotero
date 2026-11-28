@@ -3637,6 +3637,10 @@ async function runRegisteredCodexAppServerNativeTurn(
             text = await waitForCodexAppServerTurnCompletion({
               proc,
               threadId: args.thread.threadId,
+              // A stop's interrupt keeps the turn in flight until codex has
+              // stopped on the thread, so a Retry cannot archive it sooner.
+              holdWhileInterrupting: () =>
+                beginRuntimeTurn(params.scope.conversationKey),
               childThreadIds,
               startTurn: async () => {
                 const turnResult = await proc.sendRequest("turn/start", {
@@ -4208,7 +4212,8 @@ async function runRegisteredCodexAppServerNativeTurn(
           await clearStoredProviderSession({
             conversationKey: params.scope.conversationKey,
             expectedProviderSessionId: storedThreadId,
-            instanceID: params.scope.instanceID,
+            // The instance the turn started on (the panel's scope has none).
+            instanceID: scopeWithProfile.instanceID,
             hooks: params.hooks,
           });
         }

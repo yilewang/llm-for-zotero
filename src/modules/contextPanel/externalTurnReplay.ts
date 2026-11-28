@@ -95,6 +95,8 @@ export type ExternalTurnScenario = {
    * the bridge while a Retry/Edit reset runs, then let through.
    */
   retainDuringReset?: boolean;
+  /** After the retries, a "keep warm" retain of the chat; records its hint. */
+  retainAfterRetries?: boolean;
   /** After the retries, the user sends these next messages, in order. */
   followUps?: Array<{
     question: string;
@@ -165,6 +167,8 @@ export type ExternalTurnResult = {
    * With `retainDuringReset`: whether the reset succeeded, the session the
    * fake bridge maps the chat to afterwards, and the chat's saved session.
    */
+  /** With `retainAfterRetries`: the session hint the retain sent ("" none). */
+  retainHint?: string;
   retainRace?: {
     resetOk: boolean;
     bridgeMapping: string | null;
@@ -197,6 +201,8 @@ type ScriptState = {
   /** While set, a retain waits for it before the bridge maps its session. */
   retainGate: Promise<void> | null;
   retentionRequests: number;
+  /** The session hint of the latest retain ("" for none). */
+  lastRetainHint: string;
 
   payload: Record<string, unknown> | null;
   localDocumentPaths: string[][];
@@ -452,6 +458,8 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     }
     if (path === "/runtime-retention") {
       state.retentionRequests += 1;
+      if (body.retain === true)
+        state.lastRetainHint = String(body.providerSessionId || "");
       if (body.retain === true) {
         if (state.retainGate) await state.retainGate;
         // A retain with a session hint maps it, as the bridge adapter does.
@@ -522,6 +530,7 @@ export async function exerciseClaudeBridgeTurn(
     bridgeMapping: null,
     retainGate: null,
     retentionRequests: 0,
+    lastRetainHint: "",
 
     localDocumentPaths: [],
     payload: null,
@@ -706,6 +715,20 @@ export async function exerciseClaudeBridgeTurn(
       });
       state.invalidateFails = false;
     }
+    let retainHint: string | undefined;
+    if (scenario.retainAfterRetries) {
+      await updateClaudeRuntimeRetention(getCoreAgentRuntime(), {
+        conversationKey: key,
+        scope: buildClaudeScope({
+          libraryID: item.libraryID,
+          kind: "paper",
+          paperItemID: item.id,
+        }),
+        mountId: "fixture-mount",
+        retain: true,
+      }).catch(() => false);
+      retainHint = state.lastRetainHint;
+    }
     const followUps: ExternalTurnResult["followUps"] = [];
     for (const followUp of scenario.followUps || []) {
       const beforePayload = state.payload;
@@ -803,6 +826,7 @@ export async function exerciseClaudeBridgeTurn(
       retries,
       followUps,
       ...(retainRace ? { retainRace } : {}),
+      ...(retainHint !== undefined ? { retainHint } : {}),
       runtimeCalls,
       localDocumentPaths: state.localDocumentPaths,
     };

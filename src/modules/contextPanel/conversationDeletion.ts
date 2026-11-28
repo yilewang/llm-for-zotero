@@ -875,11 +875,19 @@ export async function finalizeConversationDeletion(
 export async function processPendingConversationCleanupJobs(
   deps: ConversationDeletionDeps & {
     includeAttentionRequired?: boolean;
+    /** Only this conversation's jobs (a workflow test's own chat). */
+    onlyConversationKey?: number;
   } = {},
 ): Promise<void> {
-  const jobs = await listDueConversationCleanupJobs(Date.now(), {
-    includeAttentionRequired: deps.includeAttentionRequired,
-  });
+  const jobs = (
+    await listDueConversationCleanupJobs(Date.now(), {
+      includeAttentionRequired: deps.includeAttentionRequired,
+    })
+  ).filter(
+    (job) =>
+      !deps.onlyConversationKey ||
+      job.conversationKey === deps.onlyConversationKey,
+  );
   if (!jobs.length) return;
   const operations = buildOperations(deps);
   const invalidateClaudeWithinWriteLock =

@@ -46,8 +46,8 @@ describe("workflow: Codex retry", function () {
   let api: WorkflowTestApi;
   let fixture: WorkflowTestFixture | null = null;
   let previous: Map<string, unknown>;
-  /** Panels this test opened; their chats' cleanup jobs go after it. */
-  let openedPanels: string[] = [];
+  /** The chats this test opened; their cleanup jobs go after it. */
+  let openedChats: number[] = [];
   const settings: Record<string, string | boolean> = {
     enableCodexAppServerMode: true,
     conversationSystem: "codex",
@@ -74,12 +74,8 @@ describe("workflow: Codex retry", function () {
 
   afterEach(async function () {
     // Failed scripted archives leave jobs; never retry them against codex.
-    const keys = await Promise.all(
-      openedPanels.map(async (panelId) =>
-        Number((await api.getDiagnostics(panelId)).conversationKey),
-      ),
-    );
-    openedPanels = [];
+    const keys = openedChats;
+    openedChats = [];
     await api.clearCleanupJobsForTests(keys);
     await api.useCodexAppServerChildForTests();
     await api.reset();
@@ -106,8 +102,9 @@ describe("workflow: Codex retry", function () {
       pages,
     });
     const panel = await api.renderPanelForItem(fixture.parentItemId);
-    openedPanels.push(panel.panelId);
     const diag = await api.getDiagnostics(panel.panelId);
+    // Recorded now: a test may switch the panel to another chat later.
+    openedChats.push(Number(diag.conversationKey));
     assert.equal(diag.conversationSystem, "codex", "the panel runs Codex");
     return panel.panelId;
   }
@@ -466,6 +463,32 @@ describe("workflow: Codex retry", function () {
           request.params.threadId === thread,
       ),
       `the abandoned thread is not resumed again\n${describeRequests(after)}`,
+    );
+  });
+  it("keeps a stopped turn in flight until codex answered its interrupt", async function () {
+    const server = createFakeCodexAppServer({ answers: ["FIRST", "SECOND"] });
+    const panelId = await openCodexPanel(server, ["A page for the panel."]);
+    await sendTurn(panelId, "Hello.", TIMEOUT_MS);
+    server.setHoldTurns(true);
+    server.setInterruptDelayMs(2_500);
+    const running = sendTurn(panelId, "Take your time.", 6_000).catch(
+      () => null,
+    );
+    for (let i = 0; i < 100 && server.turnStarts().length < 2; i += 1)
+      await Zotero.Promise.delay(50);
+    panelBody(panelId).querySelector<HTMLButtonElement>("#llm-cancel")?.click();
+    await Zotero.Promise.delay(500);
+    // Codex has not stopped on the thread yet.
+    const whileInterrupting =
+      await api.resetPanelRuntimeSessionForTests(panelId);
+    await Zotero.Promise.delay(3_000);
+    server.releaseTurns();
+    server.setHoldTurns(false);
+    await running;
+    assert.isFalse(whileInterrupting, "the reset waits for the interrupt");
+    assert.isTrue(
+      await api.resetPanelRuntimeSessionForTests(panelId),
+      "once codex stopped the reset runs",
     );
   });
 });

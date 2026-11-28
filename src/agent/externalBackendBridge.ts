@@ -1,3 +1,4 @@
+import { createAbortController } from "../utils/apiHelpers";
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
 import {
@@ -28,7 +29,10 @@ import {
 } from "../claudeCode/bridgeProcess";
 import { buildScopedConversationKey } from "../shared/conversationScopedKey";
 import { getClaudeConversationSummary } from "../claudeCode/store";
-import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
+import {
+  hasPendingEmptyClaudeCleanupJob,
+  hasPendingSessionCleanupJob,
+} from "../core/conversations/conversationCleanupJobs";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
 import type { ConversationSystem } from "../shared/types";
 import { getClaudePermissionModePref } from "../claudeCode/prefs";
@@ -458,6 +462,16 @@ async function resolveClaudeProviderSessionHint(
   );
   const providerSessionId = summary?.providerSessionId?.trim();
   if (!summary || !providerSessionId) return undefined;
+  // A session whose drop is still pending (a reset or a deleted turn whose
+  // bridge reply was lost) is never handed back to resume or keep warm.
+  if (
+    await hasPendingSessionCleanupJob({
+      conversationKey,
+      operation: "claude_invalidate",
+      providerSessionId,
+    }).catch(() => true)
+  )
+    return undefined;
   const expectedScopedConversationKey = buildScopedConversationKey(
     conversationKey,
     scope,
@@ -774,6 +788,23 @@ function normalizeBaseUrl(url: string): string {
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
 }
 
+/**
+ * Deadline of a bridge request made under the conversation's write lock (the
+ * end-of-turn session report, a keep-warm retain): a stalled bridge must not
+ * hold the chat's lock, and with it its saves, Clear and sends. A request
+ * that times out reports no session, or no retain, which is safe.
+ */
+const BRIDGE_LOCKED_REQUEST_TIMEOUT_MS = 10_000;
+
+/** A signal that aborts after BRIDGE_LOCKED_REQUEST_TIMEOUT_MS. */
+function lockedRequestDeadline(): AbortSignal {
+  // The plugin's own controller: AbortSignal.timeout is not available in
+  // every Zotero context.
+  const controller = createAbortController();
+  setTimeout(() => controller.abort(), BRIDGE_LOCKED_REQUEST_TIMEOUT_MS);
+  return controller.signal;
+}
+
 async function updateExternalRuntimeRetention(params: {
   baseUrl: string;
   conversationKey: number;
@@ -789,6 +820,7 @@ async function updateExternalRuntimeRetention(params: {
   if (isManagedClaudeBridgeIdle(normalized)) return null;
   const response = await claudeBridgeFetch(`${normalized}/runtime-retention`, {
     method: "POST",
+    signal: lockedRequestDeadline(),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       conversationKey: params.conversationKey,
@@ -2146,6 +2178,7 @@ export async function fetchExternalBridgeSessionInfo(params: {
       const response = await claudeBridgeFetch(url, {
         method: "GET",
         headers: { Accept: "application/json" },
+        signal: lockedRequestDeadline(),
       });
       if (!response.ok) {
         if (response.status === 400 || response.status === 404) {
