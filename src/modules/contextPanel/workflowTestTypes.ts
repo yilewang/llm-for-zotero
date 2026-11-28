@@ -1832,6 +1832,11 @@ export type WorkflowTestApi = {
     fullTextBudgetTokens: number;
   }) => Promise<{ section: string; tokens: number }>;
   /**
+   * Removes every provider cleanup job, so one a test left (a failed
+   * scripted archive) is never retried against a real runtime later.
+   */
+  clearCleanupJobsForTests: () => Promise<void>;
+  /**
    * Makes every pending provider cleanup job due and runs the background
    * cleanup worker once (processPendingConversationCleanupJobs).
    */
