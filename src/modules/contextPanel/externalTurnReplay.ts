@@ -78,6 +78,8 @@ export type ExternalTurnScenario = {
    * panel's Retry does, against these bridge steps.
    */
   retry?: ExternalTurnRetry | ExternalTurnRetry[];
+  /** After the retries, the user sends this next message as a new turn. */
+  followUp?: { question: string; steps: FakeBridgeStep[] };
   /**
    * Sends the panel paper's PDF file with the turn, as the paper chip's
    * "PDF file" source does.
@@ -131,6 +133,12 @@ export type ExternalTurnResult = {
       userText: string;
     } | null;
   }>;
+  /** What the follow-up's `/run-turn` asked of the bridge; null without one. */
+  followUpPayload: {
+    providerSessionId: string;
+    forceFreshSession: boolean;
+    userText: string;
+  } | null;
   /** What the last retry's `/run-turn` asked of the bridge; null without retry. */
   retryTurnPayload: {
     providerSessionId: string;
@@ -579,6 +587,27 @@ export async function exerciseClaudeBridgeTurn(
       });
       state.invalidateFails = false;
     }
+    let followUpPayload: ExternalTurnResult["followUpPayload"] = null;
+    if (scenario.followUp) {
+      const beforePayload = state.payload;
+      state.steps = scenario.followUp.steps;
+      setAbortController(key, createAbortController());
+      await sendAgentTurn(
+        { body, item, question: scenario.followUp.question },
+        deps,
+      ).catch((error) => {
+        threw ||= error instanceof Error ? error.message : String(error);
+      });
+      const sent = state.payload !== beforePayload ? state.payload : null;
+      const metadata = (sent?.metadata || {}) as Record<string, unknown>;
+      followUpPayload = sent
+        ? {
+            providerSessionId: String(sent.providerSessionId ?? ""),
+            forceFreshSession: metadata.forceFreshSession === true,
+            userText: String(sent.userText ?? ""),
+          }
+        : null;
+    }
     const { token, headerNames } = scopeTokenFromPayload(state.payload);
     const scopeLiveAfterTurn = token
       ? (await callMcpEndpoint(token, "library_search", { query: "x" })).ok
@@ -631,6 +660,7 @@ export async function exerciseClaudeBridgeTurn(
       },
       retryTurnPayload,
       retries,
+      followUpPayload,
       runtimeCalls,
       localDocumentPaths: state.localDocumentPaths,
     };

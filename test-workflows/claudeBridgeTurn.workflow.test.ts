@@ -390,4 +390,40 @@ describe("workflow: Claude Code turn host", function () {
     );
     assert.equal(again.payload!.providerSessionId, "");
   });
+  it("starts a fresh Claude session for the next message while a failed reset is pending", async function () {
+    // Its own paper, as the failed-reset test above.
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude pending reset fixture",
+      pages: ["A disposable paper for a pending session reset."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const firstRun = `claude-run-${Date.now()}`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(firstRun), completed(firstRun, "417")],
+          // An edit or retry whose reset the bridge refused.
+          retry: {
+            steps: [start(`${firstRun}-r`), completed(`${firstRun}-r`, "1")],
+            invalidateFails: true,
+          },
+          // The user moves on with a new message instead of retrying.
+          followUp: {
+            question: "What number did you pick?",
+            steps: [start(`${firstRun}-f`), completed(`${firstRun}-f`, "?")],
+          },
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    assert.isNull(result.retries[0].payload, JSON.stringify(result.retries));
+    assert.isNotNull(result.followUpPayload, JSON.stringify(result));
+    // The bridge still holds the session with the replaced answer.
+    assert.isTrue(
+      result.followUpPayload!.forceFreshSession,
+      JSON.stringify(result.followUpPayload),
+    );
+  });
 });

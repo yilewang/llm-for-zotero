@@ -443,11 +443,13 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
 }
 
 /**
- * Empty-session Claude jobs are intentionally a lifecycle barrier. A new
- * turn on the preserved catalog must force a fresh provider session before it
- * can reuse a mapping that Clear was unable to invalidate inline.
+ * A pending Claude invalidation is a lifecycle barrier. Until the bridge has
+ * dropped the session, a new turn on the conversation must force a fresh
+ * provider session instead of resuming it: an empty-session job is a mapping
+ * Clear could not drop inline, and a job naming a session is one a Retry or
+ * Edit could not drop, which still holds the turns being replaced.
  */
-export async function hasPendingEmptyClaudeCleanupJob(params: {
+export async function hasPendingClaudeCleanupJob(params: {
   conversationKey: number;
   instanceID?: string;
 }): Promise<boolean> {
@@ -466,7 +468,6 @@ export async function hasPendingEmptyClaudeCleanupJob(params: {
          AND system = 'claude_code'
          AND conversation_key = ?
          ${instancePredicate}
-         AND provider_session_id = ''
          AND (provider_cleanup_state = 'pending'
               OR provider_cleanup_state = 'attention_required')
        LIMIT 1`,
