@@ -38,8 +38,14 @@ import {
 } from "./pastConversationSearch";
 import { collapseWhitespace } from "../../core/values";
 
-/** Most stored messages read from one past chat (the newest ones). */
-export const PAST_CHAT_LOAD_MESSAGE_LIMIT = 400;
+/**
+ * Every stored message of a chat. The stores read "the newest N"; a past
+ * chat is read whole, since past_chat_read pages through it and the
+ * attached-chat block has its own token budget. A cap here made the oldest
+ * messages of a long chat unreachable, and those are the ones a fresh
+ * session's history note points to.
+ */
+const ALL_STORED_MESSAGES = Number.MAX_SAFE_INTEGER;
 
 /** The catalog facts a past chat is checked against. */
 export type PastConversationCatalogEntry = {
@@ -208,7 +214,7 @@ export async function loadPastConversation(
     const stored = await source.loadMessages({
       system: ref.system,
       conversationKey: ref.conversationKey,
-      limit: PAST_CHAT_LOAD_MESSAGE_LIMIT,
+      limit: ALL_STORED_MESSAGES,
     });
     const before = options.beforeTimestamp;
     const messages = cleanPastConversationMessages(

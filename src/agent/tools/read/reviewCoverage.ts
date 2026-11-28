@@ -19,10 +19,10 @@ import {
   TASK_PAPER_STATES,
   type TaskPaperState,
 } from "../../context/taskPaperLedger";
-import {
-  PAST_CHAT_LOAD_MESSAGE_LIMIT,
-  defaultPastConversationSource,
-} from "../../../services/pastConversations/pastConversationLoader";
+import { defaultPastConversationSource } from "../../../services/pastConversations/pastConversationLoader";
+
+/** Most stored messages review coverage reads (the newest ones). */
+const REVIEW_COVERAGE_MESSAGE_LIMIT = 400;
 import { listAgentRunEventsForRuns } from "../../store/traceStore";
 import { recordOrEmpty } from "../../../core/values";
 
@@ -155,7 +155,7 @@ async function executeReviewCoverage(
     const messages = await source.loadMessages({
       system: context.conversationSystem || "upstream",
       conversationKey,
-      limit: PAST_CHAT_LOAD_MESSAGE_LIMIT,
+      limit: REVIEW_COVERAGE_MESSAGE_LIMIT,
     });
     const runs = taskPaperCoverageRunsFromMessages(messages, {
       excludeRunIds: [context.runId],

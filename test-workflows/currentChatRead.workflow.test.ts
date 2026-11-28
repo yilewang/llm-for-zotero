@@ -143,4 +143,63 @@ describe("workflow: past_chat_read on the current conversation", function () {
       api.clearScopedMcpScope(untimed.token);
     }
   });
+  it("reaches the oldest messages of a chat longer than any fixed window", async function () {
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Long current chat read fixture",
+      pages: ["A disposable paper."],
+    });
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const first = await api.seedPanelStoredTurn(
+      panel.panelId,
+      "OLDEST-QUESTION what was the lab rat called?",
+      "OLDEST-ANSWER the rat was named BISCUIT.",
+    );
+    const key = first.conversationKey;
+    // 460 more messages after it, then the turn being answered.
+    const filler: Array<{
+      role: "user" | "assistant";
+      text: string;
+      timestamp: number;
+    }> = [];
+    let time = first.userTimestamp + 1_000;
+    for (let turn = 0; turn < 230; turn += 1) {
+      filler.push({ role: "user", text: `filler ${turn}`, timestamp: time++ });
+      filler.push({ role: "assistant", text: `ok ${turn}`, timestamp: time++ });
+    }
+    const currentTime = time + 1_000;
+    filler.push({ role: "user", text: "NEWEST", timestamp: currentTime });
+    filler.push({
+      role: "assistant",
+      text: "REPLACED-ANSWER",
+      timestamp: currentTime + 1,
+    });
+    await api.seedStoredConversationTurns(key, filler);
+    const paper = Zotero.Items.get(fixture.parentItemId);
+    const scope = api.registerScopedMcpScope({
+      conversationKey: key,
+      libraryID: paper.libraryID,
+      kind: "paper",
+      runId: `current-chat-read-long:${Date.now()}`,
+      runtimeAuthority: "claude",
+      sourceMessageTimestamp: currentTime,
+    });
+    try {
+      const chat = `upstream:${key}`;
+      const read = await callPastChatRead(scope.token, { chat, message: 1 });
+      assert.isTrue(read.ok, JSON.stringify(read).slice(0, 500));
+      assert.equal(read.totalMessages, 462);
+      const text = (read.messages as Array<{ text: string }>)
+        .map((entry) => entry.text)
+        .join("\n");
+      assert.include(text, "OLDEST-QUESTION");
+      assert.include(text, "OLDEST-ANSWER");
+      const search = await callPastChatRead(scope.token, {
+        chat,
+        query: "OLDEST-ANSWER",
+      });
+      assert.equal(search.totalMatches, 1, JSON.stringify(search));
+    } finally {
+      api.clearScopedMcpScope(scope.token);
+    }
+  });
 });
