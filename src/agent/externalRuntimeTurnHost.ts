@@ -241,6 +241,11 @@ export function buildMcpToolActivityEvent(
 /** What the host hands a transport while it prepares the turn. */
 export type ExternalTurnPrepareContext = {
   request: AgentRuntimeRequest;
+  /**
+   * Whether this turn gives the runtime the Zotero tools (past_chat_read
+   * among them); decided once, before the prompt is built.
+   */
+  offersZoteroTools: boolean;
   /** Records and delivers a profiling stage before the run exists. */
   recordProfiling(stage: string): Promise<void>;
   writeAllowed(): boolean;
@@ -421,8 +426,11 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
       await notifyIfLive(makeProfilingEvent(stage));
     };
     await recordProfiling("frontend.run_turn.enter");
+    const offersZoteroTools =
+      Boolean(transport.zoteroMcp) && isNativeZoteroMcpToolsEnabled();
     const prepared = await transport.prepare({
       request: params.request,
+      offersZoteroTools,
       recordProfiling,
       writeAllowed,
     });
@@ -483,7 +491,7 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
     let scopedMcpToken = "";
     const hostReceipts: AgentActionReceipt[] = [];
     try {
-      if (transport.zoteroMcp && isNativeZoteroMcpToolsEnabled()) {
+      if (transport.zoteroMcp && offersZoteroTools) {
         const mcp = transport.zoteroMcp;
         const rawPdfMode = requestLocalDocuments(params.request).length > 0;
         const profileSignature = mcp.profileSignature();

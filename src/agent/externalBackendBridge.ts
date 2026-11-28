@@ -1650,6 +1650,8 @@ async function buildBridgeRuntimeRequest(
   request: AgentRuntimeRequest,
   /** The prompt's turn blocks (renderExternalRuntimePrompt). */
   turnContext: string,
+  /** The turn has the Zotero tools (past_chat_read among them). */
+  offersZoteroTools: boolean,
 ): Promise<BridgeRuntimeRequest> {
   const joinPath = (base: string, segment: string): string => {
     if (!base) return segment;
@@ -1831,7 +1833,9 @@ async function buildBridgeRuntimeRequest(
           : undefined,
     }));
 
-  const history = selectRuntimeHistory(request);
+  const history = selectRuntimeHistory(request, {
+    pastChatReadAvailable: offersZoteroTools,
+  });
   const screenshots = Array.isArray(request.screenshots)
     ? request.screenshots.filter(
         (entry): entry is string =>
@@ -2404,7 +2408,12 @@ export function createExternalBackendBridgeRuntime(options: {
         metadata: { ...requestMetadata, forceFreshSession: true },
       };
     },
-    prepare: async ({ request, recordProfiling, writeAllowed }) => {
+    prepare: async ({
+      request,
+      offersZoteroTools,
+      recordProfiling,
+      writeAllowed,
+    }) => {
       const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
       if (!bridgeUrl) {
         throw new Error(
@@ -2423,6 +2432,7 @@ export function createExternalBackendBridgeRuntime(options: {
       const runtimeRequest = await buildBridgeRuntimeRequest(
         request,
         runtimePrompt.turn,
+        offersZoteroTools,
       );
       await recordProfiling("frontend.bridge_runtime_request.ready");
       const scope = resolveBridgeScope(request);

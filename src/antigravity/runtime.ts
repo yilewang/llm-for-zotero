@@ -697,7 +697,9 @@ export function createAntigravityTransport(
     // to fit the model (A7 in the runtime parity plan).
     const historyTranscript = session.isNew
       ? renderRuntimeHistoryTranscript(
-          selectRuntimeHistory(request),
+          selectRuntimeHistory(request, {
+            pastChatReadAvailable: Boolean(ctx.zoteroMcp),
+          }),
           "this Antigravity session starts without it",
         )
       : "";

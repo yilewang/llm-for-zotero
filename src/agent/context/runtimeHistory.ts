@@ -26,7 +26,10 @@ export type RuntimeHistory = {
   entries: RuntimeHistoryEntry[];
   /** Earlier messages left out because they did not fit the budget. */
   omitted: number;
-  /** With `omitted`: this chat's id, which past_chat_read opens. */
+  /**
+   * With `omitted`, when the turn has past_chat_read: this chat's id, which
+   * that tool opens.
+   */
   chatId?: string;
 };
 
@@ -62,9 +65,14 @@ function historyBudgetTokens(request: AgentRuntimeRequest): number | undefined {
   }
 }
 
-/** The turn's history that fits the model's budget, newest kept first. */
+/**
+ * The turn's history that fits the model's budget, newest kept first.
+ * `pastChatReadAvailable`: the turn has the Zotero tools, so the note on
+ * omitted messages may point to past_chat_read.
+ */
 export function selectRuntimeHistory(
   request: AgentRuntimeRequest,
+  options: { pastChatReadAvailable: boolean },
 ): RuntimeHistory {
   const all = (Array.isArray(request.history) ? request.history : [])
     .map((message) => ({
@@ -86,9 +94,10 @@ export function selectRuntimeHistory(
     used += cost;
     start -= 1;
   }
-  const classified = start
-    ? classifyConversationKey(request.conversationKey)
-    : null;
+  const classified =
+    start && options.pastChatReadAvailable
+      ? classifyConversationKey(request.conversationKey)
+      : null;
   return {
     entries: all.slice(start),
     omitted: start,
