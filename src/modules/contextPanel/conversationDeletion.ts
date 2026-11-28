@@ -885,7 +885,7 @@ export async function processPendingConversationCleanupJobs(
     })
   ).filter(
     (job) =>
-      !deps.onlyConversationKey ||
+      deps.onlyConversationKey === undefined ||
       job.conversationKey === deps.onlyConversationKey,
   );
   if (!jobs.length) return;

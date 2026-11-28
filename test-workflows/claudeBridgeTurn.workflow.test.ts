@@ -518,4 +518,43 @@ describe("workflow: Claude Code turn host", function () {
       "no hint for the session on its way out",
     );
   });
+  it("starts fresh and does not keep warm while the chat's session waits to be dropped", async function () {
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude pending drop fresh-start fixture",
+      pages: ["A disposable paper for a pending session drop."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const run = `claude-run-${Date.now()}`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(run), completed(run, "417")],
+          // A turn deletion's drop the bridge never confirmed.
+          plantPendingDrop: true,
+          retainAfterRetries: true,
+          followUps: [
+            {
+              question: "What did you pick?",
+              steps: [start(`${run}-f`), completed(`${run}-f`, "?")],
+            },
+          ],
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    // The bridge would warm or resume its own mapping of that session.
+    assert.isFalse(result.retainReachedBridge, "no keep-warm for it");
+    const [next] = result.followUps;
+    assert.isNotEmpty(result.plantedSession || "");
+    assert.isNotNull(next.payload, JSON.stringify(result.followUps));
+    // Whether the drop finished first or the turn started fresh, the next
+    // message never resumes the session that was being dropped.
+    assert.notEqual(
+      next.resumed,
+      result.plantedSession,
+      JSON.stringify(result.followUps),
+    );
+  });
 });

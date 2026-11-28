@@ -578,6 +578,11 @@ export class CodexAppServerProcess {
     return this.connection.onActivity(handler);
   }
 
+  /** Whether the app-server connection has closed. */
+  isClosed(): boolean {
+    return this.connection.isClosed();
+  }
+
   onClose(handler: (reason?: string) => void): () => void {
     return this.connection.onClose(handler);
   }
@@ -1521,6 +1526,7 @@ export function waitForCodexAppServerTurnCompletion(params: {
         // answers, so it keeps its own hold for the decision below.
         const releaseHold = proc.holdActiveTurn();
         const releaseCaller = params.holdWhileInterrupting?.();
+        let interruptFailed = false;
         void proc
           .sendRequest(
             "turn/interrupt",
@@ -1538,10 +1544,18 @@ export function waitForCodexAppServerTurnCompletion(params: {
               ),
             );
             retireProcess();
+            interruptFailed = true;
           })
           .finally(() => {
             releaseHold();
-            releaseCaller?.();
+            // A failed interrupt is no proof the turn stopped: the retired
+            // process may still run it for a sibling's sake. The caller's
+            // hold lasts until that process has closed.
+            if (interruptFailed && !proc.isClosed()) {
+              proc.onClose(() => releaseCaller?.());
+            } else {
+              releaseCaller?.();
+            }
           });
       } else {
         retireProcess();

@@ -1,4 +1,3 @@
-import { createAbortController } from "../utils/apiHelpers";
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
 import {
@@ -453,6 +452,29 @@ function isBridgeDebugEnabled(): boolean {
   return false;
 }
 
+/**
+ * Whether the bridge may still hold the chat's current session though its
+ * drop is pending (a reset or a deleted turn whose bridge reply was lost).
+ * The bridge resumes its own mapping without a hint, so a turn must start
+ * fresh and keep-warm must not run then. Fails closed.
+ */
+async function isClaudeSessionDropPending(
+  conversationKey: number,
+): Promise<boolean> {
+  try {
+    const summary = await getClaudeConversationSummary(conversationKey);
+    const providerSessionId = summary?.providerSessionId?.trim();
+    if (!providerSessionId) return false;
+    return await hasPendingSessionCleanupJob({
+      conversationKey,
+      operation: "claude_invalidate",
+      providerSessionId,
+    });
+  } catch {
+    return true;
+  }
+}
+
 async function resolveClaudeProviderSessionHint(
   conversationKey: number,
   scope?: BridgeScope,
@@ -788,23 +810,6 @@ function normalizeBaseUrl(url: string): string {
   return trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
 }
 
-/**
- * Deadline of a bridge request made under the conversation's write lock (the
- * end-of-turn session report, a keep-warm retain): a stalled bridge must not
- * hold the chat's lock, and with it its saves, Clear and sends. A request
- * that times out reports no session, or no retain, which is safe.
- */
-const BRIDGE_LOCKED_REQUEST_TIMEOUT_MS = 10_000;
-
-/** A signal that aborts after BRIDGE_LOCKED_REQUEST_TIMEOUT_MS. */
-function lockedRequestDeadline(): AbortSignal {
-  // The plugin's own controller: AbortSignal.timeout is not available in
-  // every Zotero context.
-  const controller = createAbortController();
-  setTimeout(() => controller.abort(), BRIDGE_LOCKED_REQUEST_TIMEOUT_MS);
-  return controller.signal;
-}
-
 async function updateExternalRuntimeRetention(params: {
   baseUrl: string;
   conversationKey: number;
@@ -820,7 +825,6 @@ async function updateExternalRuntimeRetention(params: {
   if (isManagedClaudeBridgeIdle(normalized)) return null;
   const response = await claudeBridgeFetch(`${normalized}/runtime-retention`, {
     method: "POST",
-    signal: lockedRequestDeadline(),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       conversationKey: params.conversationKey,
@@ -2178,7 +2182,6 @@ export async function fetchExternalBridgeSessionInfo(params: {
       const response = await claudeBridgeFetch(url, {
         method: "GET",
         headers: { Accept: "application/json" },
-        signal: lockedRequestDeadline(),
       });
       if (!response.ok) {
         if (response.status === 400 || response.status === 404) {
@@ -2418,6 +2421,7 @@ export function createExternalBackendBridgeRuntime(options: {
       if (request.conversationKey <= 0) return request;
       try {
         if (
+          !(await isClaudeSessionDropPending(request.conversationKey)) &&
           !(await hasPendingEmptyClaudeCleanupJob({
             conversationKey: request.conversationKey,
             ...(conversationInstanceID
@@ -2933,8 +2937,12 @@ export function createExternalBackendBridgeRuntime(options: {
       if (!bridgeUrl) {
         return null;
       }
-      const send = async () =>
-        updateExternalRuntimeRetention({
+      const send = async () => {
+        // A session on its way out is not kept warm; the bridge would warm
+        // its own mapping of it even without a hint.
+        if (retain && (await isClaudeSessionDropPending(conversationKey)))
+          return null;
+        return updateExternalRuntimeRetention({
           baseUrl: bridgeUrl,
           conversationKey,
           scope,
@@ -2947,6 +2955,7 @@ export function createExternalBackendBridgeRuntime(options: {
               ? await resolveClaudeProviderSessionHint(conversationKey, scope)
               : undefined),
         });
+      };
       // A retain can map the chat's session at the bridge again. Under the
       // conversation's lock it serializes with a reset: a reset after it
       // drops what it mapped, and a retain after a reset finds no session.

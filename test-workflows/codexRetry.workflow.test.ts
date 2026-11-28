@@ -477,7 +477,18 @@ describe("workflow: Codex retry", function () {
     for (let i = 0; i < 100 && server.turnStarts().length < 2; i += 1)
       await Zotero.Promise.delay(50);
     panelBody(panelId).querySelector<HTMLButtonElement>("#llm-cancel")?.click();
-    await Zotero.Promise.delay(500);
+    // The stop reached codex as an interrupt, which it has not answered yet.
+    for (
+      let i = 0;
+      i < 100 &&
+      !server.requests().some((request) => request.method === "turn/interrupt");
+      i += 1
+    )
+      await Zotero.Promise.delay(20);
+    assert.isTrue(
+      server.requests().some((request) => request.method === "turn/interrupt"),
+      "the stop sent an interrupt",
+    );
     // Codex has not stopped on the thread yet.
     const whileInterrupting =
       await api.resetPanelRuntimeSessionForTests(panelId);

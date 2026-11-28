@@ -30,7 +30,10 @@ import {
 } from "../../claudeCode/runtime";
 import { getClaudeConversationSummary } from "../../claudeCode/store";
 import { buildScopedConversationKey } from "../../shared/conversationScopedKey";
-import { CONVERSATION_CLEANUP_JOBS_TABLE } from "../../core/conversations/conversationCleanupJobs";
+import {
+  CONVERSATION_CLEANUP_JOBS_TABLE,
+  enqueueConversationCleanupJob,
+} from "../../core/conversations/conversationCleanupJobs";
 import { getCoreAgentRuntime } from "../../agent";
 import {
   bindClaudeBridgeConversationSystem,
@@ -95,6 +98,11 @@ export type ExternalTurnScenario = {
    * the bridge while a Retry/Edit reset runs, then let through.
    */
   retainDuringReset?: boolean;
+  /**
+   * After the retries, a pending drop of the chat's current session is
+   * stored, as a turn deletion whose bridge reply was lost leaves one.
+   */
+  plantPendingDrop?: boolean;
   /** After the retries, a "keep warm" retain of the chat; records its hint. */
   retainAfterRetries?: boolean;
   /** After the retries, the user sends these next messages, in order. */
@@ -161,6 +169,8 @@ export type ExternalTurnResult = {
   followUps: Array<{
     invalidateCalls: number;
     status: string;
+    /** The session the bridge resumed for it (null: a fresh one). */
+    resumed: string | null;
     payload: ExternalTurnResult["retryTurnPayload"];
   }>;
   /**
@@ -169,6 +179,10 @@ export type ExternalTurnResult = {
    */
   /** With `retainAfterRetries`: the session hint the retain sent ("" none). */
   retainHint?: string;
+  /** With `plantPendingDrop`: the session whose drop was planted. */
+  plantedSession?: string;
+  /** With `retainAfterRetries`: whether its retain reached the bridge. */
+  retainReachedBridge?: boolean;
   retainRace?: {
     resetOk: boolean;
     bridgeMapping: string | null;
@@ -203,6 +217,8 @@ type ScriptState = {
   retentionRequests: number;
   /** The session hint of the latest retain ("" for none). */
   lastRetainHint: string;
+  /** The session the latest `/run-turn` resumed (null: a fresh one). */
+  lastResumed: string | null;
 
   payload: Record<string, unknown> | null;
   localDocumentPaths: string[][];
@@ -406,6 +422,9 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
       state.runTurnCalls += 1;
       state.payload = body;
       const runMetadata = (body.metadata || {}) as Record<string, unknown>;
+      // What the bridge resumes: its mapping, unless told to start fresh.
+      state.lastResumed =
+        runMetadata.forceFreshSession === true ? null : state.bridgeMapping;
       if (runMetadata.forceFreshSession === true) state.sessionGeneration += 1;
       state.bridgeMapping = fakeSessionId(
         state,
@@ -504,7 +523,11 @@ export async function exerciseClaudeBridgeTurn(
   scenario: ExternalTurnScenario,
 ): Promise<ExternalTurnResult> {
   const { body, item } = panel;
-  if (scenario.retry || scenario.retainDuringReset) {
+  if (
+    scenario.retry ||
+    scenario.retainDuringReset ||
+    scenario.plantPendingDrop
+  ) {
     // A retry resets the chat's Claude Code session, which needs the chat's
     // Claude Code record, as a real Claude Code chat has.
     const created = await createClaudePaperConversation(
@@ -531,6 +554,7 @@ export async function exerciseClaudeBridgeTurn(
     retainGate: null,
     retentionRequests: 0,
     lastRetainHint: "",
+    lastResumed: null,
 
     localDocumentPaths: [],
     payload: null,
@@ -715,8 +739,33 @@ export async function exerciseClaudeBridgeTurn(
       });
       state.invalidateFails = false;
     }
+    if (scenario.plantPendingDrop) {
+      const summary = await getClaudeConversationSummary(key);
+      await enqueueConversationCleanupJob({
+        operation: "claude_invalidate",
+        system: "claude_code",
+        conversationKey: key,
+        instanceID: summary?.instanceID,
+        conversationKind: "paper",
+        libraryID: item.libraryID,
+        paperItemID: item.id,
+        providerScope: buildClaudeScope({
+          libraryID: item.libraryID,
+          kind: "paper",
+          paperItemID: item.id,
+        }),
+        providerSessionId: String(summary?.providerSessionId || ""),
+      });
+    }
+    const plantedSession = scenario.plantPendingDrop
+      ? String(
+          (await getClaudeConversationSummary(key))?.providerSessionId || "",
+        )
+      : "";
     let retainHint: string | undefined;
+    let retainReachedBridge: boolean | undefined;
     if (scenario.retainAfterRetries) {
+      const retainsBefore = state.retentionRequests;
       await updateClaudeRuntimeRetention(getCoreAgentRuntime(), {
         conversationKey: key,
         scope: buildClaudeScope({
@@ -728,6 +777,7 @@ export async function exerciseClaudeBridgeTurn(
         retain: true,
       }).catch(() => false);
       retainHint = state.lastRetainHint;
+      retainReachedBridge = state.retentionRequests > retainsBefore;
     }
     const followUps: ExternalTurnResult["followUps"] = [];
     for (const followUp of scenario.followUps || []) {
@@ -745,6 +795,7 @@ export async function exerciseClaudeBridgeTurn(
       if (!ready) {
         followUps.push({
           invalidateCalls: state.invalidateSessionCalls - invalidatedBefore,
+          resumed: null,
           status: PENDING_RESET_REFUSAL,
           payload: null,
         });
@@ -761,6 +812,7 @@ export async function exerciseClaudeBridgeTurn(
       const metadata = (sent?.metadata || {}) as Record<string, unknown>;
       followUps.push({
         invalidateCalls: state.invalidateSessionCalls - invalidatedBefore,
+        resumed: sent ? state.lastResumed : null,
         status: body.querySelector("#llm-status")?.textContent?.trim() || "",
         payload: sent
           ? {
@@ -827,6 +879,8 @@ export async function exerciseClaudeBridgeTurn(
       followUps,
       ...(retainRace ? { retainRace } : {}),
       ...(retainHint !== undefined ? { retainHint } : {}),
+      ...(scenario.plantPendingDrop ? { plantedSession } : {}),
+      ...(retainReachedBridge !== undefined ? { retainReachedBridge } : {}),
       runtimeCalls,
       localDocumentPaths: state.localDocumentPaths,
     };
@@ -835,7 +889,11 @@ export async function exerciseClaudeBridgeTurn(
     // A failed reset leaves a cleanup job for the chat this fixture made;
     // the background worker would send it to the real bridge once the fake
     // is gone. A chat the fixture did not make keeps its jobs.
-    if (scenario.retry || scenario.retainDuringReset) {
+    if (
+      scenario.retry ||
+      scenario.retainDuringReset ||
+      scenario.plantPendingDrop
+    ) {
       await Zotero.DB.queryAsync(
         `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE} WHERE conversation_key = ?`,
         [key],

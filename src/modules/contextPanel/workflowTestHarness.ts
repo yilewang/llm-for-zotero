@@ -12625,6 +12625,8 @@ export function installWorkflowTestHarness(targetAddon: {
     },
     runCleanupJobsNowForTests: async (conversationKey) => {
       assertWorkflowTestEnabled();
+      if (!(Number.isInteger(conversationKey) && conversationKey > 0))
+        throw new Error("runCleanupJobsNowForTests needs a conversation key");
       const [
         { CONVERSATION_CLEANUP_JOBS_TABLE },
         { processPendingConversationCleanupJobs },
