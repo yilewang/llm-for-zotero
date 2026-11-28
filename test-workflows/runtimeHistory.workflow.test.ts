@@ -42,6 +42,7 @@ describe("workflow: fresh-session runtime history", function () {
     const request = {
       conversationKey: 4427700500000001,
       model: "claude-sonnet-4-5",
+      metadata: { sourceMessageTimestamp: 1_700_000_000_000 },
       history: [
         { role: "user", content: "pasted ".repeat(400_000) },
         { role: "assistant", content: "Noted." },
@@ -62,5 +63,15 @@ describe("workflow: fresh-session runtime history", function () {
     const note = renderRuntimeHistoryTranscript(withoutTools, "a test");
     assert.include(note, "(1 earlier message did not fit and are not shown.)");
     assert.notInclude(note, "past_chat_read");
+    // Without the turn's time past_chat_read cannot open this chat.
+    const untimed = selectRuntimeHistory(
+      { ...request, metadata: {} } as AgentRuntimeRequest,
+      { pastChatReadAvailable: true },
+    );
+    assert.equal(untimed.omitted, 1);
+    assert.notInclude(
+      renderRuntimeHistoryTranscript(untimed, "a test"),
+      "past_chat_read",
+    );
   });
 });

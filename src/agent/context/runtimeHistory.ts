@@ -67,8 +67,10 @@ function historyBudgetTokens(request: AgentRuntimeRequest): number | undefined {
 
 /**
  * The turn's history that fits the model's budget, newest kept first.
- * `pastChatReadAvailable`: the turn has the Zotero tools, so the note on
- * omitted messages may point to past_chat_read.
+ * `pastChatReadAvailable`: the turn has the Zotero tools. The note on
+ * omitted messages points to past_chat_read only then, and only when the
+ * turn carries its message time, which past_chat_read needs to open this
+ * conversation (metadata.sourceMessageTimestamp).
  */
 export function selectRuntimeHistory(
   request: AgentRuntimeRequest,
@@ -94,10 +96,11 @@ export function selectRuntimeHistory(
     used += cost;
     start -= 1;
   }
+  const readable =
+    options.pastChatReadAvailable &&
+    Number(request.metadata?.sourceMessageTimestamp) > 0;
   const classified =
-    start && options.pastChatReadAvailable
-      ? classifyConversationKey(request.conversationKey)
-      : null;
+    start && readable ? classifyConversationKey(request.conversationKey) : null;
   return {
     entries: all.slice(start),
     omitted: start,
