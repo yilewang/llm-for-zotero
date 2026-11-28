@@ -421,4 +421,51 @@ describe("workflow: Codex retry", function () {
       "the library chat's draft stays",
     );
   });
+  it("does not reset the chat's thread while a turn on it is still running", async function () {
+    const server = createFakeCodexAppServer({ answers: ["FIRST", "SECOND"] });
+    const panelId = await openCodexPanel(server, ["A page for the panel."]);
+    await sendTurn(panelId, "Hello.", TIMEOUT_MS);
+    server.setHoldTurns(true);
+    const running = sendTurn(panelId, "Take your time.", TIMEOUT_MS).catch(
+      () => null,
+    );
+    for (let i = 0; i < 100 && server.turnStarts().length < 2; i += 1)
+      await Zotero.Promise.delay(50);
+    const archivesBefore = server
+      .requests()
+      .filter((request) => request.method === "thread/archive").length;
+    const whileRunning = await api.resetPanelRuntimeSessionForTests(panelId);
+    const archivesWhileRunning = server
+      .requests()
+      .filter((request) => request.method === "thread/archive").length;
+    server.releaseTurns();
+    server.setHoldTurns(false);
+    await running;
+    assert.isFalse(whileRunning, "the reset waits for the turn");
+    assert.equal(archivesWhileRunning, archivesBefore, "nothing archived");
+    assert.isTrue(
+      await api.resetPanelRuntimeSessionForTests(panelId),
+      "once the turn settled the reset runs",
+    );
+  });
+  it("forgets a thread that could not be resumed when no replacement could start", async function () {
+    const server = createFakeCodexAppServer({ answers: ["FIRST", "THIRD"] });
+    const panelId = await openCodexPanel(server, ["A page for the panel."]);
+    await sendTurn(panelId, "Hello.", TIMEOUT_MS);
+    const thread = String(server.turnStarts()[0]?.params.threadId || "");
+    // The scripted server cannot resume a thread; now it cannot start one.
+    server.failThreadStarts(1);
+    await sendTurn(panelId, "Second.", TIMEOUT_MS).catch(() => null);
+    const requestsBefore = server.requests().length;
+    await sendTurn(panelId, "Third.", TIMEOUT_MS);
+    const after = server.requests().slice(requestsBefore);
+    assert.isFalse(
+      after.some(
+        (request) =>
+          request.method === "thread/resume" &&
+          request.params.threadId === thread,
+      ),
+      `the abandoned thread is not resumed again\n${describeRequests(after)}`,
+    );
+  });
 });

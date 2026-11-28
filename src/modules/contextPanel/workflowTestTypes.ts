@@ -1832,6 +1832,12 @@ export type WorkflowTestApi = {
     fullTextBudgetTokens: number;
   }) => Promise<{ section: string; tokens: number }>;
   /**
+   * Resets the runtime session of the panel's chat as a Retry or Edit does
+   * (runtimeSessionReset.detachRuntimeSessionForResend); resolves with
+   * whether it could.
+   */
+  resetPanelRuntimeSessionForTests: (panelId: string) => Promise<boolean>;
+  /**
    * Removes the provider cleanup jobs of these conversations, so one a test
    * left (a failed scripted archive) is never retried against a real
    * runtime later. Other conversations' jobs stay.

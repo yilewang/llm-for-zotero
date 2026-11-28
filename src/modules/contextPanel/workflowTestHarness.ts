@@ -12588,6 +12588,29 @@ export function installWorkflowTestHarness(targetAddon: {
     sendLiveChatTurn,
     startPanelChatSend,
     retryLatestPanelResponse,
+    resetPanelRuntimeSessionForTests: async (panelId) => {
+      assertWorkflowTestEnabled();
+      const panel = getPanel(panelId);
+      const item = activeContextPanels.get(panel.body)?.() || panel.item;
+      const conversationKey = getConversationKey(item);
+      const main = panel.body.querySelector("#llm-main") as HTMLElement | null;
+      const system = (main?.dataset.conversationSystem ||
+        "upstream") as import("../../core/conversations/conversationSystems").ConversationSystem;
+      const [
+        { detachRuntimeSessionForResend },
+        { resolveDisplayConversationKind },
+      ] = await Promise.all([
+        import("./runtimeSessionReset"),
+        import("./portalScope"),
+      ]);
+      return detachRuntimeSessionForResend({
+        conversationKey,
+        conversationGeneration: getConversationWriteGeneration(conversationKey),
+        storageSystem: system,
+        kind:
+          resolveDisplayConversationKind(item) === "paper" ? "paper" : "global",
+      });
+    },
     clearCleanupJobsForTests: async (conversationKeys) => {
       assertWorkflowTestEnabled();
       const keys = conversationKeys.filter((key) => key > 0);

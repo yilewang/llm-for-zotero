@@ -614,12 +614,13 @@ export async function deleteCodexConversationLocalRows(
 }
 
 /**
- * After a Codex thread was archived (a reset, or the cleanup worker finishing
- * one), the chat forgets it if it still names that thread: its saved thread
- * id, and what the thread had already read (the native read ledger). A chat
- * that moved on to another thread keeps it.
+ * The chat forgets a Codex thread it is done with (archived by a reset or
+ * the cleanup worker, or abandoned by a recovery that could not replace it),
+ * if it still names that thread: its saved thread id, and what the thread
+ * had already read (the native read ledger). A chat that moved on to another
+ * thread keeps it. The caller holds the conversation's write lock.
  */
-export async function forgetArchivedCodexThread(params: {
+export async function forgetCodexThread(params: {
   conversationKey: number;
   threadId: string;
   instanceID?: string;

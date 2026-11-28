@@ -1,4 +1,4 @@
-import { forgetArchivedCodexThread } from "../../codexAppServer/store";
+import { forgetCodexThread } from "../../codexAppServer/store";
 import type { ConversationSystem } from "../../shared/types";
 import {
   isRuntimeConversationSystem,
@@ -905,7 +905,7 @@ export async function processPendingConversationCleanupJobs(
             // thread whose replacement may not be saved yet; the chat's
             // record is the recovery's to change.
             if (job.purpose === "resend_reset") {
-              await forgetArchivedCodexThread({
+              await forgetCodexThread({
                 conversationKey: job.conversationKey,
                 threadId: job.providerSessionId,
                 instanceID: job.instanceID || undefined,

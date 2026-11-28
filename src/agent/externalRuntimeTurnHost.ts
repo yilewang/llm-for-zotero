@@ -21,6 +21,7 @@
  * that runs the turn.
  */
 
+import { beginRuntimeTurn } from "./runtimeTurnsInFlight";
 import { appLogger } from "../core/logging";
 import { resolveAgentRuntimeRequest } from "./context/resolvedAgentRequest";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
@@ -317,6 +318,22 @@ export type ExternalRuntimeTransport<TPrepared, TServers> = {
 };
 
 export async function runExternalRuntimeTurn<TPrepared, TServers>(
+  rawParams: ExternalRunTurnParams,
+  options: {
+    coreRuntime: AgentRuntime;
+    transport: ExternalRuntimeTransport<TPrepared, TServers>;
+  },
+): Promise<AgentRuntimeOutcome> {
+  // In flight until it settles, so the chat's session is not reset under it.
+  const settled = beginRuntimeTurn(rawParams.request.conversationKey);
+  try {
+    return await runRegisteredExternalRuntimeTurn(rawParams, options);
+  } finally {
+    settled();
+  }
+}
+
+async function runRegisteredExternalRuntimeTurn<TPrepared, TServers>(
   rawParams: ExternalRunTurnParams,
   options: {
     coreRuntime: AgentRuntime;

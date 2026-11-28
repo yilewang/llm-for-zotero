@@ -16,6 +16,7 @@
  * cannot turn the reset into an untracked provider leak.
  */
 
+import { isRuntimeTurnInFlight } from "../../agent/runtimeTurnsInFlight";
 import { conversationRepository } from "../../core/conversations/repository";
 import {
   enqueueConversationCleanupJob,
@@ -27,7 +28,7 @@ import {
   assertNeverConversationSystem,
   type ConversationSystem,
 } from "../../core/conversations/conversationSystems";
-import { forgetArchivedCodexThread } from "../../codexAppServer/store";
+import { forgetCodexThread } from "../../codexAppServer/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
 import { isProviderNotFoundError } from "./conversationDeletion";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
@@ -70,7 +71,7 @@ async function attemptSessionCleanup(
         }
         // Inside the attempt: the job ends only once the chat forgot the
         // thread, so a failure here leaves it to retry.
-        await forgetArchivedCodexThread({
+        await forgetCodexThread({
           conversationKey,
           threadId: providerSessionId,
           instanceID,
@@ -176,6 +177,9 @@ export async function detachRuntimeSessionForResend(params: {
   kind: "paper" | "global";
 }): Promise<boolean> {
   const { conversationKey, conversationGeneration } = params;
+  // A turn still winding down (a Stop the runtime has not finished) would
+  // keep or write back the session being reset.
+  if (isRuntimeTurnInFlight(conversationKey)) return false;
   return withConversationWriteLock(conversationKey, async () => {
     if (
       areConversationWritesFrozen(conversationKey) ||
@@ -209,7 +213,7 @@ export async function detachRuntimeSessionForResend(params: {
 
 /** Shown when a send waits for a reset the runtime still cannot take. */
 export const PENDING_RESET_REFUSAL =
-  "Could not reset this chat's earlier session: the runtime did not answer. Try again when it is available.";
+  "Could not reset this chat's earlier session yet: the runtime is still finishing a turn or did not answer. Try again in a moment.";
 
 /**
  * Finishes a reset a Retry or Edit started on this conversation but could
@@ -234,6 +238,14 @@ export async function finishPendingRuntimeSessionResets(params: {
         : null;
   if (!operation) return true;
   return withConversationWriteLock(conversationKey, async () => {
+    if (isRuntimeTurnInFlight(conversationKey)) {
+      // Only a reset that is still pending has to wait for the turn.
+      const pending = await listPendingSessionCleanupJobs({
+        conversationKey,
+        operation,
+      });
+      if (pending.length) return false;
+    }
     const catalog = await conversationRepository.getCatalogEntry({
       system: storageSystem,
       conversationKey,
