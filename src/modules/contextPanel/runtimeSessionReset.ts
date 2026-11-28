@@ -116,6 +116,7 @@ async function detachRuntimeProviderSession(
         libraryID: catalog.libraryID,
         paperItemID: catalog.paperItemID,
         providerSessionId,
+        purpose: "resend_reset",
       });
       return job ? attemptSessionCleanup(job) : false;
     }
@@ -138,6 +139,7 @@ async function detachRuntimeProviderSession(
         paperItemID: catalog.paperItemID,
         providerScope: scope,
         providerSessionId,
+        purpose: "resend_reset",
       });
       return job ? attemptSessionCleanup(job) : false;
     }

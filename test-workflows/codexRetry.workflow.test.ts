@@ -71,6 +71,8 @@ describe("workflow: Codex retry", function () {
   });
 
   afterEach(async function () {
+    // Failed scripted archives leave jobs; never retry them against codex.
+    await api.clearCleanupJobsForTests();
     await api.useCodexAppServerChildForTests();
     await api.reset();
     if (fixture) await api.cleanupFixture(fixture);
@@ -340,5 +342,22 @@ describe("workflow: Codex retry", function () {
       after.some((request) => request.params.threadId === oldThread),
       `nothing asks for the archived thread again\n${log}`,
     );
+  });
+  it("does not hold a send for an ordinary archive of the chat's thread", async function () {
+    const server = createFakeCodexAppServer({ answers: ["FIRST", "SECOND"] });
+    const panelId = await openCodexPanel(server, ["A page for the panel."]);
+    await sendTurn(panelId, "Hello.", TIMEOUT_MS);
+    const key = Number((await api.getDiagnostics(panelId)).conversationKey);
+    const [firstStart] = server.turnStarts();
+    // A cleanup that is not a Retry or Edit reset (no purpose), naming the
+    // chat's own thread, while archives fail.
+    await api.enqueueSessionCleanupJobForTests({
+      system: "codex",
+      conversationKey: key,
+      providerSessionId: String(firstStart?.params.threadId || ""),
+    });
+    server.setArchiveFails(true);
+    const next = await sendTurn(panelId, "And now?", TIMEOUT_MS);
+    assert.include(next.text, "SECOND", "the send is not held for it");
   });
 });
