@@ -603,8 +603,12 @@ function formatPaperPathLines(entries: RuntimePaperPathEntry[]): string[] {
 function formatFallbackHistory(
   runtimeRequest: RuntimeRequestShape | undefined,
 ): string[] {
-  if (!runtimeRequest || !Array.isArray(runtimeRequest.history)) return [];
-  const entries = runtimeRequest.history
+  if (!runtimeRequest) return [];
+  // No list is no messages; the note on omitted ones can still go.
+  const history = Array.isArray(runtimeRequest.history)
+    ? runtimeRequest.history
+    : [];
+  const entries = history
     .map((entry) => {
       const record = asRecord(entry);
       if (!record) return null;

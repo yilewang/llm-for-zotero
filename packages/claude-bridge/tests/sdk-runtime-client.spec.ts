@@ -2227,20 +2227,22 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       runtimeClient: runtime,
       sessionMapper: new InMemorySessionMapper(),
     });
-    // The one earlier message was larger than the history budget.
-    await adapter.runTurn({
-      conversationKey: "conv-none-fit",
-      userMessage: "Summarize what I pasted.",
-      runtimeRequest: {
-        history: [],
-        historyOmitted: 1,
-        historyChatId: "claude_code:3000000000000044",
-      },
-    });
-
-    expect(String(prompts[0])).toContain(
-      '(1 earlier message did not fit and are not shown. Read them with past_chat_read({ chat: "claude_code:3000000000000044" })',
-    );
+    // The one earlier message was larger than the history budget; a
+    // sender may also leave the empty list out.
+    for (const [index, history] of [[], undefined].entries()) {
+      await adapter.runTurn({
+        conversationKey: `conv-none-fit-${index}`,
+        userMessage: "Summarize what I pasted.",
+        runtimeRequest: {
+          ...(history ? { history } : {}),
+          historyOmitted: 1,
+          historyChatId: "claude_code:3000000000000044",
+        },
+      });
+      expect(String(prompts[index])).toContain(
+        '(1 earlier message did not fit and are not shown. Read them with past_chat_read({ chat: "claude_code:3000000000000044" })',
+      );
+    }
   });
 
   it("preserves history-gap continuity across compact and skill commands", async () => {
