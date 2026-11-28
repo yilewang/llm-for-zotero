@@ -443,15 +443,18 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
 }
 
 /**
- * A pending Claude invalidation is a lifecycle barrier. Until the bridge has
- * dropped the session, a new turn on the conversation must force a fresh
- * provider session instead of resuming it: an empty-session job is a mapping
- * Clear could not drop inline, and a job naming a session is one a Retry or
- * Edit could not drop, which still holds the turns being replaced.
+ * A pending Claude invalidation is a lifecycle barrier: a new turn must force
+ * a fresh provider session instead of resuming the session it names. An
+ * empty-session job is a mapping Clear could not drop inline. A job naming a
+ * session is one a Retry or Edit could not drop, which still holds the turns
+ * being replaced; it bars only while that is still the chat's session
+ * (`currentSessionId`), so a replacement session started since is resumed.
  */
 export async function hasPendingClaudeCleanupJob(params: {
   conversationKey: number;
   instanceID?: string;
+  /** The session the chat would resume ("" or unset: none). */
+  currentSessionId?: string;
 }): Promise<boolean> {
   const db = getZoteroDb();
   const conversationKey = positiveIntOrZero(params.conversationKey);
@@ -460,6 +463,7 @@ export async function hasPendingClaudeCleanupJob(params: {
   try {
     await initConversationCleanupJobs();
     const instancePredicate = instanceID ? "AND instance_id = ?" : "";
+    const currentSessionId = String(params.currentSessionId || "").trim();
     const rows = (await queryCleanupDb(
       db,
       `SELECT 1
@@ -468,10 +472,15 @@ export async function hasPendingClaudeCleanupJob(params: {
          AND system = 'claude_code'
          AND conversation_key = ?
          ${instancePredicate}
+         AND (provider_session_id = ''${currentSessionId ? " OR provider_session_id = ?" : ""})
          AND (provider_cleanup_state = 'pending'
               OR provider_cleanup_state = 'attention_required')
        LIMIT 1`,
-      instanceID ? [conversationKey, instanceID] : [conversationKey],
+      [
+        conversationKey,
+        ...(instanceID ? [instanceID] : []),
+        ...(currentSessionId ? [currentSessionId] : []),
+      ],
     )) as unknown[] | undefined;
     return Boolean(rows?.length);
   } catch (error) {

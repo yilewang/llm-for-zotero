@@ -410,20 +410,34 @@ describe("workflow: Claude Code turn host", function () {
             steps: [start(`${firstRun}-r`), completed(`${firstRun}-r`, "1")],
             invalidateFails: true,
           },
-          // The user moves on with a new message instead of retrying.
-          followUp: {
-            question: "What number did you pick?",
-            steps: [start(`${firstRun}-f`), completed(`${firstRun}-f`, "?")],
-          },
+          // The user moves on with new messages instead of retrying, while
+          // the reset still waits to be retried.
+          followUps: [
+            {
+              question: "What number did you pick?",
+              steps: [
+                start(`${firstRun}-f1`),
+                completed(`${firstRun}-f1`, "?"),
+              ],
+            },
+            {
+              question: "And another one?",
+              steps: [
+                start(`${firstRun}-f2`),
+                completed(`${firstRun}-f2`, "5"),
+              ],
+            },
+          ],
         },
       })
       .finally(() => api.cleanupFixture(paper));
     assert.isNull(result.retries[0].payload, JSON.stringify(result.retries));
-    assert.isNotNull(result.followUpPayload, JSON.stringify(result));
+    const [first, second] = result.followUpPayloads;
+    const log = JSON.stringify(result.followUpPayloads);
     // The bridge still holds the session with the replaced answer.
-    assert.isTrue(
-      result.followUpPayload!.forceFreshSession,
-      JSON.stringify(result.followUpPayload),
-    );
+    assert.isTrue(first?.forceFreshSession, log);
+    // The next message continues the session that replaced it (the bridge
+    // resumes its own mapping of the chat, now that session).
+    assert.isFalse(second?.forceFreshSession, log);
   });
 });

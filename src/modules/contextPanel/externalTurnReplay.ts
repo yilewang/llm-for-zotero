@@ -19,6 +19,7 @@ import { buildAgentEngineDepsForTests, getConversationKey } from "./chat";
 import { bindProvisionedConversationKey } from "./conversationIdentity";
 import { createClaudePaperConversation } from "../../claudeCode/store";
 import { panelPaperPdfContext } from "./antigravityTurnReplay";
+import { CONVERSATION_CLEANUP_JOBS_TABLE } from "../../core/conversations/conversationCleanupJobs";
 import { getCoreAgentRuntime } from "../../agent";
 import {
   bindClaudeBridgeConversationSystem,
@@ -78,8 +79,8 @@ export type ExternalTurnScenario = {
    * panel's Retry does, against these bridge steps.
    */
   retry?: ExternalTurnRetry | ExternalTurnRetry[];
-  /** After the retries, the user sends this next message as a new turn. */
-  followUp?: { question: string; steps: FakeBridgeStep[] };
+  /** After the retries, the user sends these next messages, in order. */
+  followUps?: Array<{ question: string; steps: FakeBridgeStep[] }>;
   /**
    * Sends the panel paper's PDF file with the turn, as the paper chip's
    * "PDF file" source does.
@@ -133,12 +134,12 @@ export type ExternalTurnResult = {
       userText: string;
     } | null;
   }>;
-  /** What the follow-up's `/run-turn` asked of the bridge; null without one. */
-  followUpPayload: {
+  /** What each follow-up's `/run-turn` asked of the bridge (null: none). */
+  followUpPayloads: Array<{
     providerSessionId: string;
     forceFreshSession: boolean;
     userText: string;
-  } | null;
+  } | null>;
   /** What the last retry's `/run-turn` asked of the bridge; null without retry. */
   retryTurnPayload: {
     providerSessionId: string;
@@ -156,6 +157,11 @@ type ScriptState = {
   runTurnCalls: number;
   invalidateSessionCalls: number;
   invalidateFails: boolean;
+  /**
+   * Bumped when the fake drops the chat's session or starts a fresh one, so
+   * `/session-info` reports a new session id, as the real bridge does.
+   */
+  sessionGeneration: number;
   payload: Record<string, unknown> | null;
   localDocumentPaths: string[][];
   confirmationAnswers: Array<{ requestId: string; approved: boolean }>;
@@ -350,6 +356,8 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     if (path === "/run-turn") {
       state.runTurnCalls += 1;
       state.payload = body;
+      const runMetadata = (body.metadata || {}) as Record<string, unknown>;
+      if (runMetadata.forceFreshSession === true) state.sessionGeneration += 1;
       const runtimeRequest = (body.runtimeRequest || {}) as {
         localDocuments?: unknown;
       };
@@ -372,7 +380,9 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
         session: {
           originalConversationKey: conversationKey,
           scopedConversationKey: conversationKey,
-          providerSessionId: `fake-claude-session-${conversationKey}`,
+          providerSessionId: `fake-claude-session-${conversationKey}${
+            state.sessionGeneration ? `-${state.sessionGeneration}` : ""
+          }`,
           scopeType: query.get("scopeType") || undefined,
           scopeId: query.get("scopeId") || undefined,
           scopeLabel: query.get("scopeLabel") || undefined,
@@ -390,6 +400,7 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     if (path === "/invalidate-session") {
       state.invalidateSessionCalls += 1;
       if (state.invalidateFails) return jsonResponse(500, { error: "down" });
+      state.sessionGeneration += 1;
       return jsonResponse(200, { invalidated: true });
     }
     if (path === "/resolve-confirmation") {
@@ -440,6 +451,7 @@ export async function exerciseClaudeBridgeTurn(
     runTurnCalls: 0,
     invalidateSessionCalls: 0,
     invalidateFails: false,
+    sessionGeneration: 0,
     localDocumentPaths: [],
     payload: null,
     confirmationAnswers: [],
@@ -587,26 +599,28 @@ export async function exerciseClaudeBridgeTurn(
       });
       state.invalidateFails = false;
     }
-    let followUpPayload: ExternalTurnResult["followUpPayload"] = null;
-    if (scenario.followUp) {
+    const followUpPayloads: ExternalTurnResult["followUpPayloads"] = [];
+    for (const followUp of scenario.followUps || []) {
       const beforePayload = state.payload;
-      state.steps = scenario.followUp.steps;
+      state.steps = followUp.steps;
       setAbortController(key, createAbortController());
       await sendAgentTurn(
-        { body, item, question: scenario.followUp.question },
+        { body, item, question: followUp.question },
         deps,
       ).catch((error) => {
         threw ||= error instanceof Error ? error.message : String(error);
       });
       const sent = state.payload !== beforePayload ? state.payload : null;
       const metadata = (sent?.metadata || {}) as Record<string, unknown>;
-      followUpPayload = sent
-        ? {
-            providerSessionId: String(sent.providerSessionId ?? ""),
-            forceFreshSession: metadata.forceFreshSession === true,
-            userText: String(sent.userText ?? ""),
-          }
-        : null;
+      followUpPayloads.push(
+        sent
+          ? {
+              providerSessionId: String(sent.providerSessionId ?? ""),
+              forceFreshSession: metadata.forceFreshSession === true,
+              userText: String(sent.userText ?? ""),
+            }
+          : null,
+      );
     }
     const { token, headerNames } = scopeTokenFromPayload(state.payload);
     const scopeLiveAfterTurn = token
@@ -660,12 +674,18 @@ export async function exerciseClaudeBridgeTurn(
       },
       retryTurnPayload,
       retries,
-      followUpPayload,
+      followUpPayloads,
       runtimeCalls,
       localDocumentPaths: state.localDocumentPaths,
     };
   } finally {
     setAbortController(key, previousController);
+    // A failed reset leaves a cleanup job for this chat; the background
+    // worker would send it to the real bridge once the fake is gone.
+    await Zotero.DB.queryAsync(
+      `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE} WHERE conversation_key = ?`,
+      [key],
+    ).catch(() => undefined);
     restoreFetch();
     setNativeZoteroMcpToolsEnabled(mcpBefore);
     setPrefRaw("claudeCodeBridgeMode", prefsBefore.claudeCodeBridgeMode);

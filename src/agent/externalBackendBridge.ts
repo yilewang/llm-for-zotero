@@ -2387,6 +2387,12 @@ export function createExternalBackendBridgeRuntime(options: {
         if (
           !(await hasPendingClaudeCleanupJob({
             conversationKey: request.conversationKey,
+            currentSessionId:
+              (
+                await getClaudeConversationSummary(
+                  request.conversationKey,
+                ).catch(() => null)
+              )?.providerSessionId || "",
             ...(conversationInstanceID
               ? { instanceID: conversationInstanceID }
               : {}),
