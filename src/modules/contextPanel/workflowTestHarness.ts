@@ -12588,6 +12588,53 @@ export function installWorkflowTestHarness(targetAddon: {
     sendLiveChatTurn,
     startPanelChatSend,
     retryLatestPanelResponse,
+    renderPastChatSectionForTests: async ({
+      messages,
+      fullTextBudgetTokens,
+    }) => {
+      assertWorkflowTestEnabled();
+      const [
+        { loadPastConversation, renderPastChatSections },
+        { estimateTextTokens },
+      ] = await Promise.all([
+        import("../../services/pastConversations/pastConversationLoader"),
+        import("../../utils/modelInputCap"),
+      ]);
+      const at = 1_700_000_000_000;
+      const loaded = await loadPastConversation(
+        {
+          system: "upstream",
+          conversationKey: 1,
+          title: "Scripted past chat",
+          libraryID: Zotero.Libraries.userLibraryID,
+          kind: "global",
+        },
+        {
+          libraryID: Zotero.Libraries.userLibraryID,
+          source: {
+            getCatalogEntry: async () => ({
+              conversationID: "scripted-past-chat",
+              libraryID: Zotero.Libraries.userLibraryID,
+              kind: "global",
+              title: "Scripted past chat",
+              lastActivityAt: at,
+              createdAt: at,
+            }),
+            loadMessages: async () =>
+              messages.map((message, index) => ({
+                ...message,
+                timestamp: at + index,
+              })),
+            isPendingDeletion: () => false,
+          },
+        },
+      );
+      const [section] = renderPastChatSections([loaded], {
+        kind: "agent",
+        fullTextBudgetTokens,
+      });
+      return { section, tokens: estimateTextTokens(section) };
+    },
     passPanelSendsThrough: () => {
       assertWorkflowTestEnabled();
       setWorkflowTestSendInterceptor((opts) => {

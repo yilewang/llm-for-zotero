@@ -1823,6 +1823,15 @@ export type WorkflowTestApi = {
     >,
   ) => Promise<{ conversationKey: number; sendSettledSequenceBefore: number }>;
   /**
+   * Loads a scripted past chat of these messages through the real loader
+   * and renders its attached-chat section for the built-in agent with this
+   * full-text budget (pastConversationLoader.renderPastChatSections).
+   */
+  renderPastChatSectionForTests: (input: {
+    messages: Array<{ role: "user" | "assistant"; text: string }>;
+    fullTextBudgetTokens: number;
+  }) => Promise<{ section: string; tokens: number }>;
+  /**
    * Lets every panel Send continue into the real `sendQuestion` until the
    * next `reset`, which captures sends again. For tests that drive the
    * panel's own buttons against a real or scripted runtime.

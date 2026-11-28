@@ -342,11 +342,17 @@ export function cleanPastConversationMessages(
   return out;
 }
 
+/**
+ * The tokens of the chat's full-text section as formatPastConversationFull
+ * renders it: the header, and each message with its number and role label.
+ * The choice between full text and an outline is made on this size; the
+ * message texts alone undercount a chat of many short messages.
+ */
 export function estimatePastConversationTokens(
-  messages: readonly PastConversationMessage[],
+  chat: Omit<LoadedPastConversation, "tokenEstimate">,
 ): number {
   return estimateTextTokens(
-    messages.map((message) => message.text).join("\n\n"),
+    formatPastConversationFull({ ...chat, tokenEstimate: 0 }),
   );
 }
 

@@ -229,8 +229,8 @@ export async function loadPastConversation(
             ? collapseWhitespace(source.resolvePaperTitle(paperItemID) || "")
             : "") || "Paper chat"
         : "Library chat";
-    return {
-      status: "ok",
+    const chat = {
+      status: "ok" as const,
       ref,
       id,
       title,
@@ -238,7 +238,10 @@ export async function loadPastConversation(
       date: isoDate(entry.lastActivityAt || entry.createdAt || 0),
       paperLabel,
       messages,
-      tokenEstimate: estimatePastConversationTokens(messages),
+    };
+    return {
+      ...chat,
+      tokenEstimate: estimatePastConversationTokens(chat),
     };
   } catch {
     return unavailable("error");
