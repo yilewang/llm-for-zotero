@@ -38,6 +38,7 @@ import {
   type PastConversationSearchFilters,
 } from "./pastConversationSearch";
 import { collapseWhitespace } from "../../core/values";
+import { getConversationWriteGeneration } from "../../shared/conversationWriteFence";
 import type { StoredMessageText } from "../../shared/conversationMessageSql";
 
 /** The catalog facts a past chat is checked against. */
@@ -206,12 +207,16 @@ async function readPastChatMessages(
     );
   const cache = options.turnCache;
   if (!cache) return read();
+  // The write generation moves when the chat is cleared or loses turns, so
+  // a cached copy never outlives a destructive change; new messages do not
+  // move it, and paging stays on the copy the turn first read.
   const key = [
     "past-chat-messages",
     ref.system,
     ref.conversationKey,
     ref.conversationID || "",
     options.beforeTimestamp ?? "all",
+    getConversationWriteGeneration(ref.conversationKey),
   ].join(":");
   const cached = cache.get(key) as
     | Promise<PastConversationMessage[]>

@@ -252,4 +252,77 @@ describe("workflow: past_chat_read on the current conversation", function () {
       api.clearScopedMcpScope(next.token);
     }
   });
+  it("reads an attached chat again in the turn once it was changed destructively", async function () {
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Turn cache main fixture",
+      pages: ["A disposable paper."],
+    });
+    const pastPaper = await api.createPaperWithPdfFixture({
+      title: "Turn cache past chat fixture",
+      pages: ["Another disposable paper."],
+    });
+    try {
+      const main = await api.renderPanelForItem(fixture.parentItemId);
+      const mainTurn = await api.seedPanelStoredTurn(
+        main.panelId,
+        "MAIN question",
+        "MAIN answer",
+      );
+      const pastPanel = await api.renderPanelForItem(pastPaper.parentItemId);
+      const pastTurn = await api.seedPanelStoredTurn(
+        pastPanel.panelId,
+        "PAST question",
+        "PAST answer",
+      );
+      const paper = Zotero.Items.get(fixture.parentItemId);
+      const chat = `upstream:${pastTurn.conversationKey}`;
+      const turn = api.registerScopedMcpScope({
+        conversationKey: mainTurn.conversationKey,
+        libraryID: paper.libraryID,
+        kind: "paper",
+        runId: `turn-cache-attached:${Date.now()}`,
+        runtimeAuthority: "claude",
+        sourceMessageTimestamp: mainTurn.assistantTimestamp + 10_000,
+        attachedConversationScope: [
+          {
+            system: "upstream",
+            conversationKey: pastTurn.conversationKey,
+            title: "PAST",
+            libraryID: paper.libraryID,
+            kind: "paper",
+          },
+        ],
+      });
+      try {
+        const read = await callPastChatRead(turn.token, { chat, message: 1 });
+        assert.equal(read.totalMessages, 2, JSON.stringify(read));
+        // In the past chat's own panel: a new message, then a turn deleted.
+        await api.seedStoredConversationTurns(pastTurn.conversationKey, [
+          {
+            role: "user",
+            text: "PAST later question",
+            timestamp: pastTurn.assistantTimestamp + 5,
+          },
+        ]);
+        const appended = await callPastChatRead(turn.token, { chat });
+        assert.equal(appended.totalMessages, 2, "an append keeps the copy");
+        await api.deletePanelTurn(
+          pastPanel.panelId,
+          pastTurn.userTimestamp,
+          pastTurn.assistantTimestamp,
+        );
+        const changed = await callPastChatRead(turn.token, { chat });
+        assert.notEqual(
+          changed.totalMessages,
+          2,
+          "a destructive change drops the copy: " +
+            JSON.stringify(changed).slice(0, 300),
+        );
+      } finally {
+        api.clearScopedMcpScope(turn.token);
+      }
+    } finally {
+      await api.cleanupFixture(pastPaper);
+    }
+  });
 });
