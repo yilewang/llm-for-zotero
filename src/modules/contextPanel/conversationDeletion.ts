@@ -1,3 +1,4 @@
+import { forgetArchivedCodexThread } from "../../codexAppServer/store";
 import type { ConversationSystem } from "../../shared/types";
 import {
   isRuntimeConversationSystem,
@@ -899,6 +900,12 @@ export async function processPendingConversationCleanupJobs(
             } catch (error) {
               if (!isProviderNotFoundError(error)) throw error;
             }
+            // A chat that still names the archived thread must not resume it.
+            await forgetArchivedCodexThread({
+              conversationKey: job.conversationKey,
+              threadId: job.providerSessionId,
+              instanceID: job.instanceID || undefined,
+            });
             return;
           }
           if (job.operation === "claude_invalidate") {

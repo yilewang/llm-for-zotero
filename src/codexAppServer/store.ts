@@ -1,6 +1,7 @@
 declare const Zotero: any;
 
 import { getRuntimeConversationKeySpan } from "../shared/conversationKeySpace";
+import { clearCodexNativeReadLedgerForConversation } from "./nativeContextLedger";
 import { cleanupRememberedConversationKeyPrefs } from "../shared/conversationKeyPrefCleanup";
 import {
   CODEX_HISTORY_LIMIT,
@@ -610,4 +611,29 @@ export async function deleteCodexConversationLocalRows(
   ...args: Parameters<typeof store.deleteConversationLocalRows>
 ) {
   return store.deleteConversationLocalRows(...args);
+}
+
+/**
+ * After a Codex thread was archived (a reset, or the cleanup worker finishing
+ * one), the chat forgets it if it still names that thread: its saved thread
+ * id, and what the thread had already read (the native read ledger). A chat
+ * that moved on to another thread keeps it.
+ */
+export async function forgetArchivedCodexThread(params: {
+  conversationKey: number;
+  threadId: string;
+  instanceID?: string;
+}): Promise<void> {
+  const summary = await store.getSummary(params.conversationKey);
+  if (String(summary?.providerSessionId || "").trim() !== params.threadId)
+    return;
+  await store.clearConversationSessionMetadata(
+    params.conversationKey,
+    params.threadId,
+    params.instanceID,
+  );
+  clearCodexNativeReadLedgerForConversation({
+    conversationKey: params.conversationKey,
+    instanceID: params.instanceID,
+  });
 }

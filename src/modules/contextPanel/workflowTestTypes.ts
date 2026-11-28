@@ -1832,6 +1832,11 @@ export type WorkflowTestApi = {
     fullTextBudgetTokens: number;
   }) => Promise<{ section: string; tokens: number }>;
   /**
+   * Makes every pending provider cleanup job due and runs the background
+   * cleanup worker once (processPendingConversationCleanupJobs).
+   */
+  runCleanupJobsNowForTests: () => Promise<void>;
+  /**
    * Stores a provider cleanup job naming `providerSessionId` for the
    * conversation, as a reset that did not reach the provider leaves one.
    */

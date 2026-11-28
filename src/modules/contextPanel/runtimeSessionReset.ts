@@ -27,7 +27,7 @@ import {
   assertNeverConversationSystem,
   type ConversationSystem,
 } from "../../core/conversations/conversationSystems";
-import { clearCodexConversationSessionMetadata } from "../../codexAppServer/store";
+import { forgetArchivedCodexThread } from "../../codexAppServer/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
 import { isProviderNotFoundError } from "./conversationDeletion";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
@@ -72,11 +72,11 @@ async function attemptSessionCleanup(
       USER_ATTEMPT,
     );
     if (!attempt.ok) return false;
-    await clearCodexConversationSessionMetadata(
+    await forgetArchivedCodexThread({
       conversationKey,
-      providerSessionId,
+      threadId: providerSessionId,
       instanceID,
-    );
+    });
     return true;
   }
   const attempt = await performConversationCleanupJobAttempt(

@@ -315,4 +315,30 @@ describe("workflow: Codex retry", function () {
     );
     assert.equal(server.turnStarts().length, startsBefore, "no turn started");
   });
+  it("forgets the thread the cleanup worker archived, so the next message starts a new one", async function () {
+    const server = createFakeCodexAppServer({
+      answers: ["OLD-ANSWER-4711", "NEXT-ANSWER"],
+    });
+    const { panelId, oldThread } = await afterFailedArchive(server);
+    server.setArchiveFails(false);
+    // The background worker, not the next send, finishes the archive.
+    await api.runCleanupJobsNowForTests();
+    const archived = server
+      .requests()
+      .filter(
+        (request) =>
+          request.method === "thread/archive" &&
+          request.params.threadId === oldThread,
+      );
+    assert.isNotEmpty(archived, "the worker archived the old thread");
+    const requestsBefore = server.requests().length;
+    const next = await sendTurn(panelId, "And now?", TIMEOUT_MS);
+    assert.include(next.text, "NEXT-ANSWER");
+    const after = server.requests().slice(requestsBefore);
+    const log = describeRequests(after);
+    assert.isFalse(
+      after.some((request) => request.params.threadId === oldThread),
+      `nothing asks for the archived thread again\n${log}`,
+    );
+  });
 });

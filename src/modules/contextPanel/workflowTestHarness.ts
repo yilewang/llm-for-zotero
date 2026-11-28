@@ -12588,6 +12588,20 @@ export function installWorkflowTestHarness(targetAddon: {
     sendLiveChatTurn,
     startPanelChatSend,
     retryLatestPanelResponse,
+    runCleanupJobsNowForTests: async () => {
+      assertWorkflowTestEnabled();
+      const [
+        { CONVERSATION_CLEANUP_JOBS_TABLE },
+        { processPendingConversationCleanupJobs },
+      ] = await Promise.all([
+        import("../../core/conversations/conversationCleanupJobs"),
+        import("./conversationDeletion"),
+      ]);
+      await Zotero.DB.queryAsync(
+        `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE} SET next_attempt_at = 0`,
+      );
+      await processPendingConversationCleanupJobs();
+    },
     enqueueSessionCleanupJobForTests: async ({
       system,
       conversationKey,
