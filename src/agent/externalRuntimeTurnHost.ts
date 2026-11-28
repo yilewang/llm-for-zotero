@@ -24,16 +24,26 @@
 import { appLogger } from "../core/logging";
 import { resolveAgentRuntimeRequest } from "./context/resolvedAgentRequest";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
+import {
+  renderRuntimePromptBlocks,
+  type RenderedRuntimePrompt,
+  type RuntimePromptInput,
+} from "./context/turnPromptBlocks";
+import type { RuntimeConversationSystem } from "../core/conversations/conversationSystems";
+import { isEphemeralConversationKey } from "../shared/conversationKeySpace";
+import { buildAgentFilesInstructionForScope } from "../utils/agentFilesDirectory";
 import { loadLatestDocumentForRun } from "./documents/store";
 import { rememberOutsidePapers } from "./context/outsidePaperRecords";
 import { paperLedgerUpdateFromMcpActivity } from "./context/taskPaperLedgerRecorder";
 import {
+  getActiveTurnPaper,
   listTurnPapersWithRoles,
   type TurnPaperRole,
 } from "./context/turnPaperScope";
 import { settleExternalTurn } from "./execution/externalTurnSettlement";
 import {
   addZoteroMcpToolActivityObserver,
+  collectZoteroMcpTurnToolGuidance,
   registerScopedZoteroMcpScope,
   updateScopedZoteroMcpScope,
   type ZoteroMcpActiveScope,
@@ -118,6 +128,53 @@ export function requestLocalDocuments(
   request: AgentRuntimeRequest,
 ): readonly LocalDocumentResource[] {
   return (request.localDocuments || []).map((entry) => entry.resource);
+}
+
+/**
+ * What an external runtime's prompt carries from the plugin, rendered from
+ * the shared block list (agent/context/turnPromptBlocks.ts) by the runtime's
+ * delivery table: the standing instructions, and the turn's context (the
+ * Zotero context the turn refers to, the material the user attached, the
+ * scope rules and the matching tool guidance) that goes before the user's
+ * words. Claude Code and Antigravity both send it, so each sees what the
+ * original agent sees, except where its table records a decision.
+ */
+export async function renderExternalRuntimePrompt(
+  system: RuntimeConversationSystem,
+  request: AgentRuntimeRequest,
+): Promise<RenderedRuntimePrompt> {
+  return renderRuntimePromptBlocks(
+    system,
+    await buildExternalRuntimePromptInput(request),
+  );
+}
+
+/** What the shared block renderers read for an external runtime's turn. */
+export async function buildExternalRuntimePromptInput(
+  request: AgentRuntimeRequest,
+): Promise<RuntimePromptInput> {
+  const rawPdfMode = requestLocalDocuments(request).length > 0;
+  // A raw-PDF turn saves no files, and a side chat is read-only.
+  const agentFilesInstruction =
+    rawPdfMode || isEphemeralConversationKey(request.conversationKey)
+      ? ""
+      : await buildAgentFilesInstructionForScope({
+          conversationKind:
+            request.turnPaperScope.conversationKind === "paper"
+              ? "paper"
+              : "global",
+          libraryID: request.libraryID || request.turnPaperScope.libraryID,
+          paperItemId: (
+            getActiveTurnPaper(request.turnPaperScope) ||
+            request.turnPaperScope.papers[0]?.paper
+          )?.itemId,
+        });
+  return {
+    request,
+    rawPdfMode,
+    agentFilesInstruction,
+    toolGuidance: collectZoteroMcpTurnToolGuidance(request, { rawPdfMode }),
+  };
 }
 
 /**

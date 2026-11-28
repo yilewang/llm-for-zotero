@@ -196,5 +196,3 @@ export const composeContextStore = {
     paperContentSourceOverrides,
   ),
 };
-
-export type ComposeContextStore = typeof composeContextStore;

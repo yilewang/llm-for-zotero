@@ -12,15 +12,10 @@ import {
 // The pure search rules live in services, where the agent's past_chat_search
 // uses them too; the popup keeps its imports from here.
 export {
-  buildHistorySearchPreview,
-  collectHistorySearchRanges,
   createHistorySearchDocument,
   normalizeHistorySearchQuery,
-  normalizeHistorySearchText,
   tokenizeHistorySearchQuery,
   type HistorySearchDocument,
-  type HistorySearchRange,
-  type HistorySearchTextCandidate,
 } from "../../../../services/pastConversations/historySearchCore";
 
 export type HistorySearchResult =

@@ -80,14 +80,6 @@ const store = createRuntimeConversationStore({
   },
 });
 
-export async function repairClaudeConversationIdentityRegistry(
-  ...args: Parameters<typeof store.repairConversationIdentityRegistry>
-) {
-  return store.repairConversationIdentityRegistry(...args);
-}
-
-export const CLAUDE_STORE_STARTUP_MIGRATION_IDS = store.startupMigrationIDs;
-
 export async function initClaudeCodeStore(
   ...args: Parameters<typeof store.initStore>
 ) {
@@ -104,12 +96,6 @@ export async function loadClaudeConversation(
   ...args: Parameters<typeof store.loadConversation>
 ) {
   return store.loadConversation(...args);
-}
-
-export async function clearClaudeConversation(
-  ...args: Parameters<typeof store.clearConversation>
-) {
-  return store.clearConversation(...args);
 }
 
 export async function deleteClaudeTurnMessages(

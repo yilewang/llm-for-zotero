@@ -50,6 +50,7 @@ import {
   resolveDisplayConversationKind,
   resolvePreferredConversationSystem,
 } from "./portalScope";
+import { positiveIntOrNull } from "../../core/values";
 
 type ConversationKind = "global" | "paper";
 
@@ -84,12 +85,6 @@ const inFlightConversationProvisions = new Map<
   string,
   Promise<ConversationCatalogEntry | null>
 >();
-
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
 
 function sameRuntimeScope(
   summary: ConversationCatalogEntry | null,
@@ -149,7 +144,7 @@ function resolveProvisionScope(
   paperItemID?: number;
 } | null {
   const noteScope = resolveActiveNoteSession(item);
-  const conversationKey = normalizePositiveInt(
+  const conversationKey = positiveIntOrNull(
     noteScope
       ? resolveConversationKeyForNoteFocus(item, { conversationSystem: system })
       : getConversationKey(item),
@@ -157,7 +152,7 @@ function resolveProvisionScope(
   const kind = resolveDisplayConversationKind(item);
   if (!conversationKey || !kind) return null;
   if (kind === "global") {
-    const libraryID = normalizePositiveInt(item?.libraryID);
+    const libraryID = positiveIntOrNull(item?.libraryID);
     return libraryID
       ? {
           conversationKey,
@@ -167,10 +162,8 @@ function resolveProvisionScope(
       : null;
   }
   const baseItem = resolveConversationBaseItem(item);
-  const paperItemID = normalizePositiveInt(baseItem?.id);
-  const libraryID = normalizePositiveInt(
-    baseItem?.libraryID || item?.libraryID,
-  );
+  const paperItemID = positiveIntOrNull(baseItem?.id);
+  const libraryID = positiveIntOrNull(baseItem?.libraryID || item?.libraryID);
   if (!libraryID || !paperItemID) return null;
   return {
     conversationKey,
@@ -219,7 +212,7 @@ export function resolveConversationStorageSystemForItem(params: {
       ? resolvePreferredConversationSystem({ item: params.item })
       : null) ||
     "upstream";
-  const conversationKey = normalizePositiveInt(
+  const conversationKey = positiveIntOrNull(
     noteScope
       ? resolveConversationKeyForNoteFocus(params.item, {
           conversationSystem: requestedSystem,
@@ -620,8 +613,8 @@ export async function provisionDefaultPaperConversation(params: {
   libraryID: number;
   paperItemID: number;
 }): Promise<ConversationCatalogEntry | null> {
-  const libraryID = normalizePositiveInt(params.libraryID);
-  const paperItemID = normalizePositiveInt(params.paperItemID);
+  const libraryID = positiveIntOrNull(params.libraryID);
+  const paperItemID = positiveIntOrNull(params.paperItemID);
   if (!libraryID || !paperItemID) return null;
   await initConversationKeyLedgerStore();
   const conversationKey =

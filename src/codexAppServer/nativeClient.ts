@@ -13,12 +13,9 @@ import type {
   AgentConfirmationResolution,
   AgentPendingAction,
   AgentPendingField,
+  AgentRuntimeRequest,
 } from "../agent/types";
-import type {
-  CodexConversationKind,
-  NoteContextRef,
-  PaperContextRef,
-} from "../shared/types";
+import type { CodexConversationKind, PaperContextRef } from "../shared/types";
 import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../shared/quoteGuidance";
 import {
   AGENT_ACTION_CONTRACT,
@@ -29,6 +26,7 @@ import {
 } from "../shared/instructionContracts";
 import {
   addZoteroMcpToolActivityObserver,
+  collectZoteroMcpTurnToolGuidance,
   ZOTERO_MCP_SERVER_NAME,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
   getZoteroMcpServerName,
@@ -114,13 +112,13 @@ import {
   type ExternalRuntimeEffect,
   type ExternalRuntimeEffectOutcome,
 } from "../agent/contracts/externalRuntimeEffects";
-import { buildVisibleTurnContextBlock } from "../agent/context/turnContextEnvelope";
-import { renderSelectedTextAnchorContext } from "../services/context/selectedTextAnchorFormatting";
 import {
-  CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
-  resolveCodexNativeRuntimeCwd,
-} from "./runtimeCwd";
-export {
+  renderRuntimePromptBlocks,
+  type RuntimePromptInput,
+} from "../agent/context/turnPromptBlocks";
+import { resolveTurnUserRequestText } from "../agent/context/turnMaterial";
+import { renderAttachedFilesPromptBlocks } from "../shared/attachedFilesPromptText";
+import {
   CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
   resolveCodexNativeRuntimeCwd,
 } from "./runtimeCwd";
@@ -133,7 +131,6 @@ import { loadLatestDocumentForRun } from "../agent/documents/store";
 import { areEquivalentLocalPaths } from "../utils/localPath";
 import {
   acquireLocalDocumentPathLease,
-  clearRememberedLocalDocumentPaths,
   LocalDocumentPathStreamRedactor,
 } from "../agent/privacy/localDocumentPathRedaction";
 import { validateLocalPdfDocumentBatch } from "../agent/context/localDocumentBatch";
@@ -147,6 +144,7 @@ import {
 import { enqueueConversationCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import { settleExternalTurn } from "../agent/execution/externalTurnSettlement";
 import { isCodexNativeItemType } from "./nativeActivityStages";
+import { recordOrEmpty, trimmedString } from "../core/values";
 
 const CODEX_APP_SERVER_SERVICE_NAME = "llm_for_zotero";
 export const NO_CODEX_APP_SERVER_THREAD_TO_COMPACT_MESSAGE =
@@ -189,12 +187,6 @@ type StoredCodexProviderSession = Readonly<{
   /** The Zotero write approval mode the stored thread was created with. */
   appliedMcpWriteApproval: "writes" | "auto";
 }>;
-
-export function resetCodexNativePathSafetyStateForTests(
-  conversationKey?: number,
-): void {
-  if (conversationKey) clearRememberedLocalDocumentPaths(conversationKey);
-}
 
 export type CodexNativeTurnResult = {
   agentRunId?: string;
@@ -302,24 +294,10 @@ const CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD =
   "item/autoApprovalReview/completed";
 const nativeHistoryVerificationState = new Map<string, number>();
 
-function normalizeNonEmptyString(value: unknown): string {
-  return typeof value === "string" && value.trim() ? value.trim() : "";
-}
-
 function createNativeClientAbortError(): Error {
   const error = new Error("Aborted");
   error.name = "AbortError";
   return error;
-}
-
-export function clearCodexNativeHistoryVerificationState(): void {
-  nativeHistoryVerificationState.clear();
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
 }
 
 function prettyJson(value: unknown): string {
@@ -335,7 +313,7 @@ function firstNonEmptyString(
   keys: ReadonlyArray<string>,
 ): string {
   for (const key of keys) {
-    const value = normalizeNonEmptyString(record[key]);
+    const value = trimmedString(record[key]);
     if (value) return value;
   }
   return "";
@@ -344,7 +322,7 @@ function firstNonEmptyString(
 function collectNestedRecords(value: unknown): Record<string, unknown>[] {
   const records: Record<string, unknown>[] = [];
   const visit = (entry: unknown): void => {
-    const record = normalizeRecord(entry);
+    const record = recordOrEmpty(entry);
     if (!Object.keys(record).length) return;
     records.push(record);
     for (const nested of Object.values(record)) {
@@ -375,9 +353,7 @@ function findCommandPreview(params: unknown): string {
   for (const record of collectNestedRecords(params)) {
     const argv = record.argv || record.args;
     if (Array.isArray(argv)) {
-      const pieces = argv
-        .map((entry) => normalizeNonEmptyString(entry))
-        .filter(Boolean);
+      const pieces = argv.map((entry) => trimmedString(entry)).filter(Boolean);
       if (pieces.length) return pieces.join(" ");
     }
   }
@@ -417,11 +393,11 @@ function buildCodexNativeApprovalSummary(
     return path ? `File change: ${path}` : "File-change approval";
   }
   if (request.method === "item/permissions/requestApproval") {
-    const permissions = normalizeRecord(
-      normalizeRecord(request.params).permissions,
+    const permissions = recordOrEmpty(
+      recordOrEmpty(request.params).permissions,
     );
-    const fileSystem = normalizeRecord(permissions.fileSystem);
-    const network = normalizeRecord(permissions.network);
+    const fileSystem = recordOrEmpty(permissions.fileSystem);
+    const network = recordOrEmpty(permissions.network);
     const pieces = [
       fileSystem.read ? "filesystem read" : "",
       fileSystem.write ? "filesystem write" : "",
@@ -459,7 +435,7 @@ const CODEX_APPROVAL_FILE_PATH_KEYS = [
 function collectCodexApprovalFilePaths(params: unknown): string[] {
   const paths: string[] = [];
   const add = (value: unknown): void => {
-    const path = normalizeNonEmptyString(value);
+    const path = trimmedString(value);
     if (path && !paths.includes(path)) paths.push(path);
   };
   for (const record of collectNestedRecords(params)) {
@@ -613,7 +589,7 @@ export type CodexNativeItemEvent = CodexAppServerItemEvent & {
  * smaller lie than one wrong row for two calls.
  */
 export function createCodexNativeMcpCallCorrelator(serverName?: string) {
-  const expectedServer = normalizeNonEmptyString(serverName);
+  const expectedServer = trimmedString(serverName);
   type OpenPair = { key: string; hasRequest: boolean; hasItem: boolean };
   const openPairsByTool = new Map<string, OpenPair[]>();
   // `null` records a side this turn refused to pair, so asking again answers
@@ -677,11 +653,11 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
       toolName?: string;
     }): string | undefined {
       if (!expectedServer) return undefined;
-      const requestId = normalizeNonEmptyString(event.requestId);
+      const requestId = trimmedString(event.requestId);
       if (requestId && keyByRequestId.has(requestId)) {
         return keyByRequestId.get(requestId) || undefined;
       }
-      const toolName = normalizeNonEmptyString(event.toolName);
+      const toolName = trimmedString(event.toolName);
       if (!toolName) return undefined;
       const key = claim(toolName, "request");
       if (requestId) keyByRequestId.set(requestId, key ?? null);
@@ -697,14 +673,14 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
     }): string | undefined {
       if (!expectedServer) return undefined;
       if (!isCodexNativeItemType(item, ["mcptool"])) return undefined;
-      if (normalizeNonEmptyString(item.serverName) !== expectedServer) {
+      if (trimmedString(item.serverName) !== expectedServer) {
         return undefined;
       }
-      const itemId = normalizeNonEmptyString(item.id);
+      const itemId = trimmedString(item.id);
       if (itemId && keyByItemId.has(itemId)) {
         return keyByItemId.get(itemId) || undefined;
       }
-      const toolName = normalizeNonEmptyString(item.toolName || item.name);
+      const toolName = trimmedString(item.toolName || item.name);
       if (!toolName) return undefined;
       const key = claim(toolName, "item");
       if (itemId) keyByItemId.set(itemId, key ?? null);
@@ -713,9 +689,6 @@ export function createCodexNativeMcpCallCorrelator(serverName?: string) {
   };
 }
 
-export const createCodexNativeMcpCallCorrelatorForTests =
-  createCodexNativeMcpCallCorrelator;
-
 let codexNativeApprovalEffectSequence = 0;
 
 /** Stable identity for the approval this receipt covers. */
@@ -723,7 +696,7 @@ function codexNativeApprovalCallId(
   request: CodexNativeApprovalRequest,
 ): string {
   return (
-    firstNonEmptyString(normalizeRecord(request.params), [
+    firstNonEmptyString(recordOrEmpty(request.params), [
       "itemId",
       "approvalId",
       "callId",
@@ -734,7 +707,7 @@ function codexNativeApprovalCallId(
 
 /** Whether an app-server approval response granted the request. */
 function codexNativeApprovalResponseGranted(response: unknown): boolean {
-  const record = normalizeRecord(response);
+  const record = recordOrEmpty(response);
   return Boolean(
     record.approved ||
     record.decision === "accept" ||
@@ -754,7 +727,7 @@ export function isCodexNativeBuiltInApprovalRequest(
 export function buildCodexNativeApprovalPendingAction(
   request: CodexNativeApprovalRequest,
 ): AgentPendingAction {
-  const params = normalizeRecord(request.params);
+  const params = recordOrEmpty(request.params);
   const fields: AgentPendingField[] = [
     {
       type: "text",
@@ -846,14 +819,14 @@ export function readZoteroMcpToolApproval(
   request: CodexNativeApprovalRequest,
 ): ZoteroMcpToolApproval | null {
   if (request.method !== "mcpServer/elicitation/request") return null;
-  const params = normalizeRecord(request.params);
-  const meta = normalizeRecord(params._meta);
+  const params = recordOrEmpty(request.params);
+  const meta = recordOrEmpty(params._meta);
   if (meta.codex_approval_kind !== "mcp_tool_call") return null;
-  const serverName = normalizeNonEmptyString(params.serverName);
+  const serverName = trimmedString(params.serverName);
   // Only this turn's own Zotero server: another server that merely starts
   // with the plugin's name gets no card.
   if (!serverName || serverName !== request.zoteroMcpServerName) return null;
-  const message = normalizeNonEmptyString(params.message);
+  const message = trimmedString(params.message);
   return {
     serverName,
     toolName: /\brun tool "([^"]+)"/.exec(message)?.[1] || "",
@@ -925,8 +898,8 @@ function buildApprovedPermissionsResponse(params: unknown): {
   permissions: Record<string, unknown>;
   scope: "turn";
 } {
-  const requestParams = normalizeRecord(params);
-  const requestedPermissions = normalizeRecord(requestParams.permissions);
+  const requestParams = recordOrEmpty(params);
+  const requestedPermissions = recordOrEmpty(requestParams.permissions);
   const permissions: Record<string, unknown> = {};
   if (
     requestedPermissions.fileSystem &&
@@ -1033,11 +1006,11 @@ function collectNativeSkillMetadata(
     for (const entry of value) collectNativeSkillMetadata(entry, entries, seen);
     return entries;
   }
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   if (!Object.keys(record).length) return entries;
 
-  const name = normalizeNonEmptyString(record.name);
-  const path = normalizeNonEmptyString(record.path);
+  const name = trimmedString(record.name);
+  const path = trimmedString(record.path);
   if (name && path && record.enabled !== false) {
     const key = `${name}\n${path}`;
     if (!seen.has(key)) {
@@ -1245,12 +1218,6 @@ function applyNativeSkillInputs(params: {
   return [...params.resolution.skillInputs, ...withFallback];
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function isCodexAppServerApprovalRequestMethod(method: string): boolean {
   return (
     CODEX_APP_SERVER_APPROVAL_REQUEST_METHODS as readonly string[]
@@ -1329,14 +1296,14 @@ function getApprovalRequestTarget(params: unknown): string {
     "itemId",
     "approvalId",
   ]
-    .map((key) => normalizeNonEmptyString(record[key]))
+    .map((key) => trimmedString(record[key]))
     .filter(Boolean);
   if (direct.length) return direct.join("/");
   const questions = Array.isArray(record.questions) ? record.questions : [];
   const questionText = questions
     .map((entry) =>
       entry && typeof entry === "object"
-        ? normalizeNonEmptyString((entry as Record<string, unknown>).question)
+        ? trimmedString((entry as Record<string, unknown>).question)
         : "",
     )
     .filter(Boolean)
@@ -1352,9 +1319,9 @@ function chooseToolUserInputAnswer(question: unknown): string[] | null {
     .map((entry) => {
       if (!entry || typeof entry !== "object") return null;
       const option = entry as Record<string, unknown>;
-      const label = normalizeNonEmptyString(option.label);
-      const value = normalizeNonEmptyString(option.value);
-      const id = normalizeNonEmptyString(option.id);
+      const label = trimmedString(option.label);
+      const value = trimmedString(option.value);
+      const id = trimmedString(option.id);
       const answer = label || value || id;
       const searchable = [label, value, id].filter(Boolean).join(" ");
       return answer ? { answer, searchable } : null;
@@ -1394,7 +1361,7 @@ function buildToolRequestUserInputResponse(params: unknown): {
   for (const [index, question] of questions.entries()) {
     const id =
       question && typeof question === "object"
-        ? normalizeNonEmptyString((question as Record<string, unknown>).id)
+        ? trimmedString((question as Record<string, unknown>).id)
         : "";
     if (!id) return null;
     const questionAnswers = chooseToolUserInputAnswer(question);
@@ -1522,21 +1489,17 @@ function logCodexNativeApprovalDecision(params: {
 function buildGuardianAssessmentAction(
   action: Record<string, unknown>,
 ): unknown {
-  const type = normalizeNonEmptyString(action.type);
+  const type = trimmedString(action.type);
   if (type === "mcpToolCall" || type === "mcp_tool_call") {
     return {
       type: "mcp_tool_call",
-      server: normalizeNonEmptyString(action.server),
-      tool_name: normalizeNonEmptyString(action.toolName || action.tool_name),
+      server: trimmedString(action.server),
+      tool_name: trimmedString(action.toolName || action.tool_name),
       connector_id:
-        normalizeNonEmptyString(action.connectorId || action.connector_id) ||
-        null,
+        trimmedString(action.connectorId || action.connector_id) || null,
       connector_name:
-        normalizeNonEmptyString(
-          action.connectorName || action.connector_name,
-        ) || null,
-      tool_title:
-        normalizeNonEmptyString(action.toolTitle || action.tool_title) || null,
+        trimmedString(action.connectorName || action.connector_name) || null,
+      tool_title: trimmedString(action.toolTitle || action.tool_title) || null,
     };
   }
   return action;
@@ -1545,13 +1508,12 @@ function buildGuardianAssessmentAction(
 function buildGuardianAssessmentEvent(
   rawParams: unknown,
 ): Record<string, unknown> {
-  const params = normalizeRecord(rawParams);
-  const review = normalizeRecord(params.review);
-  const action = normalizeRecord(params.action);
+  const params = recordOrEmpty(rawParams);
+  const review = recordOrEmpty(params.review);
+  const action = recordOrEmpty(params.action);
   return {
     target_item_id:
-      normalizeNonEmptyString(params.targetItemId || params.target_item_id) ||
-      null,
+      trimmedString(params.targetItemId || params.target_item_id) || null,
     risk_level: review.riskLevel ?? review.risk_level ?? null,
     user_authorization:
       review.userAuthorization ?? review.user_authorization ?? null,
@@ -1562,24 +1524,17 @@ function buildGuardianAssessmentEvent(
 }
 
 function isDeniedTrustedZoteroMcpGuardianReview(rawParams: unknown): boolean {
-  const params = normalizeRecord(rawParams);
-  const review = normalizeRecord(params.review);
-  const action = normalizeRecord(params.action);
-  const status = normalizeNonEmptyString(review.status).toLowerCase();
-  const actionType = normalizeNonEmptyString(action.type);
+  const params = recordOrEmpty(rawParams);
+  const review = recordOrEmpty(params.review);
+  const action = recordOrEmpty(params.action);
+  const status = trimmedString(review.status).toLowerCase();
+  const actionType = trimmedString(action.type);
   if (status !== "denied") return false;
   if (actionType !== "mcpToolCall" && actionType !== "mcp_tool_call") {
     return false;
   }
   return Boolean(extractTrustedZoteroMcpApprovalPayload(action));
 }
-
-export const isDeniedTrustedZoteroMcpGuardianReviewForTests =
-  isDeniedTrustedZoteroMcpGuardianReview;
-
-export const registerNativeGuardianReviewHandlersForTests = (
-  ...args: Parameters<typeof registerNativeGuardianReviewHandlers>
-) => registerNativeGuardianReviewHandlers(...args);
 
 function registerNativeGuardianReviewHandlers(params: {
   proc: CodexAppServerProcess;
@@ -1593,7 +1548,7 @@ function registerNativeGuardianReviewHandlers(params: {
     (rawParams) => {
       // Another conversation's turn can share this process; its reviews are
       // not this turn's to override.
-      if (normalizeRecord(rawParams).threadId !== params.threadId) return;
+      if (recordOrEmpty(rawParams).threadId !== params.threadId) return;
       if (!isDeniedTrustedZoteroMcpGuardianReview(rawParams)) {
         appLogger.debug("Codex app-server native guardian review observed", {
           method: CODEX_APP_SERVER_GUARDIAN_REVIEW_COMPLETED_METHOD,
@@ -1661,20 +1616,6 @@ function extractSystemText(messages: ChatMessage[]): string {
     .join("\n\n");
 }
 
-function extractLatestUserText(messages: ChatMessage[]): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "user") continue;
-    if (typeof message.content === "string") return message.content.trim();
-    return message.content
-      .filter((part): part is TextContent => part.type === "text")
-      .map((part) => part.text || "")
-      .join("\n")
-      .trim();
-  }
-  return "";
-}
-
 function formatScopeLine(label: string, value: unknown): string | null {
   if (value === undefined || value === null || value === "") return null;
   return `- ${label}: ${value}`;
@@ -1701,60 +1642,71 @@ function formatPaperContextLine(
   return `- Active paper context: ${pieces.join(", ")}`;
 }
 
-function buildCodexNativeVisibleTurnContextBlock(params: {
-  scope: CodexNativeConversationScope;
-  skillContext?: CodexNativeSkillContext;
-  /** A raw-PDF turn has no paper_read: selection hints name no call. */
-  rawPdfMode?: boolean;
-}): string {
-  const { scope, skillContext } = params;
-  const visibleContext = buildVisibleTurnContextBlock({
-    conversationKind: scope.kind === "paper" ? "paper" : "global",
-    libraryID: scope.libraryID,
-    libraryName: scope.libraryName,
-    activeItemId: scope.activeItemId,
-    activePaperTitle: scope.paperTitle,
-    activePaperContext: scope.paperContext,
-    selectedPaperContexts: skillContext?.selectedPaperContexts,
-    pdfPaperContexts: skillContext?.pdfPaperContexts,
-    localDocuments: skillContext?.localDocuments,
-    fullTextPaperContexts: skillContext?.fullTextPaperContexts,
-    pinnedPaperContexts: skillContext?.pinnedPaperContexts,
-    selectedCollectionContexts: skillContext?.selectedCollectionContexts,
-    selectedTagContexts: skillContext?.selectedTagContexts,
-    selectedTextContexts: skillContext?.selectedTextContexts,
-    resolvedSelectedTextAnchors: skillContext?.resolvedSelectedTextAnchors,
-    selectedTexts: skillContext?.selectedTexts,
-    selectedTextSources: skillContext?.selectedTextSources,
-    selectedTextPaperContexts: skillContext?.selectedTextPaperContexts,
-    selectedTextNoteContexts: skillContext?.selectedTextNoteContexts,
-    screenshots: skillContext?.screenshots,
-    attachments: skillContext?.attachments,
-    activeNoteContext: scope.activeNoteId
-      ? {
-          noteId: scope.activeNoteId,
-          title: scope.activeNoteTitle || "Active note",
-          noteKind:
-            scope.activeNoteKind === "standalone" ? "standalone" : "item",
-          parentItemId: scope.activeNoteParentItemId,
-          noteText: "",
-        }
-      : undefined,
-  });
-  const anchorContext = renderSelectedTextAnchorContext({
-    selectedTextContexts: skillContext?.selectedTextContexts || [],
-    anchors: skillContext?.resolvedSelectedTextAnchors || [],
-    readCalls: !params.rawPdfMode,
-  });
-  return [visibleContext, anchorContext].filter(Boolean).join("\n\n");
+/**
+ * The text of a Codex turn's latest user message: the prompt's turn blocks
+ * (turnPromptBlocks.ts, Codex's delivery table: the Zotero context the turn
+ * refers to, the material the user attached, the scope rules and the
+ * matching tool guidance), then the user's words, then the attached files'
+ * text. Built from the prepared request, as the original agent builds its
+ * turn message, so a quote or an open note reaches Codex as it reaches
+ * every other runtime.
+ */
+export function buildCodexTurnUserText(
+  request: AgentRuntimeRequest,
+  rawPdfMode: boolean,
+): string {
+  const { turn } = renderRuntimePromptBlocks(
+    "codex",
+    buildCodexRuntimePromptInput(request, rawPdfMode),
+  );
+  const userRequest = `User request:\n${resolveTurnUserRequestText(request)}`;
+  return [
+    [turn, userRequest].filter(Boolean).join("\n\n"),
+    ...renderAttachedFilesPromptBlocks(
+      (request.attachments || []).filter(
+        (attachment) => attachment.category !== "image",
+      ),
+    ),
+  ].join("\n");
 }
 
-export function buildCodexNativeVisibleTurnContextBlockForTests(params: {
-  scope: CodexNativeConversationScope;
-  skillContext?: CodexNativeSkillContext;
-  rawPdfMode?: boolean;
-}): string {
-  return buildCodexNativeVisibleTurnContextBlock(params);
+/** What the shared block renderers read for a Codex turn. */
+export function buildCodexRuntimePromptInput(
+  request: AgentRuntimeRequest,
+  rawPdfMode: boolean,
+): RuntimePromptInput {
+  return {
+    request,
+    rawPdfMode,
+    // Codex's manifest carries the standing blocks (CODEX_DELIVERY).
+    agentFilesInstruction: "",
+    toolGuidance: collectZoteroMcpTurnToolGuidance(request, { rawPdfMode }),
+  };
+}
+
+/**
+ * The messages with the latest user message's text replaced; its images
+ * stay, after the text.
+ */
+function replaceLatestUserText(
+  messages: ChatMessage[],
+  text: string,
+): ChatMessage[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    const images =
+      typeof message.content === "string"
+        ? []
+        : message.content.filter((part) => part.type !== "text");
+    const next = messages.slice();
+    next[index] = {
+      ...message,
+      content: images.length ? [{ type: "text", text }, ...images] : text,
+    };
+    return next;
+  }
+  return messages;
 }
 
 function buildCodexNativeScopedMcpScope(params: {
@@ -1811,21 +1763,6 @@ function buildCodexNativeScopedMcpScope(params: {
   };
 }
 
-export function buildCodexNativeScopedMcpScopeForTests(params: {
-  preparedRequest?: import("../agent/types").AgentRuntimeRequest;
-  executionContext?: import("../agent/types").AgentExecutionContext;
-  scope: CodexNativeConversationScope;
-  profileSignature: string;
-  userText: string;
-  model?: string;
-  codexPath?: string;
-  reasoning?: ReasoningConfig;
-  sourceMessageTimestamp?: number;
-  skillContext?: CodexNativeSkillContext;
-}): ZoteroMcpActiveScope {
-  return buildCodexNativeScopedMcpScope(params);
-}
-
 /**
  * Codex's map from the search-routing source families
  * (SEARCH_ROUTING_CONTRACT) to its own tools: the Zotero MCP tools for the
@@ -1846,7 +1783,6 @@ export function buildZoteroEnvironmentManifest(params: {
   mcpWarning?: string;
   skillInstructionBlock?: string;
   priorReadContextBlock?: string;
-  resourceContextBlock?: string;
   rawPdfMode?: boolean;
   /** Where saved files go and when to show a page in the answer instead. */
   agentFilesInstruction?: string;
@@ -1928,7 +1864,6 @@ export function buildZoteroEnvironmentManifest(params: {
       lines.join("\n"),
       notesDirectoryConfig,
       agentFilesInstruction,
-      params.resourceContextBlock || "",
       priorReadContextBlock,
       params.skillInstructionBlock || "",
       finalRawPdfPolicy,
@@ -1945,7 +1880,6 @@ export function buildZoteroEnvironmentManifest(params: {
       lines.join("\n"),
       notesDirectoryConfig,
       agentFilesInstruction,
-      params.resourceContextBlock || "",
       priorReadContextBlock,
       params.skillInstructionBlock || "",
       finalRawPdfPolicy,
@@ -1980,7 +1914,6 @@ export function buildZoteroEnvironmentManifest(params: {
     lines.join("\n"),
     notesDirectoryConfig,
     agentFilesInstruction,
-    params.resourceContextBlock || "",
     priorReadContextBlock,
     params.skillInstructionBlock || "",
     finalRawPdfPolicy,
@@ -1998,7 +1931,8 @@ function prefixUserContentWithContext(
   const contextBlock = /^Zotero context for this turn:/i.test(prefix)
     ? prefix
     : `Zotero context for this turn:\n${prefix}`;
-  const textPrefix = `${contextBlock}\n\nUser request:\n`;
+  // The content already names the user's request (buildCodexTurnUserText).
+  const textPrefix = `${contextBlock}\n\n`;
   if (typeof content === "string") {
     return `${textPrefix}${content}`;
   }
@@ -2090,9 +2024,7 @@ async function loadStoredProviderSession(params: {
     const rawPermissionState =
       await params.hooks.loadProviderPermissionState?.();
     return {
-      threadId: normalizeNonEmptyString(
-        await params.hooks.loadProviderSessionId(),
-      ),
+      threadId: trimmedString(await params.hooks.loadProviderSessionId()),
       appliedPermissionState: rawPermissionState
         ? deserializeCodexPermissionState(rawPermissionState) || undefined
         : undefined,
@@ -2102,7 +2034,7 @@ async function loadStoredProviderSession(params: {
   }
   const summary = await getCodexConversationSummary(params.conversationKey);
   return {
-    threadId: normalizeNonEmptyString(summary?.providerSessionId),
+    threadId: trimmedString(summary?.providerSessionId),
     appliedPermissionState: summary?.providerPermissionState
       ? deserializeCodexPermissionState(summary.providerPermissionState) ||
         undefined
@@ -2184,8 +2116,8 @@ async function persistProviderSessionId(params: {
     ) {
       throw new Error("Conversation write generation changed");
     }
-    const expected = normalizeNonEmptyString(params.expectedProviderSessionId);
-    if (expected !== normalizeNonEmptyString(current.providerSessionId)) return;
+    const expected = trimmedString(params.expectedProviderSessionId);
+    if (expected !== trimmedString(current.providerSessionId)) return;
     await upsertCodexConversationSummary({
       conversationKey: params.scope.conversationKey,
       libraryID: params.scope.libraryID,
@@ -2350,16 +2282,14 @@ function readEffectiveCodexThreadSettings(
         ? (settings.active_permission_profile as Record<string, unknown>)
         : {};
   return {
-    threadId: normalizeNonEmptyString(
-      record.threadId || record.thread_id || thread.id,
-    ),
-    approvalPolicy: normalizeNonEmptyString(
+    threadId: trimmedString(record.threadId || record.thread_id || thread.id),
+    approvalPolicy: trimmedString(
       settings.approvalPolicy || settings.approval_policy,
     ),
-    approvalsReviewer: normalizeNonEmptyString(
+    approvalsReviewer: trimmedString(
       settings.approvalsReviewer || settings.approvals_reviewer,
     ),
-    permissionProfileId: normalizeNonEmptyString(activeProfile.id),
+    permissionProfileId: trimmedString(activeProfile.id),
   };
 }
 
@@ -2520,7 +2450,7 @@ async function resolveNativeThread(params: {
   const storedSession =
     params.storedThreadId !== undefined
       ? {
-          threadId: normalizeNonEmptyString(params.storedThreadId),
+          threadId: trimmedString(params.storedThreadId),
         }
       : await loadResumableProviderSession({
           conversationKey: params.scope.conversationKey,
@@ -2698,7 +2628,7 @@ async function setNativeThreadName(params: {
   threadId: string;
   name?: string;
 }): Promise<void> {
-  const name = normalizeNonEmptyString(params.name).slice(0, 120);
+  const name = trimmedString(params.name).slice(0, 120);
   if (!name) return;
   try {
     await params.proc.sendRequest("thread/name/set", {
@@ -2748,10 +2678,10 @@ function registerNativeApprovalRequestHandlers(params: {
 }): () => void {
   const acceptsRequest = params.getActiveThreadId
     ? (rawParams: unknown) => {
-        const record = normalizeRecord(rawParams);
+        const record = recordOrEmpty(rawParams);
         const requestThreadId =
-          normalizeNonEmptyString(record.threadId) ||
-          normalizeNonEmptyString(record.conversationId);
+          trimmedString(record.threadId) ||
+          trimmedString(record.conversationId);
         // A request that names no thread cannot be routed; the first turn
         // takes it, as before.
         if (!requestThreadId) return true;
@@ -2800,10 +2730,10 @@ function registerNativeApprovalRequestHandlers(params: {
           const identity = await params.getTurnIdentity?.();
           if (controller.signal.aborted) return { answers: {} };
           params.isTurnStillLive?.();
-          const record = normalizeRecord(rawParams);
+          const record = recordOrEmpty(rawParams);
           const requestThreadId =
-            normalizeNonEmptyString(record.threadId) ||
-            normalizeNonEmptyString(record.conversationId);
+            trimmedString(record.threadId) ||
+            trimmedString(record.conversationId);
           const isChildRequest =
             requestThreadId !== identity?.threadId &&
             params.childThreadIds?.has(requestThreadId);
@@ -2829,12 +2759,12 @@ function registerNativeApprovalRequestHandlers(params: {
           const interruptIdentity = isChildRequest
             ? {
                 threadId: requestThreadId,
-                turnId: normalizeNonEmptyString(record.turnId),
+                turnId: trimmedString(record.turnId),
               }
             : identity;
           if (
             questions &&
-            !Object.keys(normalizeRecord(normalizeRecord(response).answers))
+            !Object.keys(recordOrEmpty(recordOrEmpty(response).answers))
               .length &&
             interruptIdentity?.turnId
           ) {
@@ -2882,10 +2812,6 @@ function registerNativeApprovalRequestHandlers(params: {
     for (const dispose of disposers) dispose();
   };
 }
-
-export const registerNativeApprovalRequestHandlersForTests = (
-  ...args: Parameters<typeof registerNativeApprovalRequestHandlers>
-) => registerNativeApprovalRequestHandlers(...args);
 
 export async function listCodexAppServerModels(
   params: {
@@ -3064,25 +2990,6 @@ export async function archiveCodexAppServerThread(params: {
   await proc.sendRequest("thread/archive", { threadId: params.threadId });
 }
 
-export async function setCodexAppServerThreadName(params: {
-  threadId: string;
-  name: string;
-  codexPath?: string;
-  processKey?: string;
-}): Promise<void> {
-  const name = params.name.trim();
-  if (!name) return;
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
-  const proc = await getOrCreateCodexAppServerProcess(
-    params.processKey || CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
-    { codexPath },
-  );
-  await proc.sendRequest("thread/name/set", {
-    threadId: params.threadId,
-    name: name.slice(0, 120),
-  });
-}
-
 export async function compactCodexAppServerThread(params: {
   threadId: string;
   codexPath?: string;
@@ -3172,7 +3079,7 @@ async function verifyCodexAppServerThreadHistoryIfDue(params: {
   proc: CodexAppServerProcess;
   threadId: string;
 }): Promise<boolean | undefined> {
-  const threadId = normalizeNonEmptyString(params.threadId);
+  const threadId = trimmedString(params.threadId);
   if (!threadId) return undefined;
   const now = Date.now();
   const lastVerifiedAt = nativeHistoryVerificationState.get(threadId);
@@ -3404,7 +3311,7 @@ export async function runCodexAppServerNativeTurn(input: {
       });
       const mcpEnabled = isCodexZoteroMcpToolsEnabled();
       const profileSignature =
-        normalizeNonEmptyString(params.scope.profileSignature) ||
+        trimmedString(params.scope.profileSignature) ||
         getCodexProfileSignature();
       const latestUserText = params.executionRequest.userText;
       const summary = await getCodexConversationSummary(
@@ -3922,20 +3829,17 @@ export async function runCodexAppServerNativeTurn(input: {
           params.onSkillActivated?.(skillId);
         }
         const rawPdfMode = currentTurnHasLocalPdfs;
-        const visibleTurnContextBlock = buildCodexNativeVisibleTurnContextBlock(
-          {
-            scope: scopeWithProfile,
-            skillContext,
-            rawPdfMode,
-          },
-        );
         const optimisticMcpReady = mcpEnabled;
+        const turnMessages = replaceLatestUserText(
+          params.messages,
+          buildCodexTurnUserText(params.executionRequest, rawPdfMode),
+        );
         const messagesForNativeTurn = rawPdfMode
           ? ensureLatestUserNativeSkillMentions(
-              params.messages,
+              turnMessages,
               skillContext?.forcedSkillIds || [],
             )
-          : params.messages;
+          : turnMessages;
         const developerEnvironmentText = buildZoteroEnvironmentManifest({
           scope: scopeWithProfile,
           mcpEnabled,
@@ -3943,7 +3847,6 @@ export async function runCodexAppServerNativeTurn(input: {
           mcpWarning,
           skillInstructionBlock,
           priorReadContextBlock,
-          resourceContextBlock: visibleTurnContextBlock,
           rawPdfMode,
           agentFilesInstruction: await buildAgentFilesInstructionForScope({
             conversationKind:
@@ -4109,21 +4012,15 @@ export async function runCodexAppServerNativeTurn(input: {
           }
         }
         const contextPlacement = resolveNativeContextPlacement(thread);
-        const latestUserFallbackContextText = [
-          visibleTurnContextBlock,
-          buildZoteroEnvironmentManifest({
-            scope: scopeWithProfile,
-            mcpEnabled,
-            mcpReady,
-            mcpWarning,
-            skillInstructionBlock,
-            priorReadContextBlock,
-            resourceContextBlock: "",
-            rawPdfMode,
-          }),
-        ]
-          .filter(Boolean)
-          .join("\n\n");
+        const latestUserFallbackContextText = buildZoteroEnvironmentManifest({
+          scope: scopeWithProfile,
+          mcpEnabled,
+          mcpReady,
+          mcpWarning,
+          skillInstructionBlock,
+          priorReadContextBlock,
+          rawPdfMode,
+        });
         const nativeMessages = buildNativeMessages({
           messages: messagesForNativeTurn,
           includeVisibleHistory: true,
@@ -4134,7 +4031,6 @@ export async function runCodexAppServerNativeTurn(input: {
             mcpWarning,
             skillInstructionBlock: "",
             priorReadContextBlock: "",
-            resourceContextBlock: "",
             rawPdfMode,
           }),
           prefixLatestUserWithContext:

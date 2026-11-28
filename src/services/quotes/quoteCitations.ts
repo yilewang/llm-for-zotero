@@ -51,6 +51,7 @@ import {
   quoteTokenPattern,
   quoteTokenSource,
 } from "./quoteTokenIds";
+import { escapeRegExp } from "../../core/values";
 
 export const QUOTE_CITATION_PATTERN = quoteTokenPattern("quote");
 const BLOCKQUOTE_WRAPPED_QUOTE_CITATION_LINE_SOURCE = `^[ \\t]*(?:>[ \\t]*)+${quoteTokenSource("quote")}[ \\t]*$`;
@@ -648,10 +649,6 @@ export function isNonSourceQuoteLabel(value: string): boolean {
   return isNonSourceCitationLabel(value);
 }
 
-export function isSectionOnlyCitationLabel(value: string): boolean {
-  return isNonSourceQuoteLabel(value);
-}
-
 export function isCanonicalQuoteSourceLabel(value: string): boolean {
   return isCanonicalSourceCitationLabel(value);
 }
@@ -680,7 +677,7 @@ function parseCitationOnlyLine(value: string): string | null {
   return null;
 }
 
-function stripBlockquoteMarker(line: string): string {
+export function stripBlockquoteMarker(line: string): string {
   return line.replace(/^[ \t]*(?:>[ \t]?)+/, "");
 }
 
@@ -2184,31 +2181,6 @@ export function buildQuoteSourceIndex(params: {
   return { quoteCitations, sources, metadataTexts: [...metadataTextSet] };
 }
 
-/**
- * A review-citation index must include the citations themselves, so it cannot
- * be the cached evidence-only index. It can still borrow that index's source
- * text indexes, which are the expensive part: full-paper text is normalized
- * and indexed once per evidence scope instead of once per validated message.
- */
-export function withReusableQuoteTextIndexes(
-  sourceTexts: QuoteSourceText[] | undefined | null,
-  prepared: QuoteSourceIndex,
-): QuoteSourceText[] {
-  const indexesBySourceText = new Map<string, QuoteTextIndex>();
-  for (const entry of prepared.sources) {
-    if (entry.origin !== "source-text" || !entry.textIndex) continue;
-    indexesBySourceText.set(entry.sourceText, entry.textIndex);
-  }
-  return (sourceTexts || []).map((source) => {
-    if (source.textIndex) return source;
-    const normalized = normalizeMultilineText(source.sourceText || source.text);
-    const textIndex = normalized
-      ? indexesBySourceText.get(normalized)
-      : undefined;
-    return textIndex ? { ...source, textIndex } : source;
-  });
-}
-
 export function resolveExactDisplayedQuoteCitation(params: {
   quoteText: string;
   citationLabel?: string;
@@ -2549,15 +2521,6 @@ export function recheckPartialPageLocation(
 const PARAGRAPH_LOCATE_MISS_CACHE_LIMIT = 500;
 const paragraphLocateMisses = new Set<string>();
 let paragraphLocateSearchRuns = 0;
-
-/** Number of full searches run; tests read it to prove a miss was cached. */
-export function getParagraphLocateSearchRunCount(): number {
-  return paragraphLocateSearchRuns;
-}
-
-export function clearParagraphLocateMissCache(): void {
-  paragraphLocateMisses.clear();
-}
 
 function hashForMissCache(value: string): string {
   let hash = 5381;
@@ -3266,24 +3229,6 @@ function cacheDisplayedQuoteAnchorMatches(
       cache.estimatedBytes - (oldest?.estimatedBytes || 0),
     );
   }
-}
-
-export function __cacheDisplayedQuoteAnchorMatchesForTest(
-  sourceIndex: QuoteSourceIndex,
-  cacheKey: string,
-  matches: QuoteTextAnchorMatch[],
-): void {
-  cacheDisplayedQuoteAnchorMatches(sourceIndex, cacheKey, matches);
-}
-
-export function __getDisplayedQuoteAnchorMatchCacheStatsForTest(
-  sourceIndex: QuoteSourceIndex,
-): { entries: number; estimatedBytes: number } {
-  const cache = displayedQuoteAnchorMatchCache.get(sourceIndex);
-  return {
-    entries: cache?.entries.size || 0,
-    estimatedBytes: cache?.estimatedBytes || 0,
-  };
 }
 
 function findDisplayedQuoteAnchorMatch(params: {
@@ -4404,10 +4349,6 @@ function extractLeadingParentheticalLabel(value: string): {
 
 function normalizeCitationRemainder(value: string | undefined): string {
   return stripLeadingCitationSeparators(normalizeMultilineText(value || ""));
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function stripMetadataQuoteCitationPlaceholders(
@@ -5531,29 +5472,6 @@ export function normalizeQuoteCitationPlaceholdersForDisplay(
     markdown,
     normalizeQuoteCitationPlaceholderBoundariesInSegment,
   );
-}
-
-export function findUnresolvedQuoteCitationPlaceholderIds(
-  markdown: string,
-  quoteCitations: QuoteCitation[] | undefined | null,
-): string[] {
-  if (!markdown) return [];
-  QUOTE_CITATION_PATTERN.lastIndex = 0;
-  const matches = Array.from(markdown.matchAll(QUOTE_CITATION_PATTERN));
-  QUOTE_CITATION_PATTERN.lastIndex = 0;
-  if (!matches.length) return [];
-  const byId = new Set(
-    normalizeQuoteCitations(quoteCitations).map((citation) => citation.id),
-  );
-  const unresolved: string[] = [];
-  const seen = new Set<string>();
-  for (const match of matches) {
-    const id = match[1] || "";
-    if (!id || byId.has(id) || seen.has(id)) continue;
-    seen.add(id);
-    unresolved.push(id);
-  }
-  return unresolved;
 }
 
 export function replaceQuoteCitationPlaceholdersForMarkdown(

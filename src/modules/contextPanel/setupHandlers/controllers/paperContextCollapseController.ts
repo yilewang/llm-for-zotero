@@ -1,3 +1,4 @@
+import { positiveIntOrZero } from "../../../../core/values";
 export const PAPER_CONTEXT_COLLAPSE_THRESHOLD = 5;
 
 export type PaperContextCollapseState = {
@@ -19,11 +20,6 @@ type PaperContextCollapseParams = {
   threshold?: number;
 };
 
-function normalizePositiveInteger(value: unknown): number {
-  const numeric = Math.floor(Number(value));
-  return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
-}
-
 function formatSummaryLabel(paperCount: number): string {
   return `${paperCount} ${paperCount === 1 ? "item" : "items"}`;
 }
@@ -31,11 +27,10 @@ function formatSummaryLabel(paperCount: number): string {
 export function getPaperContextCollapseState(
   params: PaperContextCollapseParams,
 ): PaperContextCollapseState {
-  const itemId = normalizePositiveInteger(params.itemId);
-  const paperCount = Math.max(0, normalizePositiveInteger(params.paperCount));
+  const itemId = positiveIntOrZero(params.itemId);
+  const paperCount = Math.max(0, positiveIntOrZero(params.paperCount));
   const threshold =
-    normalizePositiveInteger(params.threshold) ||
-    PAPER_CONTEXT_COLLAPSE_THRESHOLD;
+    positiveIntOrZero(params.threshold) || PAPER_CONTEXT_COLLAPSE_THRESHOLD;
 
   if (!itemId || paperCount <= threshold) {
     if (itemId) params.expandedByItem.delete(itemId);
@@ -59,11 +54,10 @@ export function getPaperContextCollapseState(
 export function togglePaperContextCollapseState(
   params: PaperContextCollapseParams,
 ): boolean {
-  const itemId = normalizePositiveInteger(params.itemId);
-  const paperCount = Math.max(0, normalizePositiveInteger(params.paperCount));
+  const itemId = positiveIntOrZero(params.itemId);
+  const paperCount = Math.max(0, positiveIntOrZero(params.paperCount));
   const threshold =
-    normalizePositiveInteger(params.threshold) ||
-    PAPER_CONTEXT_COLLAPSE_THRESHOLD;
+    positiveIntOrZero(params.threshold) || PAPER_CONTEXT_COLLAPSE_THRESHOLD;
   if (!itemId || paperCount <= threshold) {
     if (itemId) params.expandedByItem.delete(itemId);
     return false;

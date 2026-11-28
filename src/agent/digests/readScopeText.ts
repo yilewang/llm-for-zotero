@@ -34,7 +34,7 @@ import {
   type ReadScopePageRange,
 } from "./readScope";
 
-export { LEAD_ABSTRACT_LABEL, RESULTS_SPAN_LABEL };
+export { LEAD_ABSTRACT_LABEL };
 
 /** The standard section kinds a section name can name. */
 const STANDARD_KINDS: ReadonlySet<PdfChunkKind> = new Set<PdfChunkKind>([

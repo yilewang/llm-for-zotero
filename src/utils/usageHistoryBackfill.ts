@@ -89,11 +89,14 @@ import {
   toLocalDateKey,
   type UsageEventMode,
   type UsageEventRuntime,
+  normalizePositiveInt,
 } from "./usageStore";
 import {
   isRuntimeConversationSystem,
   RUNTIME_CONVERSATION_SYSTEM_DESCRIPTORS,
 } from "../core/conversations/conversationSystems";
+import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
+import { getZoteroDb, type ZoteroDb } from "../core/zoteroDb";
 
 export const USAGE_HISTORY_BACKFILL_MIGRATION_ID = "usage-history-backfill-v1";
 
@@ -144,10 +147,6 @@ const EMPTY_RESULT: UsageHistoryBackfillResult = {
   conversations: 0,
   rowsWithTokenEstimate: 0,
   batches: 0,
-};
-
-type BackfillDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
 };
 
 type HistoryConversation = {
@@ -210,35 +209,13 @@ const CODEX_MESSAGES_TABLE = "llm_for_zotero_codex_messages";
 
 let backfillTask: Promise<UsageHistoryBackfillResult> | null = null;
 
-function getDb(): BackfillDb | null {
-  const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
-    .Zotero?.DB;
-  return typeof db?.queryAsync === "function" ? (db as BackfillDb) : null;
-}
-
 function log(message: string, error?: unknown): void {
   appLogger.warn(`LLM: ${message}`, error);
 }
 
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function normalizeTokenCount(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
-function normalizeText(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 /** Column names a table actually has; empty means the table is not there. */
 async function readTableColumns(
-  db: BackfillDb,
+  db: ZoteroDb,
   table: string,
 ): Promise<Set<string>> {
   try {
@@ -274,7 +251,7 @@ function selectList(
 }
 
 async function loadConversationsFromCatalog(
-  db: BackfillDb,
+  db: ZoteroDb,
   params: {
     catalogTable: string;
     messagesTable: string;
@@ -303,21 +280,21 @@ async function loadConversationsFromCatalog(
   for (const row of rows || []) {
     const conversationKey = normalizePositiveInt(row.conversationKey);
     if (!conversationKey) continue;
-    const kind = normalizeText(row.kind);
+    const kind = trimmedStringOrNull(row.kind);
     conversations.push({
       conversationKey,
       messagesTable: params.messagesTable,
       catalogMode: params.fixedMode ?? (kind === "paper" ? "paper" : "library"),
       libraryID: normalizePositiveInt(row.libraryID),
       paperItemID: normalizePositiveInt(row.paperItemID),
-      conversationInstanceID: normalizeText(row.conversationInstanceID),
+      conversationInstanceID: trimmedStringOrNull(row.conversationInstanceID),
     });
   }
   return conversations;
 }
 
 async function loadHistoryConversations(
-  db: BackfillDb,
+  db: ZoteroDb,
 ): Promise<HistoryConversation[]> {
   const sources: Array<{
     catalogTable: string;
@@ -351,7 +328,7 @@ async function loadHistoryConversations(
 }
 
 /** Earliest live row per conversation: the line history may not cross. */
-async function loadLiveCutoffs(db: BackfillDb): Promise<Map<number, number>> {
+async function loadLiveCutoffs(db: ZoteroDb): Promise<Map<number, number>> {
   const cutoffs = new Map<number, number>();
   const rows = (await db.queryAsync(
     `SELECT conversation_key AS conversationKey,
@@ -369,7 +346,7 @@ async function loadLiveCutoffs(db: BackfillDb): Promise<Map<number, number>> {
 }
 
 async function loadMessages(
-  db: BackfillDb,
+  db: ZoteroDb,
   messagesTable: string,
   columns: Set<string>,
   conversationKey: number,
@@ -395,7 +372,7 @@ async function loadMessages(
   )) as Array<Record<string, unknown>> | undefined;
   const messages: HistoryMessage[] = [];
   for (const row of rows || []) {
-    const role = normalizeText(row.role);
+    const role = trimmedStringOrNull(row.role);
     const timestamp = Math.floor(Number(row.timestamp));
     if (
       (role !== "user" && role !== "assistant") ||
@@ -405,11 +382,11 @@ async function loadMessages(
     messages.push({
       role,
       timestamp,
-      runMode: normalizeText(row.runMode),
-      modelName: normalizeText(row.modelName),
-      providerLabel: normalizeText(row.providerLabel),
-      contextTokens: normalizeTokenCount(row.contextTokens),
-      webchatRunState: normalizeText(row.webchatRunState),
+      runMode: trimmedStringOrNull(row.runMode),
+      modelName: trimmedStringOrNull(row.modelName),
+      providerLabel: trimmedStringOrNull(row.providerLabel),
+      contextTokens: positiveIntOrZero(row.contextTokens),
+      webchatRunState: trimmedStringOrNull(row.webchatRunState),
       text: typeof row.text === "string" ? row.text : "",
       reasoningSummary:
         typeof row.reasoningSummary === "string" ? row.reasoningSummary : "",
@@ -550,7 +527,7 @@ function rowParams(row: PendingRow): unknown[] {
   ];
 }
 
-async function insertRows(db: BackfillDb, rows: PendingRow[]): Promise<number> {
+async function insertRows(db: ZoteroDb, rows: PendingRow[]): Promise<number> {
   let batches = 0;
   for (let start = 0; start < rows.length; start += INSERT_BATCH_ROWS) {
     const batch = rows.slice(start, start + INSERT_BATCH_ROWS);
@@ -569,7 +546,7 @@ async function insertRows(db: BackfillDb, rows: PendingRow[]): Promise<number> {
   return batches;
 }
 
-async function collectRows(db: BackfillDb): Promise<PendingRow[]> {
+async function collectRows(db: ZoteroDb): Promise<PendingRow[]> {
   const conversations = await loadHistoryConversations(db);
   if (!conversations.length) return [];
   const cutoffs = await loadLiveCutoffs(db);
@@ -631,7 +608,7 @@ async function collectRows(db: BackfillDb): Promise<PendingRow[]> {
 }
 
 async function runBackfill(): Promise<UsageHistoryBackfillResult> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return EMPTY_RESULT;
   await initUsageStore();
   if (await hasConversationSchemaMigration(USAGE_HISTORY_BACKFILL_MIGRATION_ID))
@@ -741,7 +718,7 @@ type EstimateRow = {
  * unchanged stored text and writes that number in place of whatever is there,
  * so running it again lands on the same value instead of adding to itself.
  */
-async function loadHistoryEstimateRows(db: BackfillDb): Promise<EstimateRow[]> {
+async function loadHistoryEstimateRows(db: ZoteroDb): Promise<EstimateRow[]> {
   const rows = (await db.queryAsync(
     `SELECT id AS id,
             conversation_key AS conversationKey,
@@ -761,7 +738,7 @@ async function loadHistoryEstimateRows(db: BackfillDb): Promise<EstimateRow[]> {
       id,
       conversationKey,
       timestamp,
-      completionTokens: normalizeTokenCount(row.completionTokens),
+      completionTokens: positiveIntOrZero(row.completionTokens),
     });
   }
   return estimates;
@@ -775,7 +752,7 @@ async function loadHistoryEstimateRows(db: BackfillDb): Promise<EstimateRow[]> {
  * here: `buildHistoryTurns` is the same function the insert path uses, so both
  * halves of the ledger can never disagree about where a turn begins.
  */
-async function collectOutputUpdates(db: BackfillDb): Promise<OutputUpdate[]> {
+async function collectOutputUpdates(db: ZoteroDb): Promise<OutputUpdate[]> {
   const estimates = await loadHistoryEstimateRows(db);
   if (!estimates.length) return [];
   const estimatesByConversation = new Map<number, EstimateRow[]>();
@@ -850,7 +827,7 @@ async function collectOutputUpdates(db: BackfillDb): Promise<OutputUpdate[]> {
  * estimate -- and the value written is a full replacement, never an addition.
  */
 async function applyOutputUpdates(
-  db: BackfillDb,
+  db: ZoteroDb,
   updates: OutputUpdate[],
 ): Promise<number> {
   let batches = 0;
@@ -875,7 +852,7 @@ async function applyOutputUpdates(
 }
 
 async function runOutputBackfill(): Promise<UsageHistoryOutputBackfillResult> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return EMPTY_OUTPUT_RESULT;
   // Ordering, not a side effect: on a fresh profile the v1 pass writes these
   // rows complete and marks this migration with them, so running first means
@@ -969,9 +946,4 @@ export async function backfillUsageHistory(): Promise<UsageHistoryBackfillResult
     }
   })();
   return backfillTask;
-}
-
-export function resetUsageHistoryBackfillForTests(): void {
-  backfillTask = null;
-  outputBackfillTask = null;
 }

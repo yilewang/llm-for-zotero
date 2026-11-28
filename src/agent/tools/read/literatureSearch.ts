@@ -52,6 +52,7 @@ import {
   PAPER_CONTEXT_REF_SCHEMA,
   validateObject,
 } from "../shared";
+import { trimmedStringOrUndefined } from "../../../core/values";
 
 type LiteratureSearchMode =
   | "recommendations"
@@ -141,17 +142,14 @@ function literatureQueryLabel(input: LiteratureSearchInput): string {
 export const LITERATURE_SOURCE_SENTENCE =
   "Search mode can use source:'arxiv' (preprints) or source:'europepmc' (biomedical); recommendations, references and citations always use OpenAlex. Put author names in author, not in query.";
 
-function readTraceString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function buildLiteratureTraceUrl(
   result: Record<string, unknown>,
 ): string | undefined {
   const directUrl =
-    readTraceString(result.openAccessUrl) || readTraceString(result.sourceUrl);
+    trimmedStringOrUndefined(result.openAccessUrl) ||
+    trimmedStringOrUndefined(result.sourceUrl);
   if (directUrl) return directUrl;
-  const doi = readTraceString(result.doi)?.replace(
+  const doi = trimmedStringOrUndefined(result.doi)?.replace(
     /^https?:\/\/(?:dx\.)?doi\.org\//i,
     "",
   );
@@ -163,7 +161,7 @@ function buildLiteratureTraceCreator(
   patch: Record<string, unknown>,
 ): string {
   const authors = Array.isArray(paper.authors)
-    ? paper.authors.map(readTraceString).filter(Boolean)
+    ? paper.authors.map(trimmedStringOrUndefined).filter(Boolean)
     : [];
   if (authors.length) {
     return `${authors[0]}${authors.length > 1 ? " et al." : ""}`;
@@ -174,8 +172,11 @@ function buildLiteratureTraceCreator(
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
     const creator = entry as Record<string, unknown>;
     const name =
-      readTraceString(creator.name) ||
-      [readTraceString(creator.firstName), readTraceString(creator.lastName)]
+      trimmedStringOrUndefined(creator.name) ||
+      [
+        trimmedStringOrUndefined(creator.firstName),
+        trimmedStringOrUndefined(creator.lastName),
+      ]
         .filter(Boolean)
         .join(" ");
     if (name) return name;
@@ -190,9 +191,9 @@ function buildLiteratureTraceYear(
   if (typeof paper.year === "number" && Number.isFinite(paper.year)) {
     return String(Math.trunc(paper.year));
   }
-  const explicitYear = readTraceString(paper.year);
+  const explicitYear = trimmedStringOrUndefined(paper.year);
   if (explicitYear && /^\d{4}$/.test(explicitYear)) return explicitYear;
-  const date = readTraceString(patch.date);
+  const date = trimmedStringOrUndefined(patch.date);
   return date?.match(/\b\d{4}\b/)?.[0] || "n.d.";
 }
 
@@ -210,9 +211,9 @@ function buildLiteratureTraceDetails(
       : {};
   const details: AgentTraceDetail[] = [];
   const query =
-    readTraceString(input.query) ||
-    readTraceString(input.title) ||
-    readTraceString(input.author);
+    trimmedStringOrUndefined(input.query) ||
+    trimmedStringOrUndefined(input.title) ||
+    trimmedStringOrUndefined(input.author);
   if (query) details.push({ label: "Query", value: query });
   const reason = buildOutsideSearchReasonDetail(input);
   if (reason) details.push(reason);
@@ -228,9 +229,9 @@ function buildLiteratureTraceDetails(
         ? (paper.patch as Record<string, unknown>)
         : {};
     const title =
-      readTraceString(paper.title) ||
-      readTraceString(paper.displayTitle) ||
-      readTraceString(patch.title);
+      trimmedStringOrUndefined(paper.title) ||
+      trimmedStringOrUndefined(paper.displayTitle) ||
+      trimmedStringOrUndefined(patch.title);
     if (!title) continue;
     const creator = buildLiteratureTraceCreator(paper, patch);
     const year = buildLiteratureTraceYear(paper, patch);

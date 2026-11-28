@@ -27,6 +27,8 @@ pref("inlineAskDeletedPrompts", "");
 pref("inlineAskModelEntryId", "");
 pref("inlineAskReasoning", "");
 pref("inlineAskTextSize", 100);
+pref("noteInlinePrompts", "");
+pref("noteInlineDeletedPrompts", "");
 pref("semanticScholarApiKey", "");
 pref("temperaturePrimary", "0.3");
 pref("maxTokensPrimary", "4096");

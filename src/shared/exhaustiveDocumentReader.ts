@@ -14,6 +14,7 @@ import {
 } from "../utils/llmClient";
 import { resolveUtilityReasoningPlan } from "../utils/utilityLLM";
 import { getModelOutputTokenLimit } from "../modelCapabilities";
+import { collapseWhitespace } from "../core/values";
 
 /**
  * Batch digests in flight at once. Three cut a full read to about a third of
@@ -205,10 +206,6 @@ export type ExhaustiveDocumentReaderParams = {
   }) => void;
 };
 
-function normalizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
-
 function hashText(value: string): string {
   return fnv1a32(value);
 }
@@ -336,7 +333,7 @@ export function createExhaustiveBatchAnalyzer(
       ],
     });
     const parsed = extractJsonObject(raw);
-    const digest = normalizeText(parsed?.digest);
+    const digest = collapseWhitespace(parsed?.digest);
     if (!digest) throw new Error("The exhaustive reader returned no digest");
     const relevantChunkIds = Array.isArray(parsed?.relevantChunkIds)
       ? parsed.relevantChunkIds
@@ -753,7 +750,7 @@ async function readBatch(params: {
     if (!outputs.length) throw lastError;
     return {
       digest: outputs
-        .map((output) => normalizeText(output.digest))
+        .map((output) => collapseWhitespace(output.digest))
         .join("\n\n"),
       relevantChunkIds: Array.from(
         new Set(outputs.flatMap((output) => output.relevantChunkIds)),
@@ -922,7 +919,7 @@ export async function readDocumentsExhaustively(
       const { batchIndex, batchCount, chunks } = task.input;
       const error =
         task.error ??
-        (normalizeText(task.output?.digest)
+        (collapseWhitespace(task.output?.digest)
           ? undefined
           : new Error("The exhaustive reader returned no digest"));
       if (error !== undefined || !task.output) {
@@ -962,7 +959,7 @@ export async function readDocumentsExhaustively(
       digests.push({
         batchIndex,
         chunkIndexes: [...allowed],
-        digest: normalizeText(task.output.digest),
+        digest: collapseWhitespace(task.output.digest),
       });
     }
 

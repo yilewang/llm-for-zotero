@@ -20,6 +20,9 @@ import {
   type AgentPurgeDb,
 } from "../store/inTransactionDelete";
 import { normalizeQuoteTokenId } from "../../services/quotes/quoteTokenIds";
+import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
+import { stableJson } from "../store/stableJson";
+import { getZoteroDb } from "../../core/zoteroDb";
 
 export type AgentCacheEvidenceActivity = {
   toolName: string;
@@ -62,10 +65,6 @@ type AgentEvidenceEntry = {
   lastSeenAt: number;
 };
 
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
 const MAX_EVIDENCE_ENTRIES = 12;
 const MAX_RENDERED_EVIDENCE_ENTRIES = 8;
 const MAX_SNIPPETS_PER_ENTRY = 4;
@@ -78,15 +77,6 @@ const evidenceLedger = new Map<string, Map<string, AgentEvidenceEntry>>();
 const hydratedConversations = new Set<string>();
 let initPromise: Promise<boolean> | null = null;
 
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
-
 function logEvidenceStoreError(message: string, error: unknown): void {
   const toolkit = (
     globalThis as typeof globalThis & {
@@ -97,7 +87,7 @@ function logEvidenceStoreError(message: string, error: unknown): void {
 }
 
 async function ensureAgentEvidenceStore(): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return false;
   if (initPromise) return initPromise;
   initPromise = (async () => {
@@ -137,7 +127,7 @@ export async function initAgentEvidenceStore(): Promise<boolean> {
 }
 
 function lifecycleKey(conversationKey: number): string {
-  const normalized = normalizePositiveInt(conversationKey);
+  const normalized = positiveIntOrUndefined(conversationKey);
   return `${normalized || 0}`;
 }
 
@@ -154,38 +144,9 @@ function normalizeEvidenceText(value: unknown): string {
   return normalizeText(value, MAX_SNIPPET_CHARS);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function normalizeNumber(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
 }
 
 function ledgerForConversation(
@@ -217,7 +178,7 @@ function deserializeEvidenceEntry(
   value: unknown,
   resourceSignature?: string,
 ): AgentEvidenceEntry | null {
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   const key = normalizeText(record.key, 240);
   const toolName = normalizeText(record.toolName, 80);
   const label = normalizeText(record.label, 120);
@@ -233,9 +194,9 @@ function deserializeEvidenceEntry(
     toolName,
     label,
     snippets,
-    count: Math.max(1, normalizePositiveInt(record.count) || 1),
-    firstSeenAt: Math.max(0, normalizePositiveInt(record.firstSeenAt) || 0),
-    lastSeenAt: Math.max(0, normalizePositiveInt(record.lastSeenAt) || 0),
+    count: Math.max(1, positiveIntOrUndefined(record.count) || 1),
+    firstSeenAt: Math.max(0, positiveIntOrUndefined(record.firstSeenAt) || 0),
+    lastSeenAt: Math.max(0, positiveIntOrUndefined(record.lastSeenAt) || 0),
   };
   const targetLabel = normalizeText(record.targetLabel, 180);
   if (targetLabel) entry.targetLabel = targetLabel;
@@ -243,9 +204,9 @@ function deserializeEvidenceEntry(
   if (detail) entry.detail = detail;
   const sourceKind = normalizeText(record.sourceKind, 80);
   if (sourceKind) entry.sourceKind = sourceKind;
-  const itemId = normalizePositiveInt(record.itemId);
+  const itemId = positiveIntOrUndefined(record.itemId);
   if (itemId) entry.itemId = itemId;
-  const contextItemId = normalizePositiveInt(record.contextItemId);
+  const contextItemId = positiveIntOrUndefined(record.contextItemId);
   if (contextItemId) entry.contextItemId = contextItemId;
   const title = normalizeText(record.title, 200);
   if (title) entry.title = title;
@@ -261,9 +222,9 @@ function deserializeEvidenceEntry(
 }
 
 function normalizePaperContext(value: unknown): Partial<PaperContextRef> {
-  const record = normalizeRecord(value);
-  const itemId = normalizePositiveInt(record.itemId);
-  const contextItemId = normalizePositiveInt(record.contextItemId);
+  const record = recordOrEmpty(value);
+  const itemId = positiveIntOrUndefined(record.itemId);
+  const contextItemId = positiveIntOrUndefined(record.contextItemId);
   const title = normalizeText(record.title, 120);
   const firstCreator = normalizeText(record.firstCreator, 80);
   const year = normalizeText(record.year, 16);
@@ -292,12 +253,13 @@ function targetFromRecord(value: unknown): {
   contextItemId?: number;
   title?: string;
 } {
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   const paperContext = normalizePaperContext(record.paperContext);
   return {
-    itemId: normalizePositiveInt(record.itemId) || paperContext.itemId,
+    itemId: positiveIntOrUndefined(record.itemId) || paperContext.itemId,
     contextItemId:
-      normalizePositiveInt(record.contextItemId) || paperContext.contextItemId,
+      positiveIntOrUndefined(record.contextItemId) ||
+      paperContext.contextItemId,
     title: normalizeText(record.title, 120) || paperContext.title,
   };
 }
@@ -319,7 +281,7 @@ function extractTargets(
   args: unknown,
   request: AgentRuntimeRequest,
 ): Array<{ itemId?: number; contextItemId?: number; title?: string }> {
-  const record = normalizeRecord(args);
+  const record = recordOrEmpty(args);
   const rawTargets = Array.isArray(record.targets) ? record.targets : [];
   const targets = rawTargets
     .map(targetFromRecord)
@@ -337,7 +299,7 @@ function extractTargets(
     : [];
 }
 
-function formatTargetLabel(target: {
+export function formatTargetLabel(target: {
   title?: string;
   itemId?: number;
   contextItemId?: number;
@@ -351,8 +313,11 @@ function formatTargetLabel(target: {
   return "";
 }
 
-function buildReadDetail(toolName: string, args: unknown): string | undefined {
-  const record = normalizeRecord(args);
+export function buildReadDetail(
+  toolName: string,
+  args: unknown,
+): string | undefined {
+  const record = recordOrEmpty(args);
   if (toolName === "paper_read") {
     const mode = normalizeText(record.mode, 40) || "overview";
     const pieces = [`mode=${mode}`];
@@ -369,7 +334,7 @@ function buildReadDetail(toolName: string, args: unknown): string | undefined {
   return undefined;
 }
 
-function fileNameForPath(filePath: string): string {
+export function fileNameForPath(filePath: string): string {
   return filePath.split(/[\\/]/).pop() || filePath;
 }
 
@@ -377,7 +342,7 @@ function normalizePathForPrefix(value: string): string {
   return value.replace(/\\/g, "/").replace(/\/+$/g, "");
 }
 
-function isLikelyMineruReadPath(filePath: string): boolean {
+export function isLikelyMineruReadPath(filePath: string): boolean {
   const normalized = filePath.toLowerCase();
   if (!normalized.includes("mineru")) return false;
   return (
@@ -412,7 +377,7 @@ function findMineruPaperTarget(
 }
 
 function snippetFromRecord(value: unknown): AgentEvidenceSnippet | null {
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   const text = normalizeEvidenceText(record.text || record.snippet);
   if (!text) return null;
   const snippet: AgentEvidenceSnippet = { text };
@@ -426,7 +391,7 @@ function snippetFromRecord(value: unknown): AgentEvidenceSnippet | null {
   if (pageLabel) snippet.pageLabel = pageLabel;
   const chunkKind = normalizeText(record.chunkKind, 40);
   if (chunkKind) snippet.chunkKind = chunkKind;
-  const chunkIndex = normalizePositiveInt(record.chunkIndex);
+  const chunkIndex = positiveIntOrUndefined(record.chunkIndex);
   if (chunkIndex !== undefined) snippet.chunkIndex = chunkIndex;
   const quoteCitationId = normalizeQuoteTokenId(
     normalizeText(record.quoteCitationId, 80),
@@ -453,13 +418,13 @@ function targetFromPaperContext(value: unknown): {
 function buildPaperReadEvidenceEntries(
   activity: AgentCacheEvidenceActivity,
 ): AgentEvidenceEntry[] {
-  const content = normalizeRecord(activity.content);
+  const content = recordOrEmpty(activity.content);
   const mode = normalizeText(content.mode, 40) || "overview";
   const detail = buildReadDetail(activity.toolName, activity.input);
   const entries: AgentEvidenceEntry[] = [];
   if (mode === "targeted" && Array.isArray(content.papers)) {
     for (const paper of content.papers) {
-      const record = normalizeRecord(paper);
+      const record = recordOrEmpty(paper);
       const target = targetFromPaperContext(record.paperContext);
       const passages = Array.isArray(record.passages) ? record.passages : [];
       const snippets = passages
@@ -490,7 +455,7 @@ function buildPaperReadEvidenceEntries(
 
   if (Array.isArray(content.results)) {
     for (const result of content.results) {
-      const record = normalizeRecord(result);
+      const record = recordOrEmpty(result);
       const target = targetFromPaperContext(record.paperContext);
       const snippet = snippetFromRecord(record);
       if (!snippet) continue;
@@ -521,7 +486,7 @@ function buildPaperReadEvidenceEntries(
 function buildFileIoEvidenceEntry(
   activity: AgentCacheEvidenceActivity,
 ): AgentEvidenceEntry | null {
-  const input = normalizeRecord(activity.input);
+  const input = recordOrEmpty(activity.input);
   if (input.action !== "read") return null;
   const filePath = normalizeText(input.filePath, 1024);
   if (!filePath || !isLikelyMineruReadPath(filePath)) return null;
@@ -529,10 +494,10 @@ function buildFileIoEvidenceEntry(
   const text =
     typeof activity.content === "string"
       ? normalizeEvidenceText(activity.content)
-      : normalizeEvidenceText(normalizeRecord(activity.content).content);
+      : normalizeEvidenceText(recordOrEmpty(activity.content).content);
   const snippets = text ? [{ text }] : [];
-  const offset = normalizePositiveInt(input.offset);
-  const length = normalizePositiveInt(input.length);
+  const offset = positiveIntOrUndefined(input.offset);
+  const length = positiveIntOrUndefined(input.length);
   const fileName = fileNameForPath(filePath);
   const detail =
     offset !== undefined || length !== undefined
@@ -610,7 +575,7 @@ function buildGenericReadEvidenceEntries(
 }
 
 function collectGenericSnippets(content: unknown): AgentEvidenceSnippet[] {
-  const record = normalizeRecord(content);
+  const record = recordOrEmpty(content);
   const candidates: unknown[] = [];
   if (Array.isArray(record.results)) candidates.push(...record.results);
   if (Array.isArray(record.snippets)) candidates.push(...record.snippets);
@@ -635,14 +600,14 @@ function collectGenericSnippets(content: unknown): AgentEvidenceSnippet[] {
 function buildReadAttachmentEvidenceEntry(
   activity: AgentCacheEvidenceActivity,
 ): AgentEvidenceEntry | null {
-  const content = normalizeRecord(activity.content);
+  const content = recordOrEmpty(activity.content);
   const text = normalizeEvidenceText(content.textContent);
   if (!text) return null;
   const paperContext = normalizePaperContext(content.paperContext);
-  const parentItem = normalizeRecord(content.parentItem);
-  const attachmentId = normalizePositiveInt(content.attachmentId);
+  const parentItem = recordOrEmpty(content.parentItem);
+  const attachmentId = positiveIntOrUndefined(content.attachmentId);
   const target = {
-    itemId: paperContext.itemId || normalizePositiveInt(parentItem.itemId),
+    itemId: paperContext.itemId || positiveIntOrUndefined(parentItem.itemId),
     contextItemId: paperContext.contextItemId || attachmentId,
     title:
       normalizeText(content.title, 120) ||
@@ -757,7 +722,7 @@ async function persistEvidenceLedger(
   // A temporary side chat's key (reserved band) is never persisted.
   if (isEphemeralConversationKey(conversationKey)) return;
   const dbReady = await ensureAgentEvidenceStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   const entries = Array.from(ledger.values())
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
@@ -807,13 +772,13 @@ async function persistEvidenceLedger(
 export async function hydrateAgentEvidenceCache(
   conversationKeyValue: number,
 ): Promise<void> {
-  const conversationKey = normalizePositiveInt(conversationKeyValue);
+  const conversationKey = positiveIntOrUndefined(conversationKeyValue);
   if (!conversationKey) return;
   const expectedGeneration = getConversationWriteGeneration(conversationKey);
   const key = lifecycleKey(conversationKey);
   if (hydratedConversations.has(key)) return;
   const dbReady = await ensureAgentEvidenceStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     const rows = (await db.queryAsync(
@@ -866,21 +831,21 @@ export async function clearPersistedAgentEvidence(
     evidenceLedger.clear();
     hydratedConversations.clear();
   } else {
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (conversationKey) {
       evidenceLedger.delete(lifecycleKey(conversationKey));
       hydratedConversations.delete(lifecycleKey(conversationKey));
     }
   }
   const dbReady = await ensureAgentEvidenceStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     if (conversationKeyValue === undefined) {
       await db.queryAsync(`DELETE FROM ${EVIDENCE_TABLE}`);
       return;
     }
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (!conversationKey) return;
     await db.queryAsync(
       `DELETE FROM ${EVIDENCE_TABLE} WHERE conversation_key = ?`,
@@ -896,7 +861,7 @@ export async function commitAgentCacheEvidenceActivities(params: {
   activities: AgentCacheEvidenceActivity[];
   resourceSignature?: string;
 }): Promise<void> {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey || !params.activities.length) return;
   if (isConversationKeyRetiredInMemory(conversationKey)) return;
   const ledger = ensureLedgerForConversation(conversationKey);
@@ -915,7 +880,7 @@ export function clearAgentEvidenceCache(): void {
   hydratedConversations.clear();
 }
 
-function truncateMiddle(value: string, maxLength = 96): string {
+export function truncateMiddle(value: string, maxLength = 96): string {
   if (value.length <= maxLength) return value;
   const head = value.slice(0, Math.floor(maxLength / 2) - 2);
   const tail = value.slice(value.length - Math.floor(maxLength / 2) + 1);
@@ -1044,7 +1009,7 @@ export function buildAgentEvidenceContextBlock(params: {
   request?: AgentRuntimeRequest;
   resourceSignature?: string;
 }): string {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey) return "";
   const ledger = ledgerForConversation(conversationKey);
   if (!ledger?.size) return "";

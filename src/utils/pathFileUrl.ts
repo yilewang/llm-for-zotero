@@ -1,5 +1,1 @@
-export {
-  fileUrlToPath,
-  toFileUrl,
-  toFileUrl as pathToFileUrl,
-} from "./localPath";
+export { fileUrlToPath, toFileUrl } from "./localPath";

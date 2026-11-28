@@ -10,6 +10,7 @@ import {
   isAbstractCoveredLabel,
   type ReadScope,
 } from "../digests/readScope";
+import { recordOrNull, trimmedStringOrUndefined } from "../../core/values";
 
 type Candidate = {
   itemId?: number;
@@ -23,12 +24,6 @@ type ObservationSeed = {
   capabilities: ReadObservationCapability[];
 };
 
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function positive(value: unknown): number | undefined {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
@@ -39,21 +34,17 @@ function nonNegative(value: unknown): number | undefined {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
-function text(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function candidate(value: unknown): Candidate | null {
-  const input = record(value);
+  const input = recordOrNull(value);
   if (!input) return null;
-  const paper = record(input.paperContext);
+  const paper = recordOrNull(input.paperContext);
   const result = {
     itemId: positive(paper?.itemId ?? input.itemId ?? input.itemID),
     contextItemId: positive(
       paper?.contextItemId ?? input.contextItemId ?? input.contextItemID,
     ),
     pageIndex: nonNegative(input.pageIndex ?? input.pageHintIndex),
-    sourceFingerprint: text(
+    sourceFingerprint: trimmedStringOrUndefined(
       input.sourceFingerprint ?? input.documentFingerprint,
     ),
   };
@@ -61,7 +52,7 @@ function candidate(value: unknown): Candidate | null {
 }
 
 function directRows(result: unknown): unknown[] {
-  const output = record(result);
+  const output = recordOrNull(result);
   if (!output) return [];
   // moreResults: the rows a sized list view shows briefly (only views carry
   // it), so the evidence refs of a briefly listed paper stay with it.
@@ -75,22 +66,24 @@ function directRows(result: unknown): unknown[] {
   ].flatMap((key) =>
     Array.isArray(output[key])
       ? (output[key] as unknown[])
-      : record(output[key])
+      : recordOrNull(output[key])
         ? Object.values(output[key] as Record<string, unknown>)
         : [],
   );
 }
 
 function rowsAt(result: unknown, key: string): unknown[] {
-  const output = record(result);
+  const output = recordOrNull(result);
   if (!output) return [];
   const value = output[key];
   if (Array.isArray(value)) return value;
-  return record(value) ? Object.values(value as Record<string, unknown>) : [];
+  return recordOrNull(value)
+    ? Object.values(value as Record<string, unknown>)
+    : [];
 }
 
 function hasText(value: unknown, keys: readonly string[]): boolean {
-  const input = record(value);
+  const input = recordOrNull(value);
   return Boolean(
     input &&
     keys.some(
@@ -100,7 +93,7 @@ function hasText(value: unknown, keys: readonly string[]): boolean {
 }
 
 function hasRows(value: unknown, keys: readonly string[]): boolean {
-  const input = record(value);
+  const input = recordOrNull(value);
   return Boolean(
     input &&
     keys.some((key) => Array.isArray(input[key]) && input[key].length > 0),
@@ -108,13 +101,13 @@ function hasRows(value: unknown, keys: readonly string[]): boolean {
 }
 
 function positiveCount(value: unknown, key: string): boolean {
-  const input = record(value);
+  const input = recordOrNull(value);
   const count = Number(input?.[key]);
   return Number.isFinite(count) && count > 0;
 }
 
 function inputCandidates(input: unknown): Candidate[] {
-  const args = record(input) || {};
+  const args = recordOrNull(input) || {};
   const directInput = [
     args.target,
     ...(Array.isArray(args.targets) ? args.targets : []),
@@ -147,15 +140,15 @@ function observationSeeds(
   input: unknown,
   result: unknown,
 ): ObservationSeed[] {
-  const args = record(input) || {};
-  const output = record(result) || {};
+  const args = recordOrNull(input) || {};
+  const output = recordOrNull(result) || {};
   if (isCatalogToolName(toolName)) {
     return seedRows(directRows(result), () => ["metadata"]);
   }
   if (toolName === "library_read") {
     return seedRows(directRows(result), (row) => {
-      const value = record(row) || {};
-      const metadata = record(value.metadata);
+      const value = recordOrNull(row) || {};
+      const metadata = recordOrNull(value.metadata);
       const capabilities: ReadObservationCapability[] = [];
       if (metadata && Object.keys(metadata).length)
         capabilities.push("metadata");
@@ -180,7 +173,7 @@ function observationSeeds(
       () => ["metadata"],
     );
     const snippets = seedRows(rowsAt(result, "snippets"), (row) => {
-      const value = record(row) || {};
+      const value = recordOrNull(row) || {};
       if (!hasText(value, ["snippet", "surroundingText", "text"])) return [];
       const sourceKind = String(value.sourceKind || "").toLowerCase();
       if (sourceKind === "abstract") return ["metadata", "abstract"];
@@ -200,18 +193,20 @@ function observationSeeds(
     // row an earlier call of the run already returned (its digest repeated)
     // or reported is not read again.
     return seedRows(rowsAt(result, "papers"), (row) => {
-      const value = record(row) || {};
+      const value = recordOrNull(row) || {};
       if (
         value.status !== "digested" ||
         value.alreadyReturned === true ||
         value.alreadyReported === true
       )
         return [];
-      const source = record(value.source) || {};
+      const source = recordOrNull(value.source) || {};
       // A scoped row attests what its scope covered (`readScope.ts`).
       return digestReadCapabilities(
         {
-          scope: (record(source.scope) || undefined) as ReadScope | undefined,
+          scope: (recordOrNull(source.scope) || undefined) as
+            | ReadScope
+            | undefined,
           complete: source.complete === true,
           readCharacters: Number(source.readCharacters) || 0,
           covered: Array.isArray(source.covered)
@@ -240,8 +235,11 @@ function observationSeeds(
       return seedRows(rowsAt(result, "papers"), (row) => {
         // A section the read budget left out (no characters) was not read.
         const sections = rowsAt(row, "sections")
-          .filter((entry) => Number(record(entry)?.characters) > 0)
-          .map((entry) => text(record(entry)?.section) || "")
+          .filter((entry) => Number(recordOrNull(entry)?.characters) > 0)
+          .map(
+            (entry) =>
+              trimmedStringOrUndefined(recordOrNull(entry)?.section) || "",
+          )
           .filter(Boolean);
         if (!sections.length) return [];
         return sections.every(isAbstractCoveredLabel) ? ["abstract"] : ["body"];
@@ -253,7 +251,7 @@ function observationSeeds(
       hasRows(output, ["passages", "snippets", "chunks"]);
     const aggregateHasFigure = hasRows(output, ["figures", "images", "pages"]);
     return seedRows(sources, (row) => {
-      const value = record(row) || {};
+      const value = recordOrNull(row) || {};
       const capabilities: ReadObservationCapability[] = [];
       if (mode === "overview") {
         const backend = String(value.backend || "").toLowerCase();
@@ -321,7 +319,7 @@ function zoteroIdentity(source: Candidate): {
     ? items.get(Number(contextItem.parentID))
     : null;
   const item = bibliographicItem || parent || contextItem;
-  const itemKey = text(item?.key);
+  const itemKey = trimmedStringOrUndefined(item?.key);
   const libraryID = positive(item?.libraryID);
   if (!itemKey || !libraryID) return null;
   // The context item is the file that was read. A standalone PDF is also its
@@ -336,7 +334,7 @@ function zoteroIdentity(source: Candidate): {
   return {
     libraryID,
     itemKey,
-    attachmentItemKey: text(attachment?.key),
+    attachmentItemKey: trimmedStringOrUndefined(attachment?.key),
   };
 }
 
@@ -389,10 +387,12 @@ export async function createTrustedReadObservations(params: {
 }): Promise<TrustedReadObservation[]> {
   const seeds = observationSeeds(params.toolName, params.input, params.result);
   if (!seeds.length) return [];
-  const args = record(params.input) || {};
+  const args = recordOrNull(params.input) || {};
   const readMode =
     params.toolName === "paper_read"
-      ? text(args.mode) || text(record(params.result)?.mode) || "overview"
+      ? trimmedStringOrUndefined(args.mode) ||
+        trimmedStringOrUndefined(recordOrNull(params.result)?.mode) ||
+        "overview"
       : params.toolName === "paper_digest"
         ? "digest"
         : undefined;

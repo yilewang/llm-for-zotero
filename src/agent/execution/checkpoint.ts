@@ -2,8 +2,7 @@ import type { MaterialRef } from "../documents/materialRef";
 import type { AgentExecutionContext, AgentRunEventRecord } from "../types";
 import { ExecutionCheckpointFold } from "./checkpointEvents";
 import type { ExecutionCheckpoint } from "./types";
-
-export type { ExecutionCheckpoint, ExecutionCheckpointTask } from "./types";
+import { recordOrNull } from "../../core/values";
 
 function requiredText(value: unknown, label: string): string {
   const normalized = typeof value === "string" ? value.trim() : "";
@@ -63,12 +62,6 @@ export function assertCheckpointOwner(
   }
 }
 
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 /**
  * Collect only explicit journal-reference fields from a persisted tool result.
  * The traversal lets composite tools expose per-item actions without copying
@@ -107,7 +100,7 @@ export function collectJournalActionIds(value: unknown): string[] {
 
 /** Narrow an untrusted persisted payload to the one material identity. */
 export function parseMaterialRef(value: unknown): MaterialRef | null {
-  const candidate = record(value);
+  const candidate = recordOrNull(value);
   if (
     !candidate ||
     typeof candidate.documentId !== "string" ||

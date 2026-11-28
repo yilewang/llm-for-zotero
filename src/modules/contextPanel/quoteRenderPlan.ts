@@ -10,6 +10,7 @@ import {
   QUOTE_CITATION_PATTERN,
   sanitizeInvalidStructuredSourceMarkers,
   stripQuoteCitationAnchorsFromDisplayText,
+  stripBlockquoteMarker,
 } from "../../services/quotes/quoteCitations";
 import { splitQuoteAtEllipsisInOrder } from "../../services/quotes/quoteTextSearch";
 import {
@@ -152,10 +153,6 @@ function normalizeMultilineText(value: unknown): string {
 
 function normalizeMarkdownLineEndings(value: unknown): string {
   return typeof value === "string" ? value.replace(/\r\n?/g, "\n") : "";
-}
-
-function stripBlockquoteMarker(line: string): string {
-  return line.replace(/^[ \t]*(?:>[ \t]?)+/, "");
 }
 
 function occurrenceToken(occurrenceId: string): string {
@@ -926,12 +923,6 @@ export function expandQuoteRenderPlanToMarkdown(
   );
   QUOTE_RENDER_OCCURRENCE_PATTERN.lastIndex = 0;
   return expanded;
-}
-
-export function buildQuoteDisplayMarkdown(
-  input: BuildQuoteRenderPlanInput,
-): string {
-  return buildQuoteRenderPlan(input).displayMarkdown;
 }
 
 export function buildQuoteExpandedMarkdown(

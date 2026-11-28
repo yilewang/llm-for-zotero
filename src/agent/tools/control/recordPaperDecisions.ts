@@ -9,6 +9,7 @@ import type {
   TaskPaperDecisionInput,
   TaskPaperDigestPaper,
 } from "../../context/taskPaperLedger";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * record_paper_decisions: the agent states, for each paper, whether the task
@@ -343,12 +344,6 @@ function executeRecordPaperDecisions(
   return paperDecisions.length ? { content, paperDecisions } : { content };
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 export function createRecordPaperDecisionsTool(
   lookup: PaperDecisionLookup,
 ): AgentToolDefinition<RecordPaperDecisionsInput, RecordPaperDecisionsResult> {
@@ -400,7 +395,7 @@ export function createRecordPaperDecisionsTool(
       summaries: {
         onCall: "Recording paper decisions",
         onSuccess: ({ content }) => {
-          const result = record(content);
+          const result = recordOrEmpty(content);
           const recorded = Number(result.recorded) || 0;
           if (!recorded) return "No paper decisions recorded";
           return recorded === 1

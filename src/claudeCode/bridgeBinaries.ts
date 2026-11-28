@@ -9,6 +9,7 @@ import {
   getRuntimePlatformInfo,
   type RuntimePlatform,
 } from "../utils/runtimePlatform";
+import { readRuntimeEnvValue } from "../utils/childProcessEnvironment";
 
 /**
  * Finds the two programs the Claude Code bridge needs: Node.js, which runs the
@@ -34,22 +35,6 @@ export class ClaudeBridgeBinaryNotFoundError extends Error {
 
 type BinaryEnv = Record<string, string | undefined>;
 
-function readEnvValue(key: string): string | undefined {
-  const processValue = (globalThis as any).process?.env?.[key];
-  if (typeof processValue === "string" && processValue.trim()) {
-    return processValue.trim();
-  }
-  try {
-    const servicesValue = (globalThis as any).Services?.env?.get?.(key);
-    if (typeof servicesValue === "string" && servicesValue.trim()) {
-      return servicesValue.trim();
-    }
-  } catch {
-    /* ignore */
-  }
-  return undefined;
-}
-
 const BINARY_ENV_KEYS = [
   "HOME",
   "USERPROFILE",
@@ -68,7 +53,7 @@ const BINARY_ENV_KEYS = [
 
 export function readClaudeBridgeBinaryEnv(): BinaryEnv {
   const env: BinaryEnv = {};
-  for (const key of BINARY_ENV_KEYS) env[key] = readEnvValue(key);
+  for (const key of BINARY_ENV_KEYS) env[key] = readRuntimeEnvValue(key);
   return env;
 }
 

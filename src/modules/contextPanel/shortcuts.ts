@@ -2,7 +2,6 @@ import {
   config,
   BUILTIN_SHORTCUT_FILES,
   MAX_EDITABLE_SHORTCUTS,
-  CUSTOM_SHORTCUT_ID_PREFIX,
 } from "./constants";
 import type { CustomShortcut } from "./types";
 import {

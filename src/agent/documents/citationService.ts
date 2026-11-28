@@ -25,6 +25,7 @@ import {
   quoteTokenPattern,
   quoteTokenSource,
 } from "../../services/quotes/quoteTokenIds";
+import { collapseWhitespace } from "../../core/values";
 
 const CITATION_TOKEN = quoteTokenPattern("cite");
 /** One `[[cite:ID]]` token, without a capture group. */
@@ -119,10 +120,6 @@ function escapeMarkdownLabel(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/(\[|\])/g, "\\$1");
 }
 
-function normalizeOutput(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 function numberedCitationSources(
   cluster: FormattedCitationBundle["clusters"][number],
   outsidePapers: readonly OutsidePaperSnapshot[] = [],
@@ -201,7 +198,7 @@ function linkedCitationGroups(
   const labels = new Map(
     formatted.clusters.map((cluster) => [
       cluster.citationId,
-      normalizeOutput(cluster.text).replace(/^\(|\)$/g, ""),
+      collapseWhitespace(cluster.text).replace(/^\(|\)$/g, ""),
     ]),
   );
   for (const cluster of groups) {
@@ -600,7 +597,7 @@ export async function formatDocumentCitations(params: {
   }
   const formattedClusters = formatted.clusters.map((cluster) => ({
     citationId: cluster.citationId,
-    text: normalizeOutput(cluster.text),
+    text: collapseWhitespace(cluster.text),
     html: cluster.html,
     sources: clustersById.get(cluster.citationId)!.sources,
   }));
@@ -701,7 +698,7 @@ export async function formatDocumentCitations(params: {
         }
         return {
           paperId: paper.paperId,
-          text: normalizeOutput(entry.text),
+          text: collapseWhitespace(entry.text),
           html: entry.html,
         };
       }
@@ -714,7 +711,7 @@ export async function formatDocumentCitations(params: {
       return {
         libraryID: source.libraryID,
         itemKey: source.itemKey,
-        text: normalizeOutput(entry.text),
+        text: collapseWhitespace(entry.text),
         html: entry.html,
       };
     },
@@ -749,6 +746,3 @@ export async function formatDocumentCitations(params: {
     repairs,
   };
 }
-
-/** Compatibility alias for the original Plan-only API. */
-export const formatPlanDocumentCitations = formatDocumentCitations;

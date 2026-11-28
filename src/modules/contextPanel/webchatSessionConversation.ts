@@ -1,8 +1,7 @@
 import { appLogger } from "../../core/logging";
 import { conversationRepository } from "../../core/conversations/repository";
 import { findWebchatSessionPaperConversationKey } from "../../utils/chatStore";
-
-declare const ztoolkit: any;
+import { positiveIntOrZero } from "../../core/values";
 
 export type WebChatSessionConversationResult = {
   conversationKey: number;
@@ -14,12 +13,6 @@ export type WebChatSessionConversationRepository = Pick<
   typeof conversationRepository,
   "getCatalogEntry" | "createCatalogEntry"
 >;
-
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
 
 // The find-then-create below is not atomic, and webchat-mode entry can fire
 // concurrently (rapid model toggles, the same paper open in two windows).
@@ -57,8 +50,8 @@ export async function resolveWebChatSessionConversation(params: {
     paperItemID: number,
   ) => Promise<number | null>;
 }): Promise<WebChatSessionConversationResult | null> {
-  const libraryID = normalizePositiveInt(params.libraryID);
-  const paperItemID = normalizePositiveInt(params.paperItemID);
+  const libraryID = positiveIntOrZero(params.libraryID);
+  const paperItemID = positiveIntOrZero(params.paperItemID);
   if (!libraryID || !paperItemID) return null;
   if (forcedAnchorFailures > 0) {
     forcedAnchorFailures--;
@@ -95,7 +88,7 @@ async function resolveWebChatSessionConversationUncoalesced(params: {
   const { libraryID, paperItemID } = params;
 
   try {
-    const existingKey = normalizePositiveInt(
+    const existingKey = positiveIntOrZero(
       await findExistingSessionKey(libraryID, paperItemID),
     );
     if (existingKey) {
@@ -106,8 +99,8 @@ async function resolveWebChatSessionConversationUncoalesced(params: {
       });
       if (
         existing &&
-        normalizePositiveInt(existing.paperItemID) === paperItemID &&
-        normalizePositiveInt(existing.libraryID) === libraryID
+        positiveIntOrZero(existing.paperItemID) === paperItemID &&
+        positiveIntOrZero(existing.libraryID) === libraryID
       ) {
         return {
           conversationKey: existingKey,
@@ -134,7 +127,7 @@ async function resolveWebChatSessionConversationUncoalesced(params: {
     paperItemID,
     webchatSession: true,
   });
-  const createdKey = normalizePositiveInt(created?.conversationKey);
+  const createdKey = positiveIntOrZero(created?.conversationKey);
   if (!createdKey) return null;
   return {
     conversationKey: createdKey,

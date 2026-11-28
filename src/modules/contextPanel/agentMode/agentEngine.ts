@@ -1215,9 +1215,6 @@ function extractPaperContextCandidatesFromToolContent(
   return out;
 }
 
-export const extractPaperContextCandidatesFromToolContentForTests =
-  extractPaperContextCandidatesFromToolContent;
-
 type LatestRetryPairShape = {
   userIndex: number;
   userMessage: Message;

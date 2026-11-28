@@ -30,37 +30,25 @@ import {
   buildDefaultAntigravityPaperConversationKey,
 } from "../../antigravity/conversationKeys";
 import {
-  createAntigravityGlobalPortalItem,
-  createAntigravityPaperPortalItem,
-  isAntigravityGlobalPortalItem,
-  isAntigravityPaperPortalItem,
-  resolveAntigravityPaperPortalBaseItem,
-} from "../../antigravity/portal";
+  createRuntimeGlobalPortalItem,
+  createRuntimePaperPortalItem,
+  isAnyRuntimeGlobalPortalItem,
+  isRuntimeGlobalPortalItem,
+  isRuntimePaperPortalItem,
+  resolveRuntimePaperPortalBaseItem,
+  runtimePaperPortalSystemOf,
+} from "../../services/context/runtimePortalItems";
 import { isAntigravityModeEnabled } from "../../antigravity/prefs";
 import {
   buildDefaultClaudeGlobalConversationKey,
   buildDefaultClaudePaperConversationKey,
 } from "../../claudeCode/constants";
-import {
-  createClaudeGlobalPortalItem,
-  createClaudePaperPortalItem,
-  isClaudeGlobalPortalItem,
-  isClaudePaperPortalItem,
-  resolveClaudePaperPortalBaseItem,
-} from "../../claudeCode/portal";
 import { isClaudeCodeModeEnabled } from "../../claudeCode/prefs";
 import { surfaceChoices } from "./surfaceChoices";
 import {
   buildDefaultCodexGlobalConversationKey,
   buildDefaultCodexPaperConversationKey,
 } from "../../codexAppServer/constants";
-import {
-  createCodexGlobalPortalItem,
-  createCodexPaperPortalItem,
-  isCodexGlobalPortalItem,
-  isCodexPaperPortalItem,
-  resolveCodexPaperPortalBaseItem,
-} from "../../codexAppServer/portal";
 import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
 import {
   RUNTIME_CONVERSATION_SYSTEMS,
@@ -70,9 +58,7 @@ import {
 import { isRuntimeConversationSystemEnabled } from "../../shared/conversationSystemPrefs";
 import {
   resolveNoteFocusSystemSwitch as resolveNoteFocusSystemSwitchPolicy,
-  resolveNoteEditingParentItem,
   resolveNoteEditingScope,
-  resolveNoteEditingTitle,
   resolveOpenedNotePaper,
   resolvePreferredNoteFocusSystem,
 } from "../../services/notes/scope";
@@ -163,16 +149,6 @@ export function createPaperPortalItem(
   return portalItem as unknown as Zotero.Item;
 }
 
-export function resolveNoteParentItem(
-  item: Zotero.Item | null | undefined,
-): Zotero.Item | null {
-  return resolveNoteEditingParentItem(item);
-}
-
-export function resolveNoteTitle(item: Zotero.Item | null | undefined): string {
-  return resolveNoteEditingTitle(item);
-}
-
 export function resolveActiveNoteSession(
   item: Zotero.Item | null | undefined,
 ): ActiveNoteSession | null {
@@ -188,8 +164,8 @@ export function resolveDisplayConversationKind(
   }
   if (!item) return null;
   return isGlobalPortalItem(item) ||
-    isClaudeGlobalPortalItem(item) ||
-    isCodexGlobalPortalItem(item)
+    isRuntimeGlobalPortalItem("claude_code", item) ||
+    isRuntimeGlobalPortalItem("codex", item)
     ? "global"
     : "paper";
 }
@@ -212,24 +188,15 @@ export function resolveConversationBaseItem(
   if (!targetItem) return null;
   if (
     isGlobalPortalItem(targetItem) ||
-    isClaudeGlobalPortalItem(targetItem) ||
-    isCodexGlobalPortalItem(targetItem) ||
-    isAntigravityGlobalPortalItem(targetItem)
+    isAnyRuntimeGlobalPortalItem(targetItem)
   ) {
     return null;
   }
   if (isPaperPortalItem(targetItem)) {
     return resolvePaperPortalBaseItem(targetItem);
   }
-  if (isClaudePaperPortalItem(targetItem)) {
-    return resolveClaudePaperPortalBaseItem(targetItem);
-  }
-  if (isCodexPaperPortalItem(targetItem)) {
-    return resolveCodexPaperPortalBaseItem(targetItem);
-  }
-  if (isAntigravityPaperPortalItem(targetItem)) {
-    return resolveAntigravityPaperPortalBaseItem(targetItem);
-  }
+  const runtime = runtimePaperPortalSystemOf(targetItem);
+  if (runtime) return resolveRuntimePaperPortalBaseItem(runtime, targetItem);
   if ((targetItem as any).isNote?.()) {
     return getNoteConversation(targetItem)?.note || targetItem;
   }
@@ -242,24 +209,15 @@ export function resolvePaperChatSourceItem(
   if (!targetItem) return null;
   if (
     isGlobalPortalItem(targetItem) ||
-    isClaudeGlobalPortalItem(targetItem) ||
-    isCodexGlobalPortalItem(targetItem) ||
-    isAntigravityGlobalPortalItem(targetItem)
+    isAnyRuntimeGlobalPortalItem(targetItem)
   ) {
     return null;
   }
   if (isPaperPortalItem(targetItem)) {
     return resolvePaperPortalBaseItem(targetItem);
   }
-  if (isClaudePaperPortalItem(targetItem)) {
-    return resolveClaudePaperPortalBaseItem(targetItem);
-  }
-  if (isCodexPaperPortalItem(targetItem)) {
-    return resolveCodexPaperPortalBaseItem(targetItem);
-  }
-  if (isAntigravityPaperPortalItem(targetItem)) {
-    return resolveAntigravityPaperPortalBaseItem(targetItem);
-  }
+  const runtime = runtimePaperPortalSystemOf(targetItem);
+  if (runtime) return resolveRuntimePaperPortalBaseItem(runtime, targetItem);
   if ((targetItem as any).isNote?.()) {
     return getNoteConversation(targetItem)?.note || targetItem;
   }
@@ -279,45 +237,23 @@ function resolveLibraryIdFromItem(
   return resolveActiveLibraryID() || 0;
 }
 
-/** Each runtime's portal items and default conversation keys. */
-const RUNTIME_PORTALS: Record<
+/** Each runtime's default conversation keys. */
+const RUNTIME_DEFAULT_KEYS: Record<
   RuntimeConversationSystem,
   {
-    isGlobalItem: (item: Zotero.Item | null | undefined) => boolean;
-    isPaperItem: (item: Zotero.Item | null | undefined) => boolean;
-    createGlobalItem: (
-      libraryID: number,
-      conversationKey: number,
-    ) => Zotero.Item;
-    createPaperItem: (
-      basePaperItem: Zotero.Item,
-      conversationKey: number,
-    ) => Zotero.Item;
     buildDefaultGlobalKey: (libraryID: number) => number;
     buildDefaultPaperKey: (paperItemID: number) => number;
   }
 > = {
   claude_code: {
-    isGlobalItem: isClaudeGlobalPortalItem,
-    isPaperItem: isClaudePaperPortalItem,
-    createGlobalItem: createClaudeGlobalPortalItem,
-    createPaperItem: createClaudePaperPortalItem,
     buildDefaultGlobalKey: buildDefaultClaudeGlobalConversationKey,
     buildDefaultPaperKey: buildDefaultClaudePaperConversationKey,
   },
   codex: {
-    isGlobalItem: isCodexGlobalPortalItem,
-    isPaperItem: isCodexPaperPortalItem,
-    createGlobalItem: createCodexGlobalPortalItem,
-    createPaperItem: createCodexPaperPortalItem,
     buildDefaultGlobalKey: buildDefaultCodexGlobalConversationKey,
     buildDefaultPaperKey: buildDefaultCodexPaperConversationKey,
   },
   antigravity: {
-    isGlobalItem: isAntigravityGlobalPortalItem,
-    isPaperItem: isAntigravityPaperPortalItem,
-    createGlobalItem: createAntigravityGlobalPortalItem,
-    createPaperItem: createAntigravityPaperPortalItem,
     buildDefaultGlobalKey: buildDefaultAntigravityGlobalConversationKey,
     buildDefaultPaperKey: buildDefaultAntigravityPaperConversationKey,
   },
@@ -328,8 +264,8 @@ function isRuntimePortalItemOf(
   item: Zotero.Item | null | undefined,
 ): boolean {
   return (
-    RUNTIME_PORTALS[system].isGlobalItem(item) ||
-    RUNTIME_PORTALS[system].isPaperItem(item)
+    isRuntimeGlobalPortalItem(system, item) ||
+    isRuntimePaperPortalItem(system, item)
   );
 }
 
@@ -451,7 +387,7 @@ function resolveGlobalConversationKey(
     return Math.floor(
       Number(
         recall({ system, libraryID, kind: "global", surface }) ||
-          RUNTIME_PORTALS[system].buildDefaultGlobalKey(libraryID),
+          RUNTIME_DEFAULT_KEYS[system].buildDefaultGlobalKey(libraryID),
       ),
     );
   }
@@ -487,7 +423,8 @@ export function resolveRememberedGlobalPanelItem(
     surface,
   );
   return isRuntimeConversationSystem(conversationSystem)
-    ? RUNTIME_PORTALS[conversationSystem].createGlobalItem(
+    ? createRuntimeGlobalPortalItem(
+        conversationSystem,
         normalizedLibraryID,
         conversationKey,
       )
@@ -505,7 +442,7 @@ export function resolvePaperConversationKeyForBaseItem(
   const rememberedPaperKey = Number(
     recall({ system, libraryID, kind: "paper", paperItemID, surface }) ||
       (isRuntimeConversationSystem(system)
-        ? RUNTIME_PORTALS[system].buildDefaultPaperKey(paperItemID)
+        ? RUNTIME_DEFAULT_KEYS[system].buildDefaultPaperKey(paperItemID)
         : paperItemID),
   );
   return Number.isFinite(rememberedPaperKey) && rememberedPaperKey > 0
@@ -609,7 +546,7 @@ export function resolveInitialPanelItemState(
     isPaperPortalItem(item) ||
     RUNTIME_CONVERSATION_SYSTEMS.some(
       (system) =>
-        RUNTIME_PORTALS[system].isPaperItem(item) &&
+        isRuntimePaperPortalItem(system, item) &&
         isRuntimeConversationSystemEnabled(system),
     )
   ) {
@@ -647,7 +584,8 @@ export function resolveInitialPanelItemState(
     Math.floor(rememberedPaperKey) !== paperItemID
   ) {
     item = isRuntimeConversationSystem(conversationSystem)
-      ? RUNTIME_PORTALS[conversationSystem].createPaperItem(
+      ? createRuntimePaperPortalItem(
+          conversationSystem,
           basePaperItem,
           Math.floor(rememberedPaperKey),
         )

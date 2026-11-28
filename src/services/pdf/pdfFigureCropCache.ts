@@ -13,6 +13,7 @@ import type {
   PdfFigureCandidateSource,
   PdfFigureRect,
 } from "./pdfFigureGeometry";
+import { positiveIntOrZero } from "../../core/values";
 
 export const PDF_FIGURE_CROP_CACHE_VERSION = 2;
 export const PDF_FIGURE_CROP_ALGORITHM_VERSION = 14;
@@ -79,11 +80,6 @@ type PdfFigureCropFingerprintInput = Pick<
   "itemId" | "contextItemId" | "attachmentTitle" | "title"
 >;
 
-function normalizePositiveInt(value: unknown): number {
-  const number = Math.floor(Number(value));
-  return Number.isFinite(number) && number > 0 ? number : 0;
-}
-
 function getBaseWritableDir(): string {
   const zotero = (
     globalThis as unknown as {
@@ -114,7 +110,7 @@ function getBaseWritableDir(): string {
 export function getStandalonePdfFigureCropCacheDirForAttachmentId(
   attachmentId: number,
 ): string {
-  const normalizedAttachmentId = normalizePositiveInt(attachmentId);
+  const normalizedAttachmentId = positiveIntOrZero(attachmentId);
   if (!normalizedAttachmentId) {
     throw new Error("Cannot resolve PDF figure cache without an attachment ID");
   }
@@ -198,9 +194,7 @@ export function getPdfFigureCropCacheFreshness(
   if (cache.manifestHash !== buildPdfFigureCropManifestHash(params.manifest)) {
     return { ok: false, reason: "manifest" };
   }
-  const contextItemId = normalizePositiveInt(
-    params.paperContext?.contextItemId,
-  );
+  const contextItemId = positiveIntOrZero(params.paperContext?.contextItemId);
   if (contextItemId && cache.attachmentId !== contextItemId) {
     return { ok: false, reason: "attachment" };
   }
@@ -230,22 +224,6 @@ export async function removePdfFigureCropCacheDir(
   cacheDir: string,
 ): Promise<void> {
   await removePathQuietly(getPdfFigureCropDirForCacheDir(cacheDir));
-}
-
-export function getPdfFigureCropPathForCacheDir(
-  cacheDir: string,
-  figureId: string,
-): string {
-  const safeId =
-    figureId
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "figure";
-  return joinLocalPath(
-    getPdfFigureCropImageDirForCacheDir(cacheDir),
-    `${safeId}.png`,
-  );
 }
 
 export async function readPdfFigureCropCacheFromDir(
@@ -298,27 +276,5 @@ export async function writePdfFigureCropCacheToDir(
   await writeFileBytes(
     getPdfFigureCropCachePathForCacheDir(cacheDir),
     new TextEncoder().encode(JSON.stringify(cache)),
-  );
-}
-
-export async function writePdfFigureCropBytesToDir(
-  cacheDir: string,
-  figureId: string,
-  bytes: Uint8Array,
-): Promise<string> {
-  await ensureDir(getPdfFigureCropImageDirForCacheDir(cacheDir));
-  const path = getPdfFigureCropPathForCacheDir(cacheDir, figureId);
-  await writeFileBytes(path, bytes);
-  return path;
-}
-
-export function isPdfFigureCropPath(
-  path: string | undefined,
-  cache: PdfFigureCropCache | null,
-): boolean {
-  const normalized = (path || "").replace(/\\/g, "/");
-  if (!normalized || !cache?.entries?.length) return false;
-  return cache.entries.some(
-    (entry) => entry.cropPath.replace(/\\/g, "/") === normalized,
   );
 }

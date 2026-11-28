@@ -9,6 +9,7 @@ import {
 } from "../codex/catalogSelection";
 import { CODEX_REASONING_OPTIONS } from "./constants";
 import { listCodexAppServerModels } from "./nativeClient";
+import { trimmedString } from "../core/values";
 
 /** Escape hatch in the model picker: the user names a model by hand. */
 export const CODEX_CUSTOMIZED_MODEL_OPTION_KEY = "customized";
@@ -55,10 +56,6 @@ export function setCodexAppServerModelCatalogLoaderForTests(
   catalogLoaderForTests = loader;
 }
 
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function normalizeReasoningEfforts(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const efforts: string[] = [];
@@ -69,7 +66,7 @@ function normalizeReasoningEfforts(value: unknown): string[] {
       continue;
     }
     if (!entry || typeof entry !== "object") continue;
-    const effort = normalizeString(
+    const effort = trimmedString(
       (entry as Record<string, unknown>).reasoningEffort,
     );
     if (effort) efforts.push(effort);
@@ -82,16 +79,16 @@ function normalizeCatalogModel(
 ): CodexAppServerModelCatalogEntry | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const model = normalizeString(record.model);
+  const model = trimmedString(record.model);
   if (!model) return null;
-  const displayName = normalizeString(record.displayName) || model;
-  const id = normalizeString(record.id) || model;
-  const defaultReasoningEffort = normalizeString(record.defaultReasoningEffort);
+  const displayName = trimmedString(record.displayName) || model;
+  const id = trimmedString(record.id) || model;
+  const defaultReasoningEffort = trimmedString(record.defaultReasoningEffort);
   return {
     id,
     model,
     displayName,
-    description: normalizeString(record.description),
+    description: trimmedString(record.description),
     hidden: record.hidden === true,
     supportedReasoningEfforts: normalizeReasoningEfforts(
       record.supportedReasoningEfforts,
@@ -114,7 +111,7 @@ function normalizeCatalogPage(value: unknown): {
     .filter((entry): entry is CodexAppServerModelCatalogEntry =>
       Boolean(entry),
     );
-  const nextCursor = normalizeString(record.nextCursor);
+  const nextCursor = trimmedString(record.nextCursor);
   return {
     models,
     ...(nextCursor ? { nextCursor } : {}),

@@ -218,7 +218,6 @@ const MIGRATION_OBLIGATIONS = [
   // Conversation backends reach into panel state instead of being called by it.
   "runtime:src/antigravity/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
   "runtime:src/core/conversations/repository.ts -> src/antigravity/store.ts",
-  "runtime:src/services/notes/noteTarget.ts -> src/antigravity/portal.ts",
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/conversationIdentity.ts",
   "runtime:src/claudeCode/runtimeRetention.ts -> src/modules/contextPanel/portalScope.ts",
   "runtime:src/claudeCode/store.ts -> src/modules/contextPanel/agentConversationCleanup.ts",
@@ -239,9 +238,6 @@ const MIGRATION_OBLIGATIONS = [
   "runtime:src/core/conversations/repository.ts -> src/shared/conversationRegistry.ts",
   "runtime:src/core/conversations/repository.ts -> src/shared/conversationWriteFence.ts",
   "runtime:src/core/conversations/repository.ts -> src/utils/chatStore.ts",
-  // Note targeting resolves backend portal items directly.
-  "runtime:src/services/notes/noteTarget.ts -> src/claudeCode/portal.ts",
-  "runtime:src/services/notes/noteTarget.ts -> src/codexAppServer/portal.ts",
   // The Zotero change dispatcher writes straight into the agent change journal.
   "runtime:src/services/zoteroChangeDispatcher.ts -> src/agent/store/changeJournal.ts",
   // Library-chat read strategy reads the agent research policy.

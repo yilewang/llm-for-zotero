@@ -22,7 +22,6 @@
 
 import {
   ACP_METHOD_NOT_FOUND_ERROR_CODE,
-  type AcpContentBlock,
   type AcpPermissionOption,
   type AcpRequestPermissionParams,
   type AcpRequestPermissionResult,
@@ -38,7 +37,6 @@ import type {
   AgentRuntimeRequest,
 } from "../agent/types";
 import {
-  buildExternalRuntimeUserText,
   buildExternalRuntimeZoteroMcpScope,
   resolveClaudeBridgeMcpScopeToken,
   type AgentRuntimeLike,
@@ -49,13 +47,10 @@ import {
   type ExternalRuntimeTransport,
   type ExternalTurnOutcome,
   type ExternalTurnRunContext,
+  renderExternalRuntimePrompt,
 } from "../agent/externalRuntimeTurnHost";
 import { buildAgentModelCapabilities } from "../agent/model/contentCapabilities";
-import { AGENT_PERSONA_INSTRUCTIONS } from "../agent/model/agentPersona";
-import {
-  buildTurnContextEnvelope,
-  renderTurnContextEnvelopeForModel,
-} from "../agent/context/turnContextEnvelope";
+import type { RenderedRuntimePrompt } from "../agent/context/turnPromptBlocks";
 import {
   ZOTERO_MCP_HOST_ACCESS_TOOL_NAMES,
   ZOTERO_MCP_SAFE_READ_TOOL_NAMES,
@@ -131,34 +126,6 @@ export function getAntigravityRuntimeCwd(): string {
 
 const DENIED_TURN_TEXT =
   "Antigravity stopped this turn because a tool request was declined. Allow the tool or rephrase the request to continue.";
-
-const ANTIGRAVITY_SEARCH_ROUTES =
-  "Search tools: the Zotero MCP tools read the turn's papers (paper_read), search the library (library_retrieve, library_search), search scholarly sources (literature_search), and read a found paper's abstract and open-access text (literature_read). Write web search queries in the user's language by default.";
-
-/**
- * agy shows its model a tool result whole only up to about 10 KB. A longer
- * one arrives with its middle removed and a note naming the file that holds
- * all of it, and the model answers from the shortened result unless it is
- * told to open that file (probed on agy 1.5.17: a summary used a fifth of a
- * 40 KB result without this instruction, and all of it with).
- */
-const ANTIGRAVITY_LONG_RESULT_RULE =
-  "A tool result longer than about 10 KB reaches you with its middle removed and a note naming the file that holds the full output. Whenever a result carries that note, read the whole file it names before you answer; never answer from a shortened result.";
-
-/** The standing instructions sent once at the start of a session. */
-export function buildAntigravityInstructions(rawPdfMode: boolean): string {
-  return [
-    "## Original agent-mode Zotero behavior",
-    ...AGENT_PERSONA_INSTRUCTIONS,
-    rawPdfMode
-      ? "You receive Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
-      : "You receive Zotero access through the scoped Zotero MCP tools. Use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets.",
-    ANTIGRAVITY_SEARCH_ROUTES,
-    ANTIGRAVITY_LONG_RESULT_RULE,
-    'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", and "this tag" against those selected Zotero scopes.',
-    "A note you are asked to write is a Zotero note: use the Zotero note_write tool, not a file-writing tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note.",
-  ].join("\n\n");
-}
 
 /** The agy session mode for a permission setting (full access runs as default). */
 export function resolveAntigravitySessionMode(
@@ -423,6 +390,11 @@ type AntigravityPrepared = {
   cwd: string;
   sessionMode: string;
   rawPdfMode: boolean;
+  /**
+   * The prompt's blocks: the standing ones become a new session's system
+   * prompt, the turn ones go before the user's words.
+   */
+  prompt: RenderedRuntimePrompt;
 };
 
 /** The turn's Zotero MCP server, as agy's config names it. */
@@ -676,7 +648,7 @@ export function createAntigravityTransport(
       client,
       request,
       cwd: launch.cwd,
-      instructions: buildAntigravityInstructions(prepared.rawPdfMode),
+      instructions: prepared.prompt.standing,
     });
     await rememberAntigravitySession(
       request,
@@ -717,7 +689,10 @@ export function createAntigravityTransport(
         mapping = mapping.then(() => mapper.handle(notification));
       },
     );
-    const input = await buildAntigravityPromptInput(request);
+    const input = await buildAntigravityPromptInput(
+      request,
+      prepared.prompt.turn,
+    );
     const stopPermissions = client.setPermissionHandler(
       session.sessionId,
       createPermissionHandler({
@@ -775,6 +750,7 @@ export function createAntigravityTransport(
         cwd,
         sessionMode: resolveAntigravitySessionMode(mode),
         rawPdfMode: Boolean(request.localDocuments?.length),
+        prompt: await renderExternalRuntimePrompt("antigravity", request),
       };
     },
     zoteroMcp: {

@@ -268,18 +268,19 @@ type RuntimeAttachment = {
 
 type RuntimeRequestShape = {
   userText?: unknown;
-  selectedTexts?: unknown;
-  selectedTextContexts?: unknown;
+  /**
+   * What the plugin states about the turn before the user's words: the
+   * Zotero context and the material the user attached (the open note, the
+   * selected passages), rendered as the original agent's prompt states them.
+   */
+  turnContext?: unknown;
   selectedPaperContexts?: unknown;
   paperContexts?: unknown;
   fullTextPaperContexts?: unknown;
   pinnedPaperContexts?: unknown;
-  selectedCollectionContexts?: unknown;
-  selectedTagContexts?: unknown;
   attachments?: unknown;
   screenshots?: unknown;
   history?: unknown;
-  activeNoteContext?: unknown;
   localDocuments?: unknown;
 };
 
@@ -543,29 +544,11 @@ type RuntimePaperPathEntry = {
   contextFilePath?: string;
   mineruFullMdPath?: string;
 };
-type RuntimeCollectionScopeEntry = {
-  name: string;
-  collectionId?: number;
-  libraryID?: number;
-  path?: string;
-};
-type RuntimeTagScopeEntry = {
-  name: string;
-  libraryID?: number;
-  normalizedName?: string;
-  scope?: "allTagged" | "untagged";
-  includeAutomatic?: boolean;
-};
 function asPath(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
   if (!normalized || !normalized.startsWith("/")) return undefined;
   return normalized;
-}
-function asPositiveInt(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.floor(value)
-    : undefined;
 }
 function collectPaperPathEntries(
   entries: unknown,
@@ -597,70 +580,6 @@ function collectPaperPathEntries(
   }
   return collected;
 }
-function collectCollectionScopeEntries(
-  entries: unknown,
-  limit: number,
-): RuntimeCollectionScopeEntry[] {
-  if (!Array.isArray(entries) || limit <= 0) return [];
-  const collected: RuntimeCollectionScopeEntry[] = [];
-  for (const raw of entries) {
-    if (collected.length >= limit) break;
-    const record = asRecord(raw);
-    if (!record) continue;
-    const collectionId = asPositiveInt(record.collectionId ?? record.id);
-    const libraryID = asPositiveInt(record.libraryID);
-    const name =
-      trimInline(record.name, 140) ||
-      (collectionId ? `Collection ${collectionId}` : "");
-    if (!name && !collectionId) continue;
-    const path = trimInline(record.path, 180);
-    collected.push({
-      name: name || "Selected collection",
-      collectionId,
-      libraryID,
-      path: path || undefined,
-    });
-  }
-  return collected;
-}
-function collectTagScopeEntries(
-  entries: unknown,
-  limit: number,
-): RuntimeTagScopeEntry[] {
-  if (!Array.isArray(entries) || limit <= 0) return [];
-  const collected: RuntimeTagScopeEntry[] = [];
-  const seen = new Set<string>();
-  for (const raw of entries) {
-    if (collected.length >= limit) break;
-    const record = asRecord(raw);
-    if (!record) continue;
-    const scope =
-      record.scope === "allTagged" || record.scope === "untagged"
-        ? record.scope
-        : undefined;
-    const name =
-      trimInline(record.name, 140) ||
-      (scope === "allTagged"
-        ? "All Tagged"
-        : scope === "untagged"
-          ? "Untagged"
-          : "");
-    if (!name) continue;
-    const normalizedName = trimInline(record.normalizedName, 140) || undefined;
-    const libraryID = asPositiveInt(record.libraryID);
-    const key = `${libraryID || "any"}:${scope || "tag"}:${(normalizedName || name).toLowerCase()}:${record.includeAutomatic === true ? "auto" : "manual"}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    collected.push({
-      name,
-      libraryID,
-      normalizedName,
-      scope,
-      includeAutomatic: record.includeAutomatic === true || undefined,
-    });
-  }
-  return collected;
-}
 function formatPaperPathLines(entries: RuntimePaperPathEntry[]): string[] {
   return entries.map((entry) => {
     const pathHints = [
@@ -672,31 +591,6 @@ function formatPaperPathLines(entries: RuntimePaperPathEntry[]): string[] {
         : "",
     ].filter(Boolean);
     return `- ${entry.title}${pathHints.length ? ` [${pathHints.join(" | ")}]` : ""}`;
-  });
-}
-function formatCollectionScopeLines(
-  entries: RuntimeCollectionScopeEntry[],
-): string[] {
-  return entries.map((entry) => {
-    const hints = [
-      typeof entry.collectionId === "number"
-        ? `collectionId=${entry.collectionId}`
-        : "",
-      typeof entry.libraryID === "number" ? `libraryID=${entry.libraryID}` : "",
-      entry.path ? `path=${entry.path}` : "",
-    ].filter(Boolean);
-    return `- ${entry.name}${hints.length ? ` [${hints.join(" | ")}]` : ""}`;
-  });
-}
-function formatTagScopeLines(entries: RuntimeTagScopeEntry[]): string[] {
-  return entries.map((entry) => {
-    const hints = [
-      typeof entry.libraryID === "number" ? `libraryID=${entry.libraryID}` : "",
-      entry.normalizedName ? `normalizedName=${entry.normalizedName}` : "",
-      entry.scope ? `scope=${entry.scope}` : "",
-      entry.includeAutomatic ? "includeAutomatic=true" : "",
-    ].filter(Boolean);
-    return `- ${entry.name}${hints.length ? ` [${hints.join(" | ")}]` : ""}`;
   });
 }
 function formatFallbackHistory(
@@ -739,34 +633,6 @@ function formatFallbackHistory(
     "Use this transcript only to restore conversation context for the current answer.",
   ];
 }
-function collectSelectedSnippets(
-  runtimeRequest: RuntimeRequestShape,
-): Array<{ text: string; question: string }> {
-  const contexts = Array.isArray(runtimeRequest.selectedTextContexts)
-    ? runtimeRequest.selectedTextContexts
-    : [];
-  const questionAt = (index: number): string => {
-    const context = contexts[index];
-    if (!context || typeof context !== "object") return "";
-    const query = (context as { userQuery?: unknown }).userQuery;
-    return typeof query === "string" ? query.trim() : "";
-  };
-  const textAt = (value: unknown): string =>
-    typeof value === "string" ? value.trim() : "";
-  const rawTexts = Array.isArray(runtimeRequest.selectedTexts)
-    ? runtimeRequest.selectedTexts
-    : [];
-  const sources = rawTexts.length
-    ? rawTexts.map((entry) => textAt(entry))
-    : contexts.map((context) =>
-        context && typeof context === "object"
-          ? textAt((context as { text?: unknown }).text)
-          : "",
-      );
-  return sources
-    .map((text, index) => ({ text, question: questionAt(index) }))
-    .filter((entry) => entry.text);
-}
 function buildPromptText(
   userMessage: string,
   runtimeRequest: RuntimeRequestShape | undefined,
@@ -783,48 +649,16 @@ function buildPromptText(
   ) {
     return trimmedUserMessage;
   }
-  const lines: string[] = [trimmedUserMessage];
-  if (!runtimeRequest) return lines.join("\n\n");
+  if (!runtimeRequest) return trimmedUserMessage;
+  const turnContext =
+    typeof runtimeRequest.turnContext === "string"
+      ? runtimeRequest.turnContext.trim()
+      : "";
+  // The turn's context and the passages the user quoted come before the
+  // user's words about them, as in the original agent's prompt.
+  const lines: string[] = [turnContext, trimmedUserMessage];
   if (includeFallbackHistory) {
     lines.push(...formatFallbackHistory(runtimeRequest));
-  }
-  const selectedSnippets = collectSelectedSnippets(runtimeRequest);
-  if (selectedSnippets.length) {
-    lines.push(
-      "Selected snippets:",
-      ...selectedSnippets.map(({ text, question }, index) => {
-        const entry = `${index + 1}. ${text}`;
-        return question
-          ? `${entry}\n   Question: ${question.replace(/\r?\n/g, "\n   ")}`
-          : entry;
-      }),
-    );
-  }
-  const selectedCollections = collectCollectionScopeEntries(
-    runtimeRequest.selectedCollectionContexts,
-    8,
-  );
-  const selectedTags = collectTagScopeEntries(
-    runtimeRequest.selectedTagContexts,
-    8,
-  );
-  if (selectedCollections.length) {
-    lines.push(
-      "Selected Zotero collection scope for this turn:",
-      ...formatCollectionScopeLines(selectedCollections),
-      selectedCollections.length === 1
-        ? 'When the user says "this folder", "this collection", or asks what is inside it, treat that phrase as the selected collection above. Prefer scoped Zotero library_search or library_retrieve calls instead of asking which folder.'
-        : "When the user refers to selected folders or collections, use the selected collection scopes above. Ask a clarification only if the requested collection is ambiguous among them.",
-    );
-  }
-  if (selectedTags.length) {
-    lines.push(
-      "Selected Zotero tag scope for this turn:",
-      ...formatTagScopeLines(selectedTags),
-      selectedTags.length === 1
-        ? 'When the user says "this tag" or asks about tagged papers, treat that phrase as the selected tag above. Prefer scoped Zotero library_search or library_retrieve calls instead of asking which tag.'
-        : "When the user refers to selected tags, use the selected tag scopes above. Ask a clarification only if the requested tag is ambiguous among them.",
-    );
   }
   const selectedPaperPathEntries = collectPaperPathEntries(
     runtimeRequest.selectedPaperContexts ?? runtimeRequest.paperContexts,
@@ -862,20 +696,6 @@ function buildPromptText(
   }
   if (attachmentPaths.length) {
     lines.push("Attachments:", ...attachmentPaths.map((path) => `- ${path}`));
-  }
-  const activeNote = asRecord(runtimeRequest.activeNoteContext);
-  if (activeNote) {
-    const noteTitle =
-      typeof activeNote.title === "string" ? activeNote.title.trim() : "";
-    const noteText =
-      typeof activeNote.noteText === "string" ? activeNote.noteText.trim() : "";
-    if (noteTitle || noteText) {
-      lines.push(
-        "Active note context:",
-        noteTitle ? `- Title: ${noteTitle}` : "- Title: (untitled)",
-        noteText ? `- Content:\n${noteText}` : "",
-      );
-    }
   }
   if (localPdfs.length) lines.push(renderLocalPdfPrompt(localPdfs));
   return lines.filter(Boolean).join("\n\n");

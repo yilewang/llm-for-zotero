@@ -14,6 +14,7 @@
  * shape and the two projections, never a shared assembler.
  */
 import type { SelectionSurface } from "./conversationSelection";
+import type { ConversationSystem } from "../../core/conversations/conversationSystems";
 import type {
   AdvancedModelParams,
   AttachedConversationRef,
@@ -33,7 +34,6 @@ import type {
 } from "../../utils/llmClient";
 import type { ProviderProtocol } from "../../utils/providerProtocol";
 import type { CodexNativeSkillContext } from "../../codexAppServer/nativeSkills";
-import type { TurnPaperScopeInput } from "../../agent/context/turnPaperScope";
 
 export type EffectiveRequestConfig = {
   model: string;
@@ -91,6 +91,12 @@ export type BuildAgentRuntimeRequestParams = {
    * when omitted.
    */
   surface?: SelectionSurface;
+  /**
+   * The runtime the turn runs on, which picks the reader model slot the
+   * composer's model menu stores the user's pick in; resolved from the item
+   * and the request config when omitted.
+   */
+  conversationSystem?: ConversationSystem;
 };
 
 /**
@@ -129,21 +135,6 @@ export type TurnRequestContext = {
   screenshots: string[] | undefined;
   forcedSkillIds?: string[];
 };
-
-type TurnPaperScopeFields = Omit<
-  TurnPaperScopeInput,
-  | "libraryID"
-  | "libraryName"
-  | "conversationKind"
-  | "activeItemId"
-  | "resolvePaperContext"
->;
-// Compile-time check: a request context carries every scope field of
-// `TurnPaperScopeInput` under the same name and with a compatible type.
-type FitsTurnPaperScope<T extends TurnPaperScopeFields> = T;
-export type TurnRequestScopeFields = FitsTurnPaperScope<
-  Pick<TurnRequestContext, keyof TurnPaperScopeFields>
->;
 
 /** The fields of one request that are not compose context. */
 export type AgentRuntimeRequestTurn = Pick<

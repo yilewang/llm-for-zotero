@@ -13,6 +13,7 @@
 import { paperSourceIdentity } from "../../webAccess/paperSources";
 import { normalizeArxivId, normalizeDoi } from "../services/paperWorkIdentity";
 import type { OutsidePaperCslEnrichment } from "../documents/types";
+import { recordOrNull, trimmedStringOrUndefined } from "../../core/values";
 
 /** How far the run read an outside paper. */
 export type OutsidePaperDepth = "metadata" | "abstract" | "body";
@@ -69,18 +70,8 @@ const DEPTH_RANK: Record<OutsidePaperDepth, number> = {
   body: 2,
 };
 
-function asObject(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
-function text(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function webUrl(value: unknown): string | undefined {
-  const url = text(value);
+  const url = trimmedStringOrUndefined(value);
   return url && /^https?:\/\//i.test(url) ? url : undefined;
 }
 
@@ -228,7 +219,10 @@ export function literatureReadFoundPaper(
   paper: Record<string, unknown>,
   fullText: Record<string, unknown> | null | undefined,
 ): boolean {
-  return fullText?.status !== "unavailable" || Boolean(text(paper.title));
+  return (
+    fullText?.status !== "unavailable" ||
+    Boolean(trimmedStringOrUndefined(paper.title))
+  );
 }
 
 function recordOf(
@@ -243,7 +237,7 @@ function recordOf(
   const url = [raw.url, raw.sourceUrl, ...extraUrls, raw.openAccessUrl]
     .map(webUrl)
     .find(Boolean);
-  const abstract = text(options.abstract);
+  const abstract = trimmedStringOrUndefined(options.abstract);
   return {
     paperId: identity.paperId,
     ...(identity.doi ? { doi: identity.doi } : {}),
@@ -264,8 +258,8 @@ function literatureReadDepth(
   content: Record<string, unknown>,
 ): OutsidePaperDepth {
   const passages = Array.isArray(content.passages) ? content.passages : [];
-  if (passages.length || text(content.text)) return "body";
-  return text(content.abstract) ? "abstract" : "metadata";
+  if (passages.length || trimmedStringOrUndefined(content.text)) return "body";
+  return trimmedStringOrUndefined(content.abstract) ? "abstract" : "metadata";
 }
 
 /**
@@ -278,12 +272,12 @@ export function outsidePaperRecordsFromToolResult(
   toolName: string,
   content: unknown,
 ): OutsidePaperRecord[] {
-  const result = asObject(content);
+  const result = recordOrNull(content);
   if (!result) return [];
   if (toolName === "literature_search") {
     if (result.mode === "metadata" || !Array.isArray(result.results)) return [];
     return result.results.flatMap((entry) => {
-      const raw = asObject(entry);
+      const raw = recordOrNull(entry);
       const record = raw
         ? recordOf(raw, "metadata", { abstract: raw.abstract })
         : null;
@@ -291,8 +285,8 @@ export function outsidePaperRecordsFromToolResult(
     });
   }
   if (toolName === "literature_read") {
-    const paper = asObject(result.paper);
-    const fullText = asObject(result.fullText);
+    const paper = recordOrNull(result.paper);
+    const fullText = recordOrNull(result.fullText);
     if (!paper || !literatureReadFoundPaper(paper, fullText)) return [];
     const record = recordOf(paper, literatureReadDepth(result), {
       abstract: result.abstract,

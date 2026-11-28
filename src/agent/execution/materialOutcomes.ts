@@ -15,13 +15,6 @@ import type {
   MaterialOutcomeLedger,
 } from "./types";
 
-export type {
-  DroppedMaterialOutcome,
-  MaterialOutcomeEntry,
-  MaterialOutcomeLedger,
-  MaterialOutcomeStatus,
-} from "./types";
-
 /**
  * How far back a conversation is scanned for material outcomes.
  *

@@ -1,3 +1,4 @@
+import { getZoteroDb } from "../zoteroDb";
 // Runtime and durable tombstones for conversation instances whose local
 // deletion committed. Numeric keys are permanently retired; the immutable
 // instance identity is retained as the durable tombstone boundary. The
@@ -28,37 +29,10 @@ export function conversationInstanceIdentityDigest(params: {
   return `id-${(hash >>> 0).toString(16)}-${(secondary >>> 0).toString(16)}-${source.length.toString(16)}`;
 }
 
-function getDb(): {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-} | null {
-  return ((globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } }).Zotero
-    ?.DB || null) as {
-    queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-  } | null;
-}
-
 function normalizeKey(conversationKey: number): number {
   return Number.isFinite(conversationKey) && conversationKey > 0
     ? Math.floor(conversationKey)
     : 0;
-}
-
-function prune(now: number): void {
-  for (const [key, deletedAt] of Array.from(tombstones.entries())) {
-    if (now - deletedAt >= RECENTLY_DELETED_CONVERSATION_TTL_MS) {
-      tombstones.delete(key);
-    }
-  }
-}
-
-export function markConversationRecentlyDeleted(
-  conversationKey: number,
-  now: number = Date.now(),
-): void {
-  const key = normalizeKey(conversationKey);
-  if (!key) return;
-  prune(now);
-  tombstones.set(key, now);
 }
 
 export function markConversationInstanceRecentlyDeleted(
@@ -97,7 +71,7 @@ export async function persistConversationInstanceTombstoneInTransaction(params: 
   identityDigest?: string;
   deletedAt?: number;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (typeof db?.queryAsync !== "function") {
     throw new Error("Zotero DB unavailable for deletion tombstone");
   }
@@ -175,7 +149,7 @@ export async function hasConversationDeletionTombstoneForKey(
   conversationKey: number,
 ): Promise<boolean> {
   const key = normalizeKey(conversationKey);
-  const db = getDb();
+  const db = getZoteroDb();
   if (!key || typeof db?.queryAsync !== "function") return false;
   try {
     const rows = (await db.queryAsync(
@@ -198,7 +172,7 @@ export async function hasConversationDeletionTombstoneForKey(
 /** Load durable identity tombstones during startup/restart. */
 export async function initRecentlyDeletedConversationTombstones(): Promise<void> {
   if (tombstoneStoreInitialized) return;
-  const db = getDb();
+  const db = getZoteroDb();
   if (typeof db?.queryAsync !== "function") return;
   try {
     await db.queryAsync(
@@ -251,10 +225,4 @@ export function forgetRecentlyDeletedConversation(
   const key = normalizeKey(conversationKey);
   if (!key) return;
   tombstones.delete(key);
-}
-
-export function resetRecentlyDeletedConversationsForTests(): void {
-  tombstones.clear();
-  instanceTombstones.clear();
-  tombstoneStoreInitialized = false;
 }

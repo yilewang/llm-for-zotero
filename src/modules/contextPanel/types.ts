@@ -2,26 +2,20 @@ import type { ReasoningLevel as LLMReasoningLevel } from "../../utils/llmClient"
 import type { ContextAttachmentSupport } from "../../services/paperContent/contextAttachmentTypes";
 import type {
   SelectedTextSource,
-  ChatAttachmentCategory,
   ChatAttachment,
   GeneratedChatImage,
   PaperContentSourceMode,
   AdvancedModelParams,
-  ActiveNoteSession,
   ActiveNoteContext,
   SelectedTextContext,
-  SelectedTextAnchorResolution,
   ResolvedSelectedTextAnchor,
   PaperContextRef,
   LocalDocumentResource,
   QuoteCitation,
   NoteContextRef,
-  OtherContextRef,
   CollectionContextRef,
   TagContextRef,
   AttachedConversationRef,
-  GlobalConversationSummary,
-  PaperConversationSummary,
 } from "../../shared/types";
 import type {
   LibraryChatCoverageReceipt,
@@ -35,20 +29,15 @@ export type {
   PaperContentSourceMode,
   AdvancedModelParams,
   ActiveNoteSession,
-  ActiveNoteContext,
   SelectedTextContext,
-  SelectedTextAnchorResolution,
   ResolvedSelectedTextAnchor,
   PaperContextRef,
-  LocalDocumentResource,
   QuoteCitation,
   NoteContextRef,
   OtherContextRef,
   CollectionContextRef,
   TagContextRef,
   AttachedConversationRef,
-  GlobalConversationSummary,
-  PaperConversationSummary,
 } from "../../shared/types";
 
 export type QuoteDisplayOverride = {
@@ -261,87 +250,6 @@ export type MultiContextPlan = {
   coverageReceipt?: LibraryChatCoverageReceipt;
   fullReadReceipt?: import("../../shared/exhaustiveDocumentReader").FullReadCoverageReceipt;
   modelImages?: string[];
-};
-
-export type AntigravityGlobalPortalItem = {
-  __llmAntigravityGlobalPortalItem: true;
-  __llmAntigravityConversationKind: "global";
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
-export type AntigravityPaperPortalItem = {
-  __llmAntigravityPaperPortalItem: true;
-  __llmAntigravityConversationKind: "paper";
-  __llmAntigravityPaperPortalBaseItemID: number;
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
-export type ClaudeGlobalPortalItem = {
-  __llmClaudeGlobalPortalItem: true;
-  __llmClaudeConversationKind: "global";
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
-export type ClaudePaperPortalItem = {
-  __llmClaudePaperPortalItem: true;
-  __llmClaudeConversationKind: "paper";
-  __llmClaudePaperPortalBaseItemID: number;
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
-export type CodexGlobalPortalItem = {
-  __llmCodexGlobalPortalItem: true;
-  __llmCodexConversationKind: "global";
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
-};
-
-export type CodexPaperPortalItem = {
-  __llmCodexPaperPortalItem: true;
-  __llmCodexConversationKind: "paper";
-  __llmCodexPaperPortalBaseItemID: number;
-  id: number;
-  libraryID: number;
-  parentID?: number;
-  attachmentContentType?: string;
-  isAttachment: () => boolean;
-  getAttachments: () => number[];
-  getField: (field: string) => string;
-  isRegularItem: () => boolean;
 };
 
 // ── Send flow options ─────────────────────────────────────────────────────

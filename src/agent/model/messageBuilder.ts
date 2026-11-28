@@ -21,8 +21,7 @@ import {
   loadAgentTurnMemory,
   type AgentTurnMemory,
 } from "../store/conversationMemory";
-import { buildSkillInventory, getAllSkills } from "../skills";
-import { toolGuidanceItems } from "../tools/guidance";
+import { getAllSkills } from "../skills";
 import type { AgentSkill } from "../skills";
 import { getSkillCustomizationNotice } from "../skills/managedBlock";
 import { SKILL_SCOPE_GUARD } from "../skills/scopeGuard";
@@ -39,18 +38,7 @@ import { resolveProviderCapabilities } from "../../providers";
 import type { ProviderCapabilities } from "../../providers";
 import { buildNotesDirectoryConfigSection } from "../../utils/notesDirectoryConfig";
 import { buildAgentFilesInstructionForScope } from "../../utils/agentFilesDirectory";
-import { NOTE_EDITING_QUOTE_BLOCK_GUIDANCE } from "../../shared/quoteGuidance";
-import {
-  findNoteEmbedTokensInSelection,
-  hasNoteEmbedTokens,
-  NOTE_EMBED_PLACEHOLDER_GUIDANCE,
-} from "../../utils/noteEmbeds";
 import { buildRuntimePlatformGuidanceText } from "../../utils/runtimePlatform";
-import { formatPaperSourceLabel } from "../../services/paperContent/paperAttribution";
-import {
-  buildQuoteAnchorPromptBlock,
-  buildSelectedTextQuoteCitations,
-} from "../../services/quotes/quoteCitations";
 import {
   buildAgentStableResourceContextBlock,
   type AgentResourceContextPlan,
@@ -58,25 +46,29 @@ import {
 import { buildAgentCoverageContextBlock } from "../context/coverageLedger";
 import type { PaperPromptContext } from "../context/paperPromptContext";
 import { buildVisibleTurnContextBlock } from "../context/turnContextEnvelope";
+import { getActiveTurnPaper } from "../context/turnPaperScope";
 import {
-  getActiveTurnPaper,
-  getSelectedPassagePaper,
-} from "../context/turnPaperScope";
+  renderTurnMaterialForModel,
+  resolveTurnUserRequestText,
+} from "../context/turnMaterial";
 import { renderLongJobResume } from "../loop/longJob";
+import {
+  collectMatchingToolGuidance,
+  renderToolGuidanceLines,
+} from "../tools/guidance";
+import {
+  renderClarificationsBlock,
+  renderSkillInventoryBlock,
+  SINGLE_PAPER_HINT,
+  type TextPromptBlockId,
+  type TurnPromptBlockId,
+} from "../context/turnPromptBlocks";
 import { resolveAgentLimits } from "./limits";
 import { OUTCOME_REASONS } from "../loop/outcomes";
 import {
   hasAgentContentInputs,
   normalizeAgentContentInputs,
 } from "./contentCapabilities";
-import { synthesizeSelectedTextContexts } from "../../services/context/normalizers";
-import {
-  formatSelectedTextLocator,
-  formatSelectedTextQuestionSuffix,
-  isPromptOnlySelectedTextQuestions,
-  renderSelectedTextAnchorContext,
-  SELECTED_TEXT_QUESTIONS_INSTRUCTION,
-} from "../../services/context/selectedTextAnchorFormatting";
 import {
   buildInstructionInventory,
   type InstructionInventory,
@@ -215,135 +207,22 @@ function buildFullUserMessage(
     selectionLocations?: PaperPromptContext["selectionLocations"];
   } = {},
 ): AgentUserMessage {
-  const contextLines: string[] = [];
+  // Each block names its id in the shared block list (turnPromptBlocks.ts),
+  // so a new block here must also be decided for every external runtime.
+  const contextBlocks: { id: TextPromptBlockId; text: string }[] = [];
+  const push = (id: TextPromptBlockId, text: string | undefined) => {
+    if (text) contextBlocks.push({ id, text });
+  };
   // Volatile by nature (collection ids and counts change as the agent works),
   // so it lives here rather than in the cached system prefix.
-  const libraryOverview = renderLibraryOverviewSection(request.libraryID);
-  if (libraryOverview) {
-    contextLines.push(libraryOverview);
-  }
-  const visibleTurnContext = buildVisibleTurnContextBlock(request);
-  if (visibleTurnContext) {
-    contextLines.push(visibleTurnContext);
-  }
-  const executionCheckpoint = renderExecutionCheckpointBlock(request);
-  if (executionCheckpoint) contextLines.push(executionCheckpoint);
-  if (request.activeNoteContext) {
-    const note = request.activeNoteContext;
-    contextLines.push(
-      `Current note content for this turn:\n"""\n${note.noteText}\n"""`,
-    );
-    contextLines.push(NOTE_EDITING_QUOTE_BLOCK_GUIDANCE);
-    if (hasNoteEmbedTokens(note.noteText))
-      contextLines.push(NOTE_EMBED_PLACEHOLDER_GUIDANCE);
-    if (note.noteHtml) {
-      contextLines.push(`Original note HTML:\n"""\n${note.noteHtml}\n"""`);
-    }
-  }
-  const selectedTextContexts = synthesizeSelectedTextContexts({
-    selectedTextContexts: request.selectedTextContexts,
-    selectedTexts: request.selectedTexts,
-    selectedTextSources: request.selectedTextSources,
-    selectedTextPaperContexts: (request.selectedTextContexts || []).map(
-      (_context, index) =>
-        getSelectedPassagePaper(request.turnPaperScope, index),
-    ),
-    selectedTextNoteContexts: request.selectedTextNoteContexts,
-  });
-  const selectedTexts = selectedTextContexts.map((context) => context.text);
-  const selectedTextSources = selectedTextContexts.map(
-    (context) => context.source,
-  );
-  const selectedTextPaperContexts = selectedTextContexts.map(
-    (_context, index) => getSelectedPassagePaper(request.turnPaperScope, index),
-  );
-  const anchorsByIndex = new Map(
-    (request.resolvedSelectedTextAnchors || []).map((anchor) => [
-      anchor.contextIndex,
-      anchor,
-    ]),
-  );
-  if (selectedTexts.length) {
-    const selectedTextQuoteAnchors = buildQuoteAnchorPromptBlock(
-      buildSelectedTextQuoteCitations(
-        selectedTexts,
-        selectedTextSources,
-        selectedTextPaperContexts,
-      ),
-    );
-    const selectedTextBlock = selectedTexts
-      .map((entry, index) => {
-        const source = selectedTextSources[index];
-        const paperContext = selectedTextPaperContexts[index];
-        const sourceLabel =
-          source === "model"
-            ? "model response"
-            : source === "note"
-              ? "Zotero note"
-              : source === "note-edit"
-                ? "active note editing focus"
-                : source === "sidechat"
-                  ? "side chat transcript"
-                  : source === "inlineask"
-                    ? "Inline Ask transcript"
-                    : "PDF reader";
-        const noteContext = selectedTextContexts[index]?.noteContext;
-        const sourceMeta =
-          source === "pdf" && paperContext
-            ? `, paper=${paperContext.title}, source_label=${formatPaperSourceLabel(paperContext)}`
-            : source === "note-edit" && noteContext
-              ? [
-                  `, note=${noteContext.title}`,
-                  noteContext.noteItemId
-                    ? `note_id=${noteContext.noteItemId}`
-                    : "",
-                  `note_kind=${noteContext.noteKind}`,
-                  noteContext.parentItemId
-                    ? `parent_item_id=${noteContext.parentItemId}`
-                    : "",
-                ]
-                  .filter(Boolean)
-                  .join(", ")
-              : "";
-        const locator = formatSelectedTextLocator(
-          selectedTextContexts[index],
-          anchorsByIndex.get(index),
-        );
-        const question = formatSelectedTextQuestionSuffix(
-          selectedTextContexts[index]?.userQuery,
-        );
-        const embedTokens =
-          source === "note-edit" && request.activeNoteContext
-            ? findNoteEmbedTokensInSelection(
-                request.activeNoteContext.noteText,
-                entry,
-              )
-            : [];
-        const embedHint = embedTokens.length
-          ? `\nThis selection contains embedded note items. Keep each placeholder in your replacement where its item belongs: ${embedTokens.join(" ")}`
-          : "";
-        return `Selected text ${index + 1} [source=${sourceLabel}${sourceMeta}]${locator ? ` ${locator}` : ""}:\n"""\n${entry}\n"""${question}${embedHint}`;
-      })
-      .join("\n\n");
-    contextLines.push(
-      [...selectedTextQuoteAnchors, selectedTextBlock]
-        .filter(Boolean)
-        .join("\n\n"),
-    );
-    const anchorContext = renderSelectedTextAnchorContext({
-      selectedTextContexts,
-      // The turn scope holds each passage's paper; the page hint's read
-      // call names it when it owns the anchor's attachment.
-      anchors: (request.resolvedSelectedTextAnchors || []).map((anchor) => {
-        const paper = selectedTextPaperContexts[anchor.contextIndex];
-        return paper?.contextItemId === anchor.contextItemId
-          ? { ...anchor, paperContext: paper }
-          : anchor;
-      }),
-      locations: options.selectionLocations,
-      readCalls: true,
-    });
-    if (anchorContext) contextLines.push(anchorContext);
+  push("libraryOverview", renderLibraryOverviewSection(request.libraryID));
+  push("visibleTurnContext", buildVisibleTurnContextBlock(request));
+  push("executionCheckpoint", renderExecutionCheckpointBlock(request));
+  for (const block of renderTurnMaterialForModel(request, {
+    selectionLocations: options.selectionLocations,
+    readCalls: true,
+  })) {
+    push("turnMaterial", block);
   }
   const pdfAttachments = (request.attachments || []).filter(
     (a) =>
@@ -355,41 +234,21 @@ function buildFullUserMessage(
     (a) => a.category !== "pdf",
   );
   if (nonPdfAttachments.length) {
-    contextLines.push(
+    push(
+      "attachmentsNotice",
       "Current uploaded attachments are available through the registered document tools.",
     );
   }
-  if (options.priorReadBlock) {
-    contextLines.push(options.priorReadBlock);
-  }
-  if (options.coverageBlock) {
-    contextLines.push(options.coverageBlock);
-  }
-  if (options.earlierSourcesBlock) {
-    contextLines.push(options.earlierSourcesBlock);
-  }
-  if (request.clarificationHistory?.length) {
-    contextLines.push(
-      [
-        "Clarifications supplied for this request:",
-        ...request.clarificationHistory.map(
-          (entry) => `- ${entry.question}: ${entry.answer}`,
-        ),
-      ].join("\n"),
-    );
-  }
-  if (options.turnGuidanceBlock) {
-    contextLines.push(options.turnGuidanceBlock);
-  }
+  push("priorReads", options.priorReadBlock);
+  push("coverage", options.coverageBlock);
+  push("earlierSources", options.earlierSourcesBlock);
+  push("clarifications", renderClarificationsBlock(request));
+  // One block that carries permissionMode, singlePaperHint,
+  // workingDirectory, toolGuidance and activeSkills (renderAgentPromptEnvelope).
+  push("toolGuidance", options.turnGuidanceBlock);
+  const contextLines = contextBlocks.map((block) => block.text);
 
-  // A request that is only the chip questions (empty composer) already shows
-  // each question under its selection above; do not repeat them here.
-  const userRequestText = isPromptOnlySelectedTextQuestions(
-    request.userText,
-    selectedTextContexts,
-  )
-    ? SELECTED_TEXT_QUESTIONS_INSTRUCTION
-    : request.userText;
+  const userRequestText = resolveTurnUserRequestText(request);
   const promptText = `${
     contextLines.length ? `${contextLines.join("\n")}\n\n` : ""
   }User request:\n${userRequestText}`;
@@ -460,8 +319,11 @@ function buildUserMessage(
 }
 
 type PromptSection = {
-  /** Identifies the section in code; not emitted into the prompt text */
-  id: string;
+  /**
+   * The section's block in the shared block list (turnPromptBlocks.ts); not
+   * emitted into the prompt text.
+   */
+  id: TurnPromptBlockId;
   lines: string[];
 };
 
@@ -546,36 +408,6 @@ function buildSystemPrompt(sections: PromptSection[]): string {
     .flatMap(({ lines }) => lines)
     .filter(Boolean)
     .join("\n\n");
-}
-
-function collectMatchingToolGuidance(
-  request: AgentRuntimeRequest,
-  tools: AgentToolDefinition<any, any>[],
-  matchedSkillIds: ReadonlyArray<string>,
-): string[] {
-  const instructions = new Set<string>();
-  const {
-    userText: _userText,
-    history: _history,
-    clarificationHistory: _clarifications,
-    ...guidanceContext
-  } = request;
-  for (const tool of tools) {
-    for (const guidance of toolGuidanceItems(tool.guidance)) {
-      if (!guidance.matches(guidanceContext, { matchedSkillIds })) continue;
-      const instruction = guidance.instruction.trim();
-      if (instruction) instructions.add(instruction);
-    }
-  }
-  return [...instructions];
-}
-
-function buildToolGuidanceSection(instructions: readonly string[]): string[] {
-  if (!instructions.length) return [];
-  return [
-    "Tool guidance for this turn: call a tool only when it serves the user's request, never just because its guidance appears here.",
-    ...instructions,
-  ];
 }
 
 function formatSkillGuidanceBlock(
@@ -669,13 +501,11 @@ export async function renderAgentPromptEnvelope(
     matchedSkillIds,
   );
   const dynamicGuidanceInstructions = [
-    isSinglePaperConversation(request)
-      ? "Single-paper chat: answer directly using the supplied paper context; questions about the paper need no skill, so do not load evidence-based-qa for them. You may freely choose additional snippet, section, full, figure, or targeted reads of this paper when useful. For whole-paper explanations, consider the argument, methods, results, and limitations throughout the available source."
-      : "",
+    isSinglePaperConversation(request) ? SINGLE_PAPER_HINT : "",
     request.workingDirectory
       ? `Command working directory retained from this conversation: ${request.workingDirectory}. run_command uses it when cwd is omitted; pass cwd explicitly to change it. This directory does not confer filesystem permission.`
       : "",
-    ...buildToolGuidanceSection(toolGuidanceInstructions),
+    ...renderToolGuidanceLines(toolGuidanceInstructions),
   ];
   const matchedSkillInstructions = collectSkillGuidanceInstructions(
     request,
@@ -693,7 +523,7 @@ export async function renderAgentPromptEnvelope(
 
   const sections: PromptSection[] = [
     {
-      id: "system-override",
+      id: "customInstructions",
       lines: [(request.systemPrompt || "").trim()],
     },
     {
@@ -701,11 +531,11 @@ export async function renderAgentPromptEnvelope(
       lines: AGENT_PERSONA_INSTRUCTIONS,
     },
     {
-      id: "search-tools",
+      id: "searchRoutes",
       lines: [AGENT_SEARCH_TOOL_ROUTES],
     },
     {
-      id: "direct-agent-workflow",
+      id: "directAgentWorkflow",
       lines: [
         [
           "## Direct agent workflow",
@@ -725,7 +555,7 @@ export async function renderAgentPromptEnvelope(
       ],
     },
     {
-      id: "side-chat-read-only",
+      id: "sideChatReadOnly",
       lines: [
         isEphemeralConversationKey(request.conversationKey)
           ? SIDE_CHAT_READ_ONLY_INSTRUCTION
@@ -733,38 +563,27 @@ export async function renderAgentPromptEnvelope(
       ],
     },
     {
-      id: "skill-inventory",
-      lines: [
-        `Installed skill inventory (workflow playbooks for multi-step tasks: notes, comparisons, reviews, imports, figure work; ordinary paper questions need no skill. When one matches and its guidance is not already active, call load_skill with its id): ${JSON.stringify(
-          // Manual skills apply only when the user selects them.
-          buildSkillInventory(getAllSkills())
-            .filter(
-              (skill) =>
-                skill.activation !== "manual" &&
-                !isSkillWithheldForEphemeralRequest(skill.id, request),
-            )
-            .map(({ id, description }) => ({ id, description })),
-        )}`,
-      ],
+      id: "skillInventory",
+      lines: [renderSkillInventoryBlock(request)],
     },
     {
-      id: "runtime-platform",
+      id: "runtimePlatform",
       lines: [buildRuntimePlatformSection()],
     },
     {
-      id: "model-limitations",
+      id: "modelLimitations",
       lines: [buildTextOnlyModelInstruction(request)],
     },
     {
-      id: "custom-instructions",
+      id: "customInstructions",
       lines: [(request.customInstructions || "").trim()],
     },
     {
-      id: "notes-directory-config",
+      id: "notesFolder",
       lines: [buildNotesDirectoryConfigSection()],
     },
     {
-      id: "agent-files",
+      id: "agentFiles",
       lines: [agentFilesInstruction],
     },
   ];
@@ -957,41 +776,4 @@ export function buildAgentPromptInstructionInventory(
       .join("\n\n"),
     providerMessages,
   });
-}
-
-export async function buildAgentInitialMessages(
-  request: AgentRuntimeRequest,
-  tools: AgentToolDefinition<any, any>[],
-  matchedSkillIds: ReadonlyArray<string>,
-  resourceContextPlan?: AgentResourceContextPlan,
-  options: {
-    transcriptMessages?: AgentModelMessage[];
-    contentInputs?: AgentContentInputCapabilities;
-    onInstructionInventory?: (inventory: InstructionInventory) => void;
-  } = {},
-): Promise<AgentModelMessage[]> {
-  const rendered = await renderAgentPromptEnvelope(
-    request,
-    tools,
-    matchedSkillIds,
-    resourceContextPlan,
-    { contentInputs: options.contentInputs },
-  );
-  const transcriptMessages =
-    options.transcriptMessages === undefined
-      ? normalizeHistoryMessages(request)
-      : options.transcriptMessages;
-  const messages = composeAgentModelInput(rendered.envelope, {
-    transcriptMessages,
-  });
-  if (options.onInstructionInventory) {
-    options.onInstructionInventory(
-      buildAgentPromptInstructionInventory(
-        rendered,
-        messages,
-        transcriptMessages,
-      ),
-    );
-  }
-  return messages;
 }

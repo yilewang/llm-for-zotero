@@ -173,19 +173,6 @@ export function buildIndexDocumentFromPdfContext(params: {
   };
 }
 
-/** fnv1a32 over chunk boundaries and section labels; pinned by a unit test. */
-export function computeChunkerFingerprint(ctx: PdfContext): string {
-  const chunkMeta = ctx.documentStructure?.plainChunkMeta || ctx.chunkMeta;
-  return fnv1a32(
-    ctx.chunks
-      .map(
-        (c, i) =>
-          `${c.length}:${chunkMeta[i]?.sectionLabel || ""}:${chunkMeta[i]?.chunkKind || ""}:${chunkMeta[i]?.enclosingSection || ""}`,
-      )
-      .join("|"),
-  );
-}
-
 export async function indexAttachment(params: {
   item: Zotero.Item;
   libraryID: number;

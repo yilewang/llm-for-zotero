@@ -3,7 +3,6 @@ import { noteHtmlToModelText } from "../../services/notes/noteRendering";
 import { runCodexNativePanelTurn } from "./codexNative/turnCallbacks";
 import { getPanelRequestUI, type PanelRequestUI } from "./panelRequestUI";
 import { isLiveDocument, isLivePanelBody } from "./panelLiveness";
-export type { PanelRequestUI } from "./panelRequestUI";
 import { createCoalescedFrameScheduler } from "./setupHandlers/controllers/uiSchedulingController";
 import { syncTaskProgressPanel } from "./taskProgress/panel";
 import {
@@ -17,7 +16,6 @@ import { wireStartPageTipActions } from "./startPageTipActions";
 import { appendSelectedTextSections } from "./selectedTextPreviewSections";
 import {
   t,
-  getWelcomeHtml,
   getWebChatWelcomeHtml,
   getStandaloneLibraryChatStartPageHtml,
   getPaperChatStartPageHtml,
@@ -25,7 +23,6 @@ import {
 } from "../../utils/i18n";
 import {
   appendMessage as appendStoredMessage,
-  clearConversation as clearStoredConversation,
   pruneConversation,
   updateLatestUserMessage as updateStoredLatestUserMessage,
   updateLatestAssistantMessage as updateStoredLatestAssistantMessage,
@@ -69,7 +66,6 @@ import {
   captureClaudeSessionInfo,
   getClaudeBridgeRuntime,
   invalidateClaudeConversationSessionWithinWriteLock,
-  isClaudeConversationSystemActive,
   updateLatestClaudeConversationAssistantMessageWithinWriteLock,
   updateLatestClaudeConversationUserMessageWithinWriteLock,
 } from "../../claudeCode/runtime";
@@ -100,10 +96,6 @@ import {
   type BuildAgentRuntimeRequestParams,
   type EffectiveRequestConfig,
   type TurnRequestContext,
-} from "./requestContext";
-export type {
-  BuildAgentRuntimeRequestParams,
-  EffectiveRequestConfig,
 } from "./requestContext";
 import {
   bindClaudeBridgeConversationSystem,
@@ -152,7 +144,6 @@ import { inferLegacyProviderProtocol } from "../../utils/providerProtocol";
 import { isLocalModelApiBase } from "../../utils/providerPresets";
 import {
   PERSISTED_HISTORY_LIMIT,
-  MAX_FULL_TEXT_PAPER_CONTEXTS,
   MAX_SELECTED_IMAGES,
   formatFigureCountLabel,
   formatPaperCountLabel,
@@ -219,10 +210,7 @@ import {
   getConversationForkLink,
   type ConversationForkLink,
 } from "../../shared/conversationForkLinks";
-import {
-  isRenderableGeneratedImageSrc,
-  normalizeGeneratedChatImages,
-} from "../../shared/generatedImages";
+import { normalizeGeneratedChatImages } from "../../shared/generatedImages";
 import { isEmbeddableGeneratedImage } from "../../services/images/generatedImageAssets";
 import { copyTextToClipboard } from "./clipboard";
 import {
@@ -245,19 +233,18 @@ import {
   surfaceChoices,
 } from "./surfaceChoices";
 import { readerRuntimeKeyForSystem } from "../../shared/readerSelection";
-import { renderAssistantGeneratedImagesInto } from "./generatedImageRender";
-export { copyTextToClipboard } from "./clipboard";
-export {
-  copyGeneratedImageToClipboard,
+import {
   renderAssistantGeneratedImagesInto,
+  openGeneratedImageFileUrl,
 } from "./generatedImageRender";
+export { copyTextToClipboard } from "./clipboard";
+export { copyGeneratedImageToClipboard } from "./generatedImageRender";
 import { ensureMineruCacheDirForAttachment } from "../../services/mineru/sync";
 import type {
   Message,
   ChatRuntimeMode,
   ReasoningProviderKind,
   ReasoningOption,
-  ReasoningLevelSelection,
   AdvancedModelParams,
   ChatAttachment,
   CollectionContextRef,
@@ -268,7 +255,6 @@ import type {
   ResolvedSelectedTextAnchor,
   SelectedTextSource,
   PaperContextRef,
-  PaperContextSendMode,
   ContextAssemblyStrategy,
   ResolvedContextSource,
 } from "./types";
@@ -310,7 +296,6 @@ import {
   isRequestActive,
   isRequestOwner,
   nextRequestId,
-  isRequestPending,
   setPendingRequestId,
   transferRequest,
   tryBeginRequest,
@@ -318,7 +303,6 @@ import {
   getResponseActionRunner,
   getForkSourceNavigationRunner,
   setPromptMenuTarget,
-  selectedRuntimeModeCache,
   type ResponseActionKind,
   type ResponseActionTarget,
 } from "./state";
@@ -392,9 +376,11 @@ import {
   getLastReasoningExpanded,
   getStringPref,
   setLastReasoningExpanded,
-  setLastUsedReasoningLevelForProvider,
 } from "./prefHelpers";
-import { resolveMultiContextPlan } from "./multiContextPlanner";
+import {
+  resolveMultiContextPlan,
+  limitFullTextPaperContexts,
+} from "./multiContextPlanner";
 import {
   formatPaperCitationLabel,
   resolvePaperContextDisplayRef,
@@ -418,7 +404,6 @@ import {
 } from "./portalScope";
 import { isGlobalPortalItem } from "../../services/context/portalItems";
 import { shouldShowForkActionForAssistantTurn } from "./forkActionVisibility";
-import { buildChatHistoryNotePayload } from "./notes";
 import { readNoteSnapshot } from "../../services/notes/noteSnapshot";
 import { extractManagedBlobHash } from "../../services/attachmentStorage";
 import { buildContextPlanSystemMessages } from "./requestSystemMessages";
@@ -427,7 +412,6 @@ import { resolveSelectedTextAnchors } from "./selectedTextAnchors";
 import { canEditUserPromptTurn } from "./editability";
 import { renderAgentTrace, disposeAgentTrace } from "./agentTrace/render";
 import {
-  conversationHasStreamingMessage,
   finalizeAssistantMessageQuoteCitations,
   prewarmQuoteSourcePageText,
   resetAssistantQuoteDisplay,
@@ -473,14 +457,11 @@ import {
 } from "./citationContexts";
 import {
   buildSelectedTextQuoteCitations,
-  extractQuoteCitationsFromToolContent,
-  finalizeAssistantQuoteCitations,
   mergeQuoteCitations,
 } from "../../services/quotes/quoteCitations";
 import {
   buildQuoteExpandedMarkdown,
   getMessageQuoteDisplay,
-  QUOTE_RENDER_OCCURRENCE_PATTERN,
 } from "./quoteRenderPlan";
 import { getCoreAgentRuntime, initAgentSubsystem } from "../../agent/index";
 import {
@@ -505,7 +486,6 @@ import type {
   AgentRunEventRecord,
   AgentRuntimeRequestInput as AgentRuntimeRequest,
 } from "../../agent/types";
-import { getCodexNativeRawString } from "../../codexAppServer/nativeActivityStages";
 import { buildAgentStageEvent } from "../../agent/stageEvents";
 import {
   sendAgentTurn,
@@ -544,7 +524,8 @@ import {
   isEphemeralConversationKey,
 } from "../../shared/conversationKeySpace";
 import { buildEphemeralBackgroundContextBlock } from "../../shared/ephemeralBackgroundContext";
-export { renderAssistantMarkdownHtmlForChat } from "./renderedMarkdown";
+import { positiveIntOrNull } from "../../core/values";
+import { isPdfAttachment } from "./setupHandlers/controllers/pdfPaperModelInputController";
 
 /** Get AbortController constructor from global scope */
 function getAbortControllerCtor(): (new () => AbortController) | undefined {
@@ -744,19 +725,12 @@ function isolateWebChatConversationKey(
   loadedConversationKeys.add(key);
 }
 
-function normalizeConversationScopeInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
 function buildConversationRegistryScopeForItem(
   item: Zotero.Item,
   conversationKey: number,
   conversationSystem?: ConversationSystem | null,
 ): ConversationRegistryScope | null {
-  const normalizedConversationKey =
-    normalizeConversationScopeInt(conversationKey);
+  const normalizedConversationKey = positiveIntOrNull(conversationKey);
   if (!normalizedConversationKey) return null;
   const storageSystem = resolveConversationStorageSystemForItem({
     item,
@@ -764,7 +738,7 @@ function buildConversationRegistryScopeForItem(
   });
   if (!storageSystem) return null;
   const kind = resolveDisplayConversationKind(item);
-  const libraryID = normalizeConversationScopeInt(item?.libraryID);
+  const libraryID = positiveIntOrNull(item?.libraryID);
   if (!kind || !libraryID) return null;
   if (kind === "global") {
     return {
@@ -775,9 +749,8 @@ function buildConversationRegistryScopeForItem(
     };
   }
   const baseItem = resolveConversationBaseItem(item);
-  const paperItemID = normalizeConversationScopeInt(baseItem?.id);
-  const paperLibraryID =
-    normalizeConversationScopeInt(baseItem?.libraryID) || libraryID;
+  const paperItemID = positiveIntOrNull(baseItem?.id);
+  const paperLibraryID = positiveIntOrNull(baseItem?.libraryID) || libraryID;
   if (!paperItemID || !paperLibraryID) return null;
   return {
     conversationKey: normalizedConversationKey,
@@ -836,7 +809,7 @@ function collectMessagePaperContextIds(
 ): void {
   if (!Array.isArray(refs)) return;
   for (const ref of refs) {
-    const itemID = normalizeConversationScopeInt(ref?.itemId);
+    const itemID = positiveIntOrNull(ref?.itemId);
     if (itemID) out.add(itemID);
   }
 }
@@ -850,7 +823,7 @@ export function storedMessagesMatchActivePaper(
   if (resolveActiveNoteSession(item)) return true;
   if (resolveDisplayConversationKind(item) !== "paper") return true;
   const baseItem = resolveConversationBaseItem(item);
-  const activePaperItemID = normalizeConversationScopeInt(baseItem?.id);
+  const activePaperItemID = positiveIntOrNull(baseItem?.id);
   if (!activePaperItemID) return true;
   const ids = new Set<number>();
   for (const message of storedMessages) {
@@ -886,43 +859,6 @@ function appendReasoningPart(base: string | undefined, next?: string): string {
 
 function isReasoningExpandedByDefault(): boolean {
   return getLastReasoningExpanded();
-}
-
-function setHistoryControlsDisabled(body: Element, disabled: boolean): void {
-  const historyNewBtn = body.querySelector(
-    "#llm-history-new",
-  ) as HTMLButtonElement | null;
-  if (historyNewBtn) {
-    historyNewBtn.disabled = disabled;
-    historyNewBtn.setAttribute("aria-disabled", disabled ? "true" : "false");
-    if (disabled) {
-      historyNewBtn.setAttribute("aria-expanded", "false");
-    }
-  }
-  const historyToggleBtn = body.querySelector(
-    "#llm-history-toggle",
-  ) as HTMLButtonElement | null;
-  if (historyToggleBtn) {
-    historyToggleBtn.disabled = disabled;
-    historyToggleBtn.setAttribute("aria-disabled", disabled ? "true" : "false");
-    if (disabled) {
-      historyToggleBtn.setAttribute("aria-expanded", "false");
-    }
-  }
-  if (disabled) {
-    const historyNewMenu = body.querySelector(
-      "#llm-history-new-menu",
-    ) as HTMLDivElement | null;
-    if (historyNewMenu) {
-      historyNewMenu.style.display = "none";
-    }
-    const historyMenu = body.querySelector(
-      "#llm-history-menu",
-    ) as HTMLDivElement | null;
-    if (historyMenu) {
-      historyMenu.style.display = "none";
-    }
-  }
 }
 
 function resolveMultimodalRetryHint(
@@ -965,33 +901,7 @@ function resolveMultimodalRetryHint(
 function openStoredAttachmentFromMessage(attachment: ChatAttachment): boolean {
   const fileUrl = toFileUrl(attachment.storedPath);
   if (!fileUrl) return false;
-  return openFileUrl(fileUrl);
-}
-
-function openFileUrl(fileUrl: string): boolean {
-  try {
-    const launch = (Zotero as any).launchURL as
-      | ((url: string) => void)
-      | undefined;
-    if (typeof launch === "function") {
-      launch(fileUrl);
-      return true;
-    }
-  } catch (_err) {
-    void _err;
-  }
-  try {
-    const win = Zotero.getMainWindow?.() as
-      | (Window & { open?: (url?: string, target?: string) => unknown })
-      | null;
-    if (win?.open) {
-      win.open(fileUrl, "_blank");
-      return true;
-    }
-  } catch (_err) {
-    void _err;
-  }
-  return false;
+  return openGeneratedImageFileUrl(fileUrl);
 }
 
 function normalizeSelectedTexts(
@@ -1562,16 +1472,6 @@ export function invokeResponseMenuActionButton(params: {
   setResponseMenuTarget(body, target);
   void runner(action, target);
   return true;
-}
-
-export function shouldDecorateInterleavedAgentTraceCitations(params: {
-  agentTraceEl: Element | null;
-  agentUsesInterleavedText: boolean;
-  streaming?: boolean;
-}): boolean {
-  return Boolean(
-    params.agentTraceEl && params.agentUsesInterleavedText && !params.streaming,
-  );
 }
 
 function attachAssistantResponseContextMenu(params: {
@@ -2188,15 +2088,6 @@ function accumulateSessionTokens(
   return next;
 }
 
-export function getSessionTokenTotal(conversationKey: number): number {
-  return sessionTokenTotals.get(conversationKey) ?? 0;
-}
-
-export function resetSessionTokens(conversationKey: number): void {
-  sessionTokenTotals.delete(conversationKey);
-  contextUsageSnapshots.delete(conversationKey);
-}
-
 export function persistChatScrollSnapshot(
   item: Zotero.Item,
   chatBox: HTMLDivElement,
@@ -2416,9 +2307,6 @@ async function announceFinalizedMaterialForRun(
   );
   if (added.length) agentRunTraceCache.set(runId, [...cached, ...added]);
 }
-
-export const announceFinalizedMaterialForRunForTests =
-  announceFinalizedMaterialForRun;
 
 /**
  * Writes an assistant row through its system's store. Without `options` the
@@ -2802,9 +2690,6 @@ function normalizeStoredPaperContextRoutes(params: {
   };
 }
 
-export const normalizeStoredPaperContextRoutesForTests =
-  normalizeStoredPaperContextRoutes;
-
 function getMessageDisplayPaperContexts(
   message: Pick<
     Message,
@@ -2817,9 +2702,6 @@ function getMessageDisplayPaperContexts(
     ...(message.pdfPaperContexts || []),
   ]);
 }
-
-export const getMessageDisplayPaperContextsForTests =
-  getMessageDisplayPaperContexts;
 
 type ConversationComposeContextSnapshot = {
   paperContexts: PaperContextRef[];
@@ -2863,9 +2745,6 @@ function deriveConversationComposeContextSnapshot(
     tagContexts: normalizeTagContexts(latestUserMessage.selectedTagContexts),
   };
 }
-
-export const deriveConversationComposeContextSnapshotForTests =
-  deriveConversationComposeContextSnapshot;
 
 function clearPaperContinuationOverrides(itemId: number): void {
   composeContextStore.paperSendModes.clearOwner(itemId);
@@ -3441,14 +3320,6 @@ async function ensureAgentRunTraceLoaded(
   await task;
 }
 
-export function ensureAgentRunTraceLoadedForTests(
-  runId: string,
-  body: Element,
-  item: Zotero.Item,
-): Promise<void> {
-  return ensureAgentRunTraceLoaded(runId, body, item);
-}
-
 /**
  * Each run's web markers, read ahead of its full trace: an old chat's answers
  * show their markers after one small read of the runs' final events, not
@@ -3601,8 +3472,6 @@ export function getReasoningOptions(
     label: option.label,
   }));
 }
-
-export { QUOTE_RENDER_OCCURRENCE_PATTERN };
 
 /**
  * The copied form of a response, which is what the reader saw and no more.
@@ -4762,7 +4631,12 @@ type CodexRetryRequestSite = {
     >;
   };
   item: Zotero.Item;
-  question: string;
+  /**
+   * The request's user text: the user's own words, as the send's request
+   * has them, or the continue instruction. The Codex turn renders the
+   * quotes and files itself (buildCodexTurnUserText).
+   */
+  userText: string;
   retrySelectedTextContexts: SelectedTextContext[];
   retryResolvedSelectedTextAnchors: ResolvedSelectedTextAnchor[];
   contextPlan: Pick<
@@ -4823,7 +4697,7 @@ function codexRetryRequestParams(
     conversationGeneration: site.conversationGeneration,
     sourceMessageTimestamp: site.retryPair.userMessage.timestamp,
     item: site.item,
-    userText: site.question,
+    userText: site.userText,
     effectiveRequestConfig: site.effectiveRequestConfig,
     history: site.llmHistory,
   });
@@ -4834,11 +4708,6 @@ function codexRetrySkillContext(
 ): CodexNativeSkillContext {
   return toCodexNativeSkillContext(codexRetryRequestContext(site));
 }
-
-export const codexSendRequestParamsForTests = codexSendRequestParams;
-export const codexSendSkillContextForTests = codexSendSkillContext;
-export const codexRetryRequestParamsForTests = codexRetryRequestParams;
-export const codexRetrySkillContextForTests = codexRetrySkillContext;
 
 type ContextPlanForRequest = {
   combinedContext: string;
@@ -5559,6 +5428,8 @@ function reconstructRetryPayload(
   },
 ): {
   question: string;
+  /** The user's own words, without the quotes and files `question` adds. */
+  promptText: string;
   screenshotImages: string[];
   attachments: ChatAttachment[];
   paperContexts: PaperContextRef[];
@@ -5632,6 +5503,7 @@ function reconstructRetryPayload(
   );
   return {
     question,
+    promptText,
     screenshotImages,
     attachments: fileAttachments,
     paperContexts,
@@ -5658,13 +5530,6 @@ function buildHistoryMessageForLLM(message: Message): ChatMessage {
 
 function buildLLMHistoryMessages(history: Message[]): ChatMessage[] {
   return history.map((message) => buildHistoryMessageForLLM(message));
-}
-
-/** Stored messages as a loaded chat sends them to the model as history. */
-export function buildLLMHistoryFromStoredMessagesForTests(
-  messages: readonly StoredChatMessage[],
-): ChatMessage[] {
-  return buildLLMHistoryMessages(messages.map(toPanelMessage));
 }
 
 function normalizeModelFileAttachments(
@@ -5776,19 +5641,6 @@ function getPdfPaperAttachmentContextItemId(
   return Number.isFinite(contextItemId) && contextItemId > 0
     ? Math.floor(contextItemId)
     : null;
-}
-
-function isPdfChatAttachment(attachment: ChatAttachment): boolean {
-  const name = typeof attachment.name === "string" ? attachment.name : "";
-  const mime =
-    typeof attachment.mimeType === "string"
-      ? attachment.mimeType.trim().toLowerCase()
-      : "";
-  return (
-    attachment.category === "pdf" ||
-    mime === "application/pdf" ||
-    /\.pdf$/i.test(name)
-  );
 }
 
 function isSameRetryModelTarget(params: {
@@ -5907,8 +5759,8 @@ async function resolveRetryModelInputs(params: {
   if (
     params.effectiveRequestConfig.providerProtocol !== "web_sync" &&
     pdfSupport !== "native" &&
-    (visibleAttachments.some(isPdfChatAttachment) ||
-      (modelAttachmentsOverride || []).some(isPdfChatAttachment))
+    (visibleAttachments.some(isPdfAttachment) ||
+      (modelAttachmentsOverride || []).some(isPdfAttachment))
   ) {
     throw new Error(FULL_PDF_UNSUPPORTED_MESSAGE);
   }
@@ -6022,8 +5874,6 @@ async function resolveRetryModelInputs(params: {
   };
 }
 
-export const resolveRetryModelInputsForTests = resolveRetryModelInputs;
-
 function normalizeEditablePaperContexts(
   paperContexts?: PaperContextRef[],
 ): PaperContextRef[] {
@@ -6036,12 +5886,6 @@ function normalizeEditableFullTextPaperContexts(
   return limitFullTextPaperContexts(
     normalizePaperContexts(fullTextPaperContexts),
   );
-}
-
-function limitFullTextPaperContexts(
-  paperContexts: PaperContextRef[],
-): PaperContextRef[] {
-  return paperContexts.slice(0, MAX_FULL_TEXT_PAPER_CONTEXTS);
 }
 
 function includeAutoLoadedPaperContext(
@@ -6116,9 +5960,6 @@ function includeAutoLoadedPaperContext(
     activePaperContext,
   };
 }
-
-export const includeAutoLoadedPaperContextForTests =
-  includeAutoLoadedPaperContext;
 
 function syncComposeContextForInlineEdit(
   body: Element,
@@ -6205,9 +6046,6 @@ function syncComposeContextForInlineEdit(
   composeContextStore.initializedConversations.mark(conversationKey);
   activeContextPanelStateSync.get(body)?.();
 }
-
-export const syncComposeContextForInlineEditForTests =
-  syncComposeContextForInlineEdit;
 
 export async function editLatestUserMessageAndRetry(
   opts: import("./types").EditRetryOptions,
@@ -6347,11 +6185,6 @@ export async function editLatestUserMessageAndRetry(
   );
   const selectedTextPaperContextsForMessage =
     selectedTextContextsForMessage.map((context) => context.paperContext);
-  const selectedTextQuoteCitationsForMessage = buildSelectedTextQuoteCitations(
-    selectedTextsForMessage,
-    selectedTextSourcesForMessage,
-    selectedTextPaperContextsForMessage,
-  );
   const selectedTextNoteContextsForMessage = selectedTextContextsForMessage.map(
     (context) => context.noteContext,
   );
@@ -6864,6 +6697,7 @@ export async function retryLatestAssistantResponse(
   }
   const {
     question,
+    promptText: retryPromptText,
     screenshotImages,
     attachments,
     paperContexts,
@@ -7354,7 +7188,7 @@ export async function retryLatestAssistantResponse(
       conversationGeneration,
       retryPair,
       item,
-      question,
+      userText: continueIncomplete ? dispatchQuestion : retryPromptText,
       retrySelectedTextContexts,
       retryResolvedSelectedTextAnchors,
       contextPlan,
@@ -7728,7 +7562,6 @@ export async function editUserTurnAndRetry(opts: {
     onProviderDispatch,
     contextSource,
     userTimestamp,
-    assistantTimestamp,
     newText,
     selectedTextContexts,
     selectedTexts,
@@ -8641,11 +8474,14 @@ async function buildAgentRuntimeRequest(
     readerSelection:
       getReaderSelectionForSurface(
         readerRuntimeKeyForSystem(
-          params.effectiveRequestConfig.authMode === "codex_app_server"
-            ? "codex"
-            : params.effectiveRequestConfig.modelProviderLabel === "Claude Code"
-              ? "claude_code"
-              : "upstream",
+          params.conversationSystem ||
+            resolveEffectiveConversationSystem({
+              item: params.item,
+              authMode: params.effectiveRequestConfig.authMode,
+              providerProtocol: params.effectiveRequestConfig.providerProtocol,
+              modelProviderLabel:
+                params.effectiveRequestConfig.modelProviderLabel,
+            }),
         ),
         params.surface || resolveSurfaceForMountedItem(params.item),
       ) || undefined,
@@ -8671,8 +8507,6 @@ async function buildAgentRuntimeRequest(
     },
   };
 }
-
-export const buildAgentRuntimeRequestForTests = buildAgentRuntimeRequest;
 
 function buildAgentEngineDeps(
   currentItem?: Zotero.Item,
@@ -8739,14 +8573,13 @@ function buildAgentEngineDeps(
     getConversationKey,
     buildLLMHistoryMessages,
     buildAgentRuntimeRequest: async (requestParams) => {
-      const runtimeRequest = await buildAgentRuntimeRequest(
-        panelBody && !requestParams.surface
-          ? {
-              ...requestParams,
-              surface: resolveSelectionSurfaceForBody(panelBody),
-            }
-          : requestParams,
-      );
+      const runtimeRequest = await buildAgentRuntimeRequest({
+        ...requestParams,
+        conversationSystem: effectiveConversationSystem,
+        ...(panelBody && !requestParams.surface
+          ? { surface: resolveSelectionSurfaceForBody(panelBody) }
+          : {}),
+      });
       // The agent turn's papers are final here: read their PDF page text
       // while the agent works, so its quote cards can be checked at the end.
       void prewarmQuoteSourcePageText({
@@ -10917,10 +10750,6 @@ function updateMountedReasoningPanel(
   view.reasoningSummary = message.reasoningSummary;
   view.reasoningDetails = message.reasoningDetails;
 }
-
-export const createReasoningPanelForTests = createReasoningPanel;
-export const renderReasoningPartForTests = renderReasoningPart;
-export const disposeMountedAssistantViewForTests = disposeMountedAssistantView;
 
 /**
  * What the answer's web markers depend on. An old chat's answers are drawn

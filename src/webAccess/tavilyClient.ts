@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import { WebAccessError } from "./errors";
 import { normalizePageText } from "./pageText";
+import { recordOrEmpty, trimmedString } from "../core/values";
 
 const TAVILY_API_ORIGIN = "https://api.tavily.com";
 const TAVILY_SEARCH_URL = `${TAVILY_API_ORIGIN}/search`;
@@ -30,16 +31,6 @@ export type TavilyTransport = (params: {
   body?: string;
   signal?: AbortSignal;
 }) => Promise<TavilyTransportResponse>;
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function readString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
 
 function readFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
@@ -146,7 +137,7 @@ function isPrivateIpv6(hostname: string): boolean {
 }
 
 export function normalizePublicWebUrl(value: unknown): string {
-  const raw = readString(value);
+  const raw = trimmedString(value);
   if (!raw) throw new WebAccessError("A web URL is required.", "unsafe_url");
   let url: URL;
   try {
@@ -196,11 +187,11 @@ function hostnameForUrl(url: string): string {
 }
 
 function normalizeDisplayText(value: unknown, maxLength: number): string {
-  return readString(value).replace(/\s+/g, " ").slice(0, maxLength).trim();
+  return trimmedString(value).replace(/\s+/g, " ").slice(0, maxLength).trim();
 }
 
 function normalizeOptionalPublicWebUrl(value: unknown): string | undefined {
-  const raw = readString(value);
+  const raw = trimmedString(value);
   if (!raw) return undefined;
   try {
     return normalizePublicWebUrl(raw);
@@ -214,7 +205,7 @@ function normalizeSource(
   contentField: "content" | "raw_content",
   wholePage = false,
 ) {
-  const record = asRecord(value);
+  const record = recordOrEmpty(value);
   const url = normalizePublicWebUrl(record.url);
   const hostname = hostnameForUrl(url);
   const siteName =
@@ -247,15 +238,15 @@ function normalizeSource(
 }
 
 function normalizeUsage(value: unknown): WebAccessUsage {
-  return { credits: readNonNegativeNumber(asRecord(value).credits) };
+  return { credits: readNonNegativeNumber(recordOrEmpty(value).credits) };
 }
 
 function readErrorDetail(body: unknown): string {
-  const record = asRecord(body);
+  const record = recordOrEmpty(body);
   const detail = record.detail;
   if (typeof detail === "string") return detail.trim();
-  const nested = asRecord(detail);
-  return readString(nested.error) || readString(record.error);
+  const nested = recordOrEmpty(detail);
+  return trimmedString(nested.error) || trimmedString(record.error);
 }
 
 export class TavilyApiError extends WebAccessError {
@@ -275,8 +266,8 @@ function mapTavilyError(
   body: unknown,
   apiKey: string,
 ): TavilyApiError {
-  const record = asRecord(body);
-  const requestId = readString(record.request_id) || undefined;
+  const record = recordOrEmpty(body);
+  const requestId = trimmedString(record.request_id) || undefined;
   const detail = readErrorDetail(body).split(apiKey).join("[redacted]");
   let message: string;
   let code: ConstructorParameters<typeof WebAccessError>[1];
@@ -365,7 +356,7 @@ export class TavilyClient implements WebAccessProvider {
     if (response.status < 200 || response.status >= 300) {
       throw mapTavilyError(response.status, response.body, this.apiKey);
     }
-    return asRecord(response.body);
+    return recordOrEmpty(response.body);
   }
 
   async search(request: WebSearchRequest): Promise<WebSearchResponse> {
@@ -412,13 +403,13 @@ export class TavilyClient implements WebAccessProvider {
       : [];
     return {
       provider: "tavily",
-      query: readString(body.query) || request.query,
+      query: trimmedString(body.query) || request.query,
       depth: request.depth,
       topic: request.topic,
       results,
       usage: normalizeUsage(body.usage),
-      ...(readString(body.request_id)
-        ? { requestId: readString(body.request_id) }
+      ...(trimmedString(body.request_id)
+        ? { requestId: trimmedString(body.request_id) }
         : {}),
     };
   }
@@ -472,7 +463,7 @@ export class TavilyClient implements WebAccessProvider {
       : [];
     const failedResults: WebReadFailure[] = Array.isArray(body.failed_results)
       ? body.failed_results.flatMap((entry) => {
-          const record = asRecord(entry);
+          const record = recordOrEmpty(entry);
           try {
             return [
               {
@@ -494,19 +485,19 @@ export class TavilyClient implements WebAccessProvider {
       pages,
       failedResults,
       usage: normalizeUsage(body.usage),
-      ...(readString(body.request_id)
-        ? { requestId: readString(body.request_id) }
+      ...(trimmedString(body.request_id)
+        ? { requestId: trimmedString(body.request_id) }
         : {}),
     };
   }
 
   async getUsage(signal?: AbortSignal): Promise<WebAccessUsageSnapshot> {
     const body = await this.request("GET", TAVILY_USAGE_URL, undefined, signal);
-    const key = asRecord(body.key);
-    const account = asRecord(body.account);
+    const key = recordOrEmpty(body.key);
+    const account = recordOrEmpty(body.account);
     return {
       provider: "tavily",
-      plan: readString(account.current_plan) || "Unknown",
+      plan: trimmedString(account.current_plan) || "Unknown",
       credential: {
         usage: numberField(key, "usage"),
         limit: numberField(key, "limit"),

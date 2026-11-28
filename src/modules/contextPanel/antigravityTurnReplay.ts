@@ -44,7 +44,17 @@ import {
   startAgyClient,
   type AgyLaunchOptions,
 } from "../../antigravity/agyProcess";
-import type { ChatAttachment } from "../../shared/types";
+import type { ChatAttachment, SelectedTextContext } from "../../shared/types";
+import {
+  encodeReaderSelection,
+  READER_RUNTIME_KEYS,
+  type ReaderRuntimeKey,
+  type ReaderSelection,
+} from "../../shared/readerSelection";
+import {
+  getReaderChoicePref,
+  setReaderChoicePref,
+} from "../../utils/readerChoicePrefs";
 import { listAntigravitySlashCommands } from "../../antigravity/commands";
 
 export type AntigravityTurnScenario = {
@@ -73,6 +83,10 @@ export type AntigravityTurnScenario = {
   images?: string[];
   /** Files sent with the turn. */
   attachments?: ChatAttachment[];
+  /** Passages the user selected or quoted for the turn. */
+  selectedTextContexts?: SelectedTextContext[];
+  /** The reader model picked in the composer for each runtime. */
+  readerSelections?: Partial<Record<ReaderRuntimeKey, ReaderSelection>>;
 };
 
 export type AntigravityTurnResult = {
@@ -99,6 +113,8 @@ export type AntigravityTurnResult = {
   processes: number;
   /** The slash commands agy has announced, as the menu would list them. */
   slashCommands: string[];
+  /** The reader model the turn's request carried. */
+  readerSelection?: ReaderSelection;
 };
 
 let replayClient: AcpClient | null = null;
@@ -177,10 +193,12 @@ export async function exerciseAntigravityTurn(
   let threw = "";
   let triggered = false;
   let startedRunId = "";
+  let readerSelection: ReaderSelection | undefined;
   deps.getAgentRuntime = () =>
     ({
       ...runtime,
       runTurn: async (params: Parameters<typeof runtime.runTurn>[0]) => {
+        readerSelection = params.request.readerSelection;
         try {
           outcome = await runtime.runTurn({
             ...params,
@@ -239,7 +257,18 @@ export async function exerciseAntigravityTurn(
     ),
     mode: getAntigravityPermissionModePref(),
     mcp: isNativeZoteroMcpToolsEnabled(),
+    readers: READER_RUNTIME_KEYS.map(
+      (key) => [key, getReaderChoicePref(key)] as const,
+    ),
   };
+  for (const [key, selection] of Object.entries(
+    scenario.readerSelections || {},
+  )) {
+    setReaderChoicePref(
+      key as ReaderRuntimeKey,
+      encodeReaderSelection(selection),
+    );
+  }
   setPref("enableAntigravityMode", true);
   setAntigravityPermissionModePref(scenario.permissionMode ?? "default");
   setNativeZoteroMcpToolsEnabled(Boolean(scenario.mcp));
@@ -253,6 +282,9 @@ export async function exerciseAntigravityTurn(
         question: scenario.question,
         ...(scenario.images ? { images: scenario.images } : {}),
         ...(scenario.attachments ? { attachments: scenario.attachments } : {}),
+        ...(scenario.selectedTextContexts
+          ? { selectedTextContexts: scenario.selectedTextContexts }
+          : {}),
         ...(scenario.model ? { model: scenario.model } : {}),
         ...(scenario.thoughtLevel
           ? {
@@ -308,11 +340,13 @@ export async function exerciseAntigravityTurn(
       slashCommands: listAntigravitySlashCommands().map(
         (command) => command.name,
       ),
+      ...(readerSelection ? { readerSelection } : {}),
     };
   } finally {
     setAbortController(conversationKey, previousController);
     setPref("enableAntigravityMode", before.enable);
     setAntigravityPermissionModePref(before.mode);
     setNativeZoteroMcpToolsEnabled(before.mcp);
+    for (const [key, value] of before.readers) setReaderChoicePref(key, value);
   }
 }

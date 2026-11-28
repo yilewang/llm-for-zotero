@@ -100,7 +100,7 @@ function parseToolContent(message: AgentToolMessage): unknown {
   }
 }
 
-function existingToolResultHandle(content: unknown): string | undefined {
+export function existingToolResultHandle(content: unknown): string | undefined {
   if (!content || typeof content !== "object" || Array.isArray(content)) {
     return undefined;
   }
@@ -110,7 +110,7 @@ function existingToolResultHandle(content: unknown): string | undefined {
     : undefined;
 }
 
-function buildToolCallArgumentDigestById(
+export function buildToolCallArgumentDigestById(
   messages: AgentModelMessage[],
 ): Map<string, string> {
   const digests = new Map<string, string>();

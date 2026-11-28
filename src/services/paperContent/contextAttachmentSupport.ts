@@ -1,19 +1,10 @@
 import { resolveTextAttachmentSourceModeFromMetadata } from "./textAttachmentExtraction";
 import type { ContextAttachmentSupport } from "./contextAttachmentTypes";
-export type {
-  ContextAttachmentReadableVia,
-  ContextAttachmentSupport,
-  SupportedContextAttachmentType,
-  TextAttachmentSourceMode,
-} from "./contextAttachmentTypes";
-
-function normalizeMetadataText(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
+import { lowerTrimmedString } from "../../core/values";
 
 function getAttachmentFilename(item: Zotero.Item | null | undefined): string {
   if (!item?.isAttachment?.()) return "";
-  return normalizeMetadataText(
+  return lowerTrimmedString(
     (item as unknown as { attachmentFilename?: unknown }).attachmentFilename,
   );
 }
@@ -22,7 +13,7 @@ function getAttachmentContentType(
   item: Zotero.Item | null | undefined,
 ): string {
   if (!item?.isAttachment?.()) return "";
-  return normalizeMetadataText(
+  return lowerTrimmedString(
     (item as unknown as { attachmentContentType?: unknown })
       .attachmentContentType,
   );
@@ -32,8 +23,8 @@ export function resolveContextAttachmentSupportFromMetadata(input: {
   contentType?: unknown;
   filename?: unknown;
 }): ContextAttachmentSupport | null {
-  const contentType = normalizeMetadataText(input.contentType);
-  const filename = normalizeMetadataText(input.filename);
+  const contentType = lowerTrimmedString(input.contentType);
+  const filename = lowerTrimmedString(input.filename);
   if (contentType === "application/pdf" || filename.endsWith(".pdf")) {
     return {
       kind: "pdf",

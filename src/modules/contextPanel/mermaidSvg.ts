@@ -1,4 +1,5 @@
 import { HTML_NS } from "../../utils/domHelpers";
+import { trimSvgLeadingMetadata } from "../../utils/markdown";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -57,18 +58,6 @@ const MERMAID_ALLOWED_FOREIGN_OBJECT_TAGS = new Set([
   "i",
   "code",
 ]);
-
-function trimSvgLeadingMetadata(svg: string): string {
-  let result = svg.trim().replace(/^\uFEFF/, "");
-  let previous = "";
-  while (previous !== result) {
-    previous = result;
-    result = result
-      .replace(/^<\?xml[\s\S]*?\?>\s*/i, "")
-      .replace(/^<!--[\s\S]*?-->\s*/i, "");
-  }
-  return result;
-}
 
 function normalizeSvgHtmlBreaks(svg: string): string {
   return svg.replace(/<br(\s[^/>]*)?>/gi, (_match, attrs: string = "") => {
@@ -224,14 +213,6 @@ export function sanitizeRenderedMermaidSvgWithReason(
   }
 
   return { ok: true, svg: safeSvg };
-}
-
-export function sanitizeRenderedMermaidSvg(
-  svg: string,
-  maxChars: number,
-): string | null {
-  const result = sanitizeRenderedMermaidSvgWithReason(svg, maxChars);
-  return result.ok ? result.svg : null;
 }
 
 export function createInlineSvgElement(

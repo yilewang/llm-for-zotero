@@ -46,17 +46,6 @@ export function claimDeferredChatRender(
 }
 
 /**
- * The body's current cycle, captured by onAsyncRender in the same synchronous
- * block that consumes the sync-render flag — claiming must later be affine to
- * THIS cycle, not to whatever cycle is current at claim time, or a stale
- * in-flight async render could steal a newer cycle's claim and pin the
- * previous item's conversation on screen after a fast tab switch.
- */
-export function currentChatRenderCycle(body: Element): ChatRenderCycle | null {
-  return pendingChatRenderCycles.get(body) ?? null;
-}
-
-/**
  * onAsyncRender path. With a captured cycle the claim is shared with the
  * deferred path and refused when a newer cycle superseded it; without one
  * (async-only render, no sync onRender) onAsyncRender owns the render

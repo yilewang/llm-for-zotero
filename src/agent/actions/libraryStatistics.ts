@@ -1,14 +1,11 @@
-import type {
-  AgentAction,
-  ActionExecutionContext,
-  ActionResult,
-} from "./types";
+import type { ActionExecutionContext, ActionResult } from "./types";
 import {
   libraryIndexService,
   type LibraryIndexItem,
   type LibraryIndexSnapshot,
 } from "../../services/libraryIndexService";
 import type { ZoteroGateway } from "../services/zoteroGateway";
+import { collapseWhitespace } from "../../core/values";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,10 +91,6 @@ export type LibraryStatisticsOutput = {
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function normalizeText(value: unknown): string {
-  return `${value ?? ""}`.replace(/\s+/g, " ").trim();
-}
 
 function increment(map: Map<string, number>, key: string): void {
   map.set(key, (map.get(key) || 0) + 1);
@@ -511,7 +504,7 @@ export async function computeLibraryStatistics(
 
         // getAnnotations returns the annotation items themselves, not ids.
         for (const ann of att.getAnnotations(false)) {
-          const annType = normalizeText(ann.annotationType) || "highlight";
+          const annType = collapseWhitespace(ann.annotationType) || "highlight";
           increment(annotationsByType, annType);
           itemAnnotationCount++;
         }
@@ -644,57 +637,3 @@ export async function computeLibraryStatistics(
 
   return { ok: true, output };
 }
-
-export const libraryStatisticsAction: AgentAction<
-  LibraryStatisticsInput,
-  LibraryStatisticsOutput
-> = {
-  name: "library_statistics",
-  modes: ["library"],
-  description:
-    "Compute comprehensive summary statistics about the library: item counts by type, " +
-    "publication year distribution, top authors, top journals, collection structure, tag usage, " +
-    "annotation counts, library growth timeline, authorship patterns, and title keyword frequency.",
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      scope: {
-        type: "string",
-        enum: ["all", "collection"],
-        description: "Which items to analyze. Default: 'all'.",
-      },
-      collectionId: {
-        type: "number",
-        description: "Required when scope is 'collection'.",
-      },
-      sections: {
-        type: "array",
-        items: {
-          type: "string",
-          enum: STATISTICS_SECTIONS,
-        },
-        description:
-          "Which statistics sections to compute. Default: all. " +
-          "Available: itemTypes, yearDistribution, topAuthors, topJournals, " +
-          "collections, tags, annotations, growthTimeline, authorshipStats, titleKeywords.",
-      },
-      topN: {
-        type: "number",
-        description: "How many items to include in 'top N' lists. Default: 15.",
-      },
-    },
-  },
-
-  async execute(
-    input: LibraryStatisticsInput,
-    ctx: ActionExecutionContext,
-  ): Promise<ActionResult<LibraryStatisticsOutput>> {
-    return computeLibraryStatistics({
-      ...input,
-      libraryID: ctx.libraryID,
-      zoteroGateway: ctx.zoteroGateway,
-      onProgress: ctx.onProgress,
-    });
-  },
-};

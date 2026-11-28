@@ -10,6 +10,7 @@ import {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
+import { getZoteroDb } from "../../core/zoteroDb";
 
 /**
  * Per-conversation agent turn memory.
@@ -26,10 +27,6 @@ export type AgentTurnMemory = Readonly<{
   answerExcerpt: string;
 }>;
 
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
 const MEMORY_TABLE = "llm_for_zotero_agent_memory";
 const MAX_MEMORY_TURNS = 6;
 export const AGENT_MEMORY_QUESTION_EXCERPT_LENGTH = 200;
@@ -38,21 +35,12 @@ const ANSWER_EXCERPT_LEN = 350;
 const store = new Map<number, AgentTurnMemory[]>();
 let initPromise: Promise<boolean> | null = null;
 
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
-
 async function ensureConversationMemoryStore(): Promise<boolean> {
   if (initPromise) {
     return initPromise;
   }
   initPromise = (async () => {
-    const db = getDb();
+    const db = getZoteroDb();
     if (!db) return false;
     try {
       await db.queryAsync(
@@ -125,7 +113,7 @@ async function loadConversationMemory(
   conversationKey: number,
 ): Promise<AgentTurnMemory[]> {
   const dbReady = await ensureConversationMemoryStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return [];
   try {
     const rows = (await db.queryAsync(
@@ -188,7 +176,7 @@ export async function recordAgentTurn(
   const existing = store.get(key) ?? [];
 
   const dbReady = await ensureConversationMemoryStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (isConversationKeyRetiredInMemory(key)) {
     store.delete(key);
     return;
@@ -259,7 +247,7 @@ export async function clearAgentMemory(conversationKey: number): Promise<void> {
   if (!key) return;
   store.delete(key);
   const dbReady = await ensureConversationMemoryStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     await db.queryAsync(

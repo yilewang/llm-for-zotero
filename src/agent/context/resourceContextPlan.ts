@@ -12,13 +12,14 @@ import {
 import type { ContextCachePlan } from "../../contextCache/manager";
 import {
   buildAgentEvidenceContextBlock,
-  clearAgentEvidenceCache,
   commitAgentCacheEvidenceActivities,
   hydrateAgentEvidenceCache,
   planAgentContextCache,
   type AgentCacheEvidenceActivity,
 } from "./cacheManagement";
 import { getSelectedPassagePaper } from "./turnPaperScope";
+import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
+import { stableJson } from "../store/stableJson";
 
 export { hydrateAgentEvidenceCache };
 
@@ -44,13 +45,6 @@ export type AgentResourceSnapshot = {
   resources: Record<AgentResourceGroup, AgentResourceRecord[]>;
 };
 
-export type AgentResourceDelta = {
-  added: AgentResourceRecord[];
-  removed: AgentResourceRecord[];
-  changed: AgentResourceRecord[];
-  unchanged: number;
-};
-
 export type AgentResourceContextPlan = {
   conversationKey: number;
   contextCache?: ContextCachePlan;
@@ -72,35 +66,6 @@ function normalizeText(value: unknown, maxLength = 160): string {
     .slice(0, maxLength);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
-}
-
 function hashText(value: string): string {
   let hash = 5381;
   for (let index = 0; index < value.length; index += 1) {
@@ -120,8 +85,8 @@ function sortResourceRecords<T extends AgentResourceRecord>(records: T[]): T[] {
 }
 
 function paperKey(entry: PaperContextRef): string {
-  return `${normalizePositiveInt(entry.itemId) || 0}:${
-    normalizePositiveInt(entry.contextItemId) || 0
+  return `${positiveIntOrUndefined(entry.itemId) || 0}:${
+    positiveIntOrUndefined(entry.contextItemId) || 0
   }`;
 }
 
@@ -150,16 +115,16 @@ function buildPaperResourceRecords(params: {
     (params.papers || [])
       .filter((entry) =>
         Boolean(
-          normalizePositiveInt(entry.itemId) ||
-          normalizePositiveInt(entry.contextItemId),
+          positiveIntOrUndefined(entry.itemId) ||
+          positiveIntOrUndefined(entry.contextItemId),
         ),
       )
       .map((entry) => ({
         group: params.group,
         key: paperKey(entry),
         signature: stableJson({
-          itemId: normalizePositiveInt(entry.itemId) || 0,
-          contextItemId: normalizePositiveInt(entry.contextItemId) || 0,
+          itemId: positiveIntOrUndefined(entry.itemId) || 0,
+          contextItemId: positiveIntOrUndefined(entry.contextItemId) || 0,
           title: normalizeText(entry.title, 240),
           attachmentTitle: normalizeText(entry.attachmentTitle, 240),
           citationKey: normalizeText(entry.citationKey, 120),
@@ -178,15 +143,15 @@ function buildCollectionResourceRecords(
 ): AgentResourceRecord[] {
   return sortResourceRecords(
     request.turnPaperScope.collections
-      .filter((entry) => normalizePositiveInt(entry.collectionId))
+      .filter((entry) => positiveIntOrUndefined(entry.collectionId))
       .map((entry) => ({
         group: "collections" as const,
-        key: `${normalizePositiveInt(entry.libraryID) || 0}:${
-          normalizePositiveInt(entry.collectionId) || 0
+        key: `${positiveIntOrUndefined(entry.libraryID) || 0}:${
+          positiveIntOrUndefined(entry.collectionId) || 0
         }`,
         signature: stableJson({
-          collectionId: normalizePositiveInt(entry.collectionId) || 0,
-          libraryID: normalizePositiveInt(entry.libraryID) || 0,
+          collectionId: positiveIntOrUndefined(entry.collectionId) || 0,
+          libraryID: positiveIntOrUndefined(entry.libraryID) || 0,
           name: normalizeText(entry.name, 240),
         }),
         line: `- Collection: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
@@ -195,7 +160,7 @@ function buildCollectionResourceRecords(
 }
 
 function tagScopeKey(entry: TagContextRef): string {
-  const libraryID = normalizePositiveInt(entry.libraryID) || 0;
+  const libraryID = positiveIntOrUndefined(entry.libraryID) || 0;
   if (entry.scope) {
     return `${libraryID}:scope:${entry.scope}:${
       entry.includeAutomatic ? "auto" : "manual"
@@ -231,7 +196,7 @@ function buildTagResourceRecords(
       group: "tags" as const,
       key: tagScopeKey(entry),
       signature: stableJson({
-        libraryID: normalizePositiveInt(entry.libraryID) || 0,
+        libraryID: positiveIntOrUndefined(entry.libraryID) || 0,
         name: normalizeText(entry.name, 240),
         normalizedName: normalizeText(entry.normalizedName, 240).toLowerCase(),
         scope: entry.scope || "",
@@ -390,8 +355,8 @@ function buildAttachmentPoolResourceRecords(
   const records: AgentResourceRecord[] = [];
   for (const resource of request.availableAttachmentResources || []) {
     if (
-      !normalizePositiveInt(resource.parentItemId) ||
-      !normalizePositiveInt(resource.contextItemId)
+      !positiveIntOrUndefined(resource.parentItemId) ||
+      !positiveIntOrUndefined(resource.contextItemId)
     ) {
       continue;
     }
@@ -400,9 +365,9 @@ function buildAttachmentPoolResourceRecords(
       key: `resource:${resource.parentItemId}:${resource.contextItemId}`,
       signature: stableJson({
         lifecycleState: resource.lifecycleState,
-        parentItemId: normalizePositiveInt(resource.parentItemId),
+        parentItemId: positiveIntOrUndefined(resource.parentItemId),
         parentTitle: normalizeText(resource.parentTitle, 240),
-        contextItemId: normalizePositiveInt(resource.contextItemId),
+        contextItemId: positiveIntOrUndefined(resource.contextItemId),
         title: normalizeText(resource.title, 240),
         contentType: normalizeText(resource.contentType, 120),
         attachmentType: normalizeText(resource.attachmentType, 40),
@@ -420,10 +385,10 @@ function buildAttachmentPoolResourceRecords(
       key: `summary:${summary.libraryID}:${summary.collectionId}`,
       signature: stableJson({
         scope: summary.scope,
-        collectionId: normalizePositiveInt(summary.collectionId),
-        libraryID: normalizePositiveInt(summary.libraryID),
+        collectionId: positiveIntOrUndefined(summary.collectionId),
+        libraryID: positiveIntOrUndefined(summary.libraryID),
         collectionName: normalizeText(summary.collectionName, 240),
-        parentItemCount: normalizePositiveInt(summary.parentItemCount) || 0,
+        parentItemCount: positiveIntOrUndefined(summary.parentItemCount) || 0,
         attachmentCounts: summary.attachmentCounts,
       }),
       line:
@@ -440,14 +405,15 @@ function buildAgentBaseScopeSnapshot(
   request: AgentRuntimeRequest,
 ): Record<string, unknown> {
   const activeNote = request.activeNoteContext;
-  const metadata = normalizeRecord(request.metadata);
+  const metadata = recordOrEmpty(request.metadata);
   return {
-    conversationKey: normalizePositiveInt(request.conversationKey) || 0,
-    libraryID: normalizePositiveInt(request.libraryID) || 0,
-    activeItemId: normalizePositiveInt(request.activeItemId) || 0,
-    activeNoteId: normalizePositiveInt(activeNote?.noteId) || 0,
+    conversationKey: positiveIntOrUndefined(request.conversationKey) || 0,
+    libraryID: positiveIntOrUndefined(request.libraryID) || 0,
+    activeItemId: positiveIntOrUndefined(request.activeItemId) || 0,
+    activeNoteId: positiveIntOrUndefined(activeNote?.noteId) || 0,
     activeNoteKind: normalizeText(activeNote?.noteKind, 40),
-    activeNoteParentItemId: normalizePositiveInt(activeNote?.parentItemId) || 0,
+    activeNoteParentItemId:
+      positiveIntOrUndefined(activeNote?.parentItemId) || 0,
     activeNoteTitle: normalizeText(activeNote?.title, 240),
     activeNoteTextHash: activeNote ? hashText(activeNote.noteText || "") : "",
     activeNoteHtmlHash: activeNote?.noteHtml
@@ -495,66 +461,10 @@ export function buildAgentResourceSignatureFromSnapshot(
   return stableJson(snapshot);
 }
 
-function flattenAgentResourceSnapshot(
-  snapshot: AgentResourceSnapshot,
-): AgentResourceRecord[] {
-  const records: AgentResourceRecord[] = [];
-  for (const group of Object.keys(snapshot.resources) as AgentResourceGroup[]) {
-    for (const record of snapshot.resources[group]) {
-      records.push({
-        ...record,
-        key: `${group}:${record.key}`,
-      });
-    }
-  }
-  return sortResourceRecords(records);
-}
-
-export function diffAgentResourceSnapshots(params: {
-  previous: AgentResourceSnapshot;
-  current: AgentResourceSnapshot;
-}): AgentResourceDelta {
-  const previousRecords = new Map(
-    flattenAgentResourceSnapshot(params.previous).map((record) => [
-      record.key,
-      record,
-    ]),
-  );
-  const currentRecords = new Map(
-    flattenAgentResourceSnapshot(params.current).map((record) => [
-      record.key,
-      record,
-    ]),
-  );
-  const added: AgentResourceRecord[] = [];
-  const removed: AgentResourceRecord[] = [];
-  const changed: AgentResourceRecord[] = [];
-  let unchanged = 0;
-  for (const [key, current] of currentRecords) {
-    const previous = previousRecords.get(key);
-    if (!previous) {
-      added.push(current);
-    } else if (previous.signature !== current.signature) {
-      changed.push(current);
-    } else {
-      unchanged += 1;
-    }
-  }
-  for (const [key, previous] of previousRecords) {
-    if (!currentRecords.has(key)) removed.push(previous);
-  }
-  return {
-    added: sortResourceRecords(added),
-    removed: sortResourceRecords(removed),
-    changed: sortResourceRecords(changed),
-    unchanged,
-  };
-}
-
 export function buildAgentResourceContextPlan(
   request: AgentRuntimeRequest,
 ): AgentResourceContextPlan {
-  const conversationKey = normalizePositiveInt(request.conversationKey) || 0;
+  const conversationKey = positiveIntOrUndefined(request.conversationKey) || 0;
   const snapshot = buildAgentResourceSnapshot(request);
   const signature = buildAgentResourceSignatureFromSnapshot(snapshot);
   const priorReadBlock = buildAgentEvidenceContextBlock({
@@ -576,6 +486,44 @@ export function buildAgentResourceContextPlan(
     priorReadBlock,
   };
 }
+
+/**
+ * The rules for a selected collection or tag scope. The original agent sends
+ * all of them; a runtime reached over Zotero MCP (turnPromptBlocks.ts) sends
+ * only COLLECTION_SCOPE_RULES / TAG_SCOPE_RULES, because the skill and digest
+ * rules declare parts with task_update, which MCP does not list.
+ */
+const COLLECTION_RETRIEVAL_RULE =
+  "Reviews and summaries stay within the collection unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ scope:{ collectionIds:[<collectionId>] }, query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) for broad comprehensive evidence search when variants would improve recall, library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) for catalog listing, or collection-scoped actions when the user asks to operate on them. Do not assume all full text has already been read.";
+const SCOPE_CATALOG_NOT_EVIDENCE_RULE =
+  "Catalog rows and manifest rows are navigation context, not evidence. Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.";
+const COLLECTION_STAGED_READ_RULE =
+  "When reading papers from a collection, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit collection member.";
+const SCOPE_SKILL_BEFORE_PARTS_RULE =
+  "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.";
+const COLLECTION_DIGEST_RULE =
+  "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole collection, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large collection, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.";
+const COLLECTION_CHILD_ATTACHMENTS_RULE =
+  "If the user explicitly asks to include or only read child attachments in this collection, enumerate item attachments with library_search plus library_read sections:['attachments']; otherwise ignore sibling attachments for primary-document workflows.";
+const TAG_RETRIEVAL_RULE =
+  "Reviews and summaries stay within the tag unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) to search the selected tag pool by default, library_retrieve({ scope:{ tagNames:['<tag>'] }, query:'...', intent:'enumerate' }) for an explicit named tag scope, or library_search({ entity:'items', mode:'list', filters:{ tag:'<tag>' } }) for catalog listing. Do not ask which tag the user means when a selected tag scope is listed here.";
+const TAG_STAGED_READ_RULE =
+  "When reading papers from a tag, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text inside the tag where possible, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit tag member.";
+const TAG_DIGEST_RULE =
+  "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole tag, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large tag, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.";
+
+export const COLLECTION_SCOPE_RULES: readonly string[] = [
+  COLLECTION_RETRIEVAL_RULE,
+  SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+  COLLECTION_STAGED_READ_RULE,
+  COLLECTION_CHILD_ATTACHMENTS_RULE,
+];
+
+export const TAG_SCOPE_RULES: readonly string[] = [
+  TAG_RETRIEVAL_RULE,
+  SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+  TAG_STAGED_READ_RULE,
+];
 
 function buildScopeIdentityLines(request: AgentRuntimeRequest): string[] {
   // No conversation key here: this block sits in the system prompt, so a
@@ -655,12 +603,12 @@ export function buildAgentStableResourceContextBlock(
         (entry, index) =>
           `- Collection ${index + 1}: ${entry.name} [collectionId=${entry.collectionId}, libraryID=${entry.libraryID}]`,
       ),
-      "Reviews and summaries stay within the collection unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ scope:{ collectionIds:[<collectionId>] }, query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) for broad comprehensive evidence search when variants would improve recall, library_search({ entity:'items', mode:'list', filters:{ collectionId:<collectionId> } }) for catalog listing, or collection-scoped actions when the user asks to operate on them. Do not assume all full text has already been read.",
-      "Catalog rows and manifest rows are navigation context, not evidence. Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.",
-      "When reading papers from a collection, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit collection member.",
-      "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.",
-      "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole collection, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large collection, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.",
-      "If the user explicitly asks to include or only read child attachments in this collection, enumerate item attachments with library_search plus library_read sections:['attachments']; otherwise ignore sibling attachments for primary-document workflows.",
+      COLLECTION_RETRIEVAL_RULE,
+      SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+      COLLECTION_STAGED_READ_RULE,
+      SCOPE_SKILL_BEFORE_PARTS_RULE,
+      COLLECTION_DIGEST_RULE,
+      COLLECTION_CHILD_ATTACHMENTS_RULE,
     );
   }
   if (request.turnPaperScope.tags.length) {
@@ -669,11 +617,11 @@ export function buildAgentStableResourceContextBlock(
       ...request.turnPaperScope.tags.map((entry, index) =>
         formatTagScopeLine(entry, index),
       ),
-      "Reviews and summaries stay within the tag unless the user asks to go beyond it; other answers label papers from outside it. Use library_retrieve({ query:'...', queryVariants:[...], intent:'enumerate'|'summarize', depth:'metadata'|'evidence' }) to search the selected tag pool by default, library_retrieve({ scope:{ tagNames:['<tag>'] }, query:'...', intent:'enumerate' }) for an explicit named tag scope, or library_search({ entity:'items', mode:'list', filters:{ tag:'<tag>' } }) for catalog listing. Do not ask which tag the user means when a selected tag scope is listed here.",
-      "Catalog rows and manifest rows are navigation context, not evidence. Ground final content claims in library_retrieve snippets or paper_read results, or in the abstracts when the user limited the answer to them.",
-      "When reading papers from a tag, prefer library_retrieve for staged resource-pool search. It maps metadata, scans indexed/searchable text inside the tag where possible, returns a paper-level frontier, and expands snippets only for selected branches; use paper_read only for close reading explicit itemId/contextItemId targets returned by search/retrieval. Do not use the active reader paper as an implicit tag member.",
-      "When an installed skill matches the request (a literature review, a comparison of papers), load it with load_skill before you declare any part; its rules decide what the request leaves open, and the user's explicit instructions on sources, depth, scope and delivery come first.",
-      "When the request needs one result per paper (summaries, extracted fields, relevance to a question, support or challenge for an idea), declare a digest part with task_update ({ expectedEffect:'digest', scope:true } for the whole tag, or targetIds for chosen papers) whose description states that per-paper result, with read:{ source:'abstract' } or read:{ source:'sections', sections:[...] } when the user limited what to read; the host runs it on each paper and returns the results; synthesize from them, and in a chat answer cite their Evidence quotes by quoteCitationId, since the evidence refs are for submit_document only. For a question over a large tag, shortlist with library_retrieve first and digest the shortlist. Membership makes a paper available, not relevant: judge relevance from each paper's content. A synthesis uses a paper only where its content bears on the question: leave out one that does not, never stretch it in by analogy, list it under excluded (submit_document or task_update) with the reason, and name it by title without a citation.",
+      TAG_RETRIEVAL_RULE,
+      SCOPE_CATALOG_NOT_EVIDENCE_RULE,
+      TAG_STAGED_READ_RULE,
+      SCOPE_SKILL_BEFORE_PARTS_RULE,
+      TAG_DIGEST_RULE,
     );
   }
 
@@ -697,16 +645,4 @@ export function commitAgentReadActivities(params: {
   resourceSignature?: string;
 }): Promise<void> {
   return commitAgentCacheEvidenceActivities(params);
-}
-
-export function clearAgentReadLedger(): void {
-  clearAgentEvidenceCache();
-}
-
-export function buildAgentPriorReadContextBlock(params: {
-  conversationKey: number;
-  request?: AgentRuntimeRequest;
-  resourceSignature?: string;
-}): string {
-  return buildAgentEvidenceContextBlock(params);
 }

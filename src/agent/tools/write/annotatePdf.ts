@@ -16,6 +16,7 @@ import {
 import { executeExternalMutation } from "../../services/externalMutationCoordinator";
 import { LibraryMutationService } from "../../services/libraryMutationService";
 import { ok, fail, validateObject, normalizePositiveInt } from "../shared";
+import { trimmedStringOrUndefined } from "../../../core/values";
 
 /**
  * A reader selection the host (Inline Ask's Save) froze from Zotero's own
@@ -237,7 +238,7 @@ export function createAnnotatePdfTool(
           "attachmentId is required and must be the PDF attachment's item ID, not the parent paper's.",
         );
       }
-      const text = readString(args.text);
+      const text = trimmedStringOrUndefined(args.text);
       if (!text)
         return fail("text must be the complete quoted passage to highlight.");
       if (
@@ -266,7 +267,7 @@ export function createAnnotatePdfTool(
         return fail(
           "annotationType must be 'highlight', 'underline' or 'note'. Image and ink annotations are not offered.",
         );
-      const comment = readString(args.comment) || "";
+      const comment = trimmedStringOrUndefined(args.comment) || "";
       if (annotationType === "note" && !comment)
         return fail("A sticky note needs a comment: the text it shows.");
       const pageIndex =
@@ -380,7 +381,9 @@ export function createAnnotatePdfTool(
       const edited =
         data && typeof data.comment === "string" ? data.comment : undefined;
       const text =
-        data?.text === undefined ? input.text : readString(data.text);
+        data?.text === undefined
+          ? input.text
+          : trimmedStringOrUndefined(data.text);
       if (!text) return fail("The highlighted quotation cannot be empty.");
       // A host selection's text is bound to its rects.
       if (input.selection && text !== input.text)
@@ -547,10 +550,6 @@ export function createAnnotatePdfTool(
       });
     },
   };
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function generateAnnotationKey(): string {

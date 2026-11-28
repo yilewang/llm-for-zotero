@@ -84,7 +84,7 @@ export function stubPaperReadTool(
   } as never;
 }
 
-function contentText(message: AgentModelMessage): string {
+export function contentText(message: AgentModelMessage): string {
   return typeof message.content === "string"
     ? message.content
     : message.content

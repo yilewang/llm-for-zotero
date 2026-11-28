@@ -30,13 +30,8 @@ import {
 } from "./quoteCitations";
 
 export {
-  mergeQuoteLocationWritesIntoStoredJson,
-  normalizeQuoteSourceFileState,
   quoteSourceFileStatesEqual,
-  restoreQuoteSourceFileStates,
-  QUOTE_LOCATION_FIELDS,
   type QuoteCitationWithFileState,
-  type QuoteLocationFields,
   type QuoteLocationWrite,
   type QuoteSourceFileState,
 } from "../../shared/quoteLocationStorage";

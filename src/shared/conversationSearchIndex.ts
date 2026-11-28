@@ -16,12 +16,10 @@ import {
   type RuntimeConversationSystem,
 } from "../core/conversations/conversationSystems";
 import { CONVERSATION_STORE_TABLES_BY_SYSTEM } from "./conversationStore/storeTables";
+import { positiveIntOrZero } from "../core/values";
+import { getZoteroDb, tableExists, type ZoteroDb } from "../core/zoteroDb";
 
 const UPSTREAM_TABLES = CONVERSATION_STORE_TABLES_BY_SYSTEM.upstream;
-
-type ZoteroDb = {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
 
 export const CONVERSATION_SEARCH_INDEX_TABLE =
   "llm_for_zotero_conversation_search_index";
@@ -72,19 +70,6 @@ export type ConversationSearchIndexResult = {
   staleIndexedRowCount: number;
   truncatedRowCount: number;
 };
-
-function getZoteroDb(): ZoteroDb | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { DB?: ZoteroDb } }).Zotero
-      ?.DB || null
-  );
-}
-
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
 
 function normalizeText(value: unknown, maxLength = 2_000_000): string {
   if (typeof value !== "string") return "";
@@ -185,18 +170,6 @@ function canonicalConversationIDConflictsWithScope(params: {
       (params.kind === "paper" ? params.paperItemID || 0 : 0) ||
     parsed.conversationKey !== params.conversationKey
   );
-}
-
-async function tableExists(db: ZoteroDb, tableName: string): Promise<boolean> {
-  const rows = (await db.queryAsync?.(
-    `SELECT name
-     FROM sqlite_master
-     WHERE type = 'table'
-       AND name = ?
-     LIMIT 1`,
-    [tableName],
-  )) as Array<{ name?: unknown }> | undefined;
-  return Boolean(rows?.length);
 }
 
 async function getTableInfo(
@@ -337,7 +310,7 @@ function buildCatalogConversationFilter(params: {
       filterParams: [conversationID],
     };
   }
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   if (conversationKey) {
     return {
       filterSql: "c.conversation_key = ?",
@@ -648,7 +621,7 @@ export async function deleteConversationSearchIndexRowInTransaction(params: {
     return true;
   }
   const system = normalizeSystem(params.system);
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   if (!conversationKey) return false;
   if (system) {
     await db.queryAsync(
@@ -728,10 +701,8 @@ async function getIndexedSearchCoverage(params: {
         truncatedRowCount?: unknown;
       }>
     | undefined;
-  const indexedRowCount = normalizePositiveInt(
-    indexedRows?.[0]?.indexedRowCount,
-  );
-  const truncatedRowCount = normalizePositiveInt(
+  const indexedRowCount = positiveIntOrZero(indexedRows?.[0]?.indexedRowCount);
+  const truncatedRowCount = positiveIntOrZero(
     indexedRows?.[0]?.truncatedRowCount,
   );
 
@@ -789,11 +760,11 @@ async function getIndexedSearchCoverage(params: {
     | undefined;
   return {
     indexedRowCount,
-    catalogRowCount: normalizePositiveInt(catalogRows?.[0]?.catalogRowCount),
-    missingIndexedRowCount: normalizePositiveInt(
+    catalogRowCount: positiveIntOrZero(catalogRows?.[0]?.catalogRowCount),
+    missingIndexedRowCount: positiveIntOrZero(
       catalogRows?.[0]?.missingIndexedRowCount,
     ),
-    staleIndexedRowCount: normalizePositiveInt(
+    staleIndexedRowCount: positiveIntOrZero(
       staleRows?.[0]?.staleIndexedRowCount,
     ),
     truncatedRowCount,
@@ -804,11 +775,11 @@ async function normalizeMatch(
   row: Record<string, unknown>,
 ): Promise<ConversationSearchIndexMatch | null> {
   const conversationID = normalizeText(row.conversationID, 512);
-  const conversationKey = normalizePositiveInt(row.conversationKey);
+  const conversationKey = positiveIntOrZero(row.conversationKey);
   const system = normalizeSystem(row.system);
   const kind = normalizeKind(row.kind);
-  const libraryID = normalizePositiveInt(row.libraryID);
-  const paperItemID = normalizePositiveInt(row.paperItemID);
+  const libraryID = positiveIntOrZero(row.libraryID);
+  const paperItemID = positiveIntOrZero(row.paperItemID);
   const lastActivityAt = Number(row.lastActivityAt);
   const userTurnCount = Number(row.userTurnCount);
   const bodyTruncated = Boolean(Number(row.bodyTruncated || 0));
@@ -877,16 +848,6 @@ async function normalizeMatches(
   return matches;
 }
 
-export async function searchConversationIndex(params: {
-  system: ConversationSystem;
-  libraryID: number;
-  query: string;
-  limit?: number;
-  refresh?: boolean;
-}): Promise<ConversationSearchIndexMatch[]> {
-  return (await searchConversationIndexWithStatus(params)).matches;
-}
-
 export async function searchConversationIndexWithStatus(params: {
   system: ConversationSystem;
   libraryID: number;
@@ -906,7 +867,7 @@ export async function searchConversationIndexWithStatus(params: {
   minLastActivityAt?: number;
 }): Promise<ConversationSearchIndexResult> {
   const system = normalizeSystem(params.system);
-  const libraryID = normalizePositiveInt(params.libraryID);
+  const libraryID = positiveIntOrZero(params.libraryID);
   const tokens = tokenizeSearchQuery(params.query);
   if (!system || !libraryID || !tokens.length) {
     return {
@@ -965,7 +926,7 @@ export async function searchConversationIndexWithStatus(params: {
     params.matchAllWords ? "\n        AND " : "\n        OR ",
   );
   const extraFilters: string[] = [];
-  const paperItemID = normalizePositiveInt(params.paperItemID);
+  const paperItemID = positiveIntOrZero(params.paperItemID);
   if (paperItemID) {
     extraFilters.push("si.kind = 'paper' AND si.paper_item_id = ?");
     queryParams.push(paperItemID);
@@ -1042,7 +1003,7 @@ export async function loadTruncatedConversationIndexMatches(params: {
   limit?: number;
 }): Promise<ConversationSearchIndexMatch[]> {
   const system = normalizeSystem(params.system);
-  const libraryID = normalizePositiveInt(params.libraryID);
+  const libraryID = positiveIntOrZero(params.libraryID);
   if (!system || !libraryID) return [];
   const initialized = await initConversationSearchIndexStore();
   if (!initialized) return [];

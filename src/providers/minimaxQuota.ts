@@ -1,10 +1,5 @@
 import type { ProviderQuota } from "./types";
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
+import { recordOrEmpty } from "../core/values";
 
 function finite(value: unknown): number | undefined {
   if (typeof value !== "number" && typeof value !== "string") return undefined;
@@ -45,7 +40,7 @@ function selectModel(
   rows: unknown[],
   model?: string,
 ): Record<string, unknown> | undefined {
-  const records = rows.map(record);
+  const records = rows.map(recordOrEmpty);
   const selected = model?.trim().toLowerCase();
   const name = (row: Record<string, unknown>) =>
     typeof row.model_name === "string"
@@ -75,8 +70,8 @@ export function parseMiniMaxQuota(
   currency: "USD" | "CNY",
   model?: string,
 ): ProviderQuota | null {
-  const payload = record(value);
-  if (finite(record(payload.base_resp).status_code) !== 0) return null;
+  const payload = recordOrEmpty(value);
+  if (finite(recordOrEmpty(payload.base_resp).status_code) !== 0) return null;
   if ("available_amount" in payload) {
     const amount = finite(payload.available_amount);
     return amount === undefined

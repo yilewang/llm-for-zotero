@@ -28,6 +28,7 @@ import {
   normalizeHistorySearchText,
   tokenizeHistorySearchQuery,
 } from "../../../services/pastConversations/historySearchCore";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * past_chat_search: finds the user's earlier chats in this library by a few
@@ -445,12 +446,6 @@ async function executePastChatSearch(
   };
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 export function createPastChatSearchTool(
   source: PastConversationSource = defaultPastConversationSource,
   options: { now?: () => number } = {},
@@ -506,7 +501,7 @@ export function createPastChatSearchTool(
       summaries: {
         onCall: "Searching past chats",
         onSuccess: ({ content }) => {
-          const result = record(content);
+          const result = recordOrEmpty(content);
           if (result.ok !== true) return "Could not search past chats";
           const count = Number(result.candidateCount) || 0;
           return `Searched past chats, ${count} ${

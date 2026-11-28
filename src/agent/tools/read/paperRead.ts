@@ -160,6 +160,7 @@ import {
   type MineruScopeChoice,
   type ScopePageText,
 } from "../../digests/readScopeText";
+import { trimmedStringOrUndefined } from "../../../core/values";
 
 type PaperReadMode =
   | "overview"
@@ -423,14 +424,10 @@ function normalizeMode(value: unknown): PaperReadMode {
     : "overview";
 }
 
-function normalizeString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const entries = value
-    .map((entry) => normalizeString(entry))
+    .map((entry) => trimmedStringOrUndefined(entry))
     .filter((entry): entry is string => Boolean(entry));
   return entries.length ? Array.from(new Set(entries)) : undefined;
 }
@@ -528,7 +525,7 @@ async function tryReadMineruOverview(
   paperContext: NonNullable<PdfTarget["paperContext"]>,
   maxChars: number,
 ): Promise<unknown | null> {
-  const cacheDir = normalizeString(paperContext.mineruCacheDir);
+  const cacheDir = trimmedStringOrUndefined(paperContext.mineruCacheDir);
   if (!cacheDir) return null;
   try {
     const filePath = joinLocalPath(cacheDir, "full.md");
@@ -583,7 +580,7 @@ export async function readPaperTextForDigest(params: {
   totalCharacters: number;
 } | null> {
   const ceiling = Math.max(1, Math.floor(params.maxChars));
-  const cacheDir = normalizeString(params.paperContext.mineruCacheDir);
+  const cacheDir = trimmedStringOrUndefined(params.paperContext.mineruCacheDir);
   if (cacheDir) {
     try {
       const clean = stripMineruSourceImageEmbedsFromMarkdown(
@@ -669,7 +666,7 @@ export type PaperScopeTextReaders = {
 async function readMineruMarkdown(
   paperContext: NonNullable<PdfTarget["paperContext"]>,
 ): Promise<string | null> {
-  const cacheDir = normalizeString(paperContext.mineruCacheDir);
+  const cacheDir = trimmedStringOrUndefined(paperContext.mineruCacheDir);
   if (!cacheDir) return null;
   try {
     const clean = stripMineruSourceImageEmbedsFromMarkdown(
@@ -2214,7 +2211,7 @@ async function buildMineruVisualRedirect(params: {
     return null;
   }
   const paperContext = targets[0] || null;
-  const mineruCacheDir = normalizeString(paperContext?.mineruCacheDir);
+  const mineruCacheDir = trimmedStringOrUndefined(paperContext?.mineruCacheDir);
   if (!paperContext) return null;
   const query = params.input.query || params.context.request.userText || "";
   return {
@@ -2249,9 +2246,6 @@ function resolveMetadataOverviewTitle(
       : "";
   return standaloneContentTitle || `Paper ${metadata.itemId}`;
 }
-
-export const resolveMetadataOverviewTitleForTests =
-  resolveMetadataOverviewTitle;
 
 function buildMetadataOverview(params: {
   paperContext: NonNullable<PdfTarget["paperContext"]>;
@@ -2323,31 +2317,31 @@ function buildTargetedPaperGroups(
     if (!itemId || !contextItemId) continue;
     const key = `${itemId}:${contextItemId}`;
     const passage: Record<string, unknown> = {
-      text: normalizeString(result.text) || "",
-      sourceLabel: normalizeString(result.sourceLabel),
-      citationLabel: normalizeString(result.citationLabel),
+      text: trimmedStringOrUndefined(result.text) || "",
+      sourceLabel: trimmedStringOrUndefined(result.sourceLabel),
+      citationLabel: trimmedStringOrUndefined(result.citationLabel),
     };
     const chunkIndex = Number(result.chunkIndex);
     if (Number.isFinite(chunkIndex))
       passage.chunkIndex = Math.floor(chunkIndex);
     const score = Number(result.score);
     if (Number.isFinite(score)) passage.score = score;
-    const sectionLabel = normalizeString(result.sectionLabel);
+    const sectionLabel = trimmedStringOrUndefined(result.sectionLabel);
     if (sectionLabel) passage.sectionLabel = sectionLabel;
-    const sectionPath = normalizeString(result.sectionPath);
+    const sectionPath = trimmedStringOrUndefined(result.sectionPath);
     if (sectionPath) passage.sectionPath = sectionPath;
-    const sectionId = normalizeString(result.sectionId);
+    const sectionId = trimmedStringOrUndefined(result.sectionId);
     if (sectionId) passage.sectionId = sectionId;
     if (validateObject<Record<string, unknown>>(result.why)) {
       passage.why = result.why;
     }
-    const chunkKind = normalizeString(result.chunkKind);
+    const chunkKind = trimmedStringOrUndefined(result.chunkKind);
     if (chunkKind) passage.chunkKind = chunkKind;
     const pageIndex = Number(result.pageIndex);
     if (Number.isFinite(pageIndex) && pageIndex >= 0) {
       passage.pageIndex = Math.floor(pageIndex);
     }
-    const pageLabel = normalizeString(result.pageLabel);
+    const pageLabel = trimmedStringOrUndefined(result.pageLabel);
     if (pageLabel) passage.pageLabel = pageLabel;
     for (const field of [
       "sourceStart",
@@ -2360,7 +2354,9 @@ function buildTargetedPaperGroups(
         passage[field] = Math.floor(value);
       }
     }
-    const sourceFingerprint = normalizeString(result.sourceFingerprint);
+    const sourceFingerprint = trimmedStringOrUndefined(
+      result.sourceFingerprint,
+    );
     if (sourceFingerprint) passage.sourceFingerprint = sourceFingerprint;
     const quoteCitations = buildQuoteCitationsFromResult(
       result,
@@ -2714,7 +2710,7 @@ function buildQuoteCitationFromResult(
           pageStart === pageEnd
         ? Math.floor(pageStart)
         : undefined;
-  const exactQuoteText = normalizeString(quoteText) || "";
+  const exactQuoteText = trimmedStringOrUndefined(quoteText) || "";
   if (!exactQuoteText) return undefined;
   return buildQuoteCitation({
     quoteText: exactQuoteText,
@@ -2725,8 +2721,8 @@ function buildQuoteCitationFromResult(
     // answer-time gate, reading the PDF's own page text, records a location.
     sourceMatchSource: "context-text",
     citationLabel:
-      normalizeString(result.sourceLabel) ||
-      normalizeString(result.citationLabel),
+      trimmedStringOrUndefined(result.sourceLabel) ||
+      trimmedStringOrUndefined(result.citationLabel),
     sourceSectionLabel: result.sectionLabel,
     sourceChunkKind: result.chunkKind,
     contextItemId,
@@ -2762,7 +2758,7 @@ function buildQuoteCitationsFromResult(
 ): QuoteCitation[] {
   return buildChunkQuoteCitations(
     result,
-    normalizeString(result.text) || "",
+    trimmedStringOrUndefined(result.text) || "",
   ).slice(0, Math.max(1, Math.floor(maxQuotes)));
 }
 
@@ -2877,14 +2873,14 @@ function buildOverviewQuoteCitationPack(
       return result;
     }
     if (
-      normalizeString(result.backend) === "zotero_metadata" ||
-      normalizeString(result.sourceKind) === "zotero_metadata"
+      trimmedStringOrUndefined(result.backend) === "zotero_metadata" ||
+      trimmedStringOrUndefined(result.sourceKind) === "zotero_metadata"
     ) {
       return result;
     }
     const resultCitations = buildRegisteredQuoteCitations(
       result,
-      splitOverviewQuoteCandidates(normalizeString(result.text) || ""),
+      splitOverviewQuoteCandidates(trimmedStringOrUndefined(result.text) || ""),
     );
     quoteCitations.push(...resultCitations);
     return resultCitations.length
@@ -2911,8 +2907,8 @@ function getUniqueSourceLabels(entries: unknown[]): string[] {
       ? entry
       : null;
     const sourceLabel =
-      normalizeString(record?.displayLabel) ||
-      normalizeString(record?.sourceLabel);
+      trimmedStringOrUndefined(record?.displayLabel) ||
+      trimmedStringOrUndefined(record?.sourceLabel);
     if (!sourceLabel || seen.has(sourceLabel)) continue;
     seen.add(sourceLabel);
     out.push(sourceLabel);
@@ -2932,14 +2928,16 @@ function countGroupedPassages(papers: unknown[]): number {
 
 function extractWarningText(value: unknown): string | undefined {
   if (!validateObject<Record<string, unknown>>(value)) return undefined;
-  return normalizeString(value.warning);
+  return trimmedStringOrUndefined(value.warning);
 }
 
 function combineWarnings(
   ...warnings: Array<string | undefined>
 ): string | undefined {
   const unique = Array.from(
-    new Set(warnings.map((entry) => normalizeString(entry)).filter(Boolean)),
+    new Set(
+      warnings.map((entry) => trimmedStringOrUndefined(entry)).filter(Boolean),
+    ),
   );
   return unique.length ? unique.join("; ") : undefined;
 }
@@ -2977,7 +2975,7 @@ async function hydrateFigureTargetsWithMineruMetadata(
   >();
   const hydrated: NonNullable<PdfTarget["paperContext"]>[] = [];
   for (const target of targets) {
-    if (normalizeString(target.mineruCacheDir)) {
+    if (trimmedStringOrUndefined(target.mineruCacheDir)) {
       hydrated.push(target);
       continue;
     }
@@ -3005,7 +3003,9 @@ async function hydrateFigureTargetsWithMineruMetadata(
     const matchingAttachment = infos.find(
       (entry) => Math.floor(Number(entry.contextItemId || 0)) === contextItemId,
     );
-    const mineruCacheDir = normalizeString(matchingAttachment?.mineruCacheDir);
+    const mineruCacheDir = trimmedStringOrUndefined(
+      matchingAttachment?.mineruCacheDir,
+    );
     if (!mineruCacheDir) {
       hydrated.push(target);
       continue;
@@ -3473,7 +3473,7 @@ export function createPaperReadTool(
           targetSyntax.kind === "paper_selectors"
             ? [...targetSyntax.selectors]
             : undefined,
-        query: normalizeString(args.query),
+        query: trimmedStringOrUndefined(args.query),
         figureLabels: Array.isArray(args.figureLabels)
           ? (args.figureLabels as string[]).map((label) => label.trim())
           : undefined,
@@ -3484,7 +3484,7 @@ export function createPaperReadTool(
         queryVariants: normalizeStringArray(args.queryVariants),
         sections: normalizeStringArray(args.sections),
         sectionIds: normalizeStringArray(args.sectionIds),
-        sectionId: normalizeString(args.sectionId),
+        sectionId: trimmedStringOrUndefined(args.sectionId),
         whole: args.whole === true ? true : undefined,
         pages: normalizePages(args.pages),
         neighborPages: normalizePositiveInt(args.neighborPages),

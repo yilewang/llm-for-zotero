@@ -134,37 +134,6 @@ export function normalizeCitationLabelForMatch(value: unknown): string {
     .trim();
 }
 
-function normalizeCitationLabelForCompatibility(value: unknown): string {
-  const label = normalizeWrappedCitationLabel(value);
-  if (!label) return "";
-  return label
-    .replace(/^\(+|\)+$/g, "")
-    .normalize("NFKC")
-    .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ")
-    .replace(/&/g, " and ")
-    .replace(
-      /,\s*(?:pages?|p\.?|pp\.?)\s+[A-Za-z0-9ivxlcdmIVXLCDM]+(?:\s*[-\u2010-\u2015]\s*[A-Za-z0-9ivxlcdmIVXLCDM]+)?\s*$/i,
-      "",
-    )
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-export function citationLabelsCompatible(
-  sourceLabel: string,
-  requestedLabel: string,
-): boolean {
-  const sourceExact = normalizeCitationLabelForMatch(sourceLabel);
-  const requestedExact = normalizeCitationLabelForMatch(requestedLabel);
-  if (!sourceExact || !requestedExact) return false;
-  if (sourceExact === requestedExact) return true;
-  const sourceCore = normalizeCitationLabelForCompatibility(sourceLabel);
-  const requestedCore = normalizeCitationLabelForCompatibility(requestedLabel);
-  return Boolean(sourceCore && requestedCore && sourceCore === requestedCore);
-}
-
 function citationInnerText(value: unknown): string {
   return normalizeWrappedCitationLabel(value)
     .replace(/^\(|\)$/g, "")
@@ -242,7 +211,7 @@ function looksLikeSourceCitationLabel(value: string): boolean {
   return /^[\p{L}][^()]{1,160}$/u.test(inner) && /[,;&]/.test(inner);
 }
 
-function stripLeadingInlineCitationCue(value: string): {
+export function stripLeadingInlineCitationCue(value: string): {
   stripped: string;
   consumed: number;
 } {

@@ -750,6 +750,7 @@ import {
   removeLastUsedUpstreamConversationMode,
   removeLastUsedUpstreamGlobalConversationKey,
 } from "./prefHelpers";
+import { positiveIntOrUndefined } from "../../core/values";
 
 async function appendWorkflowStoredMessage(
   system: ConversationSystem,
@@ -907,46 +908,6 @@ function readRuntimeMenuEntries(
     active: badge.dataset.system === system,
     disabled: shown && offered.has(system) && switching,
   }));
-}
-
-type GeometryRect = Pick<
-  DOMRect,
-  "left" | "right" | "top" | "bottom" | "width" | "height"
->;
-
-function rectsIntersect(
-  first: GeometryRect | null,
-  second: GeometryRect | null,
-): boolean {
-  if (
-    !first ||
-    !second ||
-    first.width <= 0 ||
-    first.height <= 0 ||
-    second.width <= 0 ||
-    second.height <= 0
-  ) {
-    return false;
-  }
-  return (
-    first.left < second.right &&
-    first.right > second.left &&
-    first.top < second.bottom &&
-    first.bottom > second.top
-  );
-}
-
-function rectWithinContainer(
-  rect: GeometryRect,
-  container: GeometryRect,
-): boolean {
-  const tolerance = 0.5;
-  return (
-    rect.left >= container.left - tolerance &&
-    rect.right <= container.right + tolerance &&
-    rect.top >= container.top - tolerance &&
-    rect.bottom <= container.bottom + tolerance
-  );
 }
 
 type PanelRecord = {
@@ -3657,11 +3618,6 @@ async function probeTargetedRerenderScrollStability(params: {
   };
 }
 
-function parsePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value || 0);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
-}
-
 function getStandaloneWindowReferenceForTest(): Window | null {
   return (
     (addon as unknown as { data?: { standaloneWindow?: Window } }).data
@@ -3902,12 +3858,12 @@ function readStandaloneDiagnostics(): WorkflowTestStandaloneDiagnostics {
             titleTextCenterDeltaPx,
           },
     conversationKey: mountedItem ? getConversationKey(mountedItem) : undefined,
-    activeItemId: parsePositiveInt(mountedItem?.id),
+    activeItemId: positiveIntOrUndefined(mountedItem?.id),
     rawContextItemId:
-      parsePositiveInt(rawItem?.id) ||
-      parsePositiveInt(panelRoot?.dataset.rawContextItemId),
-    basePaperItemId: parsePositiveInt(panelRoot?.dataset.basePaperItemId),
-    contextItemId: parsePositiveInt(panelRoot?.dataset.contextItemId),
+      positiveIntOrUndefined(rawItem?.id) ||
+      positiveIntOrUndefined(panelRoot?.dataset.rawContextItemId),
+    basePaperItemId: positiveIntOrUndefined(panelRoot?.dataset.basePaperItemId),
+    contextItemId: positiveIntOrUndefined(panelRoot?.dataset.contextItemId),
     conversationKind: panelRoot?.dataset.conversationKind || undefined,
     runtimeMode: panelRoot?.dataset.runtimeMode || undefined,
     conversationSystem: panelRoot?.dataset.conversationSystem || undefined,
@@ -5827,15 +5783,17 @@ async function getDiagnostics(
       : null;
   return {
     panelId,
-    activeItemId: parsePositiveInt(mountedItem?.id),
+    activeItemId: positiveIntOrUndefined(mountedItem?.id),
     conversationKey: mountedItem ? getConversationKey(mountedItem) : undefined,
-    panelConversationKey: parsePositiveInt(panelRoot?.dataset.itemId),
+    panelConversationKey: positiveIntOrUndefined(panelRoot?.dataset.itemId),
     conversationKind: panelRoot?.dataset.conversationKind || undefined,
     runtimeMode: panelRoot?.dataset.runtimeMode || undefined,
     conversationSystem: panelRoot?.dataset.conversationSystem || undefined,
-    noteId: parsePositiveInt(panelRoot?.dataset.noteId),
+    noteId: positiveIntOrUndefined(panelRoot?.dataset.noteId),
     noteKind: panelRoot?.dataset.noteKind || undefined,
-    noteParentItemId: parsePositiveInt(panelRoot?.dataset.noteParentItemId),
+    noteParentItemId: positiveIntOrUndefined(
+      panelRoot?.dataset.noteParentItemId,
+    ),
     contextSnapshot: panel?.contextSnapshot,
     chipText: Array.from(
       body?.querySelectorAll(
@@ -7614,6 +7572,26 @@ function readWorkflowInlineAskCard(
         arcOpacity: arc ? Number(win?.getComputedStyle(arc)?.opacity) : NaN,
       };
     }),
+    closeButton: (() => {
+      const node = card?.querySelector(
+        '[data-llm-inline-ask-close="true"]',
+      ) as HTMLButtonElement | null;
+      if (!card || !node) return null;
+      const box = node.getBoundingClientRect();
+      const cardBox = card.getBoundingClientRect();
+      return {
+        // Visible and clickable: it fades in near the top-left corner.
+        shown:
+          box.width > 0 &&
+          box.height > 0 &&
+          Number(win?.getComputedStyle(node)?.opacity) > 0 &&
+          win?.getComputedStyle(node)?.pointerEvents !== "none",
+        label: node.getAttribute("aria-label") || "",
+        disabled: node.disabled,
+        offsetX: Math.round(box.left + box.width / 2 - cardBox.left),
+        offsetY: Math.round(box.top + box.height / 2 - cardBox.top),
+      };
+    })(),
     messageActions: Array.from(
       card?.querySelectorAll("[data-llm-inline-ask-footer] button") || [],
     ).map(
@@ -8418,7 +8396,7 @@ async function closeReaderInlineAskReaderTab(): Promise<{
 }
 
 async function endReaderInlineAsk(input: {
-  via: "discard" | "escape" | "escape_page";
+  via: "discard" | "close" | "escape" | "escape_page";
 }): Promise<{ cardRemoved: boolean }> {
   assertWorkflowTestEnabled();
   const state = workflowInlineAsk;
@@ -8429,6 +8407,12 @@ async function endReaderInlineAsk(input: {
       (
         card.querySelector(
           '[data-llm-inline-ask-action="discard"]',
+        ) as HTMLButtonElement | null
+      )?.click();
+    } else if (card && input.via === "close") {
+      (
+        card.querySelector(
+          '[data-llm-inline-ask-close="true"]',
         ) as HTMLButtonElement | null
       )?.click();
     } else if (card && input.via === "escape_page") {
@@ -9006,8 +8990,47 @@ async function hoverReaderInlineAskPassage(
 }
 
 /** Moves the pointer onto or off a corner's hit area (mouseenter or mouseleave). */
+/**
+ * Moves the pointer over the card, `distance` px in from its top-left
+ * corner on both axes, or off the card (null).
+ */
+async function hoverReaderInlineAskCloseCorner(
+  distance: number | null,
+): Promise<WorkflowTestReaderInlineAskCard> {
+  assertWorkflowTestEnabled();
+  const { state, card, win } = requireWorkflowInlineAskCardElement();
+  const rect = card.getBoundingClientRect();
+  const init = (x: number, y: number) =>
+    cloneEventInitIntoWindow(
+      {
+        bubbles: true,
+        pointerId: 1,
+        pointerType: "mouse",
+        isPrimary: true,
+        clientX: x,
+        clientY: y,
+      },
+      win,
+    );
+  if (distance === null) {
+    card.dispatchEvent(
+      new win.PointerEvent("pointerleave", init(rect.left - 40, rect.top - 40)),
+    );
+  } else {
+    card.dispatchEvent(
+      new win.PointerEvent(
+        "pointermove",
+        init(rect.left + distance, rect.top + distance),
+      ),
+    );
+  }
+  // The button fades over 0.12 s.
+  await Zotero.Promise.delay(300);
+  return readWorkflowInlineAskCard(state.popupDoc);
+}
+
 async function hoverReaderInlineAskCorner(
-  corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+  corner: "top-right" | "bottom-left" | "bottom-right",
   on: boolean,
 ): Promise<WorkflowTestReaderInlineAskCard> {
   assertWorkflowTestEnabled();
@@ -9025,7 +9048,7 @@ async function hoverReaderInlineAskCorner(
 /** Drags the card by a blank point, or its corner grip, with pointer events. */
 async function dragReaderInlineAsk(input: {
   part: "card" | "resize";
-  corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  corner?: "top-right" | "bottom-left" | "bottom-right";
   dx: number;
   dy: number;
 }): Promise<WorkflowTestReaderInlineAskCard> {
@@ -11990,6 +12013,160 @@ export function installWorkflowTestHarness(targetAddon: {
       }
       return { text: step.text, textDeltas, reasoning };
     },
+    async renderRuntimePromptParity(input) {
+      assertWorkflowTestEnabled();
+      const [
+        blocksModule,
+        { renderAgentPromptEnvelope, stringifyMessageContent },
+        { renderExternalRuntimePrompt, buildExternalRuntimePromptInput },
+        { buildExternalRuntimeUserText },
+        { buildAntigravityPromptInput },
+        { buildCodexTurnUserText, buildCodexRuntimePromptInput },
+        { RUNTIME_CONVERSATION_SYSTEMS },
+        { allocateEphemeralPaperConversationKey },
+        notesDirectory,
+      ] = await Promise.all([
+        import("../../agent/context/turnPromptBlocks"),
+        import("../../agent/model/messageBuilder"),
+        import("../../agent/externalRuntimeTurnHost"),
+        import("../../agent/externalBackendBridge"),
+        import("../../antigravity/promptInput"),
+        import("../../codexAppServer/nativeClient"),
+        import("../../core/conversations/conversationSystems"),
+        import("../../shared/conversationKeySpace"),
+        import("../../utils/notesDirectoryConfig"),
+      ]);
+      const savedNotesPath = notesDirectory.getNotesDirectoryPath();
+      if (input.notesDirectoryPath !== undefined) {
+        notesDirectory.setNotesDirectoryPath(input.notesDirectoryPath);
+      }
+      try {
+        const localPdf = input.localPdf;
+        const request = resolveAgentRuntimeRequest({
+          conversationKey: input.sideChat
+            ? allocateEphemeralPaperConversationKey()
+            : 9_000_000_000_001,
+          localDocuments: localPdf
+            ? [
+                {
+                  kind: "local_pdf",
+                  sourceKey: `zotero-pdf:${localPdf.itemId}:${localPdf.contextItemId}`,
+                  itemId: localPdf.itemId,
+                  contextItemId: localPdf.contextItemId,
+                  title: localPdf.title,
+                  name: `${localPdf.title}.pdf`,
+                  mimeType: "application/pdf",
+                  absolutePath: localPdf.path,
+                },
+              ]
+            : undefined,
+          pdfPaperContexts: localPdf
+            ? [
+                {
+                  itemId: localPdf.itemId,
+                  contextItemId: localPdf.contextItemId,
+                  title: localPdf.title,
+                },
+              ]
+            : undefined,
+          mode: "agent",
+          userText: input.userText,
+          libraryID: Zotero.Libraries.userLibraryID,
+          conversationKind: input.conversationKind,
+          activeItemId: input.activeItemId,
+          selectedTextContexts: input.selectedTextContexts,
+          selectedPaperContexts: input.selectedPaperContexts,
+          selectedCollectionContexts: input.selectedCollectionContexts,
+          activeNoteContext: input.activeNoteContext,
+          clarificationHistory: input.clarificationHistory,
+          systemPrompt: input.systemPrompt,
+        });
+        const rendered = await renderAgentPromptEnvelope(request, [], []);
+        const runtimes = {} as Record<
+          (typeof RUNTIME_CONVERSATION_SYSTEMS)[number],
+          import("./workflowTestTypes").RuntimePromptParityRuntime
+        >;
+        for (const system of RUNTIME_CONVERSATION_SYSTEMS) {
+          const table = blocksModule.RUNTIME_PROMPT_DELIVERY[system];
+          const deliveries: Record<
+            string,
+            import("./workflowTestTypes").RuntimePromptParityDelivery
+          > = {};
+          for (const id of blocksModule.TEXT_PROMPT_BLOCK_IDS) {
+            const delivery = table[id];
+            deliveries[id] = {
+              kind: delivery.kind,
+              placement:
+                delivery.kind === "send" ? delivery.placement : undefined,
+              rendered: blocksModule.isRenderedTextPromptBlock(id),
+            };
+          }
+          for (const id of blocksModule.TRANSPORT_PROMPT_BLOCK_IDS) {
+            deliveries[id] = { kind: table[id].kind };
+          }
+          // Each runtime's own assembly: what its transport actually sends.
+          let standing = "";
+          let turn = "";
+          const rawPdfMode = Boolean(localPdf);
+          switch (system) {
+            case "claude_code": {
+              const prompt = await renderExternalRuntimePrompt(system, request);
+              standing = prompt.standing;
+              // The bridge puts the turn context before the user's words
+              // (buildPromptText in the bridge package).
+              turn = [prompt.turn, await buildExternalRuntimeUserText(request)]
+                .filter(Boolean)
+                .join("\n\n");
+              break;
+            }
+            case "antigravity": {
+              const prompt = await renderExternalRuntimePrompt(system, request);
+              standing = prompt.standing;
+              const promptInput = await buildAntigravityPromptInput(
+                request,
+                prompt.turn,
+              );
+              turn = promptInput.blocks
+                .map((block) => (block.type === "text" ? block.text : ""))
+                .join("\n\n");
+              break;
+            }
+            case "codex":
+              turn = buildCodexTurnUserText(request, rawPdfMode);
+              break;
+          }
+          const blocks = blocksModule.renderRuntimePromptBlocksById(
+            system,
+            system === "codex"
+              ? buildCodexRuntimePromptInput(request, rawPdfMode)
+              : await buildExternalRuntimePromptInput(request),
+          );
+          runtimes[system] = {
+            deliveries,
+            blocks: Object.fromEntries(
+              Object.entries(blocks).map(([id, text]) => [id, text || ""]),
+            ),
+            standing,
+            turn,
+          };
+        }
+        return {
+          textBlockIds: [...blocksModule.TEXT_PROMPT_BLOCK_IDS],
+          transportBlockIds: [...blocksModule.TRANSPORT_PROMPT_BLOCK_IDS],
+          native: {
+            system: rendered.envelope.systemMessages
+              .map((message) => stringifyMessageContent(message.content))
+              .join("\n\n"),
+            turn: stringifyMessageContent(
+              rendered.envelope.turnMessage.content,
+            ),
+          },
+          runtimes,
+        };
+      } finally {
+        notesDirectory.setNotesDirectoryPath(savedNotesPath);
+      }
+    },
     async sendDocumentContextRequest(input) {
       const params = documentContextRequestParams(input);
       const chat = await callLLM(params);
@@ -12725,6 +12902,7 @@ export function installWorkflowTestHarness(targetAddon: {
     pressReaderInlineAskKey,
     hoverReaderInlineAskPassage,
     hoverReaderInlineAskCorner,
+    hoverReaderInlineAskCloseCorner,
     dragReaderInlineAsk,
     editReaderInlineAskPrompt,
     openReaderInlineAskModelMenu,

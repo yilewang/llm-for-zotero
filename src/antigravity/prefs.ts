@@ -2,7 +2,6 @@ import {
   isRuntimeConversationSystemEnabled,
   setRuntimeConversationSystemEnabled,
 } from "../shared/conversationSystemPrefs";
-import { config } from "../../package.json";
 import {
   isAntigravityPermissionMode,
   type AntigravityPermissionMode,
@@ -19,33 +18,19 @@ import {
   getPaperRestoreTarget,
   rememberPaperRestoreTarget,
 } from "../shared/paperConversationRestore";
+import { buildAntigravityLibraryStateKey } from "./state";
+import { getZoteroPrefs, prefKey } from "../utils/pluginPrefs";
 
 /**
  * Antigravity preferences. Conversation-key memory is scoped by profile
  * signature from the start, so it has no legacy unscoped prefs to read.
  */
 
-type ZoteroPrefsAPI = {
-  get?: (key: string, global?: boolean) => unknown;
-  set?: (key: string, value: unknown, global?: boolean) => void;
-};
-
 type Kind = "global" | "paper";
 
 const MODE_MAP_PREF = "antigravityConversationModeMap";
 const GLOBAL_KEY_MAP_PREF = "antigravityGlobalConversationMap";
 const ALLOCATED_KEY_MAP_PREF = "antigravityLastAllocatedConversationKeyMap";
-
-function getZoteroPrefs(): ZoteroPrefsAPI | null {
-  return (
-    (globalThis as typeof globalThis & { Zotero?: { Prefs?: ZoteroPrefsAPI } })
-      .Zotero?.Prefs || null
-  );
-}
-
-function prefKey(key: string): string {
-  return `${config.prefsPrefix}.${key}`;
-}
 
 function readJsonMap(key: string): Record<string, unknown> {
   const raw = getZoteroPrefs()?.get?.(prefKey(key), true);
@@ -68,10 +53,6 @@ function isPositiveInt(value: number): boolean {
   return Number.isFinite(value) && value > 0;
 }
 
-function libraryStateKey(libraryID: number): string {
-  return `${getAntigravityProfileSignature()}:${Math.floor(libraryID)}`;
-}
-
 function allocatedStateKey(kind: Kind): string {
   return `${getAntigravityProfileSignature()}:${kind}`;
 }
@@ -88,7 +69,8 @@ export function getLastUsedAntigravityConversationMode(
   libraryID: number,
 ): Kind | null {
   if (!isPositiveInt(libraryID)) return null;
-  const value = readJsonMap(MODE_MAP_PREF)[libraryStateKey(libraryID)];
+  const value =
+    readJsonMap(MODE_MAP_PREF)[buildAntigravityLibraryStateKey(libraryID)];
   return value === "global" || value === "paper" ? value : null;
 }
 
@@ -98,7 +80,8 @@ export function setLastUsedAntigravityConversationMode(
 ): void {
   if (!isPositiveInt(libraryID)) return;
   const map = readJsonMap(MODE_MAP_PREF);
-  map[libraryStateKey(libraryID)] = mode === "paper" ? "paper" : "global";
+  map[buildAntigravityLibraryStateKey(libraryID)] =
+    mode === "paper" ? "paper" : "global";
   writeJsonMap(MODE_MAP_PREF, map);
 }
 
@@ -107,7 +90,7 @@ export function removeLastUsedAntigravityConversationMode(
 ): void {
   if (!isPositiveInt(libraryID)) return;
   const map = readJsonMap(MODE_MAP_PREF);
-  delete map[libraryStateKey(libraryID)];
+  delete map[buildAntigravityLibraryStateKey(libraryID)];
   writeJsonMap(MODE_MAP_PREF, map);
 }
 
@@ -116,7 +99,9 @@ export function getLastUsedAntigravityGlobalConversationKey(
 ): number | null {
   if (!isPositiveInt(libraryID)) return null;
   const value = Number(
-    readJsonMap(GLOBAL_KEY_MAP_PREF)[libraryStateKey(libraryID)],
+    readJsonMap(GLOBAL_KEY_MAP_PREF)[
+      buildAntigravityLibraryStateKey(libraryID)
+    ],
   );
   return isAntigravityConversationKeyInRange(value, "global")
     ? Math.floor(value)
@@ -130,7 +115,7 @@ export function setLastUsedAntigravityGlobalConversationKey(
   if (!isPositiveInt(libraryID)) return;
   if (!isAntigravityConversationKeyInRange(conversationKey, "global")) return;
   const map = readJsonMap(GLOBAL_KEY_MAP_PREF);
-  map[libraryStateKey(libraryID)] = Math.floor(conversationKey);
+  map[buildAntigravityLibraryStateKey(libraryID)] = Math.floor(conversationKey);
   writeJsonMap(GLOBAL_KEY_MAP_PREF, map);
 }
 
@@ -139,7 +124,7 @@ export function removeLastUsedAntigravityGlobalConversationKey(
 ): void {
   if (!isPositiveInt(libraryID)) return;
   const map = readJsonMap(GLOBAL_KEY_MAP_PREF);
-  delete map[libraryStateKey(libraryID)];
+  delete map[buildAntigravityLibraryStateKey(libraryID)];
   writeJsonMap(GLOBAL_KEY_MAP_PREF, map);
 }
 

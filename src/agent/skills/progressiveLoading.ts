@@ -2,18 +2,10 @@ import { sha256Text } from "../store/journalRecoveryBlobStore";
 import { getSkillCustomizationNotice } from "./managedBlock";
 import { skillBodyForRuntime } from "./runtimeSections";
 import type { ConversationSystem } from "../../shared/types";
-import type {
-  AgentSkill,
-  SkillActivationMode,
-  SkillContextKind,
-} from "./skillLoader";
+import type { AgentSkill } from "./skillLoader";
 import type { LoadedSkill, SkillInventoryEntry } from "./loadingTypes";
 
-export type {
-  LoadedSkill,
-  LoadedSkillRecord,
-  SkillInventoryEntry,
-} from "./loadingTypes";
+export type { LoadedSkill } from "./loadingTypes";
 
 /**
  * Metadata safe to include in the first agent request. Full instruction bodies

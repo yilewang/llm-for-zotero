@@ -40,7 +40,6 @@ import {
   getStandaloneSidebarSectionOptionsPref,
   getStandaloneSidebarPinnedCollapsedPref,
   getLockedGlobalConversationKey,
-  setLockedGlobalConversationKey,
   setStandaloneSidebarWidthPref,
   setStandalonePinnedPapersPref,
   setStandaloneSidebarCollapsedGroupsPref,
@@ -96,7 +95,6 @@ import {
   ensureConversationLoaded,
   getConversationKey,
   refreshChat,
-  resetSessionTokens,
 } from "./chat";
 import { renderShortcuts } from "./shortcuts";
 import { bindTaskProgressToggle } from "./taskProgress/panel";
@@ -115,10 +113,6 @@ import {
   type ConversationCatalogEntry,
 } from "../../core/conversations/repository";
 import {
-  ATTACHMENT_GC_MIN_AGE_MS,
-  collectAndDeleteUnreferencedBlobs,
-} from "../../utils/attachmentRefStore";
-import {
   chatHistory,
   isAnyRequestPending,
   isRequestPending,
@@ -135,7 +129,6 @@ import {
 } from "./unifiedHistorySource";
 import {
   formatGlobalHistoryTimestamp,
-  getHistoryRowRuntimeLabel,
   isOrphanHistoryEntry,
   maybeSelectPaperHistoryTarget,
   normalizeConversationTitleSeed,
@@ -182,9 +175,7 @@ import {
   assertNeverConversationSystem,
   isRuntimeConversationSystem as isRuntimeSystem,
   mapRuntimeConversationSystems,
-  type RuntimeConversationSystem,
 } from "../../core/conversations/conversationSystems";
-import { getLastUsedClaudeGlobalConversationKey } from "../../claudeCode/prefs";
 import { showStandaloneConfirmationDialog } from "./standaloneConfirmationDialog";
 import { showConversationRenameDialog } from "./conversationRenameDialog";
 import {
@@ -198,23 +189,13 @@ import {
   STANDALONE_SIDEBAR_SEPARATOR_LAYOUT_WIDTH_PX,
 } from "./standaloneWindowSizing";
 import {
-  createClaudeGlobalPortalItem,
-  createClaudePaperPortalItem,
-} from "../../claudeCode/portal";
-import { loadAllClaudeConversationHistory } from "../../claudeCode/historyLoader";
-import { loadAllAntigravityConversationHistory } from "../../antigravity/historyLoader";
-import {
-  createAntigravityGlobalPortalItem,
-  createAntigravityPaperPortalItem,
-} from "../../antigravity/portal";
+  createRuntimeGlobalPortalItem,
+  createRuntimePaperPortalItem,
+} from "../../services/context/runtimePortalItems";
+import { loadAllRuntimeConversationHistory } from "../../core/conversations/runtimeHistory";
 import { isAntigravityModeEnabled } from "../../antigravity/prefs";
 import { buildDefaultCodexGlobalConversationKey } from "../../codexAppServer/constants";
-import {
-  createCodexGlobalPortalItem,
-  createCodexPaperPortalItem,
-} from "../../codexAppServer/portal";
 import { isCodexAppServerModeEnabled } from "../../codexAppServer/prefs";
-import { loadAllCodexConversationHistory } from "../../codexAppServer/historyLoader";
 import { clearActiveConversationForPendingDeletion } from "./conversationDeletionActivation";
 import {
   createSerializedConversationDeletionEventQueue,
@@ -313,11 +294,9 @@ function createGlobalPortalItemForSystem(
 ): Zotero.Item {
   switch (system) {
     case "claude_code":
-      return createClaudeGlobalPortalItem(libraryID, conversationKey);
     case "codex":
-      return createCodexGlobalPortalItem(libraryID, conversationKey);
     case "antigravity":
-      return createAntigravityGlobalPortalItem(libraryID, conversationKey);
+      return createRuntimeGlobalPortalItem(system, libraryID, conversationKey);
     case "upstream":
       return createGlobalPortalItem(libraryID, conversationKey);
     default:
@@ -337,11 +316,9 @@ function createPaperPortalItemForSystem(
 ): Zotero.Item {
   switch (system) {
     case "claude_code":
-      return createClaudePaperPortalItem(paperItem, conversationKey);
     case "codex":
-      return createCodexPaperPortalItem(paperItem, conversationKey);
     case "antigravity":
-      return createAntigravityPaperPortalItem(paperItem, conversationKey);
+      return createRuntimePaperPortalItem(system, paperItem, conversationKey);
     case "upstream":
       return createPaperPortalItem(
         paperItem,
@@ -352,13 +329,6 @@ function createPaperPortalItemForSystem(
       return assertNeverConversationSystem(system);
   }
 }
-
-/** Each runtime's loader for its chats across the library. */
-const RUNTIME_CONVERSATION_HISTORY_LOADERS = {
-  claude_code: loadAllClaudeConversationHistory,
-  codex: loadAllCodexConversationHistory,
-  antigravity: loadAllAntigravityConversationHistory,
-} satisfies Record<RuntimeConversationSystem, unknown>;
 
 function buildTornWindowFeatures(placement?: {
   screenX: number;
@@ -1312,23 +1282,6 @@ function openChatWindowInstance(
     newWin.addEventListener("unload", cleanupWindow, { once: true });
     appLogger.debug("LLM: standalone initWindow start");
 
-    const scheduleStandaloneAttachmentGc = (delayMs = 5_000) => {
-      const clearTimer = () => {
-        if (standaloneAttachmentGcTimer === null) return;
-        newWin.clearTimeout(standaloneAttachmentGcTimer);
-        standaloneAttachmentGcTimer = null;
-      };
-      clearTimer();
-      standaloneAttachmentGcTimer = newWin.setTimeout(() => {
-        standaloneAttachmentGcTimer = null;
-        void collectAndDeleteUnreferencedBlobs(ATTACHMENT_GC_MIN_AGE_MS).catch(
-          (err) => {
-            appLogger.warn("LLM: standalone attachment GC failed", err);
-          },
-        );
-      }, delayMs);
-    };
-
     try {
       const doc = newWin.document;
       // The →| ("Move to side panel") buttons exist only where this host is
@@ -1787,8 +1740,6 @@ function openChatWindowInstance(
       let iconFollowerMore: HTMLButtonElement | null = null;
       // The follower's kind line under its title: an icon, then "Paper chat
       // · Klaus et al., 2017" or "Library chat · My Library".
-      let followerKindIcon: HTMLSpanElement | null = null;
-      let followerKindText: HTMLSpanElement | null = null;
       let followerKindLine: HTMLDivElement | null = null;
       // The second row under the divider: the kind line at the left, the four
       // actions at the right.
@@ -2983,8 +2934,6 @@ function openChatWindowInstance(
             main.setAttribute("aria-label", label);
           }
           main.append(icon, text);
-          followerKindIcon = icon;
-          followerKindText = text;
           followerKindLine.replaceChildren(main);
           followerKindLine.dataset.kind = kindLine.kind;
         }
@@ -4073,9 +4022,10 @@ function openChatWindowInstance(
           system: ConversationSystem,
         ): Promise<SidebarConv[]> => {
           if (isRuntimeSystem(system)) {
-            const summaries = await RUNTIME_CONVERSATION_HISTORY_LOADERS[
-              system
-            ]({ libraryID, limit });
+            const summaries = await loadAllRuntimeConversationHistory(system, {
+              libraryID,
+              limit,
+            });
             return summaries.map((entry) => ({
               conversationKey: entry.conversationKey,
               conversationID: entry.conversationID,

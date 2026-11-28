@@ -41,8 +41,3 @@ export function noteQuoteValidationUserActivity(
 export function isQuoteValidationPreempted(now = Date.now()): boolean {
   return activeNavigationCount > 0 || now < interactionGraceUntil;
 }
-
-export function resetQuoteValidationActivityForTests(): void {
-  activeNavigationCount = 0;
-  interactionGraceUntil = 0;
-}

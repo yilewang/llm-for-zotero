@@ -424,35 +424,3 @@ export async function resolveSelectedTextAnchors(params: {
   }
   return resolved;
 }
-
-export function resolveSelectedTextAnchorsFromTextSources(params: {
-  selectedTextContexts: SelectedTextContext[];
-  paperContexts?: PaperContextRef[];
-  sources: Record<
-    number,
-    {
-      chunks?: string[];
-      pages?: LivePdfPageText[];
-      sourceType?: string;
-    }
-  >;
-}): ResolvedSelectedTextAnchor[] {
-  const contexts = normalizeSelectedTextContexts(params.selectedTextContexts, {
-    sanitizeText,
-  });
-  const provisional = contexts
-    .map((context, contextIndex) => {
-      const contextItemId = normalizeContextItemId(context);
-      const source = contextItemId ? params.sources[contextItemId] : undefined;
-      return buildProvisionalAnchor({
-        context,
-        contextIndex,
-        paperContexts: params.paperContexts || [],
-        chunks: source?.chunks || [],
-        pages: source?.pages || [],
-        sourceType: source?.sourceType,
-      });
-    })
-    .filter((entry): entry is ProvisionalAnchor => Boolean(entry));
-  return allocateAnchorText(provisional);
-}

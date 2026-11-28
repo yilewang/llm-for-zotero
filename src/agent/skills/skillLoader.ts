@@ -1,5 +1,3 @@
-import type { AgentRuntimeRequest } from "../types";
-
 /**
  * A skill is file-driven guidance. Its metadata can be presented in the
  * initial agent context and its full body loaded only when the workflow needs

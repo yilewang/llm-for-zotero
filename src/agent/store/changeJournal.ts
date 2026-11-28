@@ -12,6 +12,7 @@ import { isEphemeralConversationKey } from "../../shared/conversationKeySpace";
 import { sweepOrphanRecoveryBlobs } from "./journalRecoveryBlobStore";
 import { appLogger } from "../../core/logging";
 import { deleteIfPresent, type AgentPurgeDb } from "./inTransactionDelete";
+import { getZoteroDb, type ZoteroDb } from "../../core/zoteroDb";
 
 export const LEGACY_JOURNAL_TABLE = "llm_for_zotero_agent_change_journal";
 export const JOURNAL_ACTIONS_TABLE = "llm_for_zotero_agent_journal_actions_v2";
@@ -82,29 +83,15 @@ export type JournalUndoSelection = {
   newerIrreversible: JournalAction[];
 };
 
-type DbLike = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction?: (task: () => Promise<void>) => Promise<void>;
-};
-
-let initializedDb: DbLike | null = null;
-
-function getDb(): DbLike | null {
-  try {
-    const db = (Zotero as unknown as { DB?: DbLike }).DB;
-    return typeof db?.queryAsync === "function" ? db : null;
-  } catch {
-    return null;
-  }
-}
+let initializedDb: ZoteroDb | null = null;
 
 export function isAgentChangeJournalAvailable(): boolean {
-  const db = getDb();
+  const db = getZoteroDb();
   return db !== null && db === initializedDb;
 }
 
 async function inTransaction(task: () => Promise<void>): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   if (typeof db.executeTransaction === "function") {
     await db.executeTransaction(task);
@@ -223,7 +210,7 @@ function toStep(row: Record<string, unknown>): JournalStep {
 }
 
 export async function initAgentChangeJournal(): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   initializedDb = null;
   if (!db) return;
   await inTransaction(async () => {
@@ -526,7 +513,7 @@ export async function prepareJournalAction(input: {
   now?: number;
 }): Promise<string | null> {
   assertDurableConversationKey(input.conversationKey, "journal action");
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return null;
   const now = input.now ?? Date.now();
   const actionId = input.actionId || createJournalId("action");
@@ -565,7 +552,7 @@ export async function prepareJournalStep(input: {
   error?: string;
   now?: number;
 }): Promise<string> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) throw new Error("The durable change journal is unavailable");
   const now = input.now ?? Date.now();
   const stepId = input.stepId || `${input.actionId}:${input.sequence}`;
@@ -608,7 +595,7 @@ export async function updateJournalStep(input: {
   error?: string;
   now?: number;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   const now = input.now ?? Date.now();
   await db.queryAsync(
@@ -641,7 +628,7 @@ export async function updateJournalAction(input: {
   recovery?: string;
   now?: number;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   const now = input.now ?? Date.now();
   await db.queryAsync(
@@ -675,7 +662,7 @@ export async function claimJournalStep(input: {
   to: JournalStatus;
   now?: number;
 }): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !input.from.length) return false;
   let claimed = false;
   await inTransaction(async () => {
@@ -702,7 +689,7 @@ export async function claimJournalAction(input: {
   to: JournalStatus;
   now?: number;
 }): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !input.from.length) return false;
   let claimed = false;
   await inTransaction(async () => {
@@ -732,7 +719,7 @@ export async function recordJournalObservation(input: {
   extra?: unknown;
   now?: number;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   await db.queryAsync(
     `INSERT INTO ${JOURNAL_OBSERVATIONS_TABLE}
@@ -791,7 +778,7 @@ export async function registerJournalRecoveryPayloads(input: {
   stepId?: string;
   value: unknown;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   for (const payload of findRecoveryPayloads(input.value)) {
     await db.queryAsync(
@@ -830,7 +817,7 @@ export async function freezeJournalActionOperations(input: {
   operations: readonly unknown[];
   now?: number;
 }): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) throw new Error("The durable change journal is unavailable");
   const json = JSON.stringify({ version: 1, operations: input.operations });
   await db.queryAsync(
@@ -856,7 +843,7 @@ export async function freezeJournalActionOperations(input: {
 export async function readFrozenJournalActionOperations(
   actionId: string,
 ): Promise<unknown[] | null> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !actionId) return null;
   const rows = (await db.queryAsync(
     `SELECT inline_json FROM ${JOURNAL_PAYLOADS_TABLE}
@@ -890,7 +877,7 @@ async function removeRecoveryBlobPaths(paths: string[]): Promise<void> {
 export async function queueJournalRecoveryBlobCleanupInTransaction(
   conversationKey: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   await db.queryAsync(
     `INSERT OR IGNORE INTO ${JOURNAL_BLOB_CLEANUP_TABLE}
@@ -913,7 +900,7 @@ export async function queueJournalRecoveryBlobCleanupForRunsInTransaction(
   conversationKey: number,
   runIds: readonly string[],
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !runIds.length) return;
   const placeholders = runIds.map(() => "?").join(", ");
   await db.queryAsync(
@@ -932,7 +919,7 @@ export async function queueJournalRecoveryBlobCleanupForRunsInTransaction(
 export async function sweepJournalRecoveryBlobCleanup(
   conversationKey?: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   const params: unknown[] = [];
   const where =
@@ -969,7 +956,7 @@ async function listRecoveryBlobPaths(
   whereSql = "",
   params: unknown[] = [],
 ): Promise<string[]> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return [];
   const rows = (await db.queryAsync(
     `SELECT blob_path FROM ${JOURNAL_PAYLOADS_TABLE}
@@ -984,7 +971,7 @@ async function listRecoveryBlobPaths(
 export async function listJournalObservationObjectIds(
   actionId: string,
 ): Promise<number[]> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return [];
   const rows = (await db.queryAsync(
     `SELECT object_ids_json FROM ${JOURNAL_OBSERVATIONS_TABLE}
@@ -1010,7 +997,7 @@ export async function listJournalObservationObjectIds(
 export async function listJournalSteps(
   actionId: string,
 ): Promise<JournalStep[]> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return [];
   const rows = (await db.queryAsync(
     `SELECT * FROM ${JOURNAL_STEPS_TABLE}
@@ -1021,7 +1008,7 @@ export async function listJournalSteps(
 }
 
 async function retireTerminalJournalRecoveryPayloads(): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   const now = Date.now();
   await inTransaction(async () => {
@@ -1083,7 +1070,7 @@ async function journalActionState(actionId: string): Promise<{
   status: JournalStatus;
   conversationKey: number;
 } | null> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !actionId) return null;
   const rows = (await db.queryAsync(
     `SELECT status, conversation_key FROM ${JOURNAL_ACTIONS_TABLE}
@@ -1103,7 +1090,7 @@ async function journalActionState(actionId: string): Promise<{
 }
 
 async function compactJournalActionPayloadsInTransaction(input: {
-  db: DbLike;
+  db: ZoteroDb;
   actionId: string;
   conversationKey: number;
   now: number;
@@ -1159,7 +1146,7 @@ export async function finalizeRevertedJournalAction(input: {
   actionId: string;
   now?: number;
 }): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !input.actionId) return false;
   const state = await journalActionState(input.actionId);
   if (!state || state.status !== "reverting") return false;
@@ -1178,30 +1165,6 @@ export async function finalizeRevertedJournalAction(input: {
     });
   });
   await sweepActionBlobCleanupBestEffort(input.actionId, state.conversationKey);
-  return true;
-}
-
-/**
- * Drop heavy recovery material from historical reverted actions while
- * retaining the lightweight action and step metadata used by audit surfaces.
- */
-export async function compactRevertedJournalAction(
-  actionId: string,
-): Promise<boolean> {
-  const db = getDb();
-  if (!db || !actionId) return false;
-  const state = await journalActionState(actionId);
-  if (!state || state.status !== "reverted") return false;
-  const now = Date.now();
-  await inTransaction(async () => {
-    await compactJournalActionPayloadsInTransaction({
-      db,
-      actionId,
-      conversationKey: state.conversationKey,
-      now,
-    });
-  });
-  await sweepActionBlobCleanupBestEffort(actionId, state.conversationKey);
   return true;
 }
 
@@ -1224,7 +1187,7 @@ export async function listJournalActions(input: {
    */
   unbounded?: boolean;
 }): Promise<JournalActionWithSteps[]> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return [];
   if (input.actionIds && !input.actionIds.length) return [];
   const clauses: string[] = [];
@@ -1286,7 +1249,7 @@ export async function listJournalActions(input: {
 export async function selectUndoJournalAction(input: {
   conversationKey: number;
 }): Promise<JournalUndoSelection> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return { newerIrreversible: [] };
   const rows = (await db.queryAsync(
     `SELECT * FROM ${JOURNAL_ACTIONS_TABLE}
@@ -1327,7 +1290,7 @@ export async function selectRevertJournalActions(input: {
   conversationKey: number;
   count: number;
 }): Promise<JournalRevertSelection> {
-  const db = getDb();
+  const db = getZoteroDb();
   const count = Math.max(0, Math.floor(input.count));
   if (!db || !count) return { actions: [], skippedIrreversible: [] };
   const rows = (await db.queryAsync(
@@ -1362,7 +1325,7 @@ export async function selectRevertJournalActions(input: {
 export async function deleteConversationJournal(
   conversationKey: number,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   const actions = await listJournalActions({
     conversationKey,
@@ -1399,24 +1362,6 @@ export async function deleteConversationJournal(
         `DELETE FROM ${LEGACY_JOURNAL_TABLE} WHERE conversation_key = ?`,
         [conversationKey],
       );
-    } catch (error) {
-      if (!/no such table|no table/i.test(String(error))) throw error;
-    }
-  });
-  await removeRecoveryBlobPaths(blobPaths);
-}
-
-export async function clearAgentChangeJournal(): Promise<void> {
-  const db = getDb();
-  if (!db) return;
-  const blobPaths = await listRecoveryBlobPaths();
-  await inTransaction(async () => {
-    await db.queryAsync(`DELETE FROM ${JOURNAL_OBSERVATIONS_TABLE}`);
-    await db.queryAsync(`DELETE FROM ${JOURNAL_PAYLOADS_TABLE}`);
-    await db.queryAsync(`DELETE FROM ${JOURNAL_STEPS_TABLE}`);
-    await db.queryAsync(`DELETE FROM ${JOURNAL_ACTIONS_TABLE}`);
-    try {
-      await db.queryAsync(`DELETE FROM ${LEGACY_JOURNAL_TABLE}`);
     } catch (error) {
       if (!/no such table|no table/i.test(String(error))) throw error;
     }

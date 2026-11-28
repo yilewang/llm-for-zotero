@@ -23,6 +23,7 @@ import {
 } from "../utils/codexAppServerProcess";
 import { resolveCodexPermissionExecution } from "./permissionProfiles";
 import { resolveCodexNativeRuntimeCwd } from "./runtimeCwd";
+import { trimmedString } from "../core/values";
 
 const DEFAULT_CODEX_APP_SERVER_NATIVE_PROCESS_KEY = "codex_app_server_native";
 const MCP_PREFLIGHT_SUCCESS_TTL_MS = 5 * 60 * 1000;
@@ -138,10 +139,6 @@ async function sendOptional(
   }
 }
 
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function collectToolNames(value: unknown, names = new Set<string>()): string[] {
   if (Array.isArray(value)) {
     for (const entry of value) collectToolNames(entry, names);
@@ -149,8 +146,8 @@ function collectToolNames(value: unknown, names = new Set<string>()): string[] {
   }
   if (!value || typeof value !== "object") return Array.from(names);
   const record = value as Record<string, unknown>;
-  const type = normalizeString(record.type).toLowerCase();
-  const name = normalizeString(record.name);
+  const type = trimmedString(record.type).toLowerCase();
+  const name = trimmedString(record.name);
   if (name && (!type || type.includes("tool") || record.inputSchema)) {
     names.add(name);
   }
@@ -167,7 +164,7 @@ function objectContainsServerName(value: unknown, serverName: string): boolean {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   for (const key of ["name", "serverName", "id"]) {
-    if (normalizeString(record[key]) === serverName) return true;
+    if (trimmedString(record[key]) === serverName) return true;
   }
   return Object.values(record).some((entry) =>
     objectContainsServerName(entry, serverName),
@@ -181,7 +178,7 @@ function objectContainsServerUrl(value: unknown, serverUrl: string): boolean {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
   if (
-    Object.values(record).some((entry) => normalizeString(entry) === serverUrl)
+    Object.values(record).some((entry) => trimmedString(entry) === serverUrl)
   ) {
     return true;
   }
@@ -642,12 +639,6 @@ export async function installOrUpdateCodexZoteroMcpConfig(
   await probeCodexZoteroMcpThroughAppServer({ ...params, proc });
   const status = await readCodexNativeMcpSetupStatus({ ...params, proc });
   return { ...status, connected: true };
-}
-
-export async function ensureCodexZoteroMcpConfig(
-  params: SetupParams = {},
-): Promise<void> {
-  await installOrUpdateCodexZoteroMcpConfig(params);
 }
 
 /**

@@ -4,10 +4,7 @@ import {
   getMineruMaxAutoPages,
   type MineruFilenameMatcher,
 } from "../utils/mineruConfig";
-
-type IOUtilsLike = {
-  read?: (path: string) => Promise<Uint8Array | ArrayBuffer>;
-};
+import { getIOUtils } from "../utils/geckoFs";
 
 type PdfAttachmentLike = Zotero.Item & {
   attachmentFilename?: string;
@@ -39,10 +36,6 @@ type PageCountCacheEntry = {
 };
 
 const pageCountCache = new Map<number, PageCountCacheEntry>();
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
 
 function coerceToUint8Array(
   data: Uint8Array | ArrayBuffer | null | undefined,
@@ -166,8 +159,4 @@ export async function getMineruParseEligibility(
     maxPages,
     overrideAllowed: true,
   };
-}
-
-export function clearMineruEligibilityCacheForTests(): void {
-  pageCountCache.clear();
 }

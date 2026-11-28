@@ -273,14 +273,6 @@ export function getOrStartAgyClient(
   return agyPool.get(key, () => startAgyClient(options));
 }
 
-/** Stops the pooled agy for these options (only `client`, when given). */
-export function destroyAgyClient(
-  options: AgyLaunchOptions,
-  client?: AcpClient,
-): void {
-  agyPool.destroy(buildAgyPoolKey(options), client);
-}
-
 /** Stops every pooled agy process; runs on shutdown and on quit. */
 export function destroyAllAgyClients(): Promise<void> {
   return agyPool.destroyAll();

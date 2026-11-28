@@ -6,21 +6,12 @@ import type {
 import { libraryMutationHandlers } from "./handlerRegistry";
 import type {
   LibraryMutationHandler,
-  LibraryMutationOperationOf,
   LibraryMutationOperationType,
   MutationTargetJudgment,
 } from "./handlerDefinition";
 import type { ZoteroGateway } from "../zoteroGateway";
 import type { ForwardExecution } from "./forwardExecutors";
 import { asMutationStateView, type MutationStateView } from "./stateView";
-
-export function getLibraryMutationHandler<
-  Type extends LibraryMutationOperationType,
->(operation: LibraryMutationOperationOf<Type>): LibraryMutationHandler<Type> {
-  return libraryMutationHandlers[
-    operation.type
-  ] as unknown as LibraryMutationHandler<Type>;
-}
 
 export function capabilityForLibraryMutation(
   operation: LibraryMutationOperation | LibraryMutationOperationType,

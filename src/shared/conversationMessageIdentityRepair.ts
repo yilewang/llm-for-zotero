@@ -4,6 +4,7 @@ import {
   type PaperContextJsonColumns,
 } from "./conversationRegistry";
 import type { ConversationSystem } from "./types";
+import { positiveIntOrZero, trimmedString } from "../core/values";
 
 type QueryAsync = (sql: string, params?: unknown[]) => Promise<unknown>;
 
@@ -22,16 +23,6 @@ export type ConversationCatalogMessageIdentityRepairSummary = {
   repaired: number;
   refused: number;
 };
-
-function normalizeStoredConversationID(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
 
 function normalizeKind(value: unknown): "global" | "paper" | null {
   return value === "global" || value === "paper" ? value : null;
@@ -93,13 +84,11 @@ export async function repairRecoverableMessageConversationIDs(params: {
   )) as Array<{ conversationID?: unknown }> | undefined;
   if (!rows?.length) return { status: "unchanged" };
 
-  const hasBlankID = rows.some(
-    (row) => !normalizeStoredConversationID(row.conversationID),
-  );
+  const hasBlankID = rows.some((row) => !trimmedString(row.conversationID));
   const staleIDs = Array.from(
     new Set(
       rows
-        .map((row) => normalizeStoredConversationID(row.conversationID))
+        .map((row) => trimmedString(row.conversationID))
         .filter((id) => id && id !== registered.conversationID),
     ),
   );
@@ -197,11 +186,11 @@ export async function repairRecoverableCatalogMessageConversationIDs(params: {
   };
 
   for (const row of rows || []) {
-    const conversationID = normalizeStoredConversationID(row.conversationID);
-    const conversationKey = normalizePositiveInt(row.conversationKey);
-    const libraryID = normalizePositiveInt(row.libraryID);
+    const conversationID = trimmedString(row.conversationID);
+    const conversationKey = positiveIntOrZero(row.conversationKey);
+    const libraryID = positiveIntOrZero(row.libraryID);
     const kind = normalizeKind(row.kind);
-    const paperItemID = normalizePositiveInt(row.paperItemID);
+    const paperItemID = positiveIntOrZero(row.paperItemID);
     if (!conversationID || !conversationKey || !libraryID || !kind) continue;
     if (kind === "paper" && !paperItemID) continue;
     summary.checked += 1;

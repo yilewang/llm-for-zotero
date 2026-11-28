@@ -1,3 +1,4 @@
+import { positiveIntOrZero } from "../../core/values";
 /**
  * Pure state for the standalone window's pinned papers (no DOM, no Zotero):
  * the papers listed under "Pinned papers" in the window's sidebar, whose
@@ -7,11 +8,6 @@
 
 /** At most this many papers are pinned; pinning one more drops the oldest. */
 export const MAX_PINNED_PAPERS = 20;
-
-function positiveInt(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
 
 /** Reads the saved list (a JSON array of paper item IDs); bad input is []. */
 export function parsePinnedPaperIDs(raw: unknown): number[] {
@@ -25,7 +21,7 @@ export function parsePinnedPaperIDs(raw: unknown): number[] {
   if (!Array.isArray(parsed)) return [];
   const ids: number[] = [];
   for (const entry of parsed) {
-    const id = positiveInt(entry);
+    const id = positiveIntOrZero(entry);
     if (id && !ids.includes(id)) ids.push(id);
   }
   return ids.slice(-MAX_PINNED_PAPERS);
@@ -40,7 +36,7 @@ export function togglePinnedPaper(
   ids: readonly number[],
   paperID: number,
 ): number[] {
-  const id = positiveInt(paperID);
+  const id = positiveIntOrZero(paperID);
   if (!id) return [...ids];
   if (ids.includes(id)) return ids.filter((entry) => entry !== id);
   return [...ids, id].slice(-MAX_PINNED_PAPERS);
@@ -74,7 +70,7 @@ export function updateReadyPinnedPapers(
   },
 ): Set<number> {
   const next = new Set(ready);
-  const id = positiveInt(params.paperID);
+  const id = positiveIntOrZero(params.paperID);
   if (!id) return next;
   if (params.pending || id === params.shownPaperID) next.delete(id);
   else next.add(id);

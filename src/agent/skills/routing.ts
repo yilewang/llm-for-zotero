@@ -4,6 +4,7 @@ import {
   type SkillRoutingRequest,
 } from "./contextEligibility";
 import type { AgentSkill } from "./skillLoader";
+import { escapeRegExp } from "../../core/values";
 
 export type SkillRoutingResolution = {
   matchedSkillIds: string[];
@@ -16,9 +17,6 @@ export type SkillDirectiveTextResolution = {
   forcedSkillId?: string;
 };
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 function hasSkill(skills: ReadonlyArray<AgentSkill>, id: string): boolean {
   return skills.some((skill) => skill.id === id);
 }

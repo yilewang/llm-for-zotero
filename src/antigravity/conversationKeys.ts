@@ -3,7 +3,6 @@ import {
   buildDefaultConversationKey,
   getConversationKeyRange,
   getRuntimeAllocatedConversationKeyRange,
-  isConversationKeyFor,
 } from "../shared/conversationKeySpace";
 
 /**
@@ -60,10 +59,6 @@ export function buildDefaultAntigravityPaperConversationKey(
     paperItemID,
     getAntigravityProfileSignature(),
   );
-}
-
-export function isAntigravityConversationKey(conversationKey: number): boolean {
-  return isConversationKeyFor("antigravity", conversationKey);
 }
 
 function isInRange(value: number, range: KeyRange): boolean {

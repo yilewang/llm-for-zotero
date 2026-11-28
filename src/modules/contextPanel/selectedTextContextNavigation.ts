@@ -1,6 +1,7 @@
 import { isPdfContextAttachment } from "../../services/paperContent/contextAttachmentSupport";
 import { scrollToSelectedTextInReader } from "../../services/pdf/livePdfSelectionLocator";
 import type { SelectedTextContext } from "./types";
+import { positiveIntOrNull } from "../../core/values";
 
 type ReaderLocation = {
   pageIndex: number;
@@ -24,33 +25,27 @@ export type SelectedTextContextNavigationDeps =
     viewPdf?: (itemId: number, location: ReaderLocation) => Promise<void>;
   };
 
-function asFinitePositiveItemId(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
 export function resolveSelectedTextContextTargetItemId(
   selectedContext: SelectedTextContext,
   deps: SelectedTextContextTargetResolutionDeps,
 ): number | null {
-  const explicitContextItemId = asFinitePositiveItemId(
+  const explicitContextItemId = positiveIntOrNull(
     selectedContext.contextItemId,
   );
   if (explicitContextItemId) return explicitContextItemId;
 
-  const paperContextItemId = asFinitePositiveItemId(
+  const paperContextItemId = positiveIntOrNull(
     selectedContext.paperContext?.contextItemId,
   );
   if (paperContextItemId) return paperContextItemId;
 
-  const activeContextItemId = asFinitePositiveItemId(
+  const activeContextItemId = positiveIntOrNull(
     deps.getActiveContextAttachment()?.id,
   );
   if (activeContextItemId) return activeContextItemId;
 
   const currentItem = deps.getCurrentItem();
-  const currentPanelItemId = asFinitePositiveItemId(
+  const currentPanelItemId = positiveIntOrNull(
     isPdfContextAttachment(currentItem) ? currentItem?.id : 0,
   );
   if (currentPanelItemId) return currentPanelItemId;
@@ -97,7 +92,7 @@ export async function navigateSelectedTextContextToPage(
     ? { pageIndex, pageLabel }
     : { pageIndex };
   const activeReader = deps.getActiveReaderForSelectedTab();
-  const activeReaderItemId = asFinitePositiveItemId(
+  const activeReaderItemId = positiveIntOrNull(
     activeReader?._item?.id || activeReader?.itemID,
   );
   if (

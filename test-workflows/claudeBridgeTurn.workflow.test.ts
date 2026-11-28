@@ -77,6 +77,49 @@ describe("workflow: Claude Code turn host", function () {
     assert.isFalse(result.runTurnPayload!.hasMcpServers);
   });
 
+  it("sends the Zotero context and each quoted passage with the user's words", async function () {
+    const runId = `claude-run-${Date.now()}`;
+    const quote = "Attention lets every token weigh every other token.";
+    const result = await run({
+      question: "I don't get this sentence.",
+      selectedTextContexts: [{ text: quote, source: "model" }],
+      steps: [start(runId), completed(runId, "It means...")],
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    const payload = result.runTurnPayload!;
+    assert.include(payload.turnContext, "Zotero context for this turn:");
+    assert.include(
+      payload.turnContext,
+      `Selected text 1 [source=model response]:\n"""\n${quote}\n"""`,
+    );
+    assert.equal(payload.userText, "I don't get this sentence.");
+  });
+
+  it("asks for the attached questions when the composer was empty, without repeating them", async function () {
+    const runId = `claude-run-${Date.now()}`;
+    const result = await run({
+      question: "Why sinusoids?",
+      selectedTextContexts: [
+        {
+          text: "Positional encodings add order information.",
+          source: "model",
+          userQuery: "Why sinusoids?",
+        },
+      ],
+      steps: [start(runId), completed(runId, "Because...")],
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    const payload = result.runTurnPayload!;
+    assert.include(
+      payload.turnContext,
+      'Positional encodings add order information.\n"""\nQuestion about this text:\nWhy sinusoids?',
+    );
+    assert.equal(
+      payload.userText,
+      "Answer the question attached to each selected text above.",
+    );
+  });
+
   it("shows a bridge permission request as a review card and sends the answer back", async function () {
     const runId = `claude-run-${Date.now()}`;
     const requestId = `confirm-${Date.now()}`;

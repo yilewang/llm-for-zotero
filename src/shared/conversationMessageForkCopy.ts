@@ -9,6 +9,7 @@ import {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "./conversationWriteFence";
+import { positiveIntOrZero } from "../core/values";
 
 export type ForkConversationMessagesResult = {
   copiedMessageCount: number;
@@ -43,18 +44,6 @@ export type ConversationMessageForkCopyConfig = {
 
 type MessageCopyRow = Record<string, unknown>;
 
-function normalizeConversationKey(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
-function normalizeTimestamp(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
 export function emptyForkConversationMessagesResult(): ForkConversationMessagesResult {
   return {
     copiedMessageCount: 0,
@@ -74,8 +63,8 @@ export async function copyConversationMessagesThroughAssistantAnchor(
   },
 ): Promise<ForkConversationMessagesResult> {
   const emptyResult = emptyForkConversationMessagesResult();
-  const sourceKey = normalizeConversationKey(params.sourceConversationKey);
-  const targetKey = normalizeConversationKey(params.targetConversationKey);
+  const sourceKey = positiveIntOrZero(params.sourceConversationKey);
+  const targetKey = positiveIntOrZero(params.targetConversationKey);
   if (
     !sourceKey ||
     !targetKey ||
@@ -86,7 +75,7 @@ export async function copyConversationMessagesThroughAssistantAnchor(
     return emptyResult;
   }
 
-  const throughAssistantTimestamp = normalizeTimestamp(
+  const throughAssistantTimestamp = positiveIntOrZero(
     params.throughAssistantTimestamp,
   );
   if (!throughAssistantTimestamp) return emptyResult;
@@ -105,8 +94,8 @@ export async function copyConversationMessagesThroughAssistantAnchor(
     [...sourceSelector.params, throughAssistantTimestamp],
   )) as Array<{ id?: unknown; timestamp?: unknown }> | undefined;
   const anchorRow = anchorRows?.[0];
-  const anchorId = normalizeConversationKey(anchorRow?.id);
-  const anchorTimestamp = normalizeTimestamp(anchorRow?.timestamp);
+  const anchorId = positiveIntOrZero(anchorRow?.id);
+  const anchorTimestamp = positiveIntOrZero(anchorRow?.timestamp);
   if (!anchorId || !anchorTimestamp) return emptyResult;
 
   const roleOrderSql = storedMessageRoleOrderSql("role");
@@ -145,7 +134,7 @@ export async function copyConversationMessagesThroughAssistantAnchor(
   if (!targetConversationID) return emptyResult;
   const targetInstanceID =
     (await config.resolveTargetInstanceID?.(targetKey)) || "";
-  const timestampBase = normalizeTimestamp(params.timestampBase) || Date.now();
+  const timestampBase = positiveIntOrZero(params.timestampBase) || Date.now();
   const targetAnchorAssistantTimestamp = timestampBase + rows.length - 1;
   const insertColumns = [
     "conversation_id",

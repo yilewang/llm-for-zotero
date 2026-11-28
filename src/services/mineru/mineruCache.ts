@@ -919,19 +919,19 @@ function formatCacheWriteError(error: unknown): string {
   return String(error || "Unknown error");
 }
 
-function getItemKey(item: Zotero.Item | null | undefined): string {
+export function getItemKey(item: Zotero.Item | null | undefined): string {
   const value = (item as unknown as { key?: unknown } | null | undefined)?.key;
   return typeof value === "string" ? value.trim() : "";
 }
 
-function getAttachmentFilename(item: Zotero.Item): string {
+export function getAttachmentFilename(item: Zotero.Item): string {
   return String(
     (item as unknown as { attachmentFilename?: unknown }).attachmentFilename ||
       "",
   ).trim();
 }
 
-function getParentItem(item: Zotero.Item): Zotero.Item | null {
+export function getParentItem(item: Zotero.Item): Zotero.Item | null {
   const parentId = Number(item.parentID);
   if (!Number.isFinite(parentId) || parentId <= 0) return null;
   return Zotero.Items.get(Math.floor(parentId)) || null;

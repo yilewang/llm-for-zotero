@@ -713,5 +713,3 @@ export function bindSurfaceChoices(resolveSurface: () => SelectionSurface) {
       lastUsedRuntimeMode.set(mode, resolveSurface()),
   };
 }
-
-export type PanelSurfaceChoices = ReturnType<typeof bindSurfaceChoices>;

@@ -8,16 +8,7 @@ import {
   getClaudeRuntimeRootDir,
 } from "./projectSkills";
 import { getClaudeManagedInstructionTemplatePref } from "./prefs";
-
-type IOUtilsLike = {
-  exists?: (path: string) => Promise<boolean>;
-  read?: (path: string) => Promise<Uint8Array<ArrayBufferLike> | ArrayBuffer>;
-  write?: (path: string, data: Uint8Array<ArrayBufferLike>) => Promise<number>;
-  makeDirectory?: (
-    path: string,
-    options?: { createAncestors?: boolean; ignoreExisting?: boolean },
-  ) => Promise<void>;
-};
+import { getIOUtils } from "../utils/geckoFs";
 
 const MANAGED_BEGIN_MARKER = "<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-BEGIN -->";
 const MANAGED_END_MARKER = "<!-- LLM-FOR-ZOTERO:CLAUDE-MANAGED-END -->";
@@ -30,10 +21,6 @@ const KNOWN_STOCK_BEHAVIOR_FINGERPRINTS = new Set([
   "fnv1a32-15002f10",
   "fnv1a32-bcaf2d1b",
 ]);
-
-function getIOUtils(): IOUtilsLike | undefined {
-  return (globalThis as unknown as { IOUtils?: IOUtilsLike }).IOUtils;
-}
 
 function getBootstrapSettingsTemplate(): string {
   return (
@@ -163,12 +150,6 @@ function upgradeManagedInstructionBlock(content: string): string {
     return replacement;
   }
   return `${normalized}\n\n${replacement}`;
-}
-
-export function upgradeManagedInstructionBlockForTests(
-  content: string,
-): string {
-  return upgradeManagedInstructionBlock(content);
 }
 
 async function writeIfMissing(path: string, content: string): Promise<void> {

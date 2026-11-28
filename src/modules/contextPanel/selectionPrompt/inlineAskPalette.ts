@@ -74,3 +74,42 @@ export function inlineAskPalette(dark: boolean): InlineAskPalette {
         quoteBar: "rgba(0,0,0,0.16)",
       };
 }
+
+/** A text button in the card: plain, ghost (no frame) or primary. */
+export function inlineAskButtonCss(
+  palette: InlineAskPalette,
+  variant: "plain" | "ghost" | "primary",
+  extra: string[] = [],
+): string[] {
+  const base = [
+    "display:inline-flex",
+    "align-items:center",
+    "justify-content:center",
+    "gap:5px",
+    "padding:4px 9px",
+    `border:1px solid ${palette.border}`,
+    "border-radius:6px",
+    `background:${palette.fieldBg}`,
+    `color:${palette.fg}`,
+    "white-space:nowrap",
+    "font:inherit",
+    "font-size:12px",
+    "line-height:1.35",
+    "cursor:pointer",
+  ];
+  if (variant === "ghost") {
+    base.push(
+      "background:transparent",
+      "border-color:transparent",
+      `color:${palette.labelFg}`,
+    );
+  }
+  if (variant === "primary") {
+    base.push(
+      `background:${palette.accent}`,
+      `border-color:${palette.accent}`,
+      `color:${palette.accentFg}`,
+    );
+  }
+  return [...base, ...extra];
+}

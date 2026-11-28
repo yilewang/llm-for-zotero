@@ -69,12 +69,6 @@ export function isJsonRpcRequest(
   return "method" in message && "id" in message && message.id !== undefined;
 }
 
-export function isJsonRpcNotification(
-  message: JsonRpcMessage,
-): message is JsonRpcNotification {
-  return "method" in message && !("id" in message && message.id !== undefined);
-}
-
 export function isJsonRpcResponse(
   message: JsonRpcMessage,
 ): message is JsonRpcResponse {
@@ -82,16 +76,6 @@ export function isJsonRpcResponse(
 }
 
 // ---------------------------------------------------------------- initialize
-
-export type AcpClientCapabilities = {
-  fs?: { readTextFile?: boolean; writeTextFile?: boolean };
-  terminal?: boolean;
-};
-
-export type AcpInitializeParams = {
-  protocolVersion: number;
-  clientCapabilities: AcpClientCapabilities;
-};
 
 export type AcpAuthMethod = {
   id: string;
@@ -196,14 +180,6 @@ export type AcpListSessionsResult = {
   nextCursor?: string;
 };
 
-export type AcpSetModeParams = { sessionId: string; modeId: string };
-export type AcpSetModelParams = { sessionId: string; modelId: string };
-export type AcpSetConfigOptionParams = {
-  sessionId: string;
-  configId: string;
-  value: string;
-};
-
 // ---------------------------------------------------------------- prompts
 
 /** A slash command the agent offers (`available_commands_update`). */
@@ -252,8 +228,6 @@ export type AcpPromptResult = {
   stopReason: AcpStopReason;
   usage?: AcpUsage;
 };
-
-export type AcpCancelParams = { sessionId: string };
 
 // ---------------------------------------------------------------- updates
 

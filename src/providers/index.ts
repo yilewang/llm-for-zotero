@@ -1,8 +1,2 @@
 export { resolveProviderCapabilities } from "./registry";
-export type {
-  ProviderCapabilities,
-  ProviderParams,
-  ProviderTier,
-  PdfSupport,
-} from "./types";
-export { isTextOnlyModel } from "./modelChecks";
+export type { ProviderCapabilities, PdfSupport } from "./types";

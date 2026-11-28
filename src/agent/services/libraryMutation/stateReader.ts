@@ -12,6 +12,7 @@ import {
   mutationUsesDeferredInverse,
   targetItemIdsForLibraryMutation,
 } from "./handlerOperations";
+import { positiveIntOrZero } from "../../../core/values";
 
 /** Match Zotero's save-error recovery: reload persisted data, then discard pending getter overrides. */
 async function reloadPersistedState(
@@ -23,11 +24,6 @@ async function reloadPersistedState(
   } | null;
   await native?.reload?.(undefined, true);
   native?._clearChanged?.();
-}
-
-function normalizeLibraryID(value: unknown): number {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : 0;
 }
 
 function readCollectionChildIds(
@@ -79,7 +75,7 @@ async function readSavedSearchState(savedSearchId: number, reload: boolean) {
   return {
     savedSearchId,
     exists: true,
-    libraryID: normalizeLibraryID(search.libraryID),
+    libraryID: positiveIntOrZero(search.libraryID),
     name: String(search.name || ""),
     deleted: Boolean(search.deleted),
     conditions,

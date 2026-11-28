@@ -8,8 +8,7 @@ import type { ConversationSystem } from "../../shared/types";
 import { isReusableConversationDraft } from "./standaloneConversationResolution";
 import { pendingDeletionStore } from "../../core/conversations/pendingDeletionStore";
 import { getConversationKeyLedgerEntry } from "../../shared/conversationKeyLedger";
-
-declare const ztoolkit: any;
+import { positiveIntOrZero } from "../../core/values";
 
 export type FreshConversationDraftResult = {
   conversationKey: number;
@@ -23,12 +22,6 @@ export type FreshConversationDraftRepository = Pick<
   "getCatalogEntry" | "listCatalogEntries" | "createCatalogEntry"
 > &
   Partial<Pick<typeof conversationRepository, "loadMessages">>;
-
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
 
 function emptyResult(): FreshConversationDraftResult {
   return {
@@ -76,15 +69,15 @@ export async function resolveFreshConversationDraft(params: {
   limit?: number;
 }): Promise<FreshConversationDraftResult> {
   const repository = params.repository || conversationRepository;
-  const libraryID = normalizePositiveInt(params.libraryID);
-  const paperItemID = normalizePositiveInt(params.paperItemID);
-  const currentConversationKey = normalizePositiveInt(
+  const libraryID = positiveIntOrZero(params.libraryID);
+  const paperItemID = positiveIntOrZero(params.paperItemID);
+  const currentConversationKey = positiveIntOrZero(
     params.currentConversationKey,
   );
-  const excludeConversationKey = normalizePositiveInt(
+  const excludeConversationKey = positiveIntOrZero(
     params.excludeConversationKey,
   );
-  const limit = normalizePositiveInt(params.limit) || 50;
+  const limit = positiveIntOrZero(params.limit) || 50;
   if (!libraryID) return emptyResult();
   if (params.kind === "paper" && !paperItemID) return emptyResult();
 
@@ -143,7 +136,7 @@ export async function resolveFreshConversationDraft(params: {
     });
     const reusableCandidates: ConversationCatalogEntry[] = [];
     for (const summary of summaries) {
-      const key = normalizePositiveInt(summary.conversationKey);
+      const key = positiveIntOrZero(summary.conversationKey);
       if (!key || key === excludeConversationKey) continue;
       // Never hand back a chat the user just asked to delete. Besides being
       // the wrong chat to reuse, adopting it rewrites its catalog createdAt
@@ -165,7 +158,7 @@ export async function resolveFreshConversationDraft(params: {
       reusableCandidates.push(summary);
     }
     for (const summary of reusableCandidates) {
-      const key = normalizePositiveInt(summary.conversationKey);
+      const key = positiveIntOrZero(summary.conversationKey);
       if (
         key > 0 &&
         !(await hasStoredMessages(repository, params.system, key))
@@ -191,7 +184,7 @@ export async function resolveFreshConversationDraft(params: {
         libraryID,
         paperItemID: params.kind === "paper" ? paperItemID : undefined,
       });
-      const createdKey = normalizePositiveInt(created?.conversationKey);
+      const createdKey = positiveIntOrZero(created?.conversationKey);
       if (createdKey <= 0 || createdKey === excludeConversationKey) continue;
       if (await hasStoredMessages(repository, params.system, createdKey)) {
         continue;

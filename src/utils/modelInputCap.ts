@@ -458,14 +458,6 @@ export function estimateContextMessagesTokens(
   return total;
 }
 
-export function getModelInputTokenLimit(
-  modelName: string,
-  identity?: Omit<ModelCapabilityIdentity, "model">,
-): number {
-  return resolveModelInputTokenLimit(modelName, undefined, identity)
-    .limitTokens;
-}
-
 export type ModelInputTokenLimitSource =
   | "advanced"
   | CapabilitySource
@@ -706,13 +698,3 @@ export function applyModelInputTokenCap(
     effects,
   };
 }
-
-/** Private steps of applyModelInputTokenCap, exposed only for parity tests. */
-export const modelInputCapInternalsForTests = {
-  cloneMessages,
-  findLastUserIndex,
-  findContextMessageIndex,
-  trimContextMessage,
-  trimUserMessage,
-  buildFallbackMessages,
-};

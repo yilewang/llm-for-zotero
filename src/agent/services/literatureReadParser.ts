@@ -1,3 +1,4 @@
+import { collapseWhitespace } from "../../core/values";
 /**
  * Pure parsers for literature_read: JATS XML (Europe PMC, PubMed Central),
  * arXiv LaTeXML HTML and the arXiv export Atom feed.
@@ -334,10 +335,6 @@ function childElements(node: MarkupNode, name?: string): MarkupNode[] {
   );
 }
 
-function normalizeSpace(text: string): string {
-  return text.replace(/\s+/g, " ").trim();
-}
-
 /** All text below a node, minus the subtrees `skip` rejects. */
 function plainText(
   node: MarkupNode | null | undefined,
@@ -352,7 +349,7 @@ function plainText(
     }
   };
   visit(node);
-  return normalizeSpace(parts.join(""));
+  return collapseWhitespace(parts.join(""));
 }
 
 type CollectedSection = {
@@ -367,7 +364,7 @@ type CollectedSection = {
 
 /** "3.2. " -> "3.2"; "§2" -> "2"; empty when nothing is left. */
 function normalizeSectionLabel(value: string): string {
-  return normalizeSpace(value)
+  return collapseWhitespace(value)
     .replace(/^§\s*/, "")
     .replace(/[.:]+$/, "")
     .trim();
@@ -387,7 +384,7 @@ class SectionCollector {
   }
 
   flush(): void {
-    const paragraph = normalizeSpace(this.buffer.join(""));
+    const paragraph = collapseWhitespace(this.buffer.join(""));
     this.buffer = [];
     if (!paragraph) return;
     let target = this.path[this.path.length - 1];
@@ -546,7 +543,7 @@ function captionParagraph(node: MarkupNode): string {
 /** The alttext, or the MathML's own text when the markup has no alttext. */
 function mathAltText(node: MarkupNode): string {
   const alt =
-    normalizeSpace(node.attrs.alttext || "") ||
+    collapseWhitespace(node.attrs.alttext || "") ||
     plainText(node, (child) =>
       /^(?:mml:)?annotation(?:-xml)?$/.test(child.name),
     );
@@ -949,7 +946,7 @@ export function parseArxivAtom(xml: string): ParsedArxivEntry | null {
 
 /** Plain text of an HTML fragment (such as a Europe PMC abstract), by block. */
 export function htmlFragmentToText(html: string): string {
-  if (!html.includes("<")) return normalizeSpace(decodeEntities(html));
+  if (!html.includes("<")) return collapseWhitespace(decodeEntities(html));
   const out = new SectionCollector("");
   walkHtml(parseMarkup(html, { html: true }), out);
   out.flush();

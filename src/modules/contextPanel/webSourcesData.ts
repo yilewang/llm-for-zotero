@@ -9,6 +9,7 @@
 import type { AgentRunEventRecord } from "../../agent/types";
 import { looseWebUrlKey } from "../../webAccess/sourceLinks";
 import { normalizePublicWebUrl } from "../../webAccess/tavilyClient";
+import { trimmedString } from "../../core/values";
 
 export type WebSourceListEntry = {
   url: string;
@@ -51,10 +52,6 @@ function asObject(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function readText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function hostnameOf(url: string): string {
   try {
     return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
@@ -77,13 +74,14 @@ function toEntry(raw: unknown): WebSourceListEntry | null {
   } catch {
     return null;
   }
-  const hostname = readText(source.hostname).toLowerCase() || hostnameOf(url);
-  const faviconUrl = readText(source.faviconUrl);
+  const hostname =
+    trimmedString(source.hostname).toLowerCase() || hostnameOf(url);
+  const faviconUrl = trimmedString(source.faviconUrl);
   return {
     url,
     hostname,
-    organization: readText(source.organization) || hostname,
-    title: readText(source.title) || hostname,
+    organization: trimmedString(source.organization) || hostname,
+    title: trimmedString(source.title) || hostname,
     ...(faviconUrl ? { faviconUrl } : {}),
     read: false,
     cited: false,
@@ -97,14 +95,14 @@ function readNumber(value: unknown): number | null {
 }
 
 function recordPageRead(reads: PageReads, record: Record<string, unknown>) {
-  const content = readText(record.content);
+  const content = trimmedString(record.content);
   const total = readNumber(record.totalChars);
   if (total !== null) reads.totalChars = Math.max(reads.totalChars, total);
-  const mode = readText(record.readMode) || "passages";
+  const mode = trimmedString(record.readMode) || "passages";
   if (mode === "outline") {
     if (!reads.outline.length && Array.isArray(record.outline)) {
       for (const entry of record.outline) {
-        const heading = readText(asObject(entry)?.heading);
+        const heading = trimmedString(asObject(entry)?.heading);
         const level = readNumber(asObject(entry)?.level) || 1;
         if (heading) reads.outline.push(`${"  ".repeat(level - 1)}${heading}`);
       }
@@ -169,8 +167,8 @@ export function collectRunWebSources(
     const key = webSourceKey(entry.url);
     const current = byKey.get(key);
     const record = asObject(raw);
-    const content = readText(record?.content);
-    const snippet = readText(record?.snippet);
+    const content = trimmedString(record?.content);
+    const snippet = trimmedString(record?.snippet);
     if (current) {
       if (current.title === current.hostname) current.title = entry.title;
       if (current.organization === current.hostname)

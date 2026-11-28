@@ -3,7 +3,6 @@ import {
   parsePdfWithMineru,
   publishMineruParsedResult,
 } from "../services/mineru/mineruParser";
-import { config } from "../../package.json";
 import {
   buildMineruFilenameMatcher,
   getMineruMaxAutoPages,
@@ -81,7 +80,7 @@ const readinessRetryTimers = new Map<
   { timer: ReturnType<typeof setTimeout>; entry: QueueEntry }
 >();
 
-function getAbortControllerCtor(): (new () => AbortController) | null {
+export function getAbortControllerCtor(): (new () => AbortController) | null {
   return (
     (ztoolkit.getGlobal("AbortController") as
       | (new () => AbortController)
@@ -138,7 +137,7 @@ function showNotification(title: string, message: string): void {
   }
 }
 
-function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
+export function getPdfAttachments(item: Zotero.Item): Zotero.Item[] {
   const out: Zotero.Item[] = [];
   if (!item?.isRegularItem?.()) return out;
   for (const attId of item.getAttachments()) {
@@ -843,75 +842,4 @@ export function getAutoWatchStatus(): AutoWatchStatus {
     queueLength: processingQueue.length + readinessRetryTimers.size,
     statusMessage: currentStatusMessage,
   };
-}
-
-export async function handleAutoWatchNotificationForTests(
-  event: string,
-  type: string,
-  ids: Array<string | number>,
-): Promise<void> {
-  await handleItemNotification(event, type, ids);
-}
-
-export async function processAutoWatchQueueForTests(): Promise<void> {
-  await processQueue();
-}
-
-export function getAutoWatchQueueSnapshotForTests(): QueueEntry[] {
-  return processingQueue.map((entry) => ({ ...entry }));
-}
-
-export function getAutoWatchReadinessRetryCountForTests(): number {
-  return readinessRetryTimers.size;
-}
-
-export function flushAutoWatchReadinessRetryForTests(
-  attachmentId: number,
-): boolean {
-  const pending = readinessRetryTimers.get(attachmentId);
-  if (!pending) return false;
-  clearTimeout(pending.timer);
-  readinessRetryTimers.delete(attachmentId);
-  enqueueForProcessing(
-    pending.entry.attachmentId,
-    pending.entry.title,
-    pending.entry.parentItemId,
-    pending.entry.readinessRetryCount,
-  );
-  return true;
-}
-
-export function isAutoWatchQueueEntryCurrentForTests(
-  entry: QueueEntry,
-): boolean {
-  return Boolean(getValidatedQueueItem(entry));
-}
-
-export function resetAutoWatchForTests(): void {
-  if (currentAttachmentId !== null) {
-    stoppedAbortAttachmentIds.add(currentAttachmentId);
-  }
-  if (currentAbort) {
-    currentAbort.abort();
-    currentAbort = null;
-  }
-
-  processingQueue = [];
-  for (const { timer } of readinessRetryTimers.values()) {
-    clearTimeout(timer);
-  }
-  readinessRetryTimers.clear();
-  isProcessing = false;
-  isPaused = false;
-  currentItemTitle = "";
-  currentStatusMessage = "";
-  currentAttachmentId = null;
-  staleAbortAttachmentIds.clear();
-
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
-  }
-
-  progressListeners.clear();
 }

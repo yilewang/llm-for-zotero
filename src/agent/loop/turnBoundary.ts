@@ -48,6 +48,7 @@ import type { AgentToolEffect } from "../types";
 import { buildToolProgressFingerprint } from "../execution/toolResultLifecycle";
 import { ModelStreamInterruptedError } from "../model/completion";
 import type { RunStopRule } from "./stopRules";
+import { trimmedString } from "../../core/values";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -124,10 +125,6 @@ function record(value: unknown): Row | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Row)
     : undefined;
-}
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
 }
 
 /**
@@ -317,15 +314,17 @@ function searchQueries(input: unknown): {
     ? row.conditions.map(record).filter((entry): entry is Row => !!entry)
     : [];
   const queries = [
-    text(row.text),
-    text(filters?.author) ? `author: ${text(filters?.author)}` : "",
+    trimmedString(row.text),
+    trimmedString(filters?.author)
+      ? `author: ${trimmedString(filters?.author)}`
+      : "",
     ...conditions.map((condition) =>
-      [text(condition.condition), text(condition.value)]
+      [trimmedString(condition.condition), trimmedString(condition.value)]
         .filter(Boolean)
         .join(": "),
     ),
   ].filter(Boolean);
-  const entity = text(row.entity) || "items";
+  const entity = trimmedString(row.entity) || "items";
   return { queries, lookup: entity === "items" && queries.length > 0 };
 }
 
@@ -341,7 +340,7 @@ function listedItems(name: string, content: unknown): SearchItem[] {
     const item = record(entry);
     const itemId = itemIdOf(item?.itemId ?? item?.id);
     return itemId
-      ? [{ itemId, title: text(item?.title), ...byline(item) }]
+      ? [{ itemId, title: trimmedString(item?.title), ...byline(item) }]
       : [];
   });
 }
@@ -353,12 +352,13 @@ function byline(item: Row | undefined): {
 } {
   const creators = Array.isArray(item?.creators) ? item!.creators : [];
   const firstAuthor =
-    text(item?.firstCreator) ||
+    trimmedString(item?.firstCreator) ||
     (typeof creators[0] === "string"
-      ? text(creators[0])
-      : text(record(creators[0])?.lastName) || text(record(creators[0])?.name));
+      ? trimmedString(creators[0])
+      : trimmedString(record(creators[0])?.lastName) ||
+        trimmedString(record(creators[0])?.name));
   const year =
-    text(item?.year) ||
+    trimmedString(item?.year) ||
     (typeof item?.year === "number" ? String(item.year) : "");
   return {
     ...(firstAuthor ? { firstAuthor } : {}),
@@ -402,7 +402,7 @@ export function buildSearchRecord(
         if (emptyLookupResult(call.content)) emptyLookups += 1;
       }
     } else if (call.name === "library_retrieve") {
-      addQuery(text(record(call.input)?.query));
+      addQuery(trimmedString(record(call.input)?.query));
     }
     if (!call.ok) continue;
     if (call.name === "paper_read") {
@@ -661,16 +661,6 @@ export function modelRetryDelayMs(
 
 // ── Resume ──────────────────────────────────────────────────────────────────
 
-/** Stops after which "continue" gets a resume note. */
-export const RESUMABLE_STOP_RULES: ReadonlySet<RunStopRule> =
-  new Set<RunStopRule>([
-    "search_exhausted",
-    "budget_reached",
-    "connection_lost",
-    "prompt_budget_exceeded",
-    "empty_answer",
-  ]);
-
 const RESUME_REASONS: Partial<Record<RunStopRule, string>> = {
   search_exhausted: "its search ended without confirming the paper",
   budget_reached: "it reached its per-turn safety limit",
@@ -715,7 +705,7 @@ export function searchScopeLabel(scope: {
 }): string {
   const names = (entries: readonly { name?: string }[]) =>
     entries
-      .map((entry) => text(entry.name))
+      .map((entry) => trimmedString(entry.name))
       .filter(Boolean)
       .map((name) => `“${name}”`)
       .join(", ");

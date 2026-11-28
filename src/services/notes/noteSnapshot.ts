@@ -1,11 +1,7 @@
 import { getNoteConversation } from "./conversationItem";
 import { resolveNoteEditingParentItem, resolveNoteEditingTitle } from "./scope";
 import { stripNoteHtml } from "../../utils/noteText";
-export {
-  decodeNoteHtmlEntities,
-  stripNoteMarkup,
-  stripNoteHtml,
-} from "../../utils/noteText";
+export { decodeNoteHtmlEntities, stripNoteHtml } from "../../utils/noteText";
 
 export type NoteSnapshot = {
   noteId: number;

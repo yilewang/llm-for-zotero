@@ -33,7 +33,6 @@ import {
 import { getOrStartAgyClient } from "../../antigravity/agyProcess";
 import { getAntigravityPermissionOptions } from "../../shared/permissionOptions";
 import { isAntigravityPermissionMode } from "../../shared/antigravityPermissionMode";
-import { ensureDir } from "../../utils/geckoFs";
 
 export type AntigravityPreferences = {
   /** The row's summary: on or off, the model, and the permission level. */

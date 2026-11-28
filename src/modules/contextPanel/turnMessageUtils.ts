@@ -31,40 +31,6 @@ export const filterMessagesInPendingTurns = <
     : messages;
 };
 
-export const cloneTurnMessageForUndo = (message: Message): Message => ({
-  ...message,
-  selectedTexts: Array.isArray(message.selectedTexts)
-    ? [...message.selectedTexts]
-    : undefined,
-  selectedTextSources: Array.isArray(message.selectedTextSources)
-    ? [...message.selectedTextSources]
-    : undefined,
-  selectedTextPaperContexts: Array.isArray(message.selectedTextPaperContexts)
-    ? [...message.selectedTextPaperContexts]
-    : undefined,
-  selectedTextNoteContexts: Array.isArray(message.selectedTextNoteContexts)
-    ? [...message.selectedTextNoteContexts]
-    : undefined,
-  screenshotImages: Array.isArray(message.screenshotImages)
-    ? [...message.screenshotImages]
-    : undefined,
-  paperContexts: Array.isArray(message.paperContexts)
-    ? [...message.paperContexts]
-    : undefined,
-  fullTextPaperContexts: Array.isArray(message.fullTextPaperContexts)
-    ? [...message.fullTextPaperContexts]
-    : undefined,
-  citationPaperContexts: Array.isArray(message.citationPaperContexts)
-    ? [...message.citationPaperContexts]
-    : undefined,
-  attachments: Array.isArray(message.attachments)
-    ? message.attachments.map((attachment) => ({ ...attachment }))
-    : undefined,
-  generatedImages: Array.isArray(message.generatedImages)
-    ? message.generatedImages.map((image) => ({ ...image }))
-    : undefined,
-});
-
 export const findTurnPairByTimestamps = (
   history: Message[],
   userTimestamp: number,

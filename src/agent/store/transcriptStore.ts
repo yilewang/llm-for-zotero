@@ -10,11 +10,9 @@ import {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
-
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction: <T>(task: () => Promise<T>) => Promise<T>;
-};
+import { positiveIntOrUndefined } from "../../core/values";
+import { stableJson } from "./stableJson";
+import { getZoteroDb } from "../../core/zoteroDb";
 
 export type AgentTranscriptSegment = {
   conversationKey: number;
@@ -38,15 +36,6 @@ const transcriptByKey = new Map<string, AgentTranscriptSegment>();
 const hydratedKeys = new Set<string>();
 let initPromise: Promise<boolean> | null = null;
 
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
-
 function logTranscriptStoreError(message: string, error: unknown): void {
   const toolkit = (
     globalThis as typeof globalThis & {
@@ -56,31 +45,8 @@ function logTranscriptStoreError(message: string, error: unknown): void {
   toolkit?.log?.(message, error);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
-}
-
 function segmentKey(conversationKey: number, compatibilityKey: string): string {
-  return `${normalizePositiveInt(conversationKey) || 0}:${compatibilityKey}`;
+  return `${positiveIntOrUndefined(conversationKey) || 0}:${compatibilityKey}`;
 }
 
 function normalizeMessage(value: unknown): AgentModelMessage | null {
@@ -230,7 +196,7 @@ function normalizeMessages(
 }
 
 async function ensureAgentTranscriptStore(): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return false;
   if (initPromise) return initPromise;
   initPromise = (async () => {
@@ -272,13 +238,13 @@ async function hydrateTranscriptSegment(params: {
   conversationKey: number;
   compatibilityKey: string;
 }): Promise<void> {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey) return;
   const expectedGeneration = getConversationWriteGeneration(conversationKey);
   const key = segmentKey(conversationKey, params.compatibilityKey);
   if (hydratedKeys.has(key)) return;
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     const rows = (await db.queryAsync(
@@ -310,7 +276,7 @@ async function hydrateTranscriptSegment(params: {
     let compactedAt: number | undefined;
     for (const row of rows) {
       if (compactedAt === undefined) {
-        compactedAt = normalizePositiveInt(row.compactedAt);
+        compactedAt = positiveIntOrUndefined(row.compactedAt);
       }
       const raw = typeof row.messageJson === "string" ? row.messageJson : "";
       if (!raw) continue;
@@ -337,7 +303,7 @@ export async function loadAgentTranscriptSegment(params: {
   conversationKey: number;
   compatibilityKey: string;
 }): Promise<AgentTranscriptSegment> {
-  const conversationKey = normalizePositiveInt(params.conversationKey) || 0;
+  const conversationKey = positiveIntOrUndefined(params.conversationKey) || 0;
   const key = segmentKey(conversationKey, params.compatibilityKey);
   await hydrateTranscriptSegment({
     conversationKey,
@@ -355,10 +321,10 @@ export async function loadAgentTranscriptSegment(params: {
 export async function loadLatestAgentTranscriptSegment(
   conversationKeyValue: number,
 ): Promise<AgentTranscriptSegment | null> {
-  const conversationKey = normalizePositiveInt(conversationKeyValue);
+  const conversationKey = positiveIntOrUndefined(conversationKeyValue);
   if (!conversationKey) return null;
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db)
     return (
       [...transcriptByKey.values()]
@@ -424,7 +390,7 @@ async function persistTranscriptSegment(
   // A temporary side chat's key (reserved band) is never persisted.
   if (isEphemeralConversationKey(segment.conversationKey)) return "unavailable";
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return "unavailable";
   try {
     await db.executeTransaction(async () => {
@@ -527,7 +493,7 @@ export async function clearAgentTranscript(
     transcriptByKey.clear();
     hydratedKeys.clear();
   } else {
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (conversationKey) {
       const prefix = `${conversationKey}:`;
       for (const key of Array.from(transcriptByKey.keys())) {
@@ -539,14 +505,14 @@ export async function clearAgentTranscript(
     }
   }
   const dbReady = await ensureAgentTranscriptStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     if (conversationKeyValue === undefined) {
       await db.queryAsync(`DELETE FROM ${TRANSCRIPT_TABLE}`);
       return;
     }
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (!conversationKey) return;
     await db.queryAsync(
       `DELETE FROM ${TRANSCRIPT_TABLE} WHERE conversation_key = ?`,

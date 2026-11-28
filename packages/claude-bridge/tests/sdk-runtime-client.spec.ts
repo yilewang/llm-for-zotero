@@ -167,7 +167,7 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     ]);
   });
 
-  it("renders selected Zotero collection and tag scopes in the Claude prompt", async () => {
+  it("places the plugin's turn context before the user's words", async () => {
     let seenPrompt = "";
 
     const runtime = new ClaudeAgentSdkRuntimeClient({
@@ -175,11 +175,6 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
         seenPrompt = typeof args.prompt === "string" ? args.prompt : "";
         return makeStream([
           { type: "system", session_id: "session-scope", subtype: "init" },
-          {
-            type: "assistant",
-            session_id: "session-scope",
-            message: { content: [{ type: "text", text: "ok" }] },
-          },
           {
             type: "result",
             session_id: "session-scope",
@@ -190,44 +185,22 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       },
     });
 
+    const turnContext = [
+      "Zotero context for this turn:",
+      'Collection 1: name="Computational_Psychiatry", collectionId=42',
+      'Selected text 1 [source=model response]:\n"""\nAttention weighs every token.\n"""\nQuestion about this text:\nWhy?',
+    ].join("\n");
     const stream = await runtime.startTurn({
       conversationKey: "conv-scope",
-      userMessage:
-        "can you find the commonality of the papers inside this folder?",
-      runtimeRequest: {
-        selectedCollectionContexts: [
-          {
-            collectionId: 42,
-            name: "Computational_Psychiatry",
-            libraryID: 1,
-          },
-        ],
-        selectedTagContexts: [
-          {
-            name: "Drift",
-            normalizedName: "drift",
-            libraryID: 1,
-          },
-        ],
-      },
+      userMessage: "I don't get this sentence.",
+      runtimeRequest: { turnContext },
     });
 
     for await (const _event of stream.events) {
       // Drain the provider stream so the runtime reaches its final state.
     }
 
-    expect(seenPrompt).toContain(
-      "Selected Zotero collection scope for this turn:",
-    );
-    expect(seenPrompt).toContain("Computational_Psychiatry");
-    expect(seenPrompt).toContain("collectionId=42");
-    expect(seenPrompt).toContain("libraryID=1");
-    expect(seenPrompt).toContain('"this folder"');
-    expect(seenPrompt).toContain("library_search");
-    expect(seenPrompt).toContain("library_retrieve");
-    expect(seenPrompt).toContain("Selected Zotero tag scope for this turn:");
-    expect(seenPrompt).toContain("Drift");
-    expect(seenPrompt).toContain("normalizedName=drift");
+    expect(seenPrompt).toBe(`${turnContext}\n\nI don't get this sentence.`);
   });
 
   it("passes exact current-turn PDF paths and enforces path-scoped Read access", async () => {
@@ -1979,7 +1952,6 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
             mimeType: "text/plain",
           },
         ],
-        activeNoteContext: { title: "Note", noteText: "content" },
       } as Record<string, unknown>,
     });
 
@@ -1994,8 +1966,6 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(String(seenPrompt)).toContain("Paper C");
     expect(String(seenPrompt)).toContain("Attachments:");
     expect(String(seenPrompt)).toContain("notes.txt");
-    expect(String(seenPrompt)).toContain("Active note context:");
-    expect(String(seenPrompt)).toContain("Title: Note");
   });
 
   it("injects local Zotero history only for resume fallback turns", async () => {
@@ -2059,70 +2029,6 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       "Local Zotero conversation history",
     );
     expect(String(normalPrompt)).not.toContain("old answer");
-  });
-
-  describe("per-snippet questions", () => {
-    async function promptFor(runtimeRequest: Record<string, unknown>) {
-      let prompt: unknown;
-      const runtime = new ClaudeAgentSdkRuntimeClient({
-        queryImpl(args) {
-          prompt = args.prompt;
-          return makeStream([
-            {
-              type: "result",
-              session_id: "session-snippet",
-              result: "ok",
-              is_error: false,
-            },
-          ]);
-        },
-      });
-      await runtime.startTurn({
-        conversationKey: "conv-snippet-questions",
-        userMessage: "hello",
-        runtimeRequest,
-      });
-      return String(prompt);
-    }
-
-    it("includes the question under its snippet", async () => {
-      const prompt = await promptFor({
-        selectedTexts: ["alpha text"],
-        selectedTextContexts: [
-          { text: "alpha text", userQuery: "What is alpha?" },
-        ],
-      });
-      expect(prompt).toContain(
-        "Selected snippets:\n\n1. alpha text\n   Question: What is alpha?",
-      );
-    });
-
-    it("pairs questions by snippet index", async () => {
-      const prompt = await promptFor({
-        selectedTexts: ["one", "two", "three"],
-        selectedTextContexts: [
-          { text: "one", userQuery: "Q1" },
-          { text: "two" },
-          { text: "three", userQuery: "Q3\nline2" },
-        ],
-      });
-      expect(prompt).toContain(
-        "1. one\n   Question: Q1\n\n2. two\n\n3. three\n   Question: Q3\n   line2",
-      );
-    });
-
-    it("leaves snippets without contexts unchanged", async () => {
-      const prompt = await promptFor({ selectedTexts: ["solo"] });
-      expect(prompt).toContain("Selected snippets:\n\n1. solo");
-      expect(prompt).not.toContain("Question:");
-    });
-
-    it("uses context text when selectedTexts is empty", async () => {
-      const prompt = await promptFor({
-        selectedTextContexts: [{ text: "ctx only", userQuery: "Why?" }],
-      });
-      expect(prompt).toContain("1. ctx only\n   Question: Why?");
-    });
   });
 
   it("preserves history-gap continuity across compact and skill commands", async () => {

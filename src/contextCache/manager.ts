@@ -10,6 +10,7 @@ import type {
   ProviderPromptCacheCapability,
   ProviderPromptCacheProvider,
 } from "../providers/types";
+import { lowerTrimmedString } from "../core/values";
 
 export type ContextCacheAssemblyMode = "full" | "retrieval";
 export type ContextCacheAssemblyStrategy =
@@ -101,15 +102,11 @@ function persistTelemetry(): void {
   // exceed Firefox preference-size guidance, so keep it in memory only.
 }
 
-function normalizeProtocol(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
 export function resolvePromptCacheCapability(
   params: ProviderParams,
 ): ProviderPromptCacheCapability {
-  const authMode = normalizeProtocol(params.authMode);
-  const protocol = normalizeProtocol(params.protocol);
+  const authMode = lowerTrimmedString(params.authMode);
+  const protocol = lowerTrimmedString(params.protocol);
   const preset = detectProviderPreset(params.apiBase || "");
 
   if (authMode === "codex_app_server") {
@@ -563,27 +560,5 @@ export function recordContextCacheTelemetry(
       typeof usage.cacheHitRatio === "number" ? usage.cacheHitRatio : undefined,
     lastUpdatedAt: Date.now(),
   });
-  persistTelemetry();
-}
-
-export function getContextCacheTelemetry(
-  cacheKey: string | undefined,
-): ContextCacheTelemetryRecord | undefined {
-  loadPersistedTelemetry();
-  return cacheKey ? telemetryByCacheKey.get(cacheKey) : undefined;
-}
-
-export function listContextCacheTelemetry(
-  limit = 10,
-): ContextCacheTelemetryRecord[] {
-  loadPersistedTelemetry();
-  return [...telemetryByCacheKey.values()]
-    .sort((a, b) => b.lastUpdatedAt - a.lastUpdatedAt)
-    .slice(0, Math.max(0, Math.floor(limit)));
-}
-
-export function clearContextCacheTelemetry(): void {
-  loadPersistedTelemetry();
-  telemetryByCacheKey.clear();
   persistTelemetry();
 }

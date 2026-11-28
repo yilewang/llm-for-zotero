@@ -2,7 +2,10 @@ import { fnv1a32Raw } from "../../utils/fnv1a";
 import { appLogger } from "../../core/logging";
 import { collectReaderSelectionDocuments } from "./readerSelection";
 import { sanitizeText } from "../../utils/textSanitization";
-import { clearCitationPageCache } from "./citationNavigationCache";
+import {
+  clearCitationPageCache,
+  normalizePageIndex,
+} from "./citationNavigationCache";
 import {
   readPageCompleteZoteroFulltextCache,
   type ProveTextPageOffset,
@@ -31,6 +34,7 @@ import {
   stripPdfTextItemBoundaries,
   type QuoteTextIndex,
 } from "../quotes/quoteTextNormalization";
+import { positiveIntOrZero } from "../../core/values";
 
 type PdfReaderPageText = {
   pageIndex: number;
@@ -124,8 +128,6 @@ export type LivePdfSelectionLocateResult = {
   debugSummary?: string[];
 };
 
-export type LivePdfQuoteCertificate = PdfQuoteCertificate;
-
 export type LivePdfQuoteVerification = PdfQuoteVerification;
 
 export type ExactQuoteJumpQueryAttempt = {
@@ -189,13 +191,6 @@ type PageMatch = {
   excerpt?: string;
 };
 
-type PageTextIndexEntry = {
-  pageIndex: number;
-  pageLabel?: string;
-  text: string;
-  normalizedText: string;
-};
-
 const PAGE_CONTAINER_SELECTOR = [
   ".page[data-page-number]",
   ".page[data-page-index]",
@@ -208,53 +203,6 @@ const PAGE_CONTAINER_SELECTOR = [
 // "the152"). The marker is removed only when reconstructing the literal query
 // that FindController will normalize and search.
 const PDF_TEXT_ITEM_BOUNDARY = "\u0003";
-
-function buildPageTextIndex(pages: LivePdfPageText[]): PageTextIndexEntry[] {
-  return pages.map((page) => ({
-    pageIndex: page.pageIndex,
-    pageLabel: page.pageLabel,
-    text: page.text,
-    normalizedText: normalizeLocatorText(page.text),
-  }));
-}
-
-function searchPageIndexEntries(
-  pageIndexEntries: PageTextIndexEntry[],
-  query: string,
-): {
-  matchedPageIndexes: number[];
-  totalMatches: number;
-  excerpt?: string;
-} {
-  const normalizedQuery = normalizeLocatorText(query);
-  if (!normalizedQuery) {
-    return {
-      matchedPageIndexes: [],
-      totalMatches: 0,
-    };
-  }
-
-  const matchedPageIndexes: number[] = [];
-  let totalMatches = 0;
-  let excerpt: string | undefined;
-  for (const page of pageIndexEntries) {
-    const matchIndexes = findAllMatchIndexes(
-      page.normalizedText,
-      normalizedQuery,
-    );
-    if (!matchIndexes.length) continue;
-    matchedPageIndexes.push(page.pageIndex);
-    totalMatches += matchIndexes.length;
-    if (!excerpt) {
-      excerpt = buildExcerpt(
-        page.normalizedText,
-        matchIndexes[0],
-        normalizedQuery.length,
-      );
-    }
-  }
-  return { matchedPageIndexes, totalMatches, excerpt };
-}
 
 function findAllMatchIndexes(haystack: string, needle: string): number[] {
   if (!haystack || !needle) return [];
@@ -1002,21 +950,6 @@ function locateQuoteInIndexedPageTexts(
     sourceMatchQuoteTokenCoverage: 1,
     reason: "The complete quote matched a single PDF page.",
   };
-}
-
-export function locateQuoteInPageTexts(
-  pages: LivePdfPageText[],
-  quoteText: string,
-  expectedPageIndex?: number | null,
-): LivePdfSelectionLocateResult {
-  return locateQuoteInIndexedPageTexts(
-    pages.map((page) => ({
-      page,
-      textIndex: buildQuoteTextIndex(page.text),
-    })),
-    quoteText,
-    expectedPageIndex,
-  );
 }
 
 function unwrapGeckoJsObject(value: any): any {
@@ -3189,11 +3122,6 @@ async function settleBeforeDeadline<T>(
   }
 }
 
-function parsePositiveInteger(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
-
 function getFindControllerMatchCount(findController: any): number {
   const candidates = [
     findController?.matchesCount?.total,
@@ -3201,7 +3129,7 @@ function getFindControllerMatchCount(findController: any): number {
     findController?._matchesCountTotal,
   ];
   for (const candidate of candidates) {
-    const parsed = parsePositiveInteger(candidate);
+    const parsed = positiveIntOrZero(candidate);
     if (parsed > 0) return parsed;
   }
   return 0;
@@ -3376,12 +3304,6 @@ function getArrayLikeLength(value: unknown): number {
     : 0;
 }
 
-function normalizeZeroBasedPageIndex(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return Math.floor(parsed);
-}
-
 function normalizeOneBasedPageNumber(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 1) return null;
@@ -3398,7 +3320,7 @@ function getFindControllerSelectedPageIndex(
     findController?._offset,
   ];
   for (const selected of selectedCandidates) {
-    const pageIndex = normalizeZeroBasedPageIndex(
+    const pageIndex = normalizePageIndex(
       selected?.pageIdx ?? selected?.pageIndex,
     );
     if (pageIndex !== null) return pageIndex;
@@ -3422,7 +3344,7 @@ function getFindControllerSelectedMatchIndex(
     findController?._offset,
   ];
   for (const selected of selectedCandidates) {
-    const matchIndex = normalizeZeroBasedPageIndex(
+    const matchIndex = normalizePageIndex(
       selected?.matchIdx ?? selected?.matchIndex,
     );
     if (matchIndex !== null) return matchIndex;
@@ -3858,9 +3780,6 @@ async function waitForFindControllerPageMatches(params: {
   }
 }
 
-export const waitForFindControllerPageMatchesForTests =
-  waitForFindControllerPageMatches;
-
 function summarizeFindControllerMatches(pageMatches: unknown[]): {
   matchedPageIndexes: number[];
   totalMatches: number;
@@ -4073,14 +3992,6 @@ function normalizePageNativeFindControllerLiteral(
       "$1",
     )
     .replace(/\r\n?|\n/g, " ");
-}
-
-export function normalizePageNativeFindControllerComparableText(
-  value: string,
-): string {
-  return normalizeLocatorText(
-    normalizePageNativeFindControllerLiteral(value, ""),
-  );
 }
 
 export function resolvePageNativeFindControllerQuery(

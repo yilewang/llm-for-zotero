@@ -25,7 +25,6 @@ import { noteChangeCardHeader } from "./noteChangeCard";
 export type {
   ActionCardTarget,
   ActionCardObject,
-  ActionCardEffect,
   ActionCardEntry,
 } from "../../../agent/types";
 

@@ -1,6 +1,7 @@
 import type { LocalDocumentResource } from "../../shared/types";
 import { getLocalParentPath, isUncPath } from "../../utils/localPath";
 import type { AgentEvent } from "../types";
+import { positiveIntOrZero } from "../../core/values";
 
 type SensitivePathEntry = {
   rawPath: string;
@@ -22,11 +23,6 @@ const sensitivePathsByConversation = new Map<
   Map<string, SensitivePathEntry>
 >();
 let nextSensitivePathLeaseId = 1;
-
-function normalizeConversationKey(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
-}
 
 function jsonEscapeStringContent(value: string): string {
   const encoded = JSON.stringify(value);
@@ -227,10 +223,6 @@ function normalizePathPrefixComparison(
 
 function encodeFileUrlPathSegments(segments: string[]): string {
   return segments.map((segment) => encodeURIComponent(segment)).join("/");
-}
-
-function shellEscapePosixPath(value: string): string {
-  return value.replace(/([\\\s'"`$!&;()[\]{}*?<>|#~])/gu, "\\$1");
 }
 
 function buildSensitivePathVariants(rawPath: string): SensitivePathVariant[] {
@@ -440,7 +432,7 @@ export function acquireLocalDocumentPathLease(
   conversationKeyValue: unknown,
   localDocuments?: readonly LocalDocumentResource[],
 ): LocalDocumentPathLease {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   const registry = conversationKey
     ? touchConversationRegistry(conversationKey)
     : new Map<string, SensitivePathEntry>();
@@ -515,45 +507,11 @@ export function acquireLocalDocumentPathLease(
   });
 }
 
-export function getRememberedLocalDocumentPathCountForTests(
-  conversationKeyValue: unknown,
-): number {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
-  return sensitivePathsByConversation.get(conversationKey)?.size || 0;
-}
-
-export function resetRememberedLocalDocumentPathsForTests(
-  conversationKeyValue: unknown,
-): void {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
-  if (conversationKey) sensitivePathsByConversation.delete(conversationKey);
-}
-
-/**
- * Registers exactly one sensitive directory without implicitly registering its
- * parent. Capability roots commonly live below shared system directories, and
- * redacting the shared parent would corrupt unrelated model output.
- */
-export function rememberLocalDocumentDirectory(
-  conversationKeyValue: unknown,
-  absolutePath: string,
-  sourceKey = "selected",
-): void {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
-  if (!conversationKey || !absolutePath) return;
-  rememberSensitivePath({
-    conversationKey,
-    rawPath: absolutePath,
-    sourceKey,
-    kind: "directory",
-  });
-}
-
 export function rememberLocalDocumentPaths(
   conversationKeyValue: unknown,
   localDocuments: readonly LocalDocumentResource[] | undefined,
 ): void {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   if (!conversationKey || !localDocuments?.length) return;
   for (const document of localDocuments) {
     const rawPath =
@@ -589,7 +547,7 @@ export function rememberLocalDocumentPaths(
 export function clearRememberedLocalDocumentPaths(
   conversationKeyValue: unknown,
 ): void {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   if (!conversationKey) return;
   const registry = sensitivePathsByConversation.get(conversationKey);
   if (!registry) return;
@@ -601,19 +559,10 @@ export function clearRememberedLocalDocumentPaths(
   if (registry.size === 0) sensitivePathsByConversation.delete(conversationKey);
 }
 
-export function hasRememberedLocalDocumentPaths(
-  conversationKeyValue: unknown,
-): boolean {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
-  return Boolean(
-    conversationKey && sensitivePathsByConversation.get(conversationKey)?.size,
-  );
-}
-
 function getSensitivePathVariants(
   conversationKeyValue: unknown,
 ): Array<SensitivePathVariant & { replacement: string }> {
-  const conversationKey = normalizeConversationKey(conversationKeyValue);
+  const conversationKey = positiveIntOrZero(conversationKeyValue);
   if (!conversationKey) return [];
   const registry = sensitivePathsByConversation.get(conversationKey);
   if (!registry) return [];
@@ -719,16 +668,6 @@ function redactValueWithTextRedactor<T>(
   return redact(value) as T;
 }
 
-export function redactRememberedLocalDocumentPathsFromText(
-  conversationKeyValue: unknown,
-  value: string,
-): string {
-  return redactTextWithVariants(
-    value,
-    getSensitivePathVariants(conversationKeyValue),
-  );
-}
-
 /**
  * Redacts complete paths and fails closed when a terminal string ends in only
  * a prefix of a protected path. Providers can stop a stream at any byte, so a
@@ -744,21 +683,6 @@ export function redactRememberedLocalDocumentPathsFromTerminalText(
   );
 }
 
-export function redactAllRememberedLocalDocumentPathsFromText(
-  value: string,
-): string {
-  let redacted = value;
-  for (const conversationKey of Array.from(
-    sensitivePathsByConversation.keys(),
-  )) {
-    redacted = redactRememberedLocalDocumentPathsFromText(
-      conversationKey,
-      redacted,
-    );
-  }
-  return redacted;
-}
-
 export function redactAllRememberedLocalDocumentPathsFromTerminalText(
   value: string,
 ): string {
@@ -772,41 +696,6 @@ export function redactAllRememberedLocalDocumentPathsFromTerminalText(
     );
   }
   return redacted;
-}
-
-export function redactRememberedLocalDocumentPaths<T>(
-  conversationKeyValue: unknown,
-  value: T,
-): T {
-  const seen = new WeakMap<object, unknown>();
-  const redact = (current: unknown): unknown => {
-    if (typeof current === "string") {
-      return redactRememberedLocalDocumentPathsFromText(
-        conversationKeyValue,
-        current,
-      );
-    }
-    if (!current || typeof current !== "object") return current;
-    const cached = seen.get(current);
-    if (cached) return cached;
-    if (Array.isArray(current)) {
-      const clone: unknown[] = [];
-      seen.set(current, clone);
-      for (const entry of current) clone.push(redact(entry));
-      return clone;
-    }
-    const clone: Record<string, unknown> = {};
-    seen.set(current, clone);
-    for (const [key, child] of Object.entries(
-      current as Record<string, unknown>,
-    )) {
-      clone[
-        redactRememberedLocalDocumentPathsFromText(conversationKeyValue, key)
-      ] = redact(child);
-    }
-    return clone;
-  };
-  return redact(value) as T;
 }
 
 export function redactRememberedLocalDocumentPathsFromTerminalValue<T>(
@@ -845,16 +734,6 @@ export function redactRememberedLocalDocumentPathsFromTerminalValue<T>(
     return clone;
   };
   return redact(value) as T;
-}
-
-export function redactAllRememberedLocalDocumentPaths<T>(value: T): T {
-  let redacted = value;
-  for (const conversationKey of Array.from(
-    sensitivePathsByConversation.keys(),
-  )) {
-    redacted = redactRememberedLocalDocumentPaths(conversationKey, redacted);
-  }
-  return redacted;
 }
 
 export function redactAllRememberedLocalDocumentPathsFromTerminalValue<T>(
@@ -1118,14 +997,4 @@ export class AgentEventLocalDocumentStreamRedactor {
     this.pendingEventFactories.clear();
     return events;
   }
-}
-
-export function redactAgentEventLocalDocumentPaths(
-  conversationKeyValue: unknown,
-  event: AgentEvent,
-): AgentEvent {
-  return redactRememberedLocalDocumentPathsFromTerminalValue(
-    conversationKeyValue,
-    event,
-  );
 }

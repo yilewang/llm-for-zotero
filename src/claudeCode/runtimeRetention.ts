@@ -284,41 +284,6 @@ export async function retainClaudeRuntimeForBody(
   await ensureRemoteRetention(entry, body).catch(() => {});
 }
 
-/**
- * Clear must release every hot runtime retained for this immutable
- * conversation immediately.  The normal body-unmount grace period is not
- * safe here because Clear is an explicit user deletion boundary.
- */
-export async function releaseClaudeRuntimeForConversation(
-  conversationKey: number,
-): Promise<void> {
-  const entries = [...retainedThreads.entries()].filter(
-    ([, entry]) => entry.target.conversationKey === conversationKey,
-  );
-  for (const [threadKey, entry] of entries) {
-    if (entry.releaseTimer) clearTimeout(entry.releaseTimer);
-    retainedThreads.delete(threadKey);
-    for (const body of entry.bodies) {
-      retainedThreadKeyByBody.delete(body);
-    }
-    entry.bodies.clear();
-    try {
-      await entry.retainInFlight;
-    } catch {
-      // A failed retain still must not prevent the release attempt.
-    }
-    if (!entry.retainedRemotely) continue;
-    await updateClaudeRuntimeRetention(await getCoreRuntime(), {
-      conversationKey,
-      scope: entry.target.scope,
-      mountId: entry.mountId,
-      retain: false,
-      probeId: entry.probeId,
-    }).catch(() => {});
-    entry.retainedRemotely = false;
-  }
-}
-
 export async function releaseClaudeRuntimeForBody(
   body: Element,
 ): Promise<void> {

@@ -39,6 +39,7 @@ import {
   previewSurfaceFor,
 } from "./previewTheme";
 import { isAbsoluteLocalPath, toFileUrl } from "./localPath";
+import { collapseWhitespace, escapeRegExp } from "../core/values";
 
 // =============================================================================
 // Types
@@ -452,14 +453,9 @@ function wrapCopyable(
 function countOccurrences(text: string, pattern: string | RegExp): number {
   const regex =
     typeof pattern === "string"
-      ? new RegExp(escapeRegex(pattern), "g")
+      ? new RegExp(escapeRegExp(pattern), "g")
       : pattern;
   return (text.match(regex) || []).length;
-}
-
-/** Escape special regex characters */
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeFenceLanguage(raw: string | undefined): string {
@@ -599,26 +595,7 @@ function renderCodeHtml(code: string, lang: string): string {
   return html;
 }
 
-export function __getCodeHighlightCacheStatsForTest(): {
-  size: number;
-  hits: number;
-  misses: number;
-} {
-  return {
-    size: codeHighlightCache.size,
-    hits: codeHighlightCacheHits,
-    misses: codeHighlightCacheMisses,
-  };
-}
-
-export function __resetCodeHighlightCacheForTest(): void {
-  codeHighlightCache.clear();
-  codeHighlightCacheBytes = 0;
-  codeHighlightCacheHits = 0;
-  codeHighlightCacheMisses = 0;
-}
-
-function trimSvgLeadingMetadata(svg: string): string {
+export function trimSvgLeadingMetadata(svg: string): string {
   let result = svg.trim().replace(/^\uFEFF/, "");
   let previous = "";
   while (previous !== result) {
@@ -648,7 +625,7 @@ function hasUnsafeSvgUrl(svg: string): boolean {
   return false;
 }
 
-function encodeBase64Utf8(value: string): string {
+export function encodeBase64Utf8(value: string): string {
   const bytes = new TextEncoder().encode(value);
   let binary = "";
   const chunkSize = 0x8000;
@@ -691,15 +668,6 @@ export function buildSafeSvgMarkup(
 /** An already safe drawing as an image URI. */
 export function svgMarkupToDataUri(svg: string): string {
   return `data:image/svg+xml;base64,${encodeBase64Utf8(svg)}`;
-}
-
-export function buildSafeSvgDataUri(
-  code: string,
-  maxChars = SVG_PREVIEW_MAX_CHARS,
-): string | null {
-  const svg = buildSafeSvgMarkup(code, maxChars);
-  if (!svg) return null;
-  return svgMarkupToDataUri(svg);
 }
 
 function renderMermaidPreview(code: string): string {
@@ -1266,7 +1234,6 @@ function hasBalancedInlineDelimiter(text: string, delimiter: string): boolean {
 /** Split text into independent blocks for isolated rendering */
 function splitIntoBlocks(text: string): TextBlock[] {
   const blocks: TextBlock[] = [];
-  const remaining = text;
 
   // First, extract fenced code blocks (they're atomic)
   const codeBlockRegex = /```[ \t]*([^\s`]*)[^\n`]*\n?([\s\S]*?)```/g;
@@ -1546,10 +1513,6 @@ function hasExpectedTableCells(row: string, expectedCells: number): boolean {
   return readTableCells(row).length >= expectedCells;
 }
 
-function normalizeTableLine(line: string): string {
-  return line.trim().replace(/\s+/g, " ");
-}
-
 function collectTableBlock(
   lines: string[],
   startIndex: number,
@@ -1557,10 +1520,10 @@ function collectTableBlock(
   const dividerIndex = findTableDividerIndex(lines, startIndex);
   if (dividerIndex < 0) return null;
 
-  const header = normalizeTableLine(
+  const header = collapseWhitespace(
     lines.slice(startIndex, dividerIndex).join(" "),
   );
-  const divider = normalizeTableLine(lines[dividerIndex] || "");
+  const divider = collapseWhitespace(lines[dividerIndex] || "");
   const expectedCells = Math.max(
     readTableCells(header).length,
     readTableCells(divider).length,
@@ -1572,7 +1535,7 @@ function collectTableBlock(
   let i = dividerIndex + 1;
 
   while (i < lines.length) {
-    const trimmed = normalizeTableLine(lines[i] || "");
+    const trimmed = collapseWhitespace(lines[i] || "");
     if (!trimmed) break;
     if (
       !currentRow &&
@@ -2697,11 +2660,6 @@ function reportMarkedMarkdownFailure(err: unknown): void {
   );
 }
 
-export function __setMarkdownParserDisabledForTest(disabled: boolean): void {
-  markedMarkdownDisabled = disabled;
-  markedMarkdownFailureReported = false;
-}
-
 // =============================================================================
 // Main Export
 // =============================================================================
@@ -2809,25 +2767,6 @@ export function renderMarkdownMemoized(text: string): string {
     renderedMarkdownCacheChars -= oldestKey.length + oldest.length;
   }
   return html;
-}
-
-export function __getRenderedMarkdownCacheStatsForTest(): {
-  size: number;
-  hits: number;
-  misses: number;
-} {
-  return {
-    size: renderedMarkdownCache.size,
-    hits: renderedMarkdownCacheHits,
-    misses: renderedMarkdownCacheMisses,
-  };
-}
-
-export function __resetRenderedMarkdownCacheForTest(): void {
-  renderedMarkdownCache.clear();
-  renderedMarkdownCacheChars = 0;
-  renderedMarkdownCacheHits = 0;
-  renderedMarkdownCacheMisses = 0;
 }
 
 /**

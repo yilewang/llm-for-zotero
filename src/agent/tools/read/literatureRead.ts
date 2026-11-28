@@ -29,6 +29,7 @@ import {
   outsidePaperId,
   type OutsidePaperHolder,
 } from "../../context/outsidePaperRecords";
+import { recordOrEmpty } from "../../../core/values";
 
 /**
  * literature_read: reads one outside paper (found by literature_search or
@@ -439,12 +440,6 @@ export function buildLiteratureReadResult(
 
 // --- presentation ------------------------------------------------------------
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function argIdentifier(args: unknown): LiteratureReadIdentifier | null {
   const validated = validateLiteratureReadInput(args);
   return validated.ok ? validated.value.identifier : null;
@@ -467,15 +462,15 @@ function buildTraceDetails(
 ): AgentTraceDetail[] {
   const details: AgentTraceDetail[] = [];
   const identifier = argIdentifier(args);
-  const input = asRecord(args);
+  const input = recordOrEmpty(args);
   if (typeof input.query === "string" && input.query.trim()) {
     details.push({ label: "Query", value: input.query.trim() });
   }
   if (input.section !== undefined) {
     details.push({ label: "Section", value: String(input.section) });
   }
-  const result = asRecord(content);
-  const paper = asRecord(result.paper);
+  const result = recordOrEmpty(content);
+  const paper = recordOrEmpty(result.paper);
   const title = typeof paper.title === "string" ? paper.title : "";
   if (identifier) {
     const href =
@@ -496,9 +491,9 @@ function buildTraceDetails(
 }
 
 function successSummary(content: unknown): string {
-  const result = asRecord(content);
+  const result = recordOrEmpty(content);
   const label = String(result.sourceLabel || "the paper");
-  const fullText = asRecord(result.fullText);
+  const fullText = recordOrEmpty(result.fullText);
   if (fullText.status === "unavailable") {
     return `Could not read ${label}`;
   }
@@ -506,7 +501,7 @@ function successSummary(content: unknown): string {
     const count = result.passages.length;
     return `Read ${count} passage${count === 1 ? "" : "s"} from ${label}`;
   }
-  const section = asRecord(result.section);
+  const section = recordOrEmpty(result.section);
   if (typeof result.text === "string" && section.number) {
     return `Read section ${String(section.number)} of ${label}`;
   }

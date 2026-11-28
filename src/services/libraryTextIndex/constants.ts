@@ -35,7 +35,6 @@ export const MAX_UNINDEXED_FALLBACK_PAPERS = 5;
 export const INDEX_COVERAGE_SKIP_PROBES_RATIO = 0.9;
 export const INDEX_PLANNER_SOFT_DEADLINE_MS = 4000;
 export const MAX_QUERY_TERMS = 32;
-export const VECTOR_TOP_HITS = 200;
 export const EMBEDDING_CONCURRENCY = 3;
 export const INDEX_BUDGET_MB_DEFAULT = 500;
 /** The smallest size limit the settings pane accepts and the scheduler honours. */

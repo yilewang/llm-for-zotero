@@ -555,47 +555,6 @@ function resolveAlignedSourceEnd(params: {
   return locatorMatch ? lastTokenEnd + (locatorMatch[0]?.length || 0) : null;
 }
 
-export function findCanonicalQuoteSourceSpan(
-  index: QuoteTextIndex,
-  queryText: string,
-): QuoteTextSourceSpan | null {
-  const view = quoteTextLayoutViews.get(index);
-  if (view) {
-    const span = findCanonicalQuoteSourceSpan(view.index, queryText);
-    if (!span) return null;
-    const mapped = mapLayoutSpan(view, span.sourceStart, span.sourceEnd);
-    return {
-      ...mapped,
-      text: index.sourceText.slice(mapped.sourceStart, mapped.sourceEnd),
-    };
-  }
-  const canonicalQuery = normalizeQuoteTextCanonical(queryText);
-  if (!index.canonicalText || !canonicalQuery) return null;
-  const canonicalStart = findCanonicalTextMatchStart(
-    index.canonicalText,
-    canonicalQuery,
-  );
-  if (canonicalStart < 0) return null;
-  const canonicalEnd = canonicalStart + canonicalQuery.length;
-  const firstToken = index.tokens.find(
-    (token) => token.canonicalEnd > canonicalStart,
-  );
-  const lastToken = [...index.tokens]
-    .reverse()
-    .find((token) => token.canonicalStart < canonicalEnd);
-  if (!firstToken || !lastToken) return null;
-  const sourceStart = expandSourceSpanStart(
-    index.sourceText,
-    firstToken.sourceStart,
-  );
-  const sourceEnd = expandSourceSpanEnd(index.sourceText, lastToken.sourceEnd);
-  return {
-    sourceStart,
-    sourceEnd,
-    text: index.sourceText.slice(sourceStart, sourceEnd),
-  };
-}
-
 function isLikelyLayoutNumberToken(
   index: QuoteTextIndex,
   tokenIndex: number,

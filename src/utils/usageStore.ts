@@ -22,6 +22,8 @@ import {
   type ConversationKeyKind,
 } from "../shared/conversationKeySpace";
 import { getRegisteredConversationScope } from "../shared/conversationRegistry";
+import { positiveIntOrZero, trimmedStringOrNull } from "../core/values";
+import { getZoteroDb, type ZoteroDb } from "../core/zoteroDb";
 
 export const USAGE_EVENTS_TABLE = "llm_for_zotero_usage_events";
 
@@ -105,10 +107,6 @@ export type StoredUsageEvent = {
   cacheWriteTokens: number;
   countsAsQuestion: boolean;
   tokenSource: UsageTokenSource;
-};
-
-type UsageDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
 };
 
 const USAGE_COLUMNS: Array<{ name: string; definition: string }> = [
@@ -211,30 +209,13 @@ const USAGE_INDEXES: Array<{ name: string; columns: string }> = [
 
 let initPromise: Promise<void> | null = null;
 
-function getUsageDb(): UsageDb | null {
-  const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
-    .Zotero?.DB;
-  return typeof db?.queryAsync === "function" ? (db as UsageDb) : null;
-}
-
 function logUsageStoreWarning(message: string, error?: unknown): void {
   appLogger.warn(`LLM: ${message}`, error);
 }
 
-function normalizePositiveInt(value: unknown): number | null {
+export function normalizePositiveInt(value: unknown): number | null {
   const parsed = Math.floor(Number(value));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
-function normalizeTokenCount(value: unknown): number {
-  const parsed = Math.floor(Number(value));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-}
-
-function normalizeText(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
 }
 
 /**
@@ -262,7 +243,7 @@ export function resolveUsageModeForConversationKey(
   return kind === "paper" ? "paper" : "library";
 }
 
-async function createUsageSchema(db: UsageDb): Promise<void> {
+async function createUsageSchema(db: ZoteroDb): Promise<void> {
   await db.queryAsync(
     `CREATE TABLE IF NOT EXISTS ${USAGE_EVENTS_TABLE} (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -325,7 +306,7 @@ async function createUsageSchema(db: UsageDb): Promise<void> {
  */
 export async function initUsageStore(): Promise<void> {
   if (initPromise) return initPromise;
-  const db = getUsageDb();
+  const db = getZoteroDb();
   if (!db) return;
   initPromise = createUsageSchema(db);
   try {
@@ -345,7 +326,7 @@ export async function recordUsageEvent(
   input: UsageEventInput,
 ): Promise<boolean> {
   try {
-    const db = getUsageDb();
+    const db = getZoteroDb();
     if (!db) return false;
     const conversationKey = normalizePositiveInt(input.conversationKey);
     if (!conversationKey) return false;
@@ -381,17 +362,17 @@ export async function recordUsageEvent(
         toLocalDateKey(timestamp),
         mode,
         conversationKey,
-        normalizeText(input.conversationInstanceID),
+        trimmedStringOrNull(input.conversationInstanceID),
         normalizePositiveInt(input.libraryID),
         normalizePositiveInt(input.paperItemID),
-        normalizeText(input.model),
-        normalizeText(input.provider),
-        normalizeText(input.runtime),
-        normalizeTokenCount(input.promptTokens),
-        normalizeTokenCount(input.completionTokens),
-        normalizeTokenCount(input.totalTokens),
-        normalizeTokenCount(input.cacheReadTokens),
-        normalizeTokenCount(input.cacheWriteTokens),
+        trimmedStringOrNull(input.model),
+        trimmedStringOrNull(input.provider),
+        trimmedStringOrNull(input.runtime),
+        positiveIntOrZero(input.promptTokens),
+        positiveIntOrZero(input.completionTokens),
+        positiveIntOrZero(input.totalTokens),
+        positiveIntOrZero(input.cacheReadTokens),
+        positiveIntOrZero(input.cacheWriteTokens),
         input.countsAsQuestion === false ? 0 : 1,
         normalizeTokenSource(input.tokenSource),
       ],
@@ -425,7 +406,7 @@ export async function resolveUsageScope(conversationKey: number): Promise<{
     if (!scope) return fallback;
     return {
       mode: scope.kind === "paper" ? "paper" : fallback.mode,
-      conversationInstanceID: normalizeText(scope.instanceID),
+      conversationInstanceID: trimmedStringOrNull(scope.instanceID),
       libraryID: normalizePositiveInt(scope.libraryID),
       paperItemID: normalizePositiveInt(scope.paperItemID),
     };
@@ -446,7 +427,7 @@ function isMissingUsageTableError(error: unknown): boolean {
 export async function deleteUsageEventsForConversationInTransaction(
   conversationKey: number,
 ): Promise<void> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   const key = normalizePositiveInt(conversationKey);
   if (!db || !key) return;
   try {
@@ -481,7 +462,7 @@ export async function deleteUsageEventsForConversation(
 export async function loadUsageEventsForConversation(
   conversationKey: number,
 ): Promise<StoredUsageEvent[]> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   const key = normalizePositiveInt(conversationKey);
   if (!db || !key) return [];
   await initUsageStore();
@@ -515,17 +496,17 @@ export async function loadUsageEventsForConversation(
     localDate: String(row.localDate),
     mode: row.mode === "paper" ? "paper" : "library",
     conversationKey: Number(row.conversationKey),
-    conversationInstanceID: normalizeText(row.conversationInstanceID),
+    conversationInstanceID: trimmedStringOrNull(row.conversationInstanceID),
     libraryID: normalizePositiveInt(row.libraryID),
     paperItemID: normalizePositiveInt(row.paperItemID),
-    model: normalizeText(row.model),
-    provider: normalizeText(row.provider),
-    runtime: normalizeText(row.runtime),
-    promptTokens: normalizeTokenCount(row.promptTokens),
-    completionTokens: normalizeTokenCount(row.completionTokens),
-    totalTokens: normalizeTokenCount(row.totalTokens),
-    cacheReadTokens: normalizeTokenCount(row.cacheReadTokens),
-    cacheWriteTokens: normalizeTokenCount(row.cacheWriteTokens),
+    model: trimmedStringOrNull(row.model),
+    provider: trimmedStringOrNull(row.provider),
+    runtime: trimmedStringOrNull(row.runtime),
+    promptTokens: positiveIntOrZero(row.promptTokens),
+    completionTokens: positiveIntOrZero(row.completionTokens),
+    totalTokens: positiveIntOrZero(row.totalTokens),
+    cacheReadTokens: positiveIntOrZero(row.cacheReadTokens),
+    cacheWriteTokens: positiveIntOrZero(row.cacheWriteTokens),
     countsAsQuestion: Number(row.countsAsQuestion) !== 0,
     tokenSource: normalizeTokenSource(row.tokenSource),
   }));
@@ -542,7 +523,7 @@ export async function loadUsageEventsForConversation(
  * that was never created has nothing reconstructed in it.
  */
 export async function countHistoryEstimateUsageEvents(): Promise<number> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   if (!db) return 0;
   try {
     const rows = (await db.queryAsync(
@@ -567,7 +548,7 @@ export async function countHistoryEstimateUsageEvents(): Promise<number> {
  * not a failure.
  */
 export async function clearAllUsageEvents(): Promise<boolean> {
-  const db = getUsageDb();
+  const db = getZoteroDb();
   if (!db) return false;
   try {
     await db.queryAsync(`DELETE FROM ${USAGE_EVENTS_TABLE}`);
@@ -577,8 +558,4 @@ export async function clearAllUsageEvents(): Promise<boolean> {
     logUsageStoreWarning("Failed to clear the usage ledger", error);
     return false;
   }
-}
-
-export function resetUsageStoreForTests(): void {
-  initPromise = null;
 }

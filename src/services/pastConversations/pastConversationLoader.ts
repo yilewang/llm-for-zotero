@@ -36,6 +36,7 @@ import {
   type PastConversationCandidate,
   type PastConversationSearchFilters,
 } from "./pastConversationSearch";
+import { collapseWhitespace } from "../../core/values";
 
 /** Most stored messages read from one past chat (the newest ones). */
 export const PAST_CHAT_LOAD_MESSAGE_LIMIT = 400;
@@ -135,10 +136,6 @@ export const defaultPastConversationSource: PastConversationSource = {
   },
 };
 
-function singleLine(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 function isoDate(timestamp: number): string {
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
   try {
@@ -188,7 +185,7 @@ export async function loadPastConversation(
     status,
     ref,
     id,
-    title: singleLine(title) || `Conversation ${ref.conversationKey}`,
+    title: collapseWhitespace(title) || `Conversation ${ref.conversationKey}`,
   });
   const libraryID = Math.floor(Number(options.libraryID));
   if (!(libraryID > 0) || ref.libraryID !== libraryID) {
@@ -200,8 +197,8 @@ export async function loadPastConversation(
     const entry = checked;
     if (entry.libraryID !== libraryID) return unavailable("other_library");
     const title =
-      singleLine(entry.title || "") ||
-      singleLine(ref.title) ||
+      collapseWhitespace(entry.title || "") ||
+      collapseWhitespace(ref.title) ||
       `Conversation ${ref.conversationKey}`;
     const stored = await source.loadMessages({
       system: ref.system,
@@ -213,7 +210,7 @@ export async function loadPastConversation(
     const paperLabel =
       entry.kind === "paper"
         ? (paperItemID && source.resolvePaperTitle
-            ? singleLine(source.resolvePaperTitle(paperItemID) || "")
+            ? collapseWhitespace(source.resolvePaperTitle(paperItemID) || "")
             : "") || "Paper chat"
         : "Library chat";
     return {
@@ -438,8 +435,4 @@ export async function renderAgentPastChatMessageText(params: {
         renderParams,
       )
     : buildPastChatMessageText(renderParams);
-}
-
-export function clearPastChatRenderMemoForTests(): void {
-  renderMemo.clear();
 }

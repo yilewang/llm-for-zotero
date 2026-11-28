@@ -1,5 +1,4 @@
 import type {
-  AgentConfirmationResolution,
   AgentInheritedApproval,
   AgentModelMessage,
   AgentPendingAction,

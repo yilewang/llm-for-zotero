@@ -516,9 +516,6 @@ export function finalizeAssistantMessageQuoteCitations(
   );
 }
 
-export const finalizeAssistantMessageQuoteCitationsForTests =
-  finalizeAssistantMessageQuoteCitations;
-
 export function validateLoadedConversationQuoteMessages(
   messages: Message[],
   conversationKey: number,

@@ -46,6 +46,7 @@ import {
   removeControlRoots,
   validateRegistry,
   validateReasoning,
+  cloneValue,
 } from "./registry";
 import {
   classifyModelDiscoveryHttpError,
@@ -64,13 +65,13 @@ import type {
   ModelCapabilityRefreshOptions,
   ModelCatalogIdentity,
   ModelCatalogStatus,
-  ModelControlPatch,
   ModelReasoningCapability,
   ModelReasoningSelection,
   ModelSamplingCapability,
   RegistryModelEntry,
   ResolvedModelCapabilities,
 } from "./types";
+import { lowerTrimmedString, trimmedString } from "../core/values";
 
 const REGISTRY_REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const PROVIDER_CATALOG_TTL_MS = 60 * 1000;
@@ -119,12 +120,8 @@ function now(): number {
   return runtime.now?.() || Date.now();
 }
 
-function normalize(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
 function normalizeApiBase(value: unknown): string {
-  return normalize(value).replace(/\/+$/, "");
+  return lowerTrimmedString(value).replace(/\/+$/, "");
 }
 
 function getFetch(): typeof fetch | undefined {
@@ -142,10 +139,6 @@ function getFetch(): typeof fetch | undefined {
   return toolkitFetch;
 }
 
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
 function notify(): void {
   for (const listener of capabilityListeners) {
     try {
@@ -159,7 +152,7 @@ function notify(): void {
 function providerFromIdentity(
   identity: ModelCapabilityIdentity,
 ): ModelCapabilityProvider {
-  const explicit = normalize(identity.provider);
+  const explicit = lowerTrimmedString(identity.provider);
   if (
     explicit &&
     explicit !== "customized" &&
@@ -169,16 +162,16 @@ function providerFromIdentity(
     return explicit as ModelCapabilityProvider;
   }
   if (
-    normalize(identity.authMode) === "codex_auth" &&
-    normalize(identity.protocol) === "codex_responses"
+    lowerTrimmedString(identity.authMode) === "codex_auth" &&
+    lowerTrimmedString(identity.protocol) === "codex_responses"
   ) {
     return "openai";
   }
   return (
-    inferProviderFromApiBase(normalize(identity.apiBase)) ??
+    inferProviderFromApiBase(lowerTrimmedString(identity.apiBase)) ??
     // Relays and unrecognized hosts still serve recognizable models; the
     // model name keeps its provider family (and thus its reasoning profile).
-    inferProviderFromModelName(normalize(identity.model)) ??
+    inferProviderFromModelName(lowerTrimmedString(identity.model)) ??
     // Last resort only, so a recognized family is never shadowed by its host.
     // Must mirror detectReasoningProvider's ordering: the two derive the same
     // provider for the same model, and a mismatch would key the live catalog
@@ -285,18 +278,14 @@ function legacyReasoningProfiles(
   if (provider === "mimo") getMimoReasoningProfileForModel(model);
 }
 
-function normalizeApiKey(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function buildCatalogKey(identity: ModelCatalogIdentity): string {
   return [
     catalogProviderFromIdentity(identity),
     normalizeApiBase(identity.apiBase),
-    normalize(identity.protocol),
-    normalize(identity.authMode),
-    normalize(identity.scope),
-    normalizeApiKey(identity.apiKey),
+    lowerTrimmedString(identity.protocol),
+    lowerTrimmedString(identity.authMode),
+    lowerTrimmedString(identity.scope),
+    trimmedString(identity.apiKey),
   ].join("\u0000");
 }
 
@@ -304,8 +293,8 @@ function buildCatalogBaseKey(identity: ModelCapabilityIdentity): string {
   return [
     catalogProviderFromIdentity(identity),
     normalizeApiBase(identity.apiBase),
-    normalize(identity.protocol),
-    normalize(identity.authMode),
+    lowerTrimmedString(identity.protocol),
+    lowerTrimmedString(identity.authMode),
   ].join("\u0000");
 }
 
@@ -314,7 +303,7 @@ function isSameCatalogConfiguration(
   identity: ModelCatalogIdentity,
 ): boolean {
   const parts = existingKey.split("\u0000");
-  const reqScope = normalize(identity.scope);
+  const reqScope = lowerTrimmedString(identity.scope);
   const existingScope = parts[4] || "";
   if (existingScope !== reqScope) {
     return false;
@@ -327,8 +316,8 @@ function isSameCatalogConfiguration(
   const endpointTail = normalizedBase
     ? [
         normalizedBase,
-        normalize(identity.protocol),
-        normalize(identity.authMode),
+        lowerTrimmedString(identity.protocol),
+        lowerTrimmedString(identity.authMode),
       ].join("\u0000")
     : "";
   const existingBaseKey = parts.slice(0, 4).join("\u0000");
@@ -388,11 +377,11 @@ function getCatalogSnapshot(
 ): CatalogSnapshot | undefined {
   const exact = catalogSnapshots.get(buildCatalogKey(identity));
   if (exact) return exact;
-  const reqProtocol = normalize(identity.protocol);
-  const reqAuthMode = normalize(identity.authMode);
-  const reqScope = normalize(identity.scope);
+  const reqProtocol = lowerTrimmedString(identity.protocol);
+  const reqAuthMode = lowerTrimmedString(identity.authMode);
+  const reqScope = lowerTrimmedString(identity.scope);
   const hasExplicitApiKey = identity.apiKey !== undefined;
-  const reqApiKey = normalizeApiKey(identity.apiKey);
+  const reqApiKey = trimmedString(identity.apiKey);
   const matchesSnapshotKey = (snapshotKey: string): boolean => {
     const parts = snapshotKey.split("\u0000");
     const snapshotProtocol = parts[2] || "";
@@ -522,7 +511,7 @@ function mergeReasoning(
     return { reasoning: { kind: "none", options: [] }, source: "live" };
   }
   if (live?.reasoning && protocol !== "ollama_native") {
-    return { reasoning: clone(live.reasoning), source: "live" };
+    return { reasoning: cloneValue(live.reasoning), source: "live" };
   }
   // A recognized family may keep its level set, but never its request body,
   // when the model is served over Ollama's native protocol: `qwen3` there
@@ -546,7 +535,7 @@ function mergeReasoning(
   }
   if (entry?.reasoning) {
     return {
-      reasoning: clone(entry.reasoning),
+      reasoning: cloneValue(entry.reasoning),
       source: activeRegistrySource,
     };
   }
@@ -629,7 +618,9 @@ function canRunCapabilityPreflight(identity: ModelCatalogIdentity): boolean {
     return false;
   }
   if (!identity.model.trim() || !identity.apiBase?.trim()) return false;
-  return !CATALOG_EXCLUDED_AUTH_MODES.has(normalize(identity.authMode));
+  return !CATALOG_EXCLUDED_AUTH_MODES.has(
+    lowerTrimmedString(identity.authMode),
+  );
 }
 
 /**
@@ -721,7 +712,7 @@ export function getModelCapabilities(
     limits: mergedLimits.limits,
     reasoning: mergedReasoning.reasoning,
     sampling: entry?.sampling
-      ? { ...defaultSampling(), ...clone(entry.sampling) }
+      ? { ...defaultSampling(), ...cloneValue(entry.sampling) }
       : defaultSampling(),
     inputs: {
       ...defaultInputs(provider, model),
@@ -782,7 +773,7 @@ function applyProfileOverride(
     provenance.limits = "user";
   }
   if (override.reasoning) {
-    next.reasoning = clone(override.reasoning);
+    next.reasoning = cloneValue(override.reasoning);
     provenance.reasoning = "user";
   }
   next.provenance = provenance;
@@ -813,7 +804,7 @@ export function compileReasoningControls(
         capabilities.provider === "openai",
     };
   }
-  const requested = normalize(option.id);
+  const requested = lowerTrimmedString(option.id);
   const disabledOption =
     requested === "none" || requested === "off" || requested === "disabled";
   // A disabled selection may only emit controls its own option authored.
@@ -844,11 +835,12 @@ export function resolveModelReasoningSelection(
   capabilities: ResolvedModelCapabilities,
   selection?: { level?: string; effort?: string },
 ): ModelReasoningSelection {
-  const requested = normalize(selection?.effort || selection?.level);
+  const requested = lowerTrimmedString(selection?.effort || selection?.level);
   if (!requested || requested === "auto") return { kind: "auto" };
   const exact = capabilities.reasoning.options.find(
     (candidate) =>
-      candidate.enabled !== false && normalize(candidate.id) === requested,
+      candidate.enabled !== false &&
+      lowerTrimmedString(candidate.id) === requested,
   );
   const option =
     exact ||
@@ -920,22 +912,6 @@ export function getModelReasoningChoices(
   ];
 }
 
-export function getRuntimeReasoningOptions(
-  identity: ModelCapabilityIdentity,
-): Array<{ level: string; label: string; enabled: boolean }> {
-  const reasoning = getModelCapabilities(identity).reasoning;
-  const options = [...reasoning.options].sort((left, right) => {
-    if (left.id === reasoning.defaultOptionId) return -1;
-    if (right.id === reasoning.defaultOptionId) return 1;
-    return 0;
-  });
-  return options.map((option) => ({
-    level: option.id,
-    label: option.label,
-    enabled: option.enabled !== false,
-  }));
-}
-
 export function getModelOutputTokenLimit(
   model: string,
   identity?: Omit<ModelCapabilityIdentity, "model">,
@@ -957,7 +933,7 @@ export function publishModelCapabilityCatalog(
   models: DiscoveredModel[],
 ): void {
   catalogSnapshots.set(buildCatalogKey(identity), {
-    models: clone(models),
+    models: cloneValue(models),
     fetchedAt: now(),
     stale: false,
   });
@@ -1060,7 +1036,7 @@ function getAnthropicCompatCatalogEndpoint(
   const override =
     ANTHROPIC_COMPAT_CATALOG_ENDPOINTS[providerFromIdentity(identity)];
   if (!override) return null;
-  const base = normalize(identity.apiBase);
+  const base = lowerTrimmedString(identity.apiBase);
   return base.includes("anthropic") ? override : null;
 }
 
@@ -1205,7 +1181,7 @@ function parseDiscoveredModels(
         ? { reasoningSupported }
         : {}),
       ...(validateReasoning(row.reasoning)
-        ? { reasoning: clone(row.reasoning) }
+        ? { reasoning: cloneValue(row.reasoning) }
         : {}),
       source: "live",
     });
@@ -1302,7 +1278,7 @@ async function fetchModelCatalog(
     }
   }
   const discoveryAdapter = getModelDiscoveryAdapter(identity);
-  if (discoveryAdapter && !normalizeApiKey(identity.apiKey)) {
+  if (discoveryAdapter && !trimmedString(identity.apiKey)) {
     const snapshot: CatalogSnapshot = {
       models: cached?.models || [],
       fetchedAt: cached?.fetchedAt || 0,
@@ -1475,22 +1451,13 @@ export function invalidateModelCatalog(identity: ModelCatalogIdentity): void {
   }
 }
 
-export function getDiscoveredModels(
-  identity: ModelCatalogIdentity,
-): DiscoveredModel[] {
-  const snapshot =
-    catalogSnapshots.get(buildCatalogKey(identity)) ??
-    getCatalogSnapshot(identity);
-  return clone(snapshot?.models || []);
-}
-
 export function getModelCatalogStatus(
   identity: ModelCatalogIdentity,
 ): CatalogSnapshot | null {
   const snapshot =
     catalogSnapshots.get(buildCatalogKey(identity)) ??
     getCatalogSnapshot(identity);
-  return snapshot ? clone(snapshot) : null;
+  return snapshot ? cloneValue(snapshot) : null;
 }
 
 export function isModelCatalogExpired(identity: ModelCatalogIdentity): boolean {
@@ -1524,17 +1491,4 @@ export function resetModelCapabilityStateForTests(): void {
   catalogSnapshots.clear();
   catalogAttemptedAt.clear();
   runtime = {};
-}
-
-export function setModelCapabilityRegistryForTests(value: unknown): boolean {
-  const parsed = validateRegistry(value);
-  if (!parsed) return false;
-  activeRegistry = parsed;
-  activeRegistrySource = "remote";
-  notify();
-  return true;
-}
-
-export function getActiveModelCapabilityRegistryForTests(): typeof activeRegistry {
-  return clone(activeRegistry);
 }

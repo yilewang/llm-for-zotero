@@ -266,17 +266,17 @@ async function fetchKatexAsset(name: string): Promise<Response> {
 /**
  * KaTeX's CSS with each font inlined as a woff2 data URI. Reader documents
  * have a content principal and cannot load the plugin's chrome:// fonts, so
- * the plugin reads them here. Built once per session; a failure is retried
- * on the next call.
+ * the plugin reads them here. The shipped stylesheet gives each font one
+ * woff2 source (scripts/vendor-assets.mjs). Built once per session; a
+ * failure is retried on the next call.
  */
 function loadKatexCss(): Promise<string> {
   if (!katexCssPromise) {
     katexCssPromise = (async () => {
       const css = await (await fetchKatexAsset("katex.min.css")).text();
-      const sourceList =
-        /src:\s*url\(fonts\/([^)]+\.woff2)\)\s*format\("woff2"\)(?:,\s*url\([^)]*\)\s*format\("[^"]*"\))*;/g;
+      const fontSource = /url\(fonts\/([^)]+\.woff2)\)/g;
       const names = new Set<string>();
-      for (const match of css.matchAll(sourceList)) names.add(match[1]);
+      for (const match of css.matchAll(fontSource)) names.add(match[1]);
       const uris = new Map<string, string>();
       await Promise.all(
         Array.from(names).map(async (name) => {
@@ -290,8 +290,8 @@ function loadKatexCss(): Promise<string> {
         }),
       );
       return css.replace(
-        sourceList,
-        (_all, name: string) => `src:url(${uris.get(name)}) format("woff2");`,
+        fontSource,
+        (_all, name: string) => `url(${uris.get(name)})`,
       );
     })().catch((err) => {
       katexCssPromise = null;

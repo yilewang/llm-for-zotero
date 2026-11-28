@@ -5,22 +5,13 @@ import type {
 } from "../services/zoteroGateway";
 import type { TagContextRef } from "../../shared/types";
 import type {
-  PaperScopedActionCollectionCandidate,
   PaperScopedActionInput,
   PaperScopedActionProfile,
-  PaperScopedActionTagCandidate,
 } from "./paperScopeTypes";
 
 export type {
-  PaperScopedActionAllowedScope,
-  PaperScopedActionCollectionCandidate,
-  PaperScopedActionDefaultEmptyInput,
   PaperScopedActionInput,
-  PaperScopedActionPaperRequirement,
   PaperScopedActionProfile,
-  PaperScopedActionPromptOption,
-  PaperScopedActionTagCandidate,
-  PaperScopedActionTargetMode,
 } from "./paperScopeTypes";
 
 export type ResolvePaperScopedCommandInputResult =
@@ -270,22 +261,6 @@ function buildSelectionScopeInput(
     }
   }
   return input;
-}
-
-function buildMissingSelectionError(
-  requestContext: ActionRequestContext | undefined,
-  profile: PaperScopedActionProfile,
-): string {
-  const selection = resolvePaperScopedSelection(requestContext);
-  if (
-    selection.tagContexts.length &&
-    !selection.itemIds.length &&
-    !selection.collectionIds.length &&
-    !profile.allowedScopes.includes("tag")
-  ) {
-    return "No supported paper or collection context is selected in this chat.";
-  }
-  return "No paper, collection, or tag context is selected in this chat.";
 }
 
 function resolveDefaultInput(

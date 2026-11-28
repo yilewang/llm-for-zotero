@@ -17,6 +17,8 @@ import {
   CONVERSATION_SYSTEMS,
   isConversationSystem,
 } from "../core/conversations/conversationSystems";
+import { positiveIntOrNull, trimmedString } from "../core/values";
+import { getZoteroDb } from "../core/zoteroDb";
 
 /** Only upstream paper conversations live in a catalog of their own. */
 const UPSTREAM_PAPER_CATALOG_TABLE =
@@ -103,28 +105,18 @@ let shutdownPhase: {
 } | null = null;
 let shutdownBlocker: (() => Promise<void>) | null = null;
 
-function normalizePositiveInt(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
-function normalizeText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 function normalizeScope(
   scope: PaperRestoreScope,
 ): Required<PaperRestoreScope> | null {
-  const libraryID = normalizePositiveInt(scope.libraryID);
-  const paperItemID = normalizePositiveInt(scope.paperItemID);
+  const libraryID = positiveIntOrNull(scope.libraryID);
+  const paperItemID = positiveIntOrNull(scope.paperItemID);
   if (!libraryID || !paperItemID) return null;
   return {
     system: scope.system,
     libraryID,
     paperItemID,
     profileSignature:
-      normalizeText(scope.profileSignature) || getCurrentProfileSignature(),
+      trimmedString(scope.profileSignature) || getCurrentProfileSignature(),
   };
 }
 
@@ -143,13 +135,6 @@ function logRestoreError(message: string, error?: unknown): void {
       ? ""
       : `: ${error instanceof Error ? error.message : String(error)}`;
   Zotero?.debug?.(`[llm-for-zotero] ${message}${suffix}`);
-}
-
-function getDb(): {
-  queryAsync?: (sql: string, params?: unknown[]) => Promise<unknown>;
-  executeTransaction?: <T>(task: () => Promise<T>) => Promise<T>;
-} | null {
-  return Zotero?.DB || null;
 }
 
 function preferenceKey(system: ConversationSystem): string | null {
@@ -202,27 +187,27 @@ function parseLegacyPreference(
   for (const [rawScope, rawConversationKey] of Object.entries(
     parsed as Record<string, unknown>,
   )) {
-    const conversationKey = normalizePositiveInt(rawConversationKey);
+    const conversationKey = positiveIntOrNull(rawConversationKey);
     if (!conversationKey) continue;
     const parts = rawScope.split(":");
     let libraryID: number | null = null;
     let paperItemID: number | null = null;
     let priority = 0;
     if (system === "upstream" && parts.length === 2) {
-      libraryID = normalizePositiveInt(parts[0]);
-      paperItemID = normalizePositiveInt(parts[1]);
+      libraryID = positiveIntOrNull(parts[0]);
+      paperItemID = positiveIntOrNull(parts[1]);
       priority = 2;
     } else if (system === "claude_code" && parts.length === 2) {
-      libraryID = normalizePositiveInt(parts[0]);
-      paperItemID = normalizePositiveInt(parts[1]);
+      libraryID = positiveIntOrNull(parts[0]);
+      paperItemID = positiveIntOrNull(parts[1]);
       priority = 1;
     } else if (
       system !== "upstream" &&
       parts.length === 3 &&
       parts[0] === profileSignature
     ) {
-      libraryID = normalizePositiveInt(parts[1]);
-      paperItemID = normalizePositiveInt(parts[2]);
+      libraryID = positiveIntOrNull(parts[1]);
+      paperItemID = positiveIntOrNull(parts[2]);
       priority = 2;
     }
     if (!libraryID || !paperItemID || !priority) continue;
@@ -338,10 +323,10 @@ function normalizeEligibleRows(rows: unknown): EligibleRegistryRow[] {
     if (!raw || typeof raw !== "object") continue;
     const row = raw as Record<string, unknown>;
     const system = row.system;
-    const conversationKey = normalizePositiveInt(row.conversationKey);
-    const libraryID = normalizePositiveInt(row.libraryID);
-    const paperItemID = normalizePositiveInt(row.paperItemID);
-    const profileSignature = normalizeText(row.profileSignature);
+    const conversationKey = positiveIntOrNull(row.conversationKey);
+    const libraryID = positiveIntOrNull(row.libraryID);
+    const paperItemID = positiveIntOrNull(row.paperItemID);
+    const profileSignature = trimmedString(row.profileSignature);
     if (
       !isConversationSystem(system) ||
       !conversationKey ||
@@ -352,7 +337,7 @@ function normalizeEligibleRows(rows: unknown): EligibleRegistryRow[] {
       continue;
     }
     normalized.push({
-      instanceID: normalizeText(row.instanceID),
+      instanceID: trimmedString(row.instanceID),
       conversationKey,
       system,
       profileSignature,
@@ -405,7 +390,7 @@ async function initializeRuntime(
   system: ConversationSystem,
   profileSignature: string,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync || !db.executeTransaction) {
     initializedSystems.add(system);
     logRestoreError(
@@ -614,7 +599,7 @@ export function stagePaperRestoreTargetForStartup(
   conversationKey: number,
 ): void {
   const normalized = normalizeScope(scope);
-  const normalizedKey = normalizePositiveInt(conversationKey);
+  const normalizedKey = positiveIntOrNull(conversationKey);
   if (!normalized || !normalizedKey) return;
   if (initializedSystems.has(normalized.system)) {
     logRestoreError(
@@ -652,7 +637,7 @@ async function persistScopeSelection(
   scope: Required<PaperRestoreScope>,
   conversationKey: number | null,
 ): Promise<RestoreEntry | null> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync || !db.executeTransaction) {
     throw new Error("Zotero DB is unavailable");
   }
@@ -772,7 +757,7 @@ export function rememberPaperRestoreTarget(
     paperItemID: Number(scope.paperItemID),
     profileSignature: scope.profileSignature,
   });
-  const normalizedKey = normalizePositiveInt(conversationKey);
+  const normalizedKey = positiveIntOrNull(conversationKey);
   if (!normalized || !normalizedKey) return;
   if (!acceptingWrites || !writableSystems.has(normalized.system)) {
     logRestoreError(
@@ -815,7 +800,7 @@ export function forgetPaperRestoreTarget(
   if (!normalized) return;
   const scopeKey = buildScopeKey(normalized);
   const current = restoreCache.get(scopeKey);
-  const normalizedExpected = normalizePositiveInt(expectedKey);
+  const normalizedExpected = positiveIntOrNull(expectedKey);
   if (normalizedExpected && current?.conversationKey !== normalizedExpected)
     return;
   if (!current) return;
@@ -848,12 +833,12 @@ export function invalidatePaperRestoreTargetCache(
     paperItemID: Number(scope.paperItemID),
     profileSignature: scope.profileSignature,
   });
-  const normalizedExpected = normalizePositiveInt(expectedKey);
+  const normalizedExpected = positiveIntOrNull(expectedKey);
   if (!normalized || !normalizedExpected) return;
   const scopeKey = buildScopeKey(normalized);
   const current = restoreCache.get(scopeKey);
   if (!current || current.conversationKey !== normalizedExpected) return;
-  const instanceID = normalizeText(expectedInstanceID);
+  const instanceID = trimmedString(expectedInstanceID);
   if (instanceID && current.instanceID !== instanceID) return;
   restoreCache.delete(scopeKey);
   const committed = committedRestoreCache.get(scopeKey);
@@ -874,7 +859,7 @@ export function forgetPaperRestoreTargetsForItems(itemIDs: number[]): void {
     ...restoreCache.keys(),
     ...committedRestoreCache.keys(),
   ])) {
-    const paperItemID = normalizePositiveInt(scopeKey.split(":").at(-1));
+    const paperItemID = positiveIntOrNull(scopeKey.split(":").at(-1));
     if (!paperItemID || !itemIDSet.has(paperItemID)) continue;
     affectedScopeKeys.add(scopeKey);
     restoreCache.delete(scopeKey);
@@ -886,7 +871,7 @@ export function forgetPaperRestoreTargetsForItems(itemIDs: number[]): void {
   enqueueWrite(
     "Could not clear paper restore selections for removed Zotero items",
     async () => {
-      const db = getDb();
+      const db = getZoteroDb();
       if (!db?.queryAsync || !db.executeTransaction) {
         throw new Error("Zotero DB is unavailable");
       }
@@ -907,14 +892,6 @@ export function forgetPaperRestoreTargetsForItems(itemIDs: number[]): void {
   );
 }
 
-export function forgetPaperRestoreTargetsForItem(
-  _libraryID: number,
-  paperItemID: number,
-): void {
-  const normalized = normalizePositiveInt(paperItemID);
-  if (normalized) forgetPaperRestoreTargetsForItems([normalized]);
-}
-
 export async function clearPaperRestoreTargetsForWorkflowTests(): Promise<void> {
   await flushPaperRestoreSelectionWrites();
   const profileSignature = getCurrentProfileSignature();
@@ -924,7 +901,7 @@ export async function clearPaperRestoreTargetsForWorkflowTests(): Promise<void> 
     committedRestoreCache.delete(scopeKey);
     scopeGenerations.delete(scopeKey);
   }
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db?.queryAsync || !db.executeTransaction) return;
   await db.executeTransaction(async () => {
     await db.queryAsync?.(
@@ -962,22 +939,4 @@ export async function shutdownPaperRestoreSelections(): Promise<void> {
   stagedStartupCandidates.clear();
   writableSystems.clear();
   initializedSystems.clear();
-}
-
-export function resetPaperRestoreSelectionStateForTests(): void {
-  if (shutdownBlocker && shutdownPhase?.removeBlocker) {
-    shutdownPhase.removeBlocker(shutdownBlocker);
-  }
-  shutdownBlocker = null;
-  shutdownPhase = null;
-  unregisterRegistryInvalidation?.();
-  unregisterRegistryInvalidation = null;
-  restoreCache.clear();
-  committedRestoreCache.clear();
-  scopeGenerations.clear();
-  stagedStartupCandidates.clear();
-  writableSystems.clear();
-  initializedSystems.clear();
-  writeQueue = Promise.resolve();
-  acceptingWrites = true;
 }

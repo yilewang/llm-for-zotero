@@ -9,6 +9,7 @@ import type { ZoteroGateway } from "./zoteroGateway";
 import { appLogger } from "../../core/logging";
 import { decodeEntities } from "./literatureReadParser";
 import { getOpenAlexApiKey } from "../../webAccess/prefs";
+import { trimmedString } from "../../core/values";
 
 type SearchMode =
   | "recommendations"
@@ -87,21 +88,10 @@ type FetchJsonResponse = {
   json: () => Promise<unknown>;
 };
 
-type FetchTextResponse = {
-  ok: boolean;
-  status: number;
-  text: () => Promise<string>;
-};
-
 type FetchLike = (
   url: string,
   init?: { headers?: Record<string, string>; signal?: AbortSignal },
 ) => Promise<FetchJsonResponse>;
-
-type FetchTextLike = (
-  url: string,
-  init?: { headers?: Record<string, string> },
-) => Promise<FetchTextResponse>;
 
 interface XmlElement {
   querySelector(selector: string): XmlElement | null;
@@ -123,10 +113,6 @@ const OA_SELECT =
 const OA_BASE = "https://api.openalex.org";
 const USER_AGENT =
   "llm-for-zotero/1.0 (https://github.com/yilewang/llm-for-zotero)";
-
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
 
 function stripHtmlTags(value: string): string {
   return value
@@ -292,7 +278,7 @@ function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
     return null;
   }
   const work = raw as Record<string, unknown>;
-  const title = normalizeString(work.display_name);
+  const title = trimmedString(work.display_name);
   if (!title) {
     return null;
   }
@@ -301,7 +287,7 @@ function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
   const authors = authorships
     .map((entry) => {
       const author = (entry as Record<string, unknown>)?.author;
-      return normalizeString((author as Record<string, unknown>)?.display_name);
+      return trimmedString((author as Record<string, unknown>)?.display_name);
     })
     .filter(Boolean);
 
@@ -313,7 +299,7 @@ function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
   const abstract = abstractText
     ? `${abstractText.slice(0, 400)}${abstractText.length > 400 ? "..." : ""}`
     : undefined;
-  const doiUrl = normalizeString(work.doi);
+  const doiUrl = trimmedString(work.doi);
   const doi = doiUrl.startsWith("https://doi.org/")
     ? doiUrl.slice("https://doi.org/".length)
     : doiUrl || undefined;
@@ -323,9 +309,9 @@ function normalizeOpenAlexWork(raw: unknown): OnlinePaperResult | null {
     | Record<string, unknown>
     | null
     | undefined;
-  const openAccessUrl = normalizeString(openAccess?.oa_url) || undefined;
-  const openAlexId = normalizeString(work.id) || undefined;
-  const pmid = normalizeString(
+  const openAccessUrl = trimmedString(openAccess?.oa_url) || undefined;
+  const openAlexId = trimmedString(work.id) || undefined;
+  const pmid = trimmedString(
     (work.ids as Record<string, unknown> | undefined)?.pmid,
   ).replace(/^.*\//, "");
 
@@ -707,7 +693,7 @@ async function lookupCrossRefByDoi(
     const containerTitle = Array.isArray(message["container-title"])
       ? (message["container-title"] as string[])
       : [];
-    const abstractText = normalizeString(message.abstract);
+    const abstractText = trimmedString(message.abstract);
     const title = titleList[0] ? stripHtmlTags(titleList[0]) : undefined;
     const abstract = abstractText
       ? stripHtmlTags(abstractText).slice(0, 600)
@@ -715,8 +701,8 @@ async function lookupCrossRefByDoi(
     const venue = containerTitle[0]
       ? stripHtmlTags(containerTitle[0])
       : undefined;
-    const resolvedDoi = normalizeString(message.DOI) || doi;
-    const url = normalizeString(message.URL) || undefined;
+    const resolvedDoi = trimmedString(message.DOI) || doi;
+    const url = trimmedString(message.URL) || undefined;
     const patch: EditableArticleMetadataPatch = {};
     if (title) patch.title = title;
     if (resolvedDoi) patch.DOI = resolvedDoi;
@@ -880,8 +866,8 @@ async function searchCrossRef(
         const containerTitle = Array.isArray(message["container-title"])
           ? (message["container-title"] as string[])
           : [];
-        const abstractText = normalizeString(message.abstract);
-        const doi = normalizeString(message.DOI);
+        const abstractText = trimmedString(message.abstract);
+        const doi = trimmedString(message.DOI);
         const title = titleList[0] ? stripHtmlTags(titleList[0]) : undefined;
         const abstract = abstractText
           ? stripHtmlTags(abstractText).slice(0, 600)
@@ -889,7 +875,7 @@ async function searchCrossRef(
         const venue = containerTitle[0]
           ? stripHtmlTags(containerTitle[0])
           : undefined;
-        const url = normalizeString(message.URL) || undefined;
+        const url = trimmedString(message.URL) || undefined;
         const patch: EditableArticleMetadataPatch = {};
         if (title) patch.title = title;
         if (doi) patch.DOI = doi;
@@ -958,19 +944,15 @@ async function lookupSemanticScholar(params: {
       ? (result.authors as Array<{ name?: string }>)
       : [];
     const authors = authorList
-      .map((author) => normalizeString(author.name))
+      .map((author) => trimmedString(author.name))
       .filter(Boolean);
     const externalIds = (result.externalIds || {}) as Record<string, string>;
-    const publicationTypes = Array.isArray(result.publicationTypes)
-      ? (result.publicationTypes as string[]).join(", ")
-      : undefined;
 
-    const title = normalizeString(result.title) || undefined;
+    const title = trimmedString(result.title) || undefined;
     const doi = externalIds.DOI || externalIds.doi || params.doi || undefined;
     const year = typeof result.year === "number" ? result.year : undefined;
-    const abstract =
-      normalizeString(result.abstract).slice(0, 600) || undefined;
-    const venue = normalizeString(result.venue) || undefined;
+    const abstract = trimmedString(result.abstract).slice(0, 600) || undefined;
+    const venue = trimmedString(result.venue) || undefined;
     const patch: EditableArticleMetadataPatch = {};
     if (title) patch.title = title;
     if (doi) patch.DOI = doi;
@@ -1377,7 +1359,7 @@ export class LiteratureSearchService {
       throw new Error(`Paper with DOI "${doi}" was not found on OpenAlex.`);
     }
 
-    const openAlexId = normalizeString(work.id) || null;
+    const openAlexId = trimmedString(work.id) || null;
     let results: OnlinePaperResult[] = [];
     const warnings: string[] = [];
 

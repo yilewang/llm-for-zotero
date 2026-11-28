@@ -15,7 +15,7 @@ export function getPdfPageRenderScaleForCount(total: number): number {
 // These mirror the equivalent private helpers in agent/services/pdfPageService
 // but live here so contextPanel code can use them without importing agent code.
 
-function unwrapWrappedJsObject<T>(value: T): T {
+export function unwrapWrappedJsObject<T>(value: T): T {
   if (!value || (typeof value !== "object" && typeof value !== "function")) {
     return value;
   }
@@ -59,7 +59,7 @@ type ViewportLike = {
   dontFlip?: boolean;
 };
 
-type CloneIntoFn = <T extends object>(
+export type CloneIntoFn = <T extends object>(
   value: T,
   targetScope: unknown,
   options?: {
@@ -68,7 +68,7 @@ type CloneIntoFn = <T extends object>(
   },
 ) => T;
 
-type WindowConstructors = {
+export type WindowConstructors = {
   Object?: ObjectConstructor;
   Array?: ArrayConstructor;
 };
@@ -123,7 +123,7 @@ export function getPdfViewerApplication(reader: any): any | null {
   return null;
 }
 
-function getReaderDocument(reader: any): Document | null {
+export function getReaderDocument(reader: any): Document | null {
   return (
     reader?._iframeWindow?.document ||
     reader?._iframe?.contentDocument ||
@@ -237,7 +237,7 @@ async function waitForRenderedPageCanvas(
   return null;
 }
 
-function getCloneInto(): CloneIntoFn | undefined {
+export function getCloneInto(): CloneIntoFn | undefined {
   const globalWithClone = globalThis as unknown as {
     cloneInto?: CloneIntoFn;
     Components?: { utils?: { cloneInto?: CloneIntoFn } };
@@ -247,7 +247,10 @@ function getCloneInto(): CloneIntoFn | undefined {
   );
 }
 
-function getPdfRenderWindow(canvasDoc: Document, reader: any): Window | null {
+export function getPdfRenderWindow(
+  canvasDoc: Document,
+  reader: any,
+): Window | null {
   try {
     const canvasWindow = unwrapWrappedJsObject(
       canvasDoc.defaultView || null,
@@ -943,22 +946,6 @@ export async function renderPdfPageToDataUrl(
   } catch {
     return null;
   }
-}
-
-export async function renderPdfPageToBytes(
-  app: any,
-
-  reader: any,
-  pageNumber: number,
-  options: PdfJsPageRenderOptions = {},
-): Promise<Uint8Array | null> {
-  const dataUrl = await renderPdfPageToDataUrl(
-    app,
-    reader,
-    pageNumber,
-    options,
-  );
-  return dataUrl ? dataUrlToBytes(dataUrl) : null;
 }
 
 /**

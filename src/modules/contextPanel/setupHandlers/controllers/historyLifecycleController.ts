@@ -6,7 +6,6 @@ import type { ConversationSystem } from "../../../../shared/types";
 import {
   assertNeverConversationSystem,
   isRuntimeConversationSystem as isRuntimeSystem,
-  type RuntimeConversationSystem,
 } from "../../../../core/conversations/conversationSystems";
 import { isEphemeralConversationKey } from "../../../../shared/conversationKeySpace";
 import { isConversationKeyForKind } from "../../../../shared/conversationKeySpace";
@@ -30,19 +29,16 @@ import {
 import {
   buildDefaultUpstreamGlobalConversationKey,
   GLOBAL_CONVERSATION_KEY_BASE,
-  MAX_SELECTED_PAPER_CONTEXTS,
   GLOBAL_HISTORY_LIMIT,
   PERSISTED_HISTORY_LIMIT,
   isUpstreamGlobalConversationKey,
 } from "../../constants";
-import type { Message } from "../../types";
 import {
   chatHistory,
   conversationForkLinks,
   loadedConversationKeys,
   webChatIsolatedConversationKeys,
   webChatSessionConversationKeys,
-  draftInputCache,
   setForkSourceNavigationRunner,
   isRequestPending,
 } from "../../state";
@@ -58,7 +54,6 @@ import {
   ensureConversationLoaded,
   getConversationKey,
   persistSeededConversationMessages,
-  refreshConversationPanels,
 } from "../../chat";
 import type { StoredChatMessage } from "../../../../utils/chatStore";
 import { storeSeededConversation } from "../../seededConversation";
@@ -67,39 +62,18 @@ import {
   toUpstreamHistoryRowShape,
 } from "../../historyLoader";
 import {
-  loadAllClaudeConversationHistory,
-  toClaudeConversationHistoryEntry,
-} from "../../../../claudeCode/historyLoader";
-import {
-  loadAllCodexConversationHistory,
-  toCodexConversationHistoryEntry,
-} from "../../../../codexAppServer/historyLoader";
+  loadAllRuntimeConversationHistory,
+  toRuntimeConversationHistoryEntry,
+} from "../../../../core/conversations/runtimeHistory";
 import {
   isUnifiedHistoryRowListed,
   listUnifiedHistoryEntries,
 } from "../../unifiedHistorySource";
 import { touchClaudeConversation } from "../../../../claudeCode/runtime";
 import {
-  getConversationSystemPref,
-  setConversationSystemPref,
-} from "../../../../shared/conversationSystemPrefs";
-import { setLastUsedClaudeGlobalConversationKey } from "../../../../claudeCode/prefs";
-import {
-  createClaudeGlobalPortalItem,
-  createClaudePaperPortalItem,
-} from "../../../../claudeCode/portal";
-import {
-  loadAllAntigravityConversationHistory,
-  toAntigravityConversationHistoryEntry,
-} from "../../../../antigravity/historyLoader";
-import {
-  createAntigravityGlobalPortalItem,
-  createAntigravityPaperPortalItem,
-} from "../../../../antigravity/portal";
-import {
-  createCodexGlobalPortalItem,
-  createCodexPaperPortalItem,
-} from "../../../../codexAppServer/portal";
+  createRuntimeGlobalPortalItem,
+  createRuntimePaperPortalItem,
+} from "../../../../services/context/runtimePortalItems";
 import {
   createGlobalPortalItem,
   createPaperPortalItem,
@@ -113,10 +87,7 @@ import {
   filterMessagesInPendingTurns,
   findTurnPairByTimestamps,
 } from "../../turnMessageUtils";
-import {
-  getLockedGlobalConversationKey,
-  setLockedGlobalConversationKey,
-} from "../../prefHelpers";
+import { getLockedGlobalConversationKey } from "../../prefHelpers";
 import {
   isTornSurface,
   recall,
@@ -225,22 +196,6 @@ export function shouldFallbackToLoadedConversationHistorySearch(
 
 type StatusLevel = "ready" | "warning" | "error";
 
-function loadAllRuntimeConversationHistory(
-  system: RuntimeConversationSystem,
-  params: { libraryID: number; limit: number | null },
-) {
-  switch (system) {
-    case "claude_code":
-      return loadAllClaudeConversationHistory(params);
-    case "codex":
-      return loadAllCodexConversationHistory(params);
-    case "antigravity":
-      return loadAllAntigravityConversationHistory(params);
-    default:
-      return assertNeverConversationSystem(system);
-  }
-}
-
 const pendingDeletionSubscriptionsByBody = new WeakMap<Element, () => void>();
 const catalogChangeSubscriptionsByBody = new WeakMap<Element, () => void>();
 
@@ -290,8 +245,6 @@ type ForkTurnTarget = {
   userMessageID?: number;
   assistantMessageID?: number;
 };
-
-export { clearDeletedAgentConversationState } from "../../agentConversationCleanup";
 
 /**
  * A history row to open in another runtime. The panel switches its runtime
@@ -433,10 +386,8 @@ export function createHistoryLifecycleController(
   deps: HistoryLifecycleControllerDeps,
 ) {
   let item = deps.getItem();
-  let basePaperItem = deps.getBasePaperItem();
   const syncStateFromDeps = () => {
     item = deps.getItem();
-    basePaperItem = deps.getBasePaperItem();
   };
   const setCurrentItem = (nextItem: Zotero.Item | null): boolean => {
     if (deps.setItem(nextItem) === false) return false;
@@ -445,7 +396,6 @@ export function createHistoryLifecycleController(
   };
   const setBasePaperItem = (nextItem: Zotero.Item | null): boolean => {
     if (deps.setBasePaperItem(nextItem) === false) return false;
-    basePaperItem = nextItem;
     return true;
   };
   const captureOwnedPanelOperation = (
@@ -523,7 +473,6 @@ export function createHistoryLifecycleController(
     historyBar,
     titleStatic,
     historyNewBtn,
-    historyNewMenu,
     historyNewOpenBtn,
     historyNewPaperBtn,
     historyToggleBtn,
@@ -544,15 +493,11 @@ export function createHistoryLifecycleController(
   const getConversationSystem = deps.getConversationSystem;
   const isClaudeConversationSystem = deps.isClaudeConversationSystem;
   const isCodexConversationSystem = deps.isCodexConversationSystem;
-  const isRuntimeConversationSystem = deps.isRuntimeConversationSystem;
   const isNoteSession = deps.isNoteSession;
   const isGlobalMode = deps.isGlobalMode;
-  const isPaperMode = deps.isPaperMode;
   const isWebChatMode = deps.isWebChatMode;
   const getCurrentLibraryID = deps.getCurrentLibraryID;
   const resolveCurrentPaperBaseItem = deps.resolveCurrentPaperBaseItem;
-  const getManualPaperContextsForItem = deps.getManualPaperContextsForItem;
-  const resolveAutoLoadedPaperContext = deps.resolveAutoLoadedPaperContext;
   const refreshAutoLoadedPaperContextForCurrentItem =
     deps.refreshAutoLoadedPaperContextForCurrentItem;
   const persistDraftInputForCurrentConversation =
@@ -560,8 +505,6 @@ export function createHistoryLifecycleController(
   const restoreDraftInputForCurrentConversation =
     deps.restoreDraftInputForCurrentConversation;
   const syncConversationIdentity = deps.syncConversationIdentity;
-  const syncQueuedFollowUpRegistration = deps.syncQueuedFollowUpRegistration;
-  const updateRuntimeModeButton = deps.updateRuntimeModeButton;
   const refreshChatPreservingScroll = deps.refreshChatPreservingScroll;
   const refreshOwnChatPreservingScroll = deps.refreshOwnChatPreservingScroll;
   /** The history a switch target already had in memory, if loaded. */
@@ -592,8 +535,6 @@ export function createHistoryLifecycleController(
   const resetComposePreviewUI = deps.resetComposePreviewUI;
   const updateModelButton = deps.updateModelButton;
   const updateReasoningButton = deps.updateReasoningButton;
-  const updatePaperPreviewPreservingScroll =
-    deps.updatePaperPreviewPreservingScroll;
   const clearForcedSkill = deps.clearForcedSkill;
   const closePaperPicker = deps.closePaperPicker;
   const closePromptMenu = deps.closePromptMenu;
@@ -622,15 +563,8 @@ export function createHistoryLifecycleController(
     deps.closeHistoryMenu();
   };
   const isHistoryMenuOpen = deps.isHistoryMenuOpen;
-  const isHistoryNewMenuOpen = deps.isHistoryNewMenuOpen;
-  const runWithChatScrollGuard = deps.runWithChatScrollGuard;
-  const clearSelectedImageState = deps.clearSelectedImageState;
-  const clearSelectedFileState = deps.clearSelectedFileState;
-  const clearSelectedTextState = deps.clearSelectedTextState;
-  const clearDraftInputState = deps.clearDraftInputState;
   const clearTransientComposeStateForItem =
     deps.clearTransientComposeStateForItem;
-  const scheduleAttachmentGc = deps.scheduleAttachmentGc;
   const notifyConversationHistoryChanged =
     deps.notifyConversationHistoryChanged;
   const renderWebChatHistoryMenu = deps.renderWebChatHistoryMenu;
@@ -643,7 +577,6 @@ export function createHistoryLifecycleController(
   const updateImagePreviewPreservingScroll =
     deps.updateImagePreviewPreservingScroll;
   const setActiveEditSession = deps.setActiveEditSession;
-  const ztoolkit = { log: deps.log };
   const ensureConversationCatalogEntry = async (params: {
     system: ConversationSystem;
     conversationKey: number;
@@ -1673,19 +1606,6 @@ export function createHistoryLifecycleController(
     }
   };
 
-  const expandHistorySearch = () => {
-    historySearchExpanded = true;
-    renderGlobalHistoryMenu();
-    if (
-      historyToggleBtn &&
-      historyMenu &&
-      historyMenu.style.display !== "none"
-    ) {
-      positionMenuBelowButton(body, historyMenu, historyToggleBtn);
-    }
-    restoreHistorySearchInputFocus();
-  };
-
   const collapseHistorySearch = () => {
     if (!historySearchExpanded && !historySearchQuery) return;
     cancelHistorySearchDebounce();
@@ -1847,13 +1767,9 @@ export function createHistoryLifecycleController(
     let shape: { title: string; isDraft: boolean };
     switch (row.system) {
       case "codex":
-        shape = toCodexConversationHistoryEntry(row);
-        break;
       case "claude_code":
-        shape = toClaudeConversationHistoryEntry(row);
-        break;
       case "antigravity":
-        shape = toAntigravityConversationHistoryEntry(row);
+        shape = toRuntimeConversationHistoryEntry(row.system, row);
         break;
       case "upstream":
         // An upstream paper chat without a session version cannot be opened.
@@ -2206,26 +2122,14 @@ export function createHistoryLifecycleController(
       return false;
     }
     let nextItem: ReturnType<
-      | typeof createClaudeGlobalPortalItem
-      | typeof createCodexGlobalPortalItem
-      | typeof createAntigravityGlobalPortalItem
-      | typeof createGlobalPortalItem
+      typeof createRuntimeGlobalPortalItem | typeof createGlobalPortalItem
     >;
     switch (system) {
       case "claude_code":
-        nextItem = createClaudeGlobalPortalItem(
-          libraryID,
-          normalizedConversationKey,
-        );
-        break;
       case "codex":
-        nextItem = createCodexGlobalPortalItem(
-          libraryID,
-          normalizedConversationKey,
-        );
-        break;
       case "antigravity":
-        nextItem = createAntigravityGlobalPortalItem(
+        nextItem = createRuntimeGlobalPortalItem(
+          system,
           libraryID,
           normalizedConversationKey,
         );
@@ -2412,44 +2316,11 @@ export function createHistoryLifecycleController(
     // deletion intent.
     forgetRecentlyDeletedConversation(resolvedConversationKey);
     switch (system) {
-      case "claude_code": {
-        const nextItem = createClaudePaperPortalItem(
-          paperItem,
-          resolvedConversationKey,
-        ) as any;
-        if (
-          !canCommitPanelConversation(
-            body,
-            nextItem,
-            "switch-paper-conversation-commit",
-            hostLease,
-          ) ||
-          !setCurrentItem(nextItem)
-        ) {
-          return false;
-        }
-        break;
-      }
-      case "codex": {
-        const nextItem = createCodexPaperPortalItem(
-          paperItem,
-          resolvedConversationKey,
-        ) as any;
-        if (
-          !canCommitPanelConversation(
-            body,
-            nextItem,
-            "switch-paper-conversation-commit",
-            hostLease,
-          ) ||
-          !setCurrentItem(nextItem)
-        ) {
-          return false;
-        }
-        break;
-      }
+      case "claude_code":
+      case "codex":
       case "antigravity": {
-        const nextItem = createAntigravityPaperPortalItem(
+        const nextItem = createRuntimePaperPortalItem(
+          system,
           paperItem,
           resolvedConversationKey,
         ) as any;

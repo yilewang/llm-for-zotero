@@ -1,5 +1,6 @@
 import { quoteKeyHash } from "../quotes/quoteKey";
 import { sanitizeText } from "../../utils/textSanitization";
+import { positiveIntOrNull } from "../../core/values";
 
 export type CitationPageCacheEntry = {
   contextItemId: number;
@@ -15,12 +16,7 @@ export type CitationPageCacheEntry = {
 const MAX_CITATION_PAGE_CACHE_ENTRIES = 1000;
 const CITATION_PAGE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-let nowForTests: (() => number) | null = null;
 const citationPageCache = new Map<string, CitationPageCacheEntry>();
-
-function now(): number {
-  return nowForTests ? nowForTests() : Date.now();
-}
 
 export function buildCitationQuoteHash(quoteText: string): string {
   return quoteKeyHash(quoteText);
@@ -33,13 +29,7 @@ function buildCitationPageCacheKey(
   return `${Math.floor(contextItemId)}\u241f${quoteHash}`;
 }
 
-function normalizeContextItemId(value: unknown): number | null {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.floor(parsed);
-}
-
-function normalizePageIndex(value: unknown): number | null {
+export function normalizePageIndex(value: unknown): number | null {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return Math.floor(parsed);
@@ -86,7 +76,7 @@ export function rememberCitationPage(input: {
   /** The reader's printed label; never one guessed from the page index. */
   pageLabel?: string;
 }): string | null {
-  const contextItemId = normalizeContextItemId(input.contextItemId);
+  const contextItemId = positiveIntOrNull(input.contextItemId);
   if (contextItemId === null) return null;
   const pageIndex = normalizePageIndex(input.pageIndex);
   if (pageIndex === null) return null;
@@ -94,7 +84,7 @@ export function rememberCitationPage(input: {
   const quoteHash = buildCitationQuoteHash(input.quoteText);
   if (!quoteHash) return null;
 
-  const currentTime = now();
+  const currentTime = Date.now();
   evictExpiredEntries(currentTime);
   const key = buildCitationPageCacheKey(contextItemId, quoteHash);
   const entry: CitationPageCacheEntry = {
@@ -114,11 +104,11 @@ export function lookupCitationPage(input: {
   contextItemId: number;
   quoteText: string;
 }): CitationPageCacheEntry | null {
-  const contextItemId = normalizeContextItemId(input.contextItemId);
+  const contextItemId = positiveIntOrNull(input.contextItemId);
   if (contextItemId === null) return null;
   const quoteHash = buildCitationQuoteHash(input.quoteText);
   if (!quoteHash) return null;
-  const currentTime = now();
+  const currentTime = Date.now();
   evictExpiredEntries(currentTime);
   const key = buildCitationPageCacheKey(contextItemId, quoteHash);
   const entry = citationPageCache.get(key);
@@ -134,14 +124,4 @@ export function lookupCitationPage(input: {
 
 export function clearCitationPageCache(): void {
   citationPageCache.clear();
-}
-
-export function clearCitationNavigationCaches(): void {
-  clearCitationPageCache();
-}
-
-export function setCitationNavigationCacheNowForTests(
-  getNow: (() => number) | null,
-): void {
-  nowForTests = getNow;
 }

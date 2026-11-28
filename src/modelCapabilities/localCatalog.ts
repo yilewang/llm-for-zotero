@@ -20,6 +20,7 @@ import {
 } from "../utils/apiHelpers";
 import { MODEL_CAPABILITY_MAX_TOKEN_LIMIT } from "./registry";
 import type { DiscoveredModel, ModelCapabilityLimits } from "./types";
+import { trimmedString } from "../core/values";
 
 /** Values Ollama reports in `/api/show` → `capabilities`. */
 const CAPABILITY_VISION = "vision";
@@ -65,10 +66,6 @@ export type OllamaModelSummary = {
   parameterSize?: string;
 };
 
-function asString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 /**
  * `undefined` when the server said nothing — distinct from `[]`, which is the
  * server stating this model has no special capabilities.  Only a stated answer
@@ -77,7 +74,7 @@ function asString(value: unknown): string {
 function asCapabilityList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value
-    .map((entry) => asString(entry).toLowerCase())
+    .map((entry) => trimmedString(entry).toLowerCase())
     .filter((entry) => Boolean(entry));
 }
 
@@ -90,7 +87,7 @@ export function readContextLength(
   modelInfo: Record<string, unknown> | undefined,
 ): number | undefined {
   if (!modelInfo) return undefined;
-  const architecture = asString(modelInfo["general.architecture"]);
+  const architecture = trimmedString(modelInfo["general.architecture"]);
   const candidates = architecture
     ? [`${architecture}.context_length`]
     : ([] as string[]);
@@ -110,12 +107,6 @@ export function readContextLength(
     }
   }
   return undefined;
-}
-
-export function readArchitecture(
-  modelInfo: Record<string, unknown> | undefined,
-): string {
-  return asString(modelInfo?.["general.architecture"]);
 }
 
 /** Map one `/api/show` payload onto the shared discovered-model shape. */
@@ -193,18 +184,18 @@ export async function fetchOllamaModelList(params: {
   const models: OllamaModelSummary[] = [];
   for (const row of rows) {
     if (models.length >= 4096) break;
-    const id = asString(row?.name) || asString(row?.model);
+    const id = trimmedString(row?.name) || trimmedString(row?.model);
     if (!id || id.length > 256) continue;
     models.push({
       id,
-      ...(asString(row?.modified_at)
-        ? { modifiedAt: asString(row.modified_at) }
+      ...(trimmedString(row?.modified_at)
+        ? { modifiedAt: trimmedString(row.modified_at) }
         : {}),
-      ...(asString(row?.details?.family)
-        ? { family: asString(row.details?.family) }
+      ...(trimmedString(row?.details?.family)
+        ? { family: trimmedString(row.details?.family) }
         : {}),
-      ...(asString(row?.details?.parameter_size)
-        ? { parameterSize: asString(row.details?.parameter_size) }
+      ...(trimmedString(row?.details?.parameter_size)
+        ? { parameterSize: trimmedString(row.details?.parameter_size) }
         : {}),
     });
   }

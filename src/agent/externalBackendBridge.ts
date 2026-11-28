@@ -9,7 +9,7 @@ import {
 import { getConversationSystemPref } from "../shared/conversationSystemPrefs";
 import {
   getClaudeBridgeUrl,
-  getClaudeCustomInstructionPref,
+  getClaudeSettingSourcesCsvByPref,
 } from "../claudeCode/prefs";
 import {
   fetchClaudeModelCatalog,
@@ -34,8 +34,6 @@ import {
   REQUIRED_CLAUDE_ZOTERO_MCP_TOOL_NAMES,
 } from "../codexAppServer/mcpSetup";
 import { dbg, dbgError } from "../utils/debugLogger";
-import { buildNotesDirectoryConfigSection } from "../utils/notesDirectoryConfig";
-import { buildAgentFilesInstructionForScope } from "../utils/agentFilesDirectory";
 import {
   externalRuntimeCommandEffect,
   externalRuntimeFileEffect,
@@ -53,9 +51,9 @@ import {
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../shared/conversationWriteFence";
-import { AGENT_PERSONA_INSTRUCTIONS } from "./model/agentPersona";
 import {
   makeProfilingEvent,
+  renderExternalRuntimePrompt,
   requestLocalDocuments,
   requestPaperRefs,
   runExternalRuntimeTurn,
@@ -77,29 +75,22 @@ import type {
   AgentRuntimeRequest,
   AgentRuntimeRequestInput,
 } from "./types";
-import { resolveAgentRuntimeRequest } from "./context/resolvedAgentRequest";
 import type {
   LocalDocumentResource,
-  NoteContextRef,
   PaperContentSourceMode,
   PaperContextRef,
-  ResolvedSelectedTextAnchor,
-  SelectedTextContext,
 } from "../shared/types";
 import {
   normalizeExcludedItemIds,
   synthesizeSelectedTextContexts,
+  normalizePaperContentSourceMode,
 } from "../services/context/normalizers";
 import { formatSelectedTextLocator } from "../services/context/selectedTextAnchorFormatting";
-import {
-  buildTurnContextEnvelope,
-  renderTurnContextEnvelopeForModel,
-} from "./context/turnContextEnvelope";
+import { resolveTurnUserRequestText } from "./context/turnMaterial";
 import {
   getActiveTurnPaper,
   getSelectedPassagePaper,
 } from "./context/turnPaperScope";
-import { RAW_PDF_TRANSPORT_POLICY_BLOCK } from "./context/rawPdfTransportPolicy";
 import { resolveAgentPromptBudgetLimits } from "./context/promptBudget";
 import {
   renderAgentPastChatMessageText,
@@ -110,6 +101,7 @@ import {
   normalizeAttachedConversationScope,
 } from "../services/pastConversations/pastConversationText";
 import { LocalDocumentPathStreamRedactor } from "./privacy/localDocumentPathRedaction";
+import { positiveIntOrUndefined, trimmedStringOrNull } from "../core/values";
 
 export type RunTurnParams = ExternalRunTurnParams;
 
@@ -281,7 +273,6 @@ type ContextEnvelope = {
   pinnedPaperCount: number;
   attachmentCount: number;
   screenshotCount: number;
-  visibleContext?: string;
   selectedTexts: Array<{
     source: string;
     text: string;
@@ -366,20 +357,6 @@ type BridgePaperContext = {
   contextFilePath?: string;
 };
 
-type BridgeCollectionContext = {
-  collectionId?: number;
-  name?: string;
-  libraryID?: number;
-};
-
-type BridgeTagContext = {
-  name?: string;
-  libraryID?: number;
-  normalizedName?: string;
-  scope?: "allTagged" | "untagged";
-  includeAutomatic?: boolean;
-};
-
 type BridgeScopeType =
   | "paper"
   | "open"
@@ -440,27 +417,19 @@ type BridgeRuntimeRequest = {
   authMode?: string;
   providerProtocol?: string;
   executionContext?: AgentRuntimeRequest["executionContext"];
-  selectedTextContexts?: SelectedTextContext[];
-  resolvedSelectedTextAnchors?: ResolvedSelectedTextAnchor[];
-  selectedTexts?: string[];
-  selectedTextSources?: unknown[];
-  selectedTextNoteContexts?: NoteContextRef[];
+  /**
+   * The Zotero context and the material the user attached (the open note,
+   * the selected passages), rendered as the original agent's prompt states
+   * them; the bridge places it before the user's words.
+   */
+  turnContext?: string;
   selectedPaperContexts?: BridgePaperContext[];
   fullTextPaperContexts?: BridgePaperContext[];
   pinnedPaperContexts?: BridgePaperContext[];
-  selectedCollectionContexts?: BridgeCollectionContext[];
-  selectedTagContexts?: BridgeTagContext[];
   localDocuments?: readonly LocalDocumentResource[];
   attachments?: BridgeAttachment[];
   screenshots?: string[];
   history?: Array<{ role: string; content: string }>;
-  activeNoteContext?: {
-    noteId: number;
-    title: string;
-    noteKind: string;
-    parentItemId?: number;
-    noteText?: string;
-  };
 };
 
 const lastRunBridgeContextByConversationKey = new Map<
@@ -541,12 +510,6 @@ export async function preflightClaudeBridgeLocalPdfCapability(): Promise<void> {
     throw new Error("Claude bridge URL is empty.");
   }
   await assertClaudeBridgeLocalPdfCapability(bridgeUrl);
-}
-
-export function supportsClaudeBridgeLocalPdfPathsForTests(
-  payload: unknown,
-): boolean {
-  return supportsClaudeBridgeLocalPdfPaths(payload);
 }
 
 export function getBridgeQuickFixHint(baseUrl?: string): string {
@@ -630,10 +593,6 @@ function getClaudeSettingSourcesByPref(): Array<"user" | "project" | "local"> {
   return ["user", "project", "local"];
 }
 
-function getClaudeSettingSourcesCsvByPref(): string {
-  return getClaudeSettingSourcesByPref().join(",");
-}
-
 function buildAgentPermissionMetadata(): {
   permissionMode: ClaudePermissionMode;
   allowDangerouslySkipPermissions?: true;
@@ -646,74 +605,6 @@ function buildAgentPermissionMetadata(): {
     };
   }
   return { permissionMode };
-}
-
-/**
- * The Claude Code bridge's map from the search-routing source families
- * (SEARCH_ROUTING_CONTRACT) to its own tools: the Zotero MCP tools for the
- * turn's papers, the library and scholarly sources, and Claude Code's
- * WebSearch and WebFetch for the web (user decision 2a, 2026-10-20). The
- * bridge allows WebFetch and WebSearch by default (start-bridge-server.ts
- * --default-allowed-tools), but extra bridge arguments, the user's Claude
- * settings or the model provider can remove them, so the line says "when
- * available". Native web search has no tool description that carries the
- * query-language rule, so the line states it.
- */
-export const CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES =
-  "Search tools: the Zotero MCP tools, when listed, read the turn's papers (paper_read), search the library (library_retrieve, library_search) search scholarly sources (literature_search) and read a found paper's abstract and open-access text (literature_read); Claude Code's WebSearch and WebFetch search and read the web when available. Write web search queries in the user's language by default.";
-
-function buildOriginalAgentModeInstructionBlock(): string {
-  return [
-    "## Original agent-mode Zotero behavior",
-    ...AGENT_PERSONA_INSTRUCTIONS,
-  ].join("\n\n");
-}
-
-function buildClaudeBridgeNotesDirectoryInstruction(): string {
-  const configSection = buildNotesDirectoryConfigSection().trim();
-  if (!configSection) return "";
-  return [
-    configSection,
-    "Claude Code note-directory rules:",
-    "- The notes directory is already configured by the user. Do not use Bash, Glob, Find, LS, or Read to rediscover the vault path, inspect likely note folders, or probe write access when this section is present.",
-    "- When the user asks to save a file-based note into the configured notes directory, use the configured Default target path unless the user explicitly names a different folder or absolute path.",
-    "- Do not create a Papers, papers, Notes, or other alternate subfolder unless the user explicitly requested that exact folder.",
-    "- For a requested file-based note, finalize it with submit_document and call the Zotero MCP file_io tool with its documentId, exact visibleMarkdown, and a `.md` path under the configured Default target path. file_io exports and verifies the complete figure bundle without native shell or Write access.",
-  ].join("\n");
-}
-
-function buildClaudeBridgeCustomInstruction(
-  options: {
-    rawPdfMode?: boolean;
-    /** Where saved files go and when to show a page in the answer instead. */
-    agentFilesInstruction?: string;
-  } = {},
-): string {
-  return [
-    getClaudeCustomInstructionPref(),
-    buildOriginalAgentModeInstructionBlock(),
-    options.rawPdfMode
-      ? "Claude Code receives Zotero MCP access for metadata and write operations. For raw-PDF identities, use the exact current-turn local paths instead of Zotero paper-content retrieval."
-      : "Claude Code receives Zotero access through the scoped MCP tools for this turn. When those tools are available, use library_search, library_retrieve, library_read, and paper_read for Zotero library or paper-content questions before relying on filesystem exploration or conversation-visible snippets. Use zotero_script for Zotero-native API inspection or scripted library operations only when the semantic Zotero tools cannot cover the request.",
-    CLAUDE_BRIDGE_SEARCH_TOOL_ROUTES,
-    'If the turn includes selected collection or tag scopes, resolve phrases like "this folder", "this collection", "inside this folder", and "this tag" against those selected Zotero scopes. Do not ask the user which folder or tag they mean unless no selected scope is present or multiple selected scopes make the reference genuinely ambiguous.',
-    // Unconditional on purpose: where notes belong is a property of Zotero, not
-    // of whether this user happens to have configured a notes directory. The
-    // directory block below only carves out the file writes that are not notes.
-    "A note you are asked to write is a Zotero note: use the Zotero note_write tool, not Claude Code's Write tool. note_write is the only note path Zotero can authorize, journal, and verify against the saved note, so a note written straight to disk leaves the host with no record of what changed.",
-    buildClaudeBridgeNotesDirectoryInstruction(),
-    options.rawPdfMode ? "" : options.agentFilesInstruction || "",
-    options.rawPdfMode ? RAW_PDF_TRANSPORT_POLICY_BLOCK : "",
-  ]
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-export function buildClaudeBridgeCustomInstructionForTests(
-  rawPdfMode = false,
-): string {
-  return buildClaudeBridgeCustomInstruction({ rawPdfMode });
 }
 
 function isClaudeCodeModeEnabled(): boolean {
@@ -764,12 +655,6 @@ function normalizeScopeType(value: unknown): BridgeScopeType | null {
     default:
       return null;
   }
-}
-
-function normalizeScopeId(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim();
-  return normalized ? normalized : null;
 }
 
 function resolvePaperScopeFromRequest(
@@ -831,7 +716,7 @@ function resolveBridgeScope(request: AgentRuntimeRequest): BridgeScope {
   const explicitType = normalizeScopeType(
     (request as unknown as { scopeType?: unknown }).scopeType,
   );
-  const explicitId = normalizeScopeId(
+  const explicitId = trimmedStringOrNull(
     (request as unknown as { scopeId?: unknown }).scopeId,
   );
   const explicitLabel =
@@ -1050,7 +935,10 @@ async function streamBridgeLines(
  * message. The block is the built-in agent's past-chat message, rendered
  * under the same memo key as the resume-fallback history
  * (agentMode/pastChatHistory.ts), so a later replay sends the same bytes.
- * The bridge needs no change: it reads userText as the prompt.
+ * The bridge needs no change: it reads userText as the prompt. A send from
+ * an empty composer carries only the questions attached to the selections,
+ * which the turn context already shows under each quote, so a short
+ * instruction stands in for them (resolveTurnUserRequestText).
  *
  * request.userText itself stays unchanged, for the MCP scope and skill
  * routing. Never fails the turn.
@@ -1059,7 +947,7 @@ export async function buildExternalRuntimeUserText(
   request: AgentRuntimeRequest,
   source?: PastConversationSource,
 ): Promise<string> {
-  const userText = request.userText || "";
+  const userText = resolveTurnUserRequestText(request) || "";
   const refs = normalizeAttachedConversationScope(
     request.deliveredConversations,
   );
@@ -1103,22 +991,14 @@ export async function buildExternalRuntimeUserText(
   }
 }
 
-export function buildExternalRuntimeUserTextForTests(
-  request: AgentRuntimeRequestInput,
-  source?: PastConversationSource,
-): Promise<string> {
-  return buildExternalRuntimeUserText(
-    resolveAgentRuntimeRequest(request),
-    source,
-  );
-}
-
 async function runExternalBridgeTurn(
   baseUrl: string,
   params: ResolvedRunTurnParams & {
     pastConversationSource?: PastConversationSource;
     contextEnvelope?: ContextEnvelope;
     runtimeRequest?: BridgeRuntimeRequest;
+    /** The prompt's standing blocks (renderExternalRuntimePrompt). */
+    standingInstructions?: string;
     allowedTools?: string[];
     mcpServers?: ClaudeMcpServersConfig;
     scope?: BridgeScope;
@@ -1167,15 +1047,6 @@ async function runExternalBridgeTurn(
     params.request.metadata && typeof params.request.metadata === "object"
       ? params.request.metadata
       : undefined;
-  const agentFilesInstruction = await buildAgentFilesInstructionForScope({
-    conversationKind:
-      params.request.conversationKind === "paper" ? "paper" : "global",
-    libraryID: resolveFallbackLibraryId(params.request),
-    paperItemId: (
-      getActiveTurnPaper(params.request.turnPaperScope) ||
-      params.request.turnPaperScope.papers[0]?.paper
-    )?.itemId,
-  });
   const providerIdentityStack = await buildClaudeProviderIdentityStack();
   const providerIdentity = hashProviderIdentityStack(providerIdentityStack);
   const providerSessionIdHint = await resolveClaudeProviderSessionHint(
@@ -1199,10 +1070,7 @@ async function runExternalBridgeTurn(
       claudeSettingSources: getClaudeSettingSourcesByPref(),
       settingSources: getClaudeSettingSourcesCsvByPref(),
       ...buildAgentPermissionMetadata(),
-      customInstruction: buildClaudeBridgeCustomInstruction({
-        rawPdfMode: requestLocalDocuments(params.request).length > 0,
-        agentFilesInstruction,
-      }),
+      customInstruction: params.standingInstructions,
       providerIdentity,
       providerIdentityStack,
       model: resolveClaudeBridgeModelForMetadata(params.request.model),
@@ -1353,12 +1221,6 @@ function trimText(value: unknown, max = 360): string {
   return `${normalized.slice(0, Math.max(0, max - 3)).trimEnd()}...`;
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function resolveLibraryName(libraryID: number | undefined): string | undefined {
   if (!libraryID) return undefined;
   try {
@@ -1396,13 +1258,13 @@ function resolveFallbackLibraryId(
     request.turnPaperScope.tags,
     1,
   )[0]?.libraryID;
-  const userLibraryId = normalizePositiveInt(
+  const userLibraryId = positiveIntOrUndefined(
     (Zotero as unknown as { Libraries?: { userLibraryID?: unknown } }).Libraries
       ?.userLibraryID,
   );
   return (
-    normalizePositiveInt(request.libraryID) ||
-    normalizePositiveInt(request.item?.libraryID) ||
+    positiveIntOrUndefined(request.libraryID) ||
+    positiveIntOrUndefined(request.item?.libraryID) ||
     selectedCollectionLibraryId ||
     selectedTagLibraryId ||
     userLibraryId
@@ -1466,8 +1328,8 @@ export function buildExternalRuntimeZoteroMcpScope(
     request.turnPaperScope.papers[0]?.paper;
   const kind = request.conversationKind === "paper" ? "paper" : "global";
   const activeItemId =
-    normalizePositiveInt(request.activeItemId) ||
-    normalizePositiveInt(request.item?.id) ||
+    positiveIntOrUndefined(request.activeItemId) ||
+    positiveIntOrUndefined(request.item?.id) ||
     selectedPaper?.itemId;
   const activeNote = request.activeNoteContext;
   const paperItemID =
@@ -1484,19 +1346,19 @@ export function buildExternalRuntimeZoteroMcpScope(
     outsidePaperSelection: request.outsidePaperSelection,
     profileSignature,
     conversationGeneration: request.conversationGeneration,
-    conversationKey: normalizePositiveInt(request.conversationKey),
+    conversationKey: positiveIntOrUndefined(request.conversationKey),
     libraryID,
     kind,
     paperItemID,
     activeItemId: paperItemID || activeItemId,
     activeContextItemId: selectedPaper?.contextItemId,
-    activeNoteId: normalizePositiveInt(activeNote?.noteId),
+    activeNoteId: positiveIntOrUndefined(activeNote?.noteId),
     activeNoteKind:
       activeNote?.noteKind === "item" || activeNote?.noteKind === "standalone"
         ? activeNote.noteKind
         : undefined,
     activeNoteTitle: activeNote?.title,
-    activeNoteParentItemId: normalizePositiveInt(activeNote?.parentItemId),
+    activeNoteParentItemId: positiveIntOrUndefined(activeNote?.parentItemId),
     libraryName: resolveLibraryName(libraryID),
     title: selectedPaper?.title,
     userText: request.userText,
@@ -1511,36 +1373,6 @@ export function buildExternalRuntimeZoteroMcpScope(
     turnPaperScope: request.turnPaperScope,
     turnPaperScopeWarnings: request.turnPaperScopeWarnings,
   };
-}
-
-export function buildClaudeZoteroMcpScopeForTests(
-  request: AgentRuntimeRequestInput,
-  profileSignature: string,
-): ZoteroMcpActiveScope {
-  return buildExternalRuntimeZoteroMcpScope(
-    resolveAgentRuntimeRequest(request),
-    profileSignature,
-    CLAUDE_MCP_IDENTITY,
-  );
-}
-
-function normalizePaperContentSourceMode(
-  value: unknown,
-): PaperContentSourceMode | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "text":
-    case "mineru":
-    case "pdf":
-    case "markdown":
-    case "html":
-    case "txt":
-    case "docx":
-      return normalized;
-    default:
-      return undefined;
-  }
 }
 
 function normalizePaperRefs(list: unknown, limit = 8): PaperContextRef[] {
@@ -1689,9 +1521,6 @@ function normalizeTagRefs(
 }
 
 function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
-  const turnContextEnvelope = buildTurnContextEnvelope(request);
-  const visibleContext =
-    renderTurnContextEnvelopeForModel(turnContextEnvelope) || undefined;
   const selectedTextContexts = synthesizeSelectedTextContexts({
     selectedTextContexts: request.selectedTextContexts,
     selectedTexts: request.selectedTexts,
@@ -1798,7 +1627,6 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
     screenshotCount: Array.isArray(request.screenshots)
       ? request.screenshots.length
       : 0,
-    visibleContext,
     selectedTexts: selectedTextRows,
     selectedPapers,
     selectedCollections,
@@ -1812,6 +1640,8 @@ function buildContextEnvelope(request: AgentRuntimeRequest): ContextEnvelope {
 
 async function buildBridgeRuntimeRequest(
   request: AgentRuntimeRequest,
+  /** The prompt's turn blocks (renderExternalRuntimePrompt). */
+  turnContext: string,
 ): Promise<BridgeRuntimeRequest> {
   const joinPath = (base: string, segment: string): string => {
     if (!base) return segment;
@@ -2017,47 +1847,15 @@ async function buildBridgeRuntimeRequest(
     authMode: request.authMode,
     providerProtocol: request.providerProtocol,
     executionContext: request.executionContext,
-    selectedTextContexts: Array.isArray(request.selectedTextContexts)
-      ? request.selectedTextContexts
-      : undefined,
-    resolvedSelectedTextAnchors: Array.isArray(
-      request.resolvedSelectedTextAnchors,
-    )
-      ? request.resolvedSelectedTextAnchors
-      : undefined,
-    selectedTexts: Array.isArray(request.selectedTexts)
-      ? request.selectedTexts
-      : undefined,
-    selectedTextSources: Array.isArray(request.selectedTextSources)
-      ? request.selectedTextSources
-      : undefined,
-    selectedTextNoteContexts: Array.isArray(request.selectedTextNoteContexts)
-      ? request.selectedTextNoteContexts.filter(
-          (entry): entry is NoteContextRef => Boolean(entry),
-        )
-      : undefined,
+    turnContext: turnContext || undefined,
     selectedPaperContexts,
     fullTextPaperContexts,
     pinnedPaperContexts,
-    selectedCollectionContexts: normalizeCollectionRefs(
-      request.turnPaperScope.collections,
-      20,
-    ),
-    selectedTagContexts: normalizeTagRefs(request.turnPaperScope.tags, 20),
     localDocuments: requestLocalDocuments(request).length
       ? requestLocalDocuments(request)
       : undefined,
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
-    activeNoteContext: request.activeNoteContext
-      ? {
-          noteId: request.activeNoteContext.noteId,
-          title: request.activeNoteContext.title,
-          noteKind: request.activeNoteContext.noteKind,
-          parentItemId: request.activeNoteContext.parentItemId,
-          noteText: request.activeNoteContext.noteText,
-        }
-      : undefined,
     history: Array.isArray(request.history)
       ? request.history.map((entry) => ({
           role: typeof entry.role === "string" ? entry.role : "user",
@@ -2065,18 +1863,6 @@ async function buildBridgeRuntimeRequest(
         }))
       : undefined,
   };
-}
-
-export function buildBridgeRuntimeRequestForTests(
-  request: AgentRuntimeRequestInput,
-): Promise<BridgeRuntimeRequest> {
-  return buildBridgeRuntimeRequest(resolveAgentRuntimeRequest(request));
-}
-
-export function buildExternalBridgeContextEnvelopeForTests(
-  request: AgentRuntimeRequestInput,
-) {
-  return buildContextEnvelope(resolveAgentRuntimeRequest(request));
 }
 
 function signatureForContextEnvelope(envelope: ContextEnvelope): string {
@@ -2118,14 +1904,6 @@ function signatureForContextEnvelope(envelope: ContextEnvelope): string {
     ),
     activeNoteId: envelope.activeNote?.noteId,
   });
-}
-
-export function buildExternalBridgeContextSignatureForTests(
-  request: AgentRuntimeRequestInput,
-): string {
-  return signatureForContextEnvelope(
-    buildContextEnvelope(resolveAgentRuntimeRequest(request)),
-  );
 }
 
 async function fetchExternalTools(
@@ -2505,6 +2283,8 @@ type ClaudeBridgeTurnPrepared = {
   bridgeUrl: string;
   contextEnvelope: ContextEnvelope;
   runtimeRequest: BridgeRuntimeRequest;
+  /** The prompt's standing blocks, the Claude system-prompt append. */
+  standingInstructions: string;
   scope: BridgeScope;
 };
 
@@ -2621,7 +2401,14 @@ export function createExternalBackendBridgeRuntime(options: {
       }
       const contextEnvelope = buildContextEnvelope(request);
       await recordProfiling("frontend.context_envelope.ready");
-      const runtimeRequest = await buildBridgeRuntimeRequest(request);
+      const runtimePrompt = await renderExternalRuntimePrompt(
+        "claude_code",
+        request,
+      );
+      const runtimeRequest = await buildBridgeRuntimeRequest(
+        request,
+        runtimePrompt.turn,
+      );
       await recordProfiling("frontend.bridge_runtime_request.ready");
       const scope = resolveBridgeScope(request);
       await withConversationWriteLock(request.conversationKey, async () => {
@@ -2647,7 +2434,13 @@ export function createExternalBackendBridgeRuntime(options: {
           signatureForContextEnvelope(contextEnvelope),
         );
       });
-      return { bridgeUrl, contextEnvelope, runtimeRequest, scope };
+      return {
+        bridgeUrl,
+        contextEnvelope,
+        runtimeRequest,
+        standingInstructions: runtimePrompt.standing,
+        scope,
+      };
     },
     createStageTracker: createClaudeTurnStageTracker,
     zoteroMcp: {
@@ -2686,6 +2479,7 @@ export function createExternalBackendBridgeRuntime(options: {
         onEvent: ctx.emit,
         contextEnvelope: ctx.prepared.contextEnvelope,
         runtimeRequest: ctx.prepared.runtimeRequest,
+        standingInstructions: ctx.prepared.standingInstructions,
         allowedTools: ctx.zoteroMcp?.allowedTools,
         mcpServers: ctx.zoteroMcp?.servers,
         scope: ctx.prepared.scope,

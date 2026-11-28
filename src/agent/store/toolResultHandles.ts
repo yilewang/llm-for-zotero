@@ -10,6 +10,9 @@ import {
   getConversationWriteGeneration,
   isConversationWriteGenerationCurrent,
 } from "../../shared/conversationWriteFence";
+import { positiveIntOrUndefined } from "../../core/values";
+import { stableJson } from "./stableJson";
+import { getZoteroDb } from "../../core/zoteroDb";
 
 export type AgentToolResultHandleRecord = {
   handle: string;
@@ -32,10 +35,6 @@ export type AgentToolResultHandleSeed = {
   createdAt?: number;
 };
 
-type ZoteroDb = {
-  queryAsync: (sql: string, params?: unknown[]) => Promise<unknown>;
-};
-
 const TOOL_RESULT_HANDLE_TABLE = "llm_for_zotero_agent_tool_result_handles";
 const TOOL_RESULT_HANDLE_INDEX =
   "llm_for_zotero_agent_tool_result_handles_conversation_idx";
@@ -43,16 +42,6 @@ const TOOL_RESULT_HANDLE_INDEX =
 const handleStore = new Map<string, AgentToolResultHandleRecord>();
 const hydratedConversations = new Set<number>();
 let initPromise: Promise<boolean> | null = null;
-
-function getDb(): ZoteroDb | null {
-  const zotero = (
-    globalThis as typeof globalThis & {
-      Zotero?: { DB?: ZoteroDb };
-      ztoolkit?: { log?: (...args: unknown[]) => void };
-    }
-  ).Zotero;
-  return zotero?.DB || null;
-}
 
 function logHandleStoreError(message: string, error: unknown): void {
   const toolkit = (
@@ -63,12 +52,6 @@ function logHandleStoreError(message: string, error: unknown): void {
   toolkit?.log?.(message, error);
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function normalizeText(value: unknown, maxChars = 4096): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
@@ -76,23 +59,6 @@ function normalizeText(value: unknown, maxChars = 4096): string | undefined {
   return normalized.length > maxChars
     ? normalized.slice(0, maxChars)
     : normalized;
-}
-
-function stableJson(value: unknown): string {
-  return JSON.stringify(stabilizeForJson(value));
-}
-
-function stabilizeForJson(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stabilizeForJson);
-  if (!value || typeof value !== "object") return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined) continue;
-    out[key] = stabilizeForJson(child);
-  }
-  return out;
 }
 
 function hashText(value: string): string {
@@ -115,7 +81,7 @@ function parseStoredContent(value: unknown): unknown {
 function normalizeRecord(value: unknown): AgentToolResultHandleRecord | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const conversationKey = normalizePositiveInt(record.conversationKey);
+  const conversationKey = positiveIntOrUndefined(record.conversationKey);
   const handle = normalizeText(record.handle, 160);
   const toolName = normalizeText(record.toolName, 100);
   const toolCallId = normalizeText(record.toolCallId, 160);
@@ -134,7 +100,7 @@ function normalizeRecord(value: unknown): AgentToolResultHandleRecord | null {
 }
 
 async function ensureAgentToolResultHandleStore(): Promise<boolean> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return false;
   if (initPromise) return initPromise;
   initPromise = (async () => {
@@ -177,7 +143,7 @@ export async function initAgentToolResultHandleStore(): Promise<boolean> {
 export function createAgentToolResultHandleRecord(
   seed: AgentToolResultHandleSeed,
 ): AgentToolResultHandleRecord | null {
-  const conversationKey = normalizePositiveInt(seed.conversationKey);
+  const conversationKey = positiveIntOrUndefined(seed.conversationKey);
   const toolName = normalizeText(seed.toolName, 100);
   const toolCallId = normalizeText(seed.toolCallId, 160);
   if (!conversationKey || !toolName || !toolCallId) return null;
@@ -202,18 +168,18 @@ export function createAgentToolResultHandleRecord(
     inputDigest,
     resourceSignature,
     content: seed.content,
-    createdAt: normalizePositiveInt(seed.createdAt) || Date.now(),
+    createdAt: positiveIntOrUndefined(seed.createdAt) || Date.now(),
   };
 }
 
 export async function hydrateAgentToolResultHandles(
   conversationKeyValue: number,
 ): Promise<void> {
-  const conversationKey = normalizePositiveInt(conversationKeyValue);
+  const conversationKey = positiveIntOrUndefined(conversationKeyValue);
   if (!conversationKey || hydratedConversations.has(conversationKey)) return;
   const expectedGeneration = getConversationWriteGeneration(conversationKey);
   const dbReady = await ensureAgentToolResultHandleStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) {
     hydratedConversations.add(conversationKey);
     return;
@@ -279,7 +245,7 @@ export async function upsertAgentToolResultHandles(
     return false;
   }
   const dbReady = await ensureAgentToolResultHandleStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return false;
   let written = true;
   try {
@@ -330,7 +296,7 @@ export async function getAgentToolResultHandle(params: {
   conversationKey: number;
   handle: string;
 }): Promise<AgentToolResultHandleRecord | null> {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   const handle = normalizeText(params.handle, 160);
   if (!conversationKey || !handle) return null;
   await hydrateAgentToolResultHandles(conversationKey);
@@ -342,7 +308,7 @@ export async function listAgentToolResultHandles(params: {
   conversationKey: number;
   toolName: string;
 }): Promise<AgentToolResultHandleRecord[]> {
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const conversationKey = positiveIntOrUndefined(params.conversationKey);
   if (!conversationKey) return [];
   await hydrateAgentToolResultHandles(conversationKey);
   return Array.from(handleStore.values())
@@ -357,7 +323,7 @@ export async function listAgentToolResultHandles(params: {
 export function hasAgentToolResultHandles(
   conversationKeyValue: number,
 ): boolean {
-  const conversationKey = normalizePositiveInt(conversationKeyValue);
+  const conversationKey = positiveIntOrUndefined(conversationKeyValue);
   if (!conversationKey) return false;
   const prefix = `${conversationKey}:`;
   return Array.from(handleStore.keys()).some((key) => key.startsWith(prefix));
@@ -372,7 +338,7 @@ export function clearAgentToolResultHandleStore(): void {
 export function clearInMemoryAgentToolResultHandles(
   conversationKeyValue: number,
 ): void {
-  const conversationKey = normalizePositiveInt(conversationKeyValue);
+  const conversationKey = positiveIntOrUndefined(conversationKeyValue);
   if (!conversationKey) return;
   const prefix = `${conversationKey}:`;
   for (const key of Array.from(handleStore.keys())) {
@@ -388,7 +354,7 @@ export async function clearPersistedAgentToolResultHandles(
     handleStore.clear();
     hydratedConversations.clear();
   } else {
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (conversationKey) {
       const prefix = `${conversationKey}:`;
       for (const key of Array.from(handleStore.keys())) {
@@ -398,14 +364,14 @@ export async function clearPersistedAgentToolResultHandles(
     }
   }
   const dbReady = await ensureAgentToolResultHandleStore();
-  const db = getDb();
+  const db = getZoteroDb();
   if (!dbReady || !db) return;
   try {
     if (conversationKeyValue === undefined) {
       await db.queryAsync(`DELETE FROM ${TOOL_RESULT_HANDLE_TABLE}`);
       return;
     }
-    const conversationKey = normalizePositiveInt(conversationKeyValue);
+    const conversationKey = positiveIntOrUndefined(conversationKeyValue);
     if (!conversationKey) return;
     await db.queryAsync(
       `DELETE FROM ${TOOL_RESULT_HANDLE_TABLE}

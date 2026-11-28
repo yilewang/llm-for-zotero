@@ -54,8 +54,6 @@ import type { TaskPaperScopeEntry } from "../../../agent/context/taskPaperScopeL
 import type { RunEndState } from "../../../agent/execution/types";
 import { t } from "../../../utils/i18n";
 import {
-  canOpenTaskPaperPassage,
-  taskPaperPassagePageLabel,
   taskPaperReadReach,
   type TaskPaperPassageTarget,
 } from "./passageSource";
@@ -97,6 +95,7 @@ import {
   type TaskProgressOpenSourceDetail,
   type TaskProgressShowInAnswerDetail,
   type TaskSourceRow,
+  el,
 } from "./outsideView";
 import type { TaskOutsideQuote } from "./outside";
 import type { TaskAnswerCitation } from "./answerCitations";
@@ -199,10 +198,6 @@ export function findCurrentTaskProgressSteps(
       !node.hidden && !node.closest(".llm-task-progress-question-section"),
   );
   return top || null;
-}
-
-export function getRememberedTaskProgressDrawerHeight(): number | null {
-  return rememberedDrawerHeight;
 }
 
 export function resetTaskProgressDrawerHeight(): void {
@@ -1159,40 +1154,6 @@ export function formatTaskPaperChatCounts(
   return count ? format("{count} cited", { count }) : "";
 }
 
-/** An earlier question's counts: "2/2 steps · 8 papers", a zero left out. */
-export function formatTaskQuestionCounts(
-  section: TaskProgressSection,
-  /** The question's scholarly papers and web pages. */
-  outside: { papers: number; pages: number } = { papers: 0, pages: 0 },
-): string {
-  const parts: string[] = [];
-  const checklist = section.checklist;
-  if (checklist && checklist.total > 0) {
-    parts.push(
-      format("{done}/{total} steps", {
-        done: checklist.done,
-        total: checklist.total,
-      }),
-    );
-  }
-  const papers = section.rows.length + outside.papers;
-  if (papers) {
-    parts.push(
-      format(papers === 1 ? "{count} paper" : "{count} papers", {
-        count: papers,
-      }),
-    );
-  }
-  if (outside.pages) {
-    parts.push(
-      format(outside.pages === 1 ? "{count} web page" : "{count} web pages", {
-        count: outside.pages,
-      }),
-    );
-  }
-  return parts.join(" · ");
-}
-
 /**
  * The decision words: the row's tag and the opened row's line. Both name only
  * a paper left out or put off; an included paper shows neither.
@@ -1224,18 +1185,6 @@ const STATE_LABELS: Record<TaskPaperState, string> = {
 // ---------------------------------------------------------------------------
 // DOM
 // ---------------------------------------------------------------------------
-
-function el<K extends keyof HTMLElementTagNameMap>(
-  doc: Document,
-  tag: K,
-  className: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = doc.createElement(tag);
-  node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -2913,15 +2862,6 @@ export function mountTaskProgressView(params: {
       more.textContent = format("and {count} more", { count: truncated });
     }
     renderDockedQuestions(sections);
-  };
-
-  /** A question's scholarly papers and web pages, for its counts. */
-  const outsideCountsOf = (section: TaskProgressSection) => {
-    const sources = record()?.outside?.[section.question.turn]?.sources || [];
-    return {
-      papers: sources.filter((source) => source.kind === "paper").length,
-      pages: sources.filter((source) => source.kind === "web").length,
-    };
   };
 
   /** A question's groups, when its run searched or cited outside sources. */

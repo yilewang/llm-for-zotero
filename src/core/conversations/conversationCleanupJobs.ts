@@ -1,11 +1,15 @@
-declare const Zotero: any;
-
 import type { ConversationSystem } from "../../shared/types";
 import { getMaintenanceQueryOptions } from "../logging";
 import {
   CONVERSATION_SYSTEMS,
   isConversationSystem,
 } from "./conversationSystems";
+import { positiveIntOrZero } from "../values";
+import {
+  getZoteroDb,
+  isAlreadyExistingColumnError,
+  type ZoteroDb,
+} from "../zoteroDb";
 
 const CONVERSATION_SYSTEMS_SQL_LIST = CONVERSATION_SYSTEMS.map(
   (system) => `'${system}'`,
@@ -93,31 +97,12 @@ export function scheduleConversationCleanupJobsChangedNotification(): void {
   maybeUnref.unref?.();
 }
 
-type CleanupDb = {
-  queryAsync: (
-    sql: string,
-    params?: unknown[],
-    options?: { debug?: boolean },
-  ) => Promise<unknown>;
-};
-
-function getDb(): CleanupDb | null {
-  const db = (globalThis as { Zotero?: { DB?: { queryAsync?: unknown } } })
-    .Zotero?.DB;
-  return typeof db?.queryAsync === "function" ? (db as CleanupDb) : null;
-}
-
 function queryCleanupDb(
-  db: CleanupDb,
+  db: ZoteroDb,
   sql: string,
   params?: unknown[],
 ): Promise<unknown> {
   return db.queryAsync(sql, params, getMaintenanceQueryOptions());
-}
-
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
 }
 
 function normalizeOperation(
@@ -136,12 +121,12 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
   const id = typeof row.id === "string" ? row.id.trim() : "";
   const operation = normalizeOperation(row.operation);
   const system = normalizeSystem(row.system);
-  const conversationKey = normalizePositiveInt(row.conversation_key);
+  const conversationKey = positiveIntOrZero(row.conversation_key);
   const instanceID =
     typeof row.instance_id === "string" ? row.instance_id.trim() : "";
   const conversationKind =
     row.conversation_kind === "paper" ? "paper" : "global";
-  const libraryID = normalizePositiveInt(row.library_id);
+  const libraryID = positiveIntOrZero(row.library_id);
   const providerSessionId =
     typeof row.provider_session_id === "string"
       ? row.provider_session_id.trim()
@@ -176,7 +161,7 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
     instanceID,
     conversationKind,
     libraryID,
-    paperItemID: normalizePositiveInt(row.paper_item_id) || undefined,
+    paperItemID: positiveIntOrZero(row.paper_item_id) || undefined,
     providerScope:
       providerScopeType && providerScopeId
         ? {
@@ -205,20 +190,9 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
 
 let initPromise: Promise<void> | null = null;
 
-/** Forget the cached table init, for a test that swaps in a fresh database. */
-export function resetConversationCleanupJobsInitForTests(): void {
-  initPromise = null;
-}
-
-function isAlreadyExistingColumnError(error: unknown): boolean {
-  return /duplicate column|already exists/i.test(
-    String(error instanceof Error ? error.message : error || ""),
-  );
-}
-
 export async function initConversationCleanupJobs(): Promise<void> {
   if (initPromise) return initPromise;
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   initPromise = queryCleanupDb(
     db,
@@ -314,8 +288,8 @@ export async function enqueueConversationCleanupJob(params: {
   providerScope?: ConversationCleanupProviderScope;
   providerSessionId: string;
 }): Promise<ConversationCleanupJob | null> {
-  const db = getDb();
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const db = getZoteroDb();
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   const providerSessionId = String(params.providerSessionId || "").trim();
   const providerScope = params.providerScope;
   if (
@@ -358,8 +332,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
   providerScope?: ConversationCleanupProviderScope;
   providerSessionId: string;
 }): Promise<ConversationCleanupJob | null> {
-  const db = getDb();
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const db = getZoteroDb();
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   const providerSessionId = String(params.providerSessionId || "").trim();
   const providerScope = params.providerScope;
   if (
@@ -409,8 +383,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     conversationKey,
     instanceID: String(params.instanceID || "").trim(),
     conversationKind: params.conversationKind || "global",
-    libraryID: normalizePositiveInt(params.libraryID) || 0,
-    paperItemID: normalizePositiveInt(params.paperItemID) || undefined,
+    libraryID: positiveIntOrZero(params.libraryID) || 0,
+    paperItemID: positiveIntOrZero(params.paperItemID) || undefined,
     providerScope: params.providerScope,
     providerSessionId,
     attempts: 0,
@@ -477,8 +451,8 @@ export async function hasPendingEmptyClaudeCleanupJob(params: {
   conversationKey: number;
   instanceID?: string;
 }): Promise<boolean> {
-  const db = getDb();
-  const conversationKey = normalizePositiveInt(params.conversationKey);
+  const db = getZoteroDb();
+  const conversationKey = positiveIntOrZero(params.conversationKey);
   const instanceID = String(params.instanceID || "").trim();
   if (!db || !conversationKey) return false;
   try {
@@ -511,7 +485,7 @@ export async function listDueConversationCleanupJobs(
   now = Date.now(),
   options: { includeAttentionRequired?: boolean } = {},
 ): Promise<ConversationCleanupJob[]> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return [];
   await initConversationCleanupJobs();
   const rows = (await queryCleanupDb(
@@ -535,7 +509,7 @@ export async function listDueConversationCleanupJobs(
 export async function getNextConversationCleanupJobDueAt(
   options: { includeAttentionRequired?: boolean } = {},
 ): Promise<number | null> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return null;
   await initConversationCleanupJobs();
   const rows = (await queryCleanupDb(
@@ -561,7 +535,7 @@ export async function getNextConversationCleanupJobDueAt(
 async function getConversationCleanupJobByID(
   id: string,
 ): Promise<ConversationCleanupJob | null> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !id) return null;
   await initConversationCleanupJobs();
   const rows = (await queryCleanupDb(
@@ -581,7 +555,7 @@ async function getConversationCleanupJobByID(
 export async function completeConversationCleanupJob(
   id: string,
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db || !id) return;
   await initConversationCleanupJobs();
   await queryCleanupDb(
@@ -597,7 +571,7 @@ export async function failConversationCleanupJob(
   error: unknown,
   now = Date.now(),
 ): Promise<void> {
-  const db = getDb();
+  const db = getZoteroDb();
   if (!db) return;
   await initConversationCleanupJobs();
   const attempts = Math.min(Number.MAX_SAFE_INTEGER - 1, job.attempts + 1);

@@ -829,6 +829,3 @@ export async function getLibraryTextIndexStore(): Promise<LibraryTextIndexStore 
 export function resetLibraryTextIndexStore(): void {
   shared = null;
 }
-export function resetLibraryTextIndexStoreForTests(): void {
-  resetLibraryTextIndexStore();
-}

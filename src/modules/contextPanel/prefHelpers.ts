@@ -67,18 +67,8 @@ import {
   getPaperRestoreTarget,
   rememberPaperRestoreTarget,
 } from "../../shared/paperConversationRestore";
-
-type ZoteroPrefsAPI = {
-  get?: (key: string, global?: boolean) => unknown;
-  set?: (key: string, value: unknown, global?: boolean) => void;
-  clear?: (key: string, global?: boolean) => void;
-};
-
-function getZoteroPrefs(): ZoteroPrefsAPI | null {
-  return (
-    (Zotero as unknown as { Prefs?: ZoteroPrefsAPI } | undefined)?.Prefs || null
-  );
-}
+import { collapseWhitespace } from "../../core/values";
+import { getZoteroPrefs } from "../../utils/pluginPrefs";
 
 export function getStringPref(key: string): string {
   const value = getZoteroPrefs()?.get?.(`${config.prefsPrefix}.${key}`, true);
@@ -956,10 +946,6 @@ export function setStringArrayPref(key: string, value: string[]): void {
   Zotero.Prefs.set(`${config.prefsPrefix}.${key}`, JSON.stringify(value), true);
 }
 
-function normalizeShortcutText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
 function dedupeStrings(values: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -981,10 +967,10 @@ function normalizeShortcutOverridesForMigration(
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt) continue;
     const knownOldPrompts = KNOWN_OLD_BUILTIN_PROMPTS[id] || [];
-    const normalizedPrompt = normalizeShortcutText(trimmedPrompt);
+    const normalizedPrompt = collapseWhitespace(trimmedPrompt);
     if (
       knownOldPrompts.some(
-        (oldPrompt) => normalizeShortcutText(oldPrompt) === normalizedPrompt,
+        (oldPrompt) => collapseWhitespace(oldPrompt) === normalizedPrompt,
       )
     ) {
       continue;

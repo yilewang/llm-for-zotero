@@ -1,4 +1,3 @@
-import { fnv1a32Raw } from "../../utils/fnv1a";
 import type {
   AgentModelContentPart,
   AgentModelMessage,
@@ -22,7 +21,11 @@ import {
   resolveOutputRequestPolicy,
 } from "../../utils/outputTokenPolicy";
 import { normalizeProviderProtocol } from "../../utils/providerProtocol";
-import { durableTranscriptMessages } from "./transcriptCompactor";
+import {
+  durableTranscriptMessages,
+  buildToolCallArgumentDigestById,
+  existingToolResultHandle,
+} from "./transcriptCompactor";
 import { normalizeQuoteTokenId } from "../../services/quotes/quoteTokenIds";
 import { isCatalogToolName, isPaperEvidenceToolName } from "./toolNames";
 
@@ -237,16 +240,6 @@ function parseToolContent(message: AgentToolMessage): unknown {
   }
 }
 
-function existingToolResultHandle(content: unknown): string | undefined {
-  if (!content || typeof content !== "object" || Array.isArray(content)) {
-    return undefined;
-  }
-  const handle = (content as Record<string, unknown>).toolResultHandle;
-  return typeof handle === "string" && handle.startsWith("trh_")
-    ? handle
-    : undefined;
-}
-
 // Stored history that carries a retired tool name gets generic compaction.
 function isLibrarySearchTool(toolName: string): boolean {
   return isCatalogToolName(toolName.trim().toLowerCase());
@@ -254,26 +247,6 @@ function isLibrarySearchTool(toolName: string): boolean {
 
 function isEvidenceTool(toolName: string): boolean {
   return isPaperEvidenceToolName(toolName.trim().toLowerCase());
-}
-
-function simpleDigest(value: unknown): string {
-  const text = stableStringify(value);
-  return fnv1a32Raw(text).toString(16);
-}
-
-function buildToolCallArgumentDigestById(
-  messages: AgentModelMessage[],
-): Map<string, string> {
-  const digests = new Map<string, string>();
-  for (const message of messages) {
-    if (message.role !== "assistant" || !Array.isArray(message.tool_calls)) {
-      continue;
-    }
-    for (const call of message.tool_calls) {
-      digests.set(call.id, simpleDigest(call.arguments ?? {}));
-    }
-  }
-  return digests;
 }
 
 function buildPromptToolResultHandle(params: {

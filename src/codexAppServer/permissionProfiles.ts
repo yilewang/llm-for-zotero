@@ -26,6 +26,7 @@ import {
   readCodexPermissionStatePref,
   type CodexPermissionStatePreference,
 } from "./prefs";
+import { recordOrEmpty } from "../core/values";
 
 export type CodexPermissionCapabilities = {
   protocol: "profiles" | "legacy";
@@ -93,12 +94,6 @@ export function isCodexMethodNotFound(error: unknown): boolean {
   );
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function normalizeCursor(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
@@ -107,7 +102,7 @@ function normalizePermissionProfilePage(value: unknown): {
   profiles: CodexPermissionProfile[];
   nextCursor?: string;
 } {
-  const record = asRecord(value);
+  const record = recordOrEmpty(value);
   const rows = Array.isArray(record.data)
     ? record.data
     : Array.isArray(record.profiles)
@@ -116,7 +111,7 @@ function normalizePermissionProfilePage(value: unknown): {
         ? record.items
         : [];
   const profiles = rows.flatMap((row) => {
-    const entry = asRecord(row);
+    const entry = recordOrEmpty(row);
     const id = typeof entry.id === "string" ? entry.id : "";
     if (!id.trim()) return [];
     const allowed = entry.allowed !== false;
@@ -142,7 +137,7 @@ function normalizeFeaturePage(value: unknown): {
   guardianApprovalEnabled: boolean;
   nextCursor?: string;
 } {
-  const record = asRecord(value);
+  const record = recordOrEmpty(value);
   const rows = Array.isArray(record.data)
     ? record.data
     : Array.isArray(record.features)
@@ -152,7 +147,7 @@ function normalizeFeaturePage(value: unknown): {
         : [];
   return {
     guardianApprovalEnabled: rows.some((row) => {
-      const entry = asRecord(row);
+      const entry = recordOrEmpty(row);
       return entry.name === "guardian_approval" && entry.enabled === true;
     }),
     nextCursor: normalizeCursor(record.nextCursor),
@@ -238,10 +233,10 @@ async function loadCapabilities(params: {
   let allowedApprovalPolicies: Set<CodexApprovalPolicy> | null = null;
   let allowedApprovalsReviewers: Set<CodexApprovalsReviewer> | null = null;
   try {
-    const response = asRecord(
+    const response = recordOrEmpty(
       await params.proc.sendRequest("configRequirements/read"),
     );
-    const requirements = asRecord(response.requirements || response);
+    const requirements = recordOrEmpty(response.requirements || response);
     allowedApprovalPolicies = normalizeAllowedSet(
       requirements.allowedApprovalPolicies,
       ["untrusted", "on-request", "never"] as const,

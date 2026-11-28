@@ -1,10 +1,10 @@
 import {
   getRegisteredConversationScope,
   type ConversationRegistryRow,
-  type ConversationRegistryScope,
   type RegistryConversationKind,
 } from "./conversationRegistry";
 import type { ConversationSystem } from "./types";
+import { positiveIntOrZero, trimmedString } from "../core/values";
 
 export type ConversationRef = {
   conversationID: string;
@@ -16,24 +16,14 @@ export type ConversationRef = {
   profileSignature?: string;
 };
 
-function normalizePositiveInt(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
-function normalizeText(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 export function normalizeConversationRefFromRegistry(
   row: ConversationRegistryRow | null | undefined,
 ): ConversationRef | null {
   if (!row?.valid) return null;
-  const conversationID = normalizeText(row.conversationID);
-  const legacyConversationKey = normalizePositiveInt(row.conversationKey);
-  const libraryID = normalizePositiveInt(row.libraryID);
-  const paperItemID = normalizePositiveInt(row.paperItemID);
+  const conversationID = trimmedString(row.conversationID);
+  const legacyConversationKey = positiveIntOrZero(row.conversationKey);
+  const libraryID = positiveIntOrZero(row.libraryID);
+  const paperItemID = positiveIntOrZero(row.paperItemID);
   if (!conversationID || !legacyConversationKey || !libraryID) return null;
   if (row.kind === "paper" && !paperItemID) return null;
   const ref: ConversationRef = {
@@ -46,7 +36,7 @@ export function normalizeConversationRefFromRegistry(
   if (row.kind === "paper") {
     ref.paperItemID = paperItemID;
   }
-  const profileSignature = normalizeText(row.profileSignature);
+  const profileSignature = trimmedString(row.profileSignature);
   if (profileSignature) {
     ref.profileSignature = profileSignature;
   }
@@ -56,27 +46,9 @@ export function normalizeConversationRefFromRegistry(
 export async function resolveConversationRefForKey(
   conversationKey: number,
 ): Promise<ConversationRef | null> {
-  const normalizedKey = normalizePositiveInt(conversationKey);
+  const normalizedKey = positiveIntOrZero(conversationKey);
   if (!normalizedKey) return null;
   return normalizeConversationRefFromRegistry(
     await getRegisteredConversationScope(normalizedKey),
   );
-}
-
-export function conversationRefToRegistryScope(
-  ref: ConversationRef,
-): ConversationRegistryScope {
-  return {
-    conversationID: ref.conversationID,
-    conversationKey: ref.legacyConversationKey,
-    system: ref.system,
-    kind: ref.kind,
-    libraryID: ref.libraryID,
-    paperItemID: ref.paperItemID,
-    profileSignature: ref.profileSignature,
-  };
-}
-
-export function conversationRefCacheKey(ref: ConversationRef): string {
-  return ref.conversationID;
 }

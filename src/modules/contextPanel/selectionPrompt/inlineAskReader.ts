@@ -591,6 +591,7 @@ export function openInlineAskCardForReader(params: {
       send: t("Send"),
       reading: t("Reading the selection…"),
       discard: t("Discard"),
+      close: t("Close"),
       continueInSidebar: t("Continue in sidebar"),
       saveAsAnnotation: t("Save as annotation"),
       reasoningEffort: t("Reasoning effort"),

@@ -4,7 +4,10 @@ import { noteHtmlToModelText } from "../../services/notes/noteRendering";
 import { NOTE_EMBED_PLACEHOLDER_GUIDANCE } from "../../utils/noteEmbeds";
 import { createJournalId } from "../store/changeJournal";
 import { createAbortController } from "../../utils/apiHelpers";
-import { normalizeExcludedItemIds } from "../../services/context/normalizers";
+import {
+  normalizeExcludedItemIds,
+  normalizePaperContentSourceMode,
+} from "../../services/context/normalizers";
 /**
  * MCP (Model Context Protocol) server for the llm-for-zotero plugin.
  *
@@ -17,7 +20,6 @@ import { config } from "../../../package.json";
 import type {
   AttachedConversationRef,
   CollectionContextRef,
-  PaperContentSourceMode,
   PaperContextRef,
   QuoteCitation,
   TagContextRef,
@@ -73,7 +75,6 @@ import {
 } from "./protocol";
 import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
-import { extractVerifiedReadSources } from "../context/readEvidence";
 import { buildPagedModelView } from "../execution/modelView";
 import {
   createAgentToolResultHandleRecord,
@@ -109,7 +110,10 @@ import { getNotesDirectoryConfig } from "../../utils/notesDirectoryConfig";
 import { OUTSIDE_SEARCH_NEED_SENTENCE } from "../tools/read/outsideSearchNeed";
 import { LITERATURE_SOURCE_SENTENCE } from "../tools/read/literatureSearch";
 import { SCOPELESS_MCP_RUN_PREFIX } from "../tools/read/outsideSearchLedger";
-import { toolGuidanceItems } from "../tools/guidance";
+import {
+  collectMatchingToolGuidance,
+  toolGuidanceItems,
+} from "../tools/guidance";
 import {
   PAST_CHAT_ATTACH_TOOL_NAME,
   PAST_CHAT_READ_TOOL_NAME,
@@ -117,6 +121,7 @@ import {
   normalizeAttachedConversationScope,
   pastConversationId,
 } from "../../services/pastConversations/pastConversationText";
+import { positiveIntOrUndefined, recordOrEmpty } from "../../core/values";
 
 export const ZOTERO_MCP_SERVER_NAME = "llm_for_zotero";
 export const ZOTERO_MCP_ENDPOINT_PATH = "/llm-for-zotero/mcp";
@@ -207,33 +212,18 @@ export const ZOTERO_MCP_WRITE_TOOL_NAMES = [
   "note_write_batch",
 ] as const;
 
-/**
- * Registered tools deliberately NOT exposed over MCP, and why: the single
- * owner of every plugin-only reason.
- *
- * This list exists so a missing tool reads as a decision rather than drift —
- * the registry and these curated arrays are maintained by hand and have
- * silently diverged before. test/mcpSurfaceDrift.test.ts derives the expected
- * list from the registry and fails for a tool that is neither exposed, named
- * here, nor `localAgentOnly`.
- *
- * Not listed here, by design: the tools the registry marks `localAgentOnly`.
- * `registry.listTools()` never lists them to an external client, and the
- * spec flag is their one owner. They are web_search and web_read (the MCP
- * client has its own web tools) and workflow_script (it also needs the
- * in-plugin `context.invokeRegisteredOperation`, which an MCP call lacks).
- */
-export const ZOTERO_MCP_EXCLUDED_TOOL_NAMES: Record<string, string> = {
-  literature_review:
-    "Ranked discovery review uses the Original Agent's conversation-scoped candidate store and interactive review channel; external MCP clients receive scholarly search results directly.",
-  // Runs unattended for minutes and reports only at the end. The MCP
-  // transport has no progress channel and no way to drive the per-page
-  // review the in-plugin surface offers, so an external backend would see a
-  // single opaque call that either succeeds or times out. Revisit when the
-  // paged result contract ({done, nextOffset, remaining}) lands.
-  library_batch:
-    "library_batch runs unattended with no progress channel over MCP; use the in-plugin agent or the slash-command surface.",
-};
+// Registered tools deliberately not exposed over MCP, and why:
+// - literature_review: ranked discovery review uses the Original Agent's
+//   conversation-scoped candidate store and interactive review channel;
+//   external MCP clients receive scholarly search results directly.
+// - library_batch: runs unattended for minutes and reports only at the end.
+//   MCP has no progress channel and no way to drive the per-page review, so
+//   an external backend would see one opaque call that succeeds or times
+//   out. Revisit when the paged result contract ({done, nextOffset,
+//   remaining}) lands.
+// - web_search, web_read and workflow_script: the registry marks them
+//   `localAgentOnly` and never lists them to an external client.
+
 /** The tools that read or attach past chats, pinned to the scope's library. */
 const PAST_CHAT_TOOL_NAMES = new Set<string>([
   PAST_CHAT_READ_TOOL_NAME,
@@ -266,7 +256,7 @@ const MCP_GUIDANCE_TOOL_NAMES = new Set<string>([
 const CURATED_WRITE_TOOL_NAMES = new Set<string>(ZOTERO_MCP_WRITE_TOOL_NAMES);
 /**
  * MCP-only descriptions for tools whose in-plugin description routes through
- * a tool the MCP catalog excludes (see ZOTERO_MCP_EXCLUDED_TOOL_NAMES), or
+ * a tool the MCP catalog excludes (see the note above), or
  * promises a review MCP has no channel for (MCP_REFUSED_TOOL_ARGUMENTS).
  */
 const MCP_TOOL_DESCRIPTION_OVERRIDES: ReadonlyMap<string, string> = new Map([
@@ -617,18 +607,6 @@ function emitZoteroMcpToolActivity(event: ZoteroMcpToolActivityEvent): void {
   }
 }
 
-function logZoteroMcp(message: string, details?: unknown): void {
-  try {
-    (
-      globalThis as typeof globalThis & {
-        ztoolkit?: { log?: (...args: unknown[]) => void };
-      }
-    ).ztoolkit?.log?.(message, details);
-  } catch {
-    /* diagnostics must not affect MCP execution */
-  }
-}
-
 function getZoteroPrefs(): {
   get?: (key: string, global?: boolean) => unknown;
   set?: (key: string, value: unknown, global?: boolean) => void;
@@ -673,12 +651,6 @@ export function getOrCreateZoteroMcpBearerToken(): string {
   return token;
 }
 
-export function resetZoteroMcpBearerToken(): string {
-  const token = generateToken();
-  getZoteroPrefs()?.set?.(ZOTERO_MCP_TOKEN_PREF_KEY, token, true);
-  return token;
-}
-
 export function getZoteroHttpPort(): number {
   const raw = (
     Zotero as unknown as {
@@ -712,6 +684,45 @@ export function getZoteroMcpDirectPdfToolNames(): string[] {
     (name) =>
       !RAW_PDF_HIDDEN_NATIVE_TOOL_NAMES.has(name) &&
       !RAW_PDF_HIDDEN_RETRIEVAL_TOOL_NAMES.has(name),
+  );
+}
+
+/**
+ * The guidance of the Zotero MCP tools that matches a turn, for an external
+ * runtime's turn prompt (turnPromptBlocks.ts, block `toolGuidance`).
+ *
+ * The original agent receives a tool's guidance only on the turns it
+ * matches. An MCP catalog is static, so the tools in MCP_GUIDANCE_TOOL_NAMES
+ * carry theirs on the description instead and are left out here; every
+ * other listed tool's matching guidance goes with the turn, as it does for
+ * the original agent. An external runtime routes no skills before the turn,
+ * so only the skills the user selected count as matched.
+ */
+export function collectZoteroMcpTurnToolGuidance(
+  request: AgentRuntimeRequest,
+  options: { rawPdfMode: boolean },
+): string[] {
+  const deps = registeredMcpDeps;
+  if (!deps) return [];
+  const listed = new Set(
+    options.rawPdfMode
+      ? getZoteroMcpDirectPdfToolNames()
+      : getZoteroMcpAllowedToolNames(),
+  );
+  const tools = deps.toolRegistry
+    .listTools()
+    .filter(
+      (tool) =>
+        isMcpExposedTool(tool) &&
+        listed.has(tool.name) &&
+        !MCP_GUIDANCE_TOOL_NAMES.has(tool.name),
+    )
+    .map((tool) => deps.toolRegistry.getTool(tool.name))
+    .filter((tool): tool is NonNullable<typeof tool> => Boolean(tool));
+  return collectMatchingToolGuidance(
+    request,
+    tools,
+    request.forcedSkillIds || [],
   );
 }
 
@@ -791,12 +802,6 @@ export function buildZoteroMcpConfigValue(
   };
 }
 
-function normalizePositiveInt(value: unknown): number | undefined {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-  return Math.floor(parsed);
-}
-
 function normalizeText(value: unknown, maxLength = 240): string | undefined {
   if (typeof value !== "string") return undefined;
   const withoutControlChars = Array.from(value, (char) => {
@@ -807,32 +812,13 @@ function normalizeText(value: unknown, maxLength = 240): string | undefined {
   return normalized ? normalized.slice(0, maxLength) : undefined;
 }
 
-function normalizePaperContentSourceMode(
-  value: unknown,
-): PaperContentSourceMode | undefined {
-  if (typeof value !== "string") return undefined;
-  const normalized = value.trim().toLowerCase();
-  switch (normalized) {
-    case "text":
-    case "mineru":
-    case "pdf":
-    case "markdown":
-    case "html":
-    case "txt":
-    case "docx":
-      return normalized;
-    default:
-      return undefined;
-  }
-}
-
 function normalizePaperContext(
   value: PaperContextRef | undefined,
 ): PaperContextRef | undefined {
   if (!value) return undefined;
-  const libraryID = normalizePositiveInt(value.libraryID);
-  const itemId = normalizePositiveInt(value.itemId);
-  const contextItemId = normalizePositiveInt(value.contextItemId);
+  const libraryID = positiveIntOrUndefined(value.libraryID);
+  const itemId = positiveIntOrUndefined(value.itemId);
+  const contextItemId = positiveIntOrUndefined(value.contextItemId);
   if (!itemId || !contextItemId) return undefined;
   return {
     ...(libraryID ? { libraryID } : {}),
@@ -872,8 +858,8 @@ function normalizeCollectionContexts(
   const out: CollectionContextRef[] = [];
   const seen = new Set<string>();
   for (const value of values) {
-    const collectionId = normalizePositiveInt(value?.collectionId);
-    const libraryID = normalizePositiveInt(value?.libraryID);
+    const collectionId = positiveIntOrUndefined(value?.collectionId);
+    const libraryID = positiveIntOrUndefined(value?.libraryID);
     const name = normalizeText(value?.name);
     if (!collectionId || !libraryID || !name) continue;
     const key = `${libraryID}:${collectionId}`;
@@ -897,7 +883,7 @@ function normalizeTagContexts(
   const out: TagContextRef[] = [];
   const seen = new Set<string>();
   for (const value of values) {
-    const libraryID = normalizePositiveInt(value?.libraryID);
+    const libraryID = positiveIntOrUndefined(value?.libraryID);
     const scope =
       value?.scope === "allTagged" || value?.scope === "untagged"
         ? value.scope
@@ -1000,17 +986,17 @@ function normalizeActiveScope(
   const canonicalActivePaper = scope.turnPaperScope
     ? getActiveTurnPaper(scope.turnPaperScope)
     : undefined;
-  const conversationKey = normalizePositiveInt(scope.conversationKey);
+  const conversationKey = positiveIntOrUndefined(scope.conversationKey);
   const paperItemID =
-    normalizePositiveInt(scope.paperItemID) ||
+    positiveIntOrUndefined(scope.paperItemID) ||
     canonicalActivePaper?.itemId ||
     paperContext?.itemId;
   const activeContextItemId =
-    normalizePositiveInt(scope.activeContextItemId) ||
+    positiveIntOrUndefined(scope.activeContextItemId) ||
     canonicalActivePaper?.contextItemId ||
     paperContext?.contextItemId;
-  const metadataLibraryID = normalizePositiveInt(scope.libraryID);
-  const canonicalLibraryID = normalizePositiveInt(
+  const metadataLibraryID = positiveIntOrUndefined(scope.libraryID);
+  const canonicalLibraryID = positiveIntOrUndefined(
     scope.turnPaperScope?.libraryID,
   );
   if (
@@ -1052,12 +1038,14 @@ function normalizeActiveScope(
       (scope.kind === "paper" ? "paper" : "global"),
     paperItemID,
     activeItemId:
-      normalizePositiveInt(scope.activeItemId) || paperItemID || undefined,
+      positiveIntOrUndefined(scope.activeItemId) || paperItemID || undefined,
     activeContextItemId,
-    activeNoteId: normalizePositiveInt(scope.activeNoteId),
+    activeNoteId: positiveIntOrUndefined(scope.activeNoteId),
     activeNoteKind: normalizeNoteKind(scope.activeNoteKind),
     activeNoteTitle: normalizeText(scope.activeNoteTitle),
-    activeNoteParentItemId: normalizePositiveInt(scope.activeNoteParentItemId),
+    activeNoteParentItemId: positiveIntOrUndefined(
+      scope.activeNoteParentItemId,
+    ),
     libraryName: normalizeText(scope.libraryName),
     title: normalizeText(scope.title),
     userText: typeof scope.userText === "string" ? scope.userText : "",
@@ -1432,8 +1420,8 @@ function collectPaperIdentities(value: unknown): Array<{
   if (!value || typeof value !== "object") return [];
   if (Array.isArray(value)) return value.flatMap(collectPaperIdentities);
   const record = value as Record<string, unknown>;
-  const itemId = normalizePositiveInt(record.itemId ?? record.itemID);
-  const contextItemId = normalizePositiveInt(
+  const itemId = positiveIntOrUndefined(record.itemId ?? record.itemID);
+  const contextItemId = positiveIntOrUndefined(
     record.contextItemId ?? record.contextItemID,
   );
   const current = itemId || contextItemId ? [{ itemId, contextItemId }] : [];
@@ -1443,11 +1431,11 @@ function collectPaperIdentities(value: unknown): Array<{
 function collectLibraryRetrieveItemIdentities(
   value: unknown,
 ): Array<{ itemId: number }> {
-  const record = normalizeRecord(value);
-  const scope = normalizeRecord(record.scope);
+  const record = recordOrEmpty(value);
+  const scope = recordOrEmpty(record.scope);
   if (!Array.isArray(scope.itemIds)) return [];
   return scope.itemIds
-    .map((itemId) => normalizePositiveInt(itemId))
+    .map((itemId) => positiveIntOrUndefined(itemId))
     .filter((itemId): itemId is number => Boolean(itemId))
     .map((itemId) => ({ itemId }));
 }
@@ -1455,10 +1443,10 @@ function collectLibraryRetrieveItemIdentities(
 function collectLibraryReadItemIdentities(
   value: unknown,
 ): Array<{ itemId: number }> {
-  const record = normalizeRecord(value);
+  const record = recordOrEmpty(value);
   if (!Array.isArray(record.itemIds)) return [];
   return record.itemIds
-    .map((itemId) => normalizePositiveInt(itemId))
+    .map((itemId) => positiveIntOrUndefined(itemId))
     .filter((itemId): itemId is number => Boolean(itemId))
     .map((itemId) => ({ itemId }));
 }
@@ -1468,7 +1456,7 @@ function getAttachmentParentItemId(itemId: number): number | null {
     const item = Zotero?.Items?.get?.(itemId);
     if (!item || typeof item.isAttachment !== "function") return null;
     if (!item.isAttachment()) return null;
-    return normalizePositiveInt(item.parentID) || null;
+    return positiveIntOrUndefined(item.parentID) || null;
   } catch {
     return null;
   }
@@ -1479,7 +1467,7 @@ function identityUsesAttachmentUnderRawParent(
   rawParentItemIds: ReadonlySet<number>,
 ): boolean {
   return [identity.itemId, identity.contextItemId].some((value) => {
-    const itemId = normalizePositiveInt(value);
+    const itemId = positiveIntOrUndefined(value);
     if (!itemId) return false;
     const parentItemId = getAttachmentParentItemId(itemId);
     return Boolean(parentItemId && rawParentItemIds.has(parentItemId));
@@ -1496,8 +1484,8 @@ function shouldBlockRawPdfRetrieval(params: {
   if (!rawPdfs.length) return false;
   const isLibraryAttachmentEnumeration =
     params.toolName === "library_read" &&
-    Array.isArray(normalizeRecord(params.rawArgs).sections) &&
-    (normalizeRecord(params.rawArgs).sections as unknown[]).includes(
+    Array.isArray(recordOrEmpty(params.rawArgs).sections) &&
+    (recordOrEmpty(params.rawArgs).sections as unknown[]).includes(
       "attachments",
     );
   const identities: Array<{
@@ -1522,7 +1510,7 @@ function shouldBlockRawPdfRetrieval(params: {
     // same-parent attachment aliases before that canonicalization occurs.
     return identities.some((identity) => {
       const suppliedValues = [identity.itemId, identity.contextItemId]
-        .map(normalizePositiveInt)
+        .map(positiveIntOrUndefined)
         .filter((value): value is number => Boolean(value));
       return (
         suppliedValues.some((value) => rawContextItemIds.has(value)) ||
@@ -1554,8 +1542,8 @@ function shouldBlockRawPdfRetrieval(params: {
     explicitTextContexts.map((paper) => paper.itemId),
   );
   return identities.some((identity) => {
-    const itemId = normalizePositiveInt(identity.itemId);
-    const contextItemId = normalizePositiveInt(identity.contextItemId);
+    const itemId = positiveIntOrUndefined(identity.itemId);
+    const contextItemId = positiveIntOrUndefined(identity.contextItemId);
     if (!itemId && !contextItemId) return true;
 
     const suppliedValues = [itemId, contextItemId].filter(
@@ -1698,7 +1686,7 @@ function mcpScopeStoresToolResults(
   scope: ZoteroMcpActiveScope | null,
 ): boolean {
   return Boolean(
-    normalizePositiveInt(scope?.conversationKey) && scope?.runtimeAuthority,
+    positiveIntOrUndefined(scope?.conversationKey) && scope?.runtimeAuthority,
   );
 }
 
@@ -1753,8 +1741,8 @@ const PAPER_READ_NO_FULL_MODE_NOTE =
 /** paper_read's schema without the full mode, for such a scope. */
 function withoutFullPaperReadMode(schema: object): object {
   const record = schema as Record<string, unknown>;
-  const properties = normalizeRecord(record.properties);
-  const mode = normalizeRecord(properties.mode);
+  const properties = recordOrEmpty(record.properties);
+  const mode = recordOrEmpty(properties.mode);
   if (!Array.isArray(mode.enum)) return schema;
   return {
     ...record,
@@ -1818,12 +1806,6 @@ function handleToolsList(
   return { tools };
 }
 
-function normalizeRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
 function hasJsonRpcId(request: JsonRpcRequest): boolean {
   return Object.prototype.hasOwnProperty.call(request, "id");
 }
@@ -1850,14 +1832,16 @@ function extractMcpScopeArgs(rawArgs: unknown): {
   activeItemId?: number;
   activeContextItemId?: number;
 } {
-  const args = normalizeRecord(rawArgs);
+  const args = recordOrEmpty(rawArgs);
   const toolArgs = { ...args };
   for (const key of MCP_SCOPE_ARG_NAMES) delete toolArgs[key];
   return {
     toolArgs,
-    libraryID: normalizePositiveInt(args.libraryID ?? args.libraryId),
-    activeItemId: normalizePositiveInt(args.activeItemId ?? args.activeItemID),
-    activeContextItemId: normalizePositiveInt(
+    libraryID: positiveIntOrUndefined(args.libraryID ?? args.libraryId),
+    activeItemId: positiveIntOrUndefined(
+      args.activeItemId ?? args.activeItemID,
+    ),
+    activeContextItemId: positiveIntOrUndefined(
       args.activeContextItemId ?? args.activeContextItemID,
     ),
   };
@@ -1877,8 +1861,8 @@ function resolveLibraryRetrieveScopeID(
   toolArgs: Record<string, unknown>,
 ): number | undefined {
   if (toolName !== "library_retrieve") return undefined;
-  const retrievalScope = normalizeRecord(toolArgs.scope);
-  return normalizePositiveInt(
+  const retrievalScope = recordOrEmpty(toolArgs.scope);
+  return positiveIntOrUndefined(
     retrievalScope.libraryID ?? retrievalScope.libraryId,
   );
 }
@@ -1908,7 +1892,7 @@ function resolveMcpCallScope(params: {
   // libraryID that differs from the scope's is refused (libraryMismatch)
   // instead of overriding it.
   const pinnedToScopeLibrary = LIBRARY_PINNED_TOOL_NAMES.has(params.toolName);
-  const scopeLibraryID = normalizePositiveInt(scope?.libraryID) || 0;
+  const scopeLibraryID = positiveIntOrUndefined(scope?.libraryID) || 0;
   const libraryMismatch =
     pinnedToScopeLibrary &&
     scopeArgs.libraryID &&
@@ -1972,12 +1956,12 @@ function decorateMcpToolSchema(inputSchema: object, toolName: string): object {
     return inputSchema;
   }
   const record = inputSchema as Record<string, unknown>;
-  const rawProperties = { ...normalizeRecord(record.properties) };
+  const rawProperties = { ...recordOrEmpty(record.properties) };
   const refused = MCP_REFUSED_TOOL_ARGUMENTS.get(toolName);
   if (refused?.value === undefined) {
     if (refused) delete rawProperties[refused.argument];
   } else {
-    const property = normalizeRecord(rawProperties[refused.argument]);
+    const property = recordOrEmpty(rawProperties[refused.argument]);
     if (Array.isArray(property.enum))
       rawProperties[refused.argument] = {
         ...property,
@@ -2021,8 +2005,10 @@ function resolveScopePaperContext(
   }
   const paperContext = normalizePaperContext(scope.paperContext);
   if (paperContext) return paperContext;
-  const itemId = normalizePositiveInt(scope.paperItemID || scope.activeItemId);
-  const contextItemId = normalizePositiveInt(scope.activeContextItemId);
+  const itemId = positiveIntOrUndefined(
+    scope.paperItemID || scope.activeItemId,
+  );
+  const contextItemId = positiveIntOrUndefined(scope.activeContextItemId);
   if (!itemId || !contextItemId) return undefined;
   return {
     itemId,
@@ -2034,7 +2020,7 @@ function resolveScopePaperContext(
 function resolveScopeActiveNoteContext(
   scope: ZoteroMcpActiveScope | null,
 ): AgentRuntimeRequest["activeNoteContext"] {
-  const noteId = normalizePositiveInt(scope?.activeNoteId);
+  const noteId = positiveIntOrUndefined(scope?.activeNoteId);
   if (!noteId) return undefined;
   const noteItem =
     (
@@ -2059,7 +2045,7 @@ function resolveScopeActiveNoteContext(
     noteId,
     title: normalizeText(scope?.activeNoteTitle) || `Note ${noteId}`,
     noteKind: normalizeNoteKind(scope?.activeNoteKind) || "standalone",
-    parentItemId: normalizePositiveInt(scope?.activeNoteParentItemId),
+    parentItemId: positiveIntOrUndefined(scope?.activeNoteParentItemId),
     noteText: "",
   };
 }
@@ -3025,7 +3011,7 @@ async function handleToolsCall(
     // A client that can page a stored result reads a sized view, as the
     // plugin Agent does; the whole result stays under a handle.
     const contextReadTool = deps.toolRegistry.getTool("context_read");
-    const storeConversationKey = normalizePositiveInt(scope?.conversationKey);
+    const storeConversationKey = positiveIntOrUndefined(scope?.conversationKey);
     const pagesResults = Boolean(
       storeConversationKey &&
       contextReadTool &&

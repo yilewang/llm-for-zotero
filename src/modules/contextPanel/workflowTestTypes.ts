@@ -460,6 +460,18 @@ export type WorkflowTestReaderInlineAskCard = {
     coveredControls: number;
     arcOpacity: number;
   }>;
+  /**
+   * The floating close button: whether it is shown (it fades in only while
+   * the pointer is near the top-left corner), and its center's offset
+   * from the card's top-left corner in pixels (null when it is absent).
+   */
+  closeButton: {
+    shown: boolean;
+    label: string;
+    disabled: boolean;
+    offsetX: number;
+    offsetY: number;
+  } | null;
   /** The message actions under the latest answer, in order. */
   messageActions: string[];
   modelLabel: string;
@@ -1324,6 +1336,14 @@ export type WorkflowTestApi = {
     apiKey: string;
     providerProtocol: ProviderProtocol;
   }) => Promise<{ text: string; textDeltas: string[]; reasoning: string[] }>;
+  /**
+   * Renders one turn's prompt for the original agent and every external
+   * runtime from the same request, through each runtime's own prompt
+   * assembly (runtimePromptParity.workflow.test.ts).
+   */
+  renderRuntimePromptParity: (
+    params: RuntimePromptParityInput,
+  ) => Promise<RuntimePromptParityResult>;
   /**
    * Sends one plain-chat request that carries document context, the way a
    * paper chat does, once through callLLM and once through callLLMStream.
@@ -2332,9 +2352,9 @@ export type WorkflowTestApi = {
     /** Add Text's question box is open in the reader. */
     addTextPromptOpen: boolean;
   }>;
-  /** Closes the card (Discard, Escape in the card, or Escape on the page) and the reader. */
+  /** Closes the card (Discard, the floating close button, Escape in the card, or Escape on the page) and the reader. */
   endReaderInlineAsk: (input: {
-    via: "discard" | "escape" | "escape_page";
+    via: "discard" | "close" | "escape" | "escape_page";
   }) => Promise<{ cardRemoved: boolean }>;
   /** Closes the reader tab under the card (the card goes with it). */
   closeReaderInlineAskReaderTab: () => Promise<{ readerClosed: boolean }>;
@@ -2401,16 +2421,23 @@ export type WorkflowTestApi = {
   hoverReaderInlineAskPassage: (
     on: boolean,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
+  /**
+   * Moves the pointer onto the card `distance` px in from its top-left
+   * corner (where the close button shows when near), or off the card (null).
+   */
+  hoverReaderInlineAskCloseCorner: (
+    distance: number | null,
+  ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Moves the pointer onto or off one corner's hit area. */
   hoverReaderInlineAskCorner: (
-    corner: "top-left" | "top-right" | "bottom-left" | "bottom-right",
+    corner: "top-right" | "bottom-left" | "bottom-right",
     on: boolean,
   ) => Promise<WorkflowTestReaderInlineAskCard>;
   /** Drags a blank point of the card ("card") or its corner grip ("resize"). */
   dragReaderInlineAsk: (input: {
     part: "card" | "resize";
     /** The corner to drag for a resize; the default is bottom-right. */
-    corner?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+    corner?: "top-right" | "bottom-left" | "bottom-right";
     dx: number;
     dy: number;
   }) => Promise<WorkflowTestReaderInlineAskCard>;
@@ -2755,4 +2782,55 @@ export type WorkflowTestApi = {
     entryId: string,
     inputTokenCap: number,
   ) => Promise<WorkflowTestDiagnostics>;
+};
+
+/** One turn for the runtime prompt parity check. */
+export type RuntimePromptParityInput = {
+  userText: string;
+  conversationKind: "global" | "paper";
+  /** The paper chat's item, or the reader's attachment. */
+  activeItemId?: number;
+  selectedTextContexts?: import("../../shared/types").SelectedTextContext[];
+  selectedPaperContexts?: import("../../shared/types").PaperContextRef[];
+  selectedCollectionContexts?: import("../../shared/types").CollectionContextRef[];
+  activeNoteContext?: import("../../shared/types").ActiveNoteContext;
+  clarificationHistory?: Array<{ question: string; answer: string }>;
+  /** The user's custom instructions (the systemPrompt pref). */
+  systemPrompt?: string;
+  /** Sets the notes directory for this render; restored after. */
+  notesDirectoryPath?: string;
+  /** Renders the turn in a temporary side chat. */
+  sideChat?: boolean;
+  /** A raw-PDF turn on this PDF. */
+  localPdf?: {
+    itemId: number;
+    contextItemId: number;
+    title: string;
+    path: string;
+  };
+};
+
+/** A runtime's decision about one block (turnPromptBlocks.ts). */
+export type RuntimePromptParityDelivery = {
+  kind: "send" | "transport" | "replaced" | "notApplicable";
+  placement?: "standing" | "turn";
+  /** For a text block: the shared renderer has text for external runtimes. */
+  rendered?: boolean;
+};
+
+export type RuntimePromptParityRuntime = {
+  deliveries: Record<string, RuntimePromptParityDelivery>;
+  /** Each `send` block's text for this turn. */
+  blocks: Record<string, string>;
+  /** The standing instructions the runtime's transport sends. */
+  standing: string;
+  /** The text the runtime's transport sends with the turn. */
+  turn: string;
+};
+
+export type RuntimePromptParityResult = {
+  textBlockIds: string[];
+  transportBlockIds: string[];
+  native: { system: string; turn: string };
+  runtimes: Record<RuntimeConversationSystem, RuntimePromptParityRuntime>;
 };

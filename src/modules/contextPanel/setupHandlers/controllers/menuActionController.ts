@@ -3,9 +3,7 @@ import {
   copyGeneratedImageToClipboard,
   copyRenderedMarkdownToClipboard,
   copyTextToClipboard,
-  resolveAssistantResponseMenuContent,
 } from "../../chat";
-import { getMessageCitationPaperContexts } from "../../citationContexts";
 import {
   buildChatHistoryNotePayload,
   createAssistantResponseNote,
@@ -13,10 +11,9 @@ import {
   createStandaloneNoteFromChatHistory,
 } from "../../notes";
 import { isGlobalPortalItem } from "../../../../services/context/portalItems";
-import { isClaudeGlobalPortalItem } from "../../../../claudeCode/portal";
+import { isRuntimeGlobalPortalItem } from "../../../../services/context/runtimePortalItems";
 import { positionMenuBelowButton } from "../../menuPositioning";
 import { renderMermaidSourceToSvg } from "../../renderedMarkdown";
-import { getMessageQuoteDisplay } from "../../quoteRenderPlan";
 import { setStatus } from "../../textUtils";
 import type { ConversationSystem } from "../../../../shared/types";
 import type { ChatRuntimeMode, Message } from "../../types";
@@ -26,6 +23,7 @@ import {
   type ResponseActionTarget,
 } from "../../state";
 import { openStandaloneResponseDocument } from "../../standaloneResponseDocumentWindow";
+import { positiveIntOrZero } from "../../../../core/values";
 
 export type ResponseMenuTarget = ResponseActionTarget | null;
 
@@ -132,20 +130,12 @@ function stopFloatingMenuPropagation(menu: HTMLDivElement): void {
   });
 }
 
-function parsePositiveFiniteNumber(value: unknown): number {
-  const parsed = Number(value || 0);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
-  return Math.floor(parsed);
-}
-
 function normalizeResponseTurnReference(
   input: Partial<ResponseTurnReference> | null | undefined,
 ): ResponseTurnReference | null {
-  const conversationKey = parsePositiveFiniteNumber(input?.conversationKey);
-  const userTimestamp = parsePositiveFiniteNumber(input?.userTimestamp);
-  const assistantTimestamp = parsePositiveFiniteNumber(
-    input?.assistantTimestamp,
-  );
+  const conversationKey = positiveIntOrZero(input?.conversationKey);
+  const userTimestamp = positiveIntOrZero(input?.userTimestamp);
+  const assistantTimestamp = positiveIntOrZero(input?.assistantTimestamp);
   if (!conversationKey || !userTimestamp || !assistantTimestamp) return null;
   return { conversationKey, userTimestamp, assistantTimestamp };
 }
@@ -171,37 +161,6 @@ function findResponseTurnPair(
     }
   }
   return null;
-}
-
-export function buildResponseActionTargetFromHistory(params: {
-  item: Zotero.Item;
-  history: Message[];
-  conversationKey: number;
-  userTimestamp: number;
-  assistantTimestamp: number;
-}): ResponseMenuTarget {
-  const reference = normalizeResponseTurnReference(params);
-  if (!reference) return null;
-  const pair = findResponseTurnPair(params.history, reference);
-  if (!pair) return null;
-  const quoteDisplay = getMessageQuoteDisplay(pair.assistantMessage);
-  const menuContent = resolveAssistantResponseMenuContent({
-    text: quoteDisplay.markdown,
-    generatedImages: pair.assistantMessage.generatedImages,
-  });
-  if (!menuContent) return null;
-  return {
-    item: params.item,
-    contentText: menuContent.contentText,
-    queryText: pair.userMessage.text || "",
-    modelName: pair.assistantMessage.modelName?.trim() || "unknown",
-    conversationKey: reference.conversationKey,
-    userTimestamp: reference.userTimestamp,
-    assistantTimestamp: reference.assistantTimestamp,
-    paperContexts: getMessageCitationPaperContexts(pair.userMessage),
-    quoteCitations: quoteDisplay.quoteCitations || undefined,
-    generatedImages: menuContent.generatedImages,
-  };
 }
 
 async function copyResponseTarget(
@@ -282,10 +241,8 @@ function buildResponseNoteSaveKey(
   target: NonNullable<ResponseMenuTarget>,
 ): string {
   const itemId = Number(target.item?.id || 0);
-  const conversationKey = parsePositiveFiniteNumber(target.conversationKey);
-  const assistantTimestamp = parsePositiveFiniteNumber(
-    target.assistantTimestamp,
-  );
+  const conversationKey = positiveIntOrZero(target.conversationKey);
+  const assistantTimestamp = positiveIntOrZero(target.assistantTimestamp);
   if (conversationKey && assistantTimestamp) {
     return `${itemId}:${conversationKey}:${assistantTimestamp}`;
   }
@@ -329,7 +286,7 @@ async function saveResponseTargetAsNoteOnce(
     if (
       deps.isGlobalMode() ||
       isGlobalPortalItem(targetItem) ||
-      isClaudeGlobalPortalItem(targetItem) ||
+      isRuntimeGlobalPortalItem("claude_code", targetItem) ||
       targetNoteSession?.noteKind === "standalone"
     ) {
       const libraryID =
@@ -457,11 +414,9 @@ function normalizeTurnTarget(
   assistantTimestamp: number;
 } | null {
   if (!target?.item) return null;
-  const conversationKey = parsePositiveFiniteNumber(target.conversationKey);
-  const userTimestamp = parsePositiveFiniteNumber(target.userTimestamp);
-  const assistantTimestamp = parsePositiveFiniteNumber(
-    target.assistantTimestamp,
-  );
+  const conversationKey = positiveIntOrZero(target.conversationKey);
+  const userTimestamp = positiveIntOrZero(target.userTimestamp);
+  const assistantTimestamp = positiveIntOrZero(target.assistantTimestamp);
   if (!conversationKey || !userTimestamp || !assistantTimestamp) return null;
   return {
     item: target.item,
@@ -481,7 +436,7 @@ export async function runResponseMenuAction(
   ) => void,
 ): Promise<void> {
   const targetConversationKey = target?.conversationKey
-    ? parsePositiveFiniteNumber(target.conversationKey)
+    ? positiveIntOrZero(target.conversationKey)
     : undefined;
   const ownership = captureMenuActionOwnership(
     deps,

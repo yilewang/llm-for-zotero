@@ -1173,20 +1173,3 @@ export function findLargestUniqueQuoteTextAnchorMatch(
     ) || null
   );
 }
-
-/**
- * Return the largest strong source overlap even when it is repeated. This is
- * negative-evidence protection: a repeated source phrase cannot navigate
- * uniquely, but it still proves that a cache miss is not evidence of
- * model-generated text.
- */
-export function findLargestQuoteTextAnchorMatch(
-  entries: QuoteTextSearchEntry[],
-  quoteText: string,
-  options?: Pick<
-    QuoteTextSearchOptions,
-    "minQueryLength" | "rejectWeakQueries"
-  >,
-): QuoteTextAnchorMatch | null {
-  return findQuoteTextAnchorMatches(entries, quoteText, options)[0] || null;
-}

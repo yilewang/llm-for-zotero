@@ -1,5 +1,4 @@
 import { modelNameCandidates } from "../shared/modelNameCandidates";
-const REASONING_PROFILE_TABLE_VERSION = 7;
 
 export type ReasoningProvider =
   | "openai"
@@ -1136,10 +1135,6 @@ const OPENAI_EFFORT_ORDER: OpenAIReasoningEffort[] = [
   "xhigh",
 ];
 
-function normalizeModelName(modelName?: string): string {
-  return (modelName || "").trim().toLowerCase();
-}
-
 /** A family hint alone is not evidence for a future model's level set. */
 /**
  * Whether we can say anything about this model's reasoning.
@@ -1231,11 +1226,6 @@ export function getReasoningDefaultLevelForModel(
     (optionState) => optionState.enabled,
   );
   return firstEnabled?.level || null;
-}
-
-export function shouldUseDeepseekThinkingPayload(modelName?: string): boolean {
-  const profile = resolveProviderProfile("deepseek", modelName);
-  return Boolean(profile.deepseek?.defaultThinkingType);
 }
 
 export function getDeepseekReasoningProfileForModel(

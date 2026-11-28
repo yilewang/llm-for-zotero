@@ -1,4 +1,5 @@
 import type { AgentTraceDetail } from "../../types";
+import { trimmedStringOrUndefined } from "../../../core/values";
 
 /**
  * Why an outside search (literature_search, web_search) is needed: the
@@ -60,10 +61,6 @@ export const OUTSIDE_SEARCH_NEED_PROPERTIES = {
   gap: { type: "string" },
 } as const;
 
-function readGap(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 /**
  * The rejection for a call's need and gap, or null when they are valid.
  * A find-paper search (workflow:'review') states neither (user decision 1a).
@@ -81,7 +78,10 @@ export function outsideSearchNeedError(
   if (!OUTSIDE_SEARCH_NEEDS.includes(need as OutsideSearchNeed)) {
     return OUTSIDE_SEARCH_NEED_MESSAGE;
   }
-  if (need === "not_in_scope_or_library" && !readGap(args.gap)) {
+  if (
+    need === "not_in_scope_or_library" &&
+    !trimmedStringOrUndefined(args.gap)
+  ) {
     return OUTSIDE_SEARCH_GAP_MESSAGE;
   }
   return null;
@@ -111,7 +111,7 @@ export function buildOutsideSearchReasonDetail(
   const record = args as Record<string, unknown>;
   const need = record.need as OutsideSearchNeed;
   if (!OUTSIDE_SEARCH_NEEDS.includes(need)) return null;
-  const gap = readGap(record.gap);
+  const gap = trimmedStringOrUndefined(record.gap);
   const text = NEED_TRACE_TEXT[need];
   return {
     label: "Why outside",

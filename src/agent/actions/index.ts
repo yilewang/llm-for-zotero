@@ -17,27 +17,11 @@ export function createBuiltInActionRegistry(): ActionRegistry {
 
 export { ActionRegistry } from "./registry";
 export type {
-  AgentAction,
   ActionExecutionContext,
   ActionConfirmationMode,
   ActionProgressEvent,
-  ActionCheckpoint,
-  ActionResult,
   ActionLLMConfig,
   ActionRequestContext,
 } from "./types";
-export type {
-  PaperScopedActionProfile,
-  PaperScopedActionInput,
-  PaperScopedActionCollectionCandidate,
-  PaperScopedActionTagCandidate,
-  PaperScopedActionTarget,
-} from "./paperScope";
-export {
-  resolvePaperScopedDefaultInput,
-  resolvePaperScopedActionTargets,
-  normalizePaperScopedActionInput,
-  normalizePositiveIntArray,
-  normalizeLimit,
-  applyLimit,
-} from "./paperScope";
+export type { PaperScopedActionProfile } from "./paperScope";
+export { resolvePaperScopedDefaultInput } from "./paperScope";

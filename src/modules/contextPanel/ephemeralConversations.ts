@@ -59,12 +59,10 @@ function clearComposerCaches(conversationKey: number): void {
 }
 
 export {
-  isEphemeralConversationKey,
   allocateEphemeralGlobalConversationKey,
   allocateEphemeralPaperConversationKey,
 };
 export {
-  buildEphemeralBackgroundContextBlock,
   clearEphemeralBackgroundContextProvider,
   setEphemeralBackgroundContextProvider,
 } from "../../shared/ephemeralBackgroundContext";

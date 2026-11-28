@@ -10,8 +10,6 @@
  * in English until a Chinese translation is added to the map.
  */
 
-import { config } from "../../package.json";
-
 // ── Chinese (Simplified) translation map ────────────────────────────────────
 
 const zhCN: Record<string, string> = {
@@ -2138,39 +2136,6 @@ export function getWebChatWelcomeHtml(
       },
     ],
   );
-}
-
-export function getWelcomeHtml(): string {
-  if (getEffectiveLocale().startsWith("zh")) {
-    return `
-      <div class="llm-welcome">
-        <div class="llm-welcome-icon llm-context-svg-icon llm-context-icon-model-chip" aria-hidden="true"></div>
-        <div class="llm-welcome-text">
-          <div class="llm-welcome-title">开始对话 — 以下是你可以做的。</div>
-          <ul class="llm-welcome-list">
-            <li><strong>论文对话</strong>回答关于当前打开的 PDF 的问题。<strong>开放对话</strong>是一个自由形式的工作区，可跨多篇论文和文件提问。</li>
-            <li>输入 <strong>/</strong> 打开快捷操作：附加文件、添加参考文献、发送当前 PDF 页面或发送整个 PDF。输入 <strong>@</strong> 从文献库添加论文作为上下文。</li>
-            <li>在工具栏中启用 <strong>Agent 模式</strong>，让助手自主搜索文献库、查看论文并完成多步骤研究任务。</li>
-            <li>内联添加上下文：在 PDF 阅读器中选择文本作为<strong>文本上下文</strong>，使用截图按钮作为<strong>图片上下文</strong>，或使用 <strong>@</strong> 作为<strong>论文上下文</strong>。右键点击论文标签可强制发送全文；再次右键点击切换回检索模式。</li>
-          </ul>
-        </div>
-      </div>
-    `;
-  }
-  return `
-    <div class="llm-welcome">
-      <div class="llm-welcome-icon llm-context-svg-icon llm-context-icon-model-chip" aria-hidden="true"></div>
-      <div class="llm-welcome-text">
-        <div class="llm-welcome-title">Start chatting — here's what you can do.</div>
-        <ul class="llm-welcome-list">
-          <li><strong>Paper chat</strong> answers questions about the currently open PDF. <strong>Library chat</strong> is a free-form workspace for questions across multiple papers and files.</li>
-          <li>Type <strong>/</strong> to open quick actions: attach files, add a reference, send the current PDF page, or send the entire PDF. Type <strong>@</strong> to add a paper from your library as context.</li>
-          <li>Enable <strong>Agent mode</strong> with the toggle in the toolbar to let the assistant autonomously search your library, inspect papers, and complete multi-step research tasks.</li>
-          <li>Add context inline: select text in the PDF reader for <strong>text context</strong>, use the screenshot button for <strong>figure context</strong>, or use <strong>@</strong> for <strong>paper context</strong>. Right-click a paper chip to force sending its full text; right-click again to switch it back to retrieval mode.</li>
-        </ul>
-      </div>
-    </div>
-  `;
 }
 
 export function getPaperChatStartPageHtml(): string {
