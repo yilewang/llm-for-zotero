@@ -23,9 +23,7 @@ import {
   type UpdateLatestAssistantMessageOptions,
   type UpdateLatestUserMessageOptions,
   buildStoredMessageTextsQuery,
-  buildStoredMessageTextsRevisionQuery,
   readStoredMessageTexts,
-  readStoredMessageTextsRevision,
   type StoredMessageText,
 } from "../../shared/conversationMessageSql";
 import {
@@ -642,27 +640,6 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       [...selector.params, ...(before ? [beforeTimestamp] : [])],
     )) as Array<Record<string, unknown>> | undefined;
     return readStoredMessageTexts(rows);
-  }
-
-  /** The revision of loadConversationTexts' rows. */
-  async function loadConversationTextsRevision(
-    conversationKey: number,
-    beforeTimestamp?: number,
-  ): Promise<string> {
-    const normalizedKey = normalizeConversationKey(conversationKey);
-    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return "";
-    const selector =
-      await resolveRepairingMessageConversationSelector(normalizedKey);
-    const before = beforeTimestamp !== undefined;
-    const rows = (await Zotero.DB.queryAsync(
-      buildStoredMessageTextsRevisionQuery({
-        tableName: tables.messages,
-        whereSql: selector.whereSql,
-        before,
-      }),
-      [...selector.params, ...(before ? [beforeTimestamp] : [])],
-    )) as Array<Record<string, unknown>> | undefined;
-    return readStoredMessageTextsRevision(rows);
   }
 
   async function loadConversation(
@@ -2994,7 +2971,6 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     appendMessage,
     loadConversation,
     loadConversationTexts,
-    loadConversationTextsRevision,
     clearConversation,
     deleteTurnMessages,
     pruneConversation,

@@ -492,12 +492,6 @@ export async function loadCodexConversationTexts(
   return store.loadConversationTexts(...args);
 }
 
-export async function loadCodexConversationTextsRevision(
-  ...args: Parameters<typeof store.loadConversationTextsRevision>
-) {
-  return store.loadConversationTextsRevision(...args);
-}
-
 export async function deleteCodexTurnMessages(
   ...args: Parameters<typeof store.deleteTurnMessages>
 ) {

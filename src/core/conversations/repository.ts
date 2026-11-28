@@ -11,7 +11,6 @@ import {
   getClaudeConversationSummary,
   loadClaudeConversation,
   loadClaudeConversationTexts,
-  loadClaudeConversationTextsRevision,
   listAllClaudePaperConversationsByLibrary,
   listClaudeGlobalConversations,
   listClaudePaperConversations,
@@ -33,7 +32,6 @@ import {
   getCodexConversationSummary,
   loadCodexConversation,
   loadCodexConversationTexts,
-  loadCodexConversationTextsRevision,
   listAllCodexPaperConversationsByLibrary,
   listCodexGlobalConversations,
   listCodexPaperConversations,
@@ -73,7 +71,6 @@ import {
   getPaperConversation,
   loadConversation as loadUpstreamConversation,
   loadConversationTexts as loadUpstreamConversationTexts,
-  loadConversationTextsRevision as loadUpstreamConversationTextsRevision,
   listAllPaperConversationsByLibrary,
   listGlobalConversations,
   listPaperConversations,
@@ -553,11 +550,6 @@ type ConversationStoreAdapter = {
     conversationKey: number,
     beforeTimestamp?: number,
   ): Promise<StoredMessageText[]>;
-  /** A revision of loadMessageTexts' rows; changes when they change. */
-  loadMessageTextsRevision(
-    conversationKey: number,
-    beforeTimestamp?: number,
-  ): Promise<string>;
   deleteTurnMessages(
     conversationKey: number,
     userTimestamp: number,
@@ -658,13 +650,6 @@ const UPSTREAM_STORE: ConversationStoreAdapter = {
 
   loadMessageTexts(conversationKey, beforeTimestamp) {
     return loadUpstreamConversationTexts(conversationKey, beforeTimestamp);
-  },
-
-  loadMessageTextsRevision(conversationKey, beforeTimestamp) {
-    return loadUpstreamConversationTextsRevision(
-      conversationKey,
-      beforeTimestamp,
-    );
   },
 
   async deleteTurnMessages(
@@ -866,7 +851,6 @@ type RuntimeStoreFunctions = {
   getSummary: typeof getClaudeConversationSummary;
   loadConversation: typeof loadClaudeConversation;
   loadConversationTexts: typeof loadClaudeConversationTexts;
-  loadConversationTextsRevision: typeof loadClaudeConversationTextsRevision;
   deleteTurnMessages: typeof deleteClaudeTurnMessages;
   ensureGlobalConversation: typeof ensureClaudeGlobalConversation;
   ensurePaperConversation: typeof ensureClaudePaperConversation;
@@ -906,13 +890,6 @@ function createRuntimeStoreAdapter(
 
     loadMessageTexts(conversationKey, beforeTimestamp) {
       return store.loadConversationTexts(conversationKey, beforeTimestamp);
-    },
-
-    loadMessageTextsRevision(conversationKey, beforeTimestamp) {
-      return store.loadConversationTextsRevision(
-        conversationKey,
-        beforeTimestamp,
-      );
     },
 
     async deleteTurnMessages(
@@ -1060,7 +1037,6 @@ const CLAUDE_CODE_STORE = createRuntimeStoreAdapter(
     getSummary: getClaudeConversationSummary,
     loadConversation: loadClaudeConversation,
     loadConversationTexts: loadClaudeConversationTexts,
-    loadConversationTextsRevision: loadClaudeConversationTextsRevision,
     deleteTurnMessages: deleteClaudeTurnMessages,
     ensureGlobalConversation: ensureClaudeGlobalConversation,
     ensurePaperConversation: ensureClaudePaperConversation,
@@ -1094,7 +1070,6 @@ const CODEX_STORE = createRuntimeStoreAdapter(
     getSummary: getCodexConversationSummary,
     loadConversation: loadCodexConversation,
     loadConversationTexts: loadCodexConversationTexts,
-    loadConversationTextsRevision: loadCodexConversationTextsRevision,
     deleteTurnMessages: deleteCodexTurnMessages,
     ensureGlobalConversation: ensureCodexGlobalConversation,
     ensurePaperConversation: ensureCodexPaperConversation,
@@ -1143,8 +1118,6 @@ const ANTIGRAVITY_STORE = createRuntimeStoreAdapter(
     getSummary: antigravityConversationStore.getSummary,
     loadConversation: antigravityConversationStore.loadConversation,
     loadConversationTexts: antigravityConversationStore.loadConversationTexts,
-    loadConversationTextsRevision:
-      antigravityConversationStore.loadConversationTextsRevision,
     deleteTurnMessages: antigravityConversationStore.deleteTurnMessages,
     ensureGlobalConversation:
       antigravityConversationStore.ensureGlobalConversation,
@@ -1282,18 +1255,6 @@ export const conversationRepository = {
     const conversationKey = positiveIntOrZero(target.conversationKey);
     if (!conversationKey) return [];
     return storeFor(target.system).loadMessageTexts(
-      conversationKey,
-      target.beforeTimestamp,
-    );
-  },
-
-  /** A revision of loadMessageTexts' rows: it changes when they change. */
-  async loadMessageTextsRevision(
-    target: ConversationMessageTarget & { beforeTimestamp?: number },
-  ): Promise<string> {
-    const conversationKey = positiveIntOrZero(target.conversationKey);
-    if (!conversationKey) return "";
-    return storeFor(target.system).loadMessageTextsRevision(
       conversationKey,
       target.beforeTimestamp,
     );

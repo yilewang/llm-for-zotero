@@ -26,7 +26,6 @@ import {
   pastConversationId,
   pastConversationModeLabel,
   type PastConversationLoadResult,
-  type PastConversationMessage,
 } from "./pastConversationText";
 import {
   catalogEntryToPastConversationCandidate,
@@ -77,16 +76,6 @@ export type PastConversationSource = {
     conversationKey: number;
     beforeTimestamp?: number;
   }): Promise<ReadonlyArray<StoredMessageText>>;
-  /**
-   * A revision of the rows loadMessageTexts reads: it changes when a message
-   * is added, removed or rewritten. A turn's copy of a chat is kept while it
-   * holds.
-   */
-  loadMessageTextsRevision(target: {
-    system: ConversationSystem;
-    conversationKey: number;
-    beforeTimestamp?: number;
-  }): Promise<string>;
   isPendingDeletion(conversationKey: number): boolean | Promise<boolean>;
   resolvePaperTitle?(paperItemID: number): string | undefined;
   /**
@@ -144,11 +133,6 @@ export const defaultPastConversationSource: PastConversationSource = {
       await import("../../core/conversations/repository");
     return conversationRepository.loadMessageTexts(target);
   },
-  async loadMessageTextsRevision(target) {
-    const { conversationRepository } =
-      await import("../../core/conversations/repository");
-    return conversationRepository.loadMessageTextsRevision(target);
-  },
   async isPendingDeletion(conversationKey) {
     const { pendingDeletionStore } =
       await import("../../core/conversations/pendingDeletionStore");
@@ -200,52 +184,6 @@ export async function findPastConversationCatalogEntry(
 }
 
 /**
- * A past chat's cleaned messages, read once per turn and cut-off when the
- * turn has a cache: past_chat_read pages through a long chat in several
- * calls, and each would read the whole chat again.
- */
-async function readPastChatMessages(
-  ref: AttachedConversationRef,
-  source: PastConversationSource,
-  options: { beforeTimestamp?: number; turnCache?: Map<string, unknown> },
-): Promise<PastConversationMessage[]> {
-  const target = {
-    system: ref.system,
-    conversationKey: ref.conversationKey,
-    ...(options.beforeTimestamp !== undefined
-      ? { beforeTimestamp: options.beforeTimestamp }
-      : {}),
-  };
-  const read = async () =>
-    cleanPastConversationMessages(await source.loadMessageTexts(target));
-  const cache = options.turnCache;
-  if (!cache) return read();
-  // The copy is kept while the rows' revision holds (a cheap aggregate read):
-  // a Clear, a deleted turn, an edit's truncation or a new message makes it
-  // read again. A new message only adds at the end, so the numbers of the
-  // messages already paged stay the same.
-  const key = [
-    "past-chat-messages",
-    ref.system,
-    ref.conversationKey,
-    ref.conversationID || "",
-    options.beforeTimestamp ?? "all",
-    await source.loadMessageTextsRevision(target),
-  ].join(":");
-  const cached = cache.get(key) as
-    | Promise<PastConversationMessage[]>
-    | undefined;
-  if (cached) return cached;
-  const pending = read();
-  cache.set(key, pending);
-  // A failed read is not kept: the next call tries again.
-  pending.catch(() => {
-    if (cache.get(key) === pending) cache.delete(key);
-  });
-  return pending;
-}
-
-/**
  * Reads one attached past chat after checking it again in the catalog.
  * Never throws: a chat that cannot be read comes back with its reason.
  */
@@ -256,12 +194,6 @@ export async function loadPastConversation(
     source?: PastConversationSource;
     /** Only the messages stored before this time (ms), when set. */
     beforeTimestamp?: number;
-    /**
-     * The turn's cache (AgentToolContext.turnCache): a chat's messages are
-     * read once per turn and cut-off, while the checks above them (library,
-     * deletion, catalog) still run on every call.
-     */
-    turnCache?: Map<string, unknown>;
   },
 ): Promise<PastConversationLoadResult> {
   const source = options.source || defaultPastConversationSource;
@@ -288,7 +220,15 @@ export async function loadPastConversation(
       collapseWhitespace(entry.title || "") ||
       collapseWhitespace(ref.title) ||
       `Conversation ${ref.conversationKey}`;
-    const messages = await readPastChatMessages(ref, source, options);
+    const messages = cleanPastConversationMessages(
+      await source.loadMessageTexts({
+        system: ref.system,
+        conversationKey: ref.conversationKey,
+        ...(options.beforeTimestamp !== undefined
+          ? { beforeTimestamp: options.beforeTimestamp }
+          : {}),
+      }),
+    );
     const paperItemID = entry.paperItemID || ref.paperItemID;
     const paperLabel =
       entry.kind === "paper"
