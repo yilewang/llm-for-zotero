@@ -29,10 +29,15 @@ import {
 const POLL_INTERVAL_MS = 500;
 const REMOTE_READY_POLL_INTERVAL_MS = 250;
 const REMOTE_READY_TIMEOUT_MS = 30_000;
-const DEEPSEEK_SCRAPE_TIMEOUT_MS = 45_000;
+const SLOW_SITE_SCRAPE_TIMEOUT_MS = 45_000;
 const HISTORY_REFRESH_POLL_INTERVAL_MS = 500;
 const HISTORY_REFRESH_TIMEOUT_MS = 25_000;
-const TIMEOUT_MS = 300_000; // 5 minutes
+// Web models can spend a long time reasoning before the first answer delta
+// lands, so the wait must react to stalls, not to total elapsed time. Only
+// give up when neither the answer nor the thinking trace moved for this long,
+// with a generous absolute ceiling as a final safety net.
+const RESPONSE_INACTIVITY_TIMEOUT_MS = 10 * 60_000;
+const RESPONSE_HARD_TIMEOUT_MS = 60 * 60_000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -219,6 +224,7 @@ type PollResponseData = {
   turn_status: RelayTurnStatus | null;
   diagnostic: RelayTurnDiagnostic | null;
   current_seq: number;
+  last_activity_at: number;
 };
 
 export type WebChatAnswerSnapshot = WebChatTurnMetadata & {
@@ -338,6 +344,7 @@ export async function pollForResponse(
   let lastRunState: RelayRunState | null = null;
   let lastCompletionReason: RelayCompletionReason | null = null;
   const startTime = Date.now();
+  let lastProgressAt = startTime;
 
   const buildTerminalResult = (
     match: PollResponseData["responses"][number],
@@ -457,6 +464,7 @@ export async function pollForResponse(
     lastAnswerAnchorId = snapshot.answerAnchorId;
     lastRunState = snapshot.runState;
     lastCompletionReason = snapshot.completionReason;
+    lastProgressAt = Date.now();
     onAnswerSnapshot(nextText, snapshot);
   };
 
@@ -478,13 +486,24 @@ export async function pollForResponse(
 
     lastThinkingText = nextText;
     lastThinkingRevision = nextRevision;
+    lastProgressAt = Date.now();
     onThinkingSnapshot(nextText, snapshot);
   };
 
-  while (Date.now() - startTime < TIMEOUT_MS) {
+  while (true) {
     if (signal?.aborted) throw createAbortError();
+    const elapsed = Date.now() - startTime;
+    if (elapsed >= RESPONSE_HARD_TIMEOUT_MS) break;
+    if (Date.now() - lastProgressAt >= RESPONSE_INACTIVITY_TIMEOUT_MS) break;
 
     const data: PollResponseData = relayPollResponse();
+
+    // The extension heartbeats while a provider is still reasoning, even when
+    // no visible text changed. Any advance of the relay activity timestamp is
+    // real progress, so restart the inactivity window from it.
+    if (data.current_seq === seq && Number.isFinite(data.last_activity_at)) {
+      lastProgressAt = Math.max(lastProgressAt, Number(data.last_activity_at));
+    }
 
     if (data.current_seq === seq) {
       if (
@@ -554,7 +573,12 @@ export async function pollForResponse(
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
 
-  throw new Error("Timed out waiting for webchat response (5 min).");
+  throw new Error(
+    "Timed out waiting for webchat response " +
+      `(no new answer or thinking text for ${Math.round(
+        RESPONSE_INACTIVITY_TIMEOUT_MS / 60_000,
+      )} min).`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -782,8 +806,9 @@ async function waitForFreshScrapedMessagesForChat(
         }
       })()
     : null;
-  const isDeepSeekChat =
-    normalizeHistoryHostname(siteHostname) === "chat.deepseek.com";
+  const isSlowSite =
+    normalizeHistoryHostname(siteHostname) === "chat.deepseek.com" ||
+    normalizeHistoryHostname(siteHostname) === "yuanbao.tencent.com";
   const snapshot = await waitForFreshScrapedTranscriptSnapshot(host, {
     expectedChatUrl: options.expectedChatUrl,
     expectedChatId: options.expectedChatId,
@@ -791,7 +816,7 @@ async function waitForFreshScrapedMessagesForChat(
     minCapturedAt: options.minCapturedAt,
     timeoutMs:
       options.timeoutMs ||
-      (isDeepSeekChat ? DEEPSEEK_SCRAPE_TIMEOUT_MS : REMOTE_READY_TIMEOUT_MS),
+      (isSlowSite ? SLOW_SITE_SCRAPE_TIMEOUT_MS : REMOTE_READY_TIMEOUT_MS),
     signal: options.signal,
   });
 
