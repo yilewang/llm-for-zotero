@@ -12620,7 +12620,8 @@ export function installWorkflowTestHarness(targetAddon: {
               lastActivityAt: at,
               createdAt: at,
             }),
-            loadMessages: async () =>
+            loadMessages: async () => [],
+            loadMessageTexts: async () =>
               messages.map((message, index) => ({
                 ...message,
                 timestamp: at + index,

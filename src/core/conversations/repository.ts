@@ -10,6 +10,7 @@ import {
   ensureClaudePaperConversation,
   getClaudeConversationSummary,
   loadClaudeConversation,
+  loadClaudeConversationTexts,
   listAllClaudePaperConversationsByLibrary,
   listClaudeGlobalConversations,
   listClaudePaperConversations,
@@ -30,6 +31,7 @@ import {
   getLatestCodexForkableAssistantTimestamp,
   getCodexConversationSummary,
   loadCodexConversation,
+  loadCodexConversationTexts,
   listAllCodexPaperConversationsByLibrary,
   listCodexGlobalConversations,
   listCodexPaperConversations,
@@ -52,6 +54,7 @@ import type {
   ConversationSystem,
   GlobalConversationSummary,
   PaperConversationSummary,
+  StoredMessageText,
 } from "../../shared/types";
 import {
   clearConversationTitle,
@@ -67,6 +70,7 @@ import {
   getGlobalConversation,
   getPaperConversation,
   loadConversation as loadUpstreamConversation,
+  loadConversationTexts as loadUpstreamConversationTexts,
   listAllPaperConversationsByLibrary,
   listGlobalConversations,
   listPaperConversations,
@@ -541,6 +545,11 @@ type ConversationStoreAdapter = {
     conversationKey: number,
     limit: number,
   ): Promise<StoredChatMessage[]>;
+  /** Every message as text, oldest first, before `beforeTimestamp`. */
+  loadMessageTexts(
+    conversationKey: number,
+    beforeTimestamp?: number,
+  ): Promise<StoredMessageText[]>;
   deleteTurnMessages(
     conversationKey: number,
     userTimestamp: number,
@@ -637,6 +646,10 @@ const UPSTREAM_STORE: ConversationStoreAdapter = {
 
   loadMessages(conversationKey, limit) {
     return loadUpstreamConversation(conversationKey, limit);
+  },
+
+  loadMessageTexts(conversationKey, beforeTimestamp) {
+    return loadUpstreamConversationTexts(conversationKey, beforeTimestamp);
   },
 
   async deleteTurnMessages(
@@ -837,6 +850,7 @@ type RuntimeStoreFunctions = {
   ): ConversationCatalogEntry | null;
   getSummary: typeof getClaudeConversationSummary;
   loadConversation: typeof loadClaudeConversation;
+  loadConversationTexts: typeof loadClaudeConversationTexts;
   deleteTurnMessages: typeof deleteClaudeTurnMessages;
   ensureGlobalConversation: typeof ensureClaudeGlobalConversation;
   ensurePaperConversation: typeof ensureClaudePaperConversation;
@@ -872,6 +886,10 @@ function createRuntimeStoreAdapter(
 
     loadMessages(conversationKey, limit) {
       return store.loadConversation(conversationKey, limit);
+    },
+
+    loadMessageTexts(conversationKey, beforeTimestamp) {
+      return store.loadConversationTexts(conversationKey, beforeTimestamp);
     },
 
     async deleteTurnMessages(
@@ -1018,6 +1036,7 @@ const CLAUDE_CODE_STORE = createRuntimeStoreAdapter(
     fromSummary: (summary) => fromRuntimeSummary("claude_code", summary),
     getSummary: getClaudeConversationSummary,
     loadConversation: loadClaudeConversation,
+    loadConversationTexts: loadClaudeConversationTexts,
     deleteTurnMessages: deleteClaudeTurnMessages,
     ensureGlobalConversation: ensureClaudeGlobalConversation,
     ensurePaperConversation: ensureClaudePaperConversation,
@@ -1050,6 +1069,7 @@ const CODEX_STORE = createRuntimeStoreAdapter(
     fromSummary: (summary) => fromRuntimeSummary("codex", summary),
     getSummary: getCodexConversationSummary,
     loadConversation: loadCodexConversation,
+    loadConversationTexts: loadCodexConversationTexts,
     deleteTurnMessages: deleteCodexTurnMessages,
     ensureGlobalConversation: ensureCodexGlobalConversation,
     ensurePaperConversation: ensureCodexPaperConversation,
@@ -1097,6 +1117,7 @@ const ANTIGRAVITY_STORE = createRuntimeStoreAdapter(
     fromSummary: (summary) => fromRuntimeSummary("antigravity", summary),
     getSummary: antigravityConversationStore.getSummary,
     loadConversation: antigravityConversationStore.loadConversation,
+    loadConversationTexts: antigravityConversationStore.loadConversationTexts,
     deleteTurnMessages: antigravityConversationStore.deleteTurnMessages,
     ensureGlobalConversation:
       antigravityConversationStore.ensureGlobalConversation,
@@ -1221,6 +1242,22 @@ export const conversationRepository = {
     if (!conversationKey) return [];
     const limit = normalizeLimit(target.limit, 200);
     return storeFor(target.system).loadMessages(conversationKey, limit);
+  },
+
+  /**
+   * Every message of a conversation as text, oldest first, before
+   * `beforeTimestamp` when given: what a past-chat reader needs, without
+   * the screenshot, attachment and context data of loadMessages.
+   */
+  async loadMessageTexts(
+    target: ConversationMessageTarget & { beforeTimestamp?: number },
+  ): Promise<StoredMessageText[]> {
+    const conversationKey = positiveIntOrZero(target.conversationKey);
+    if (!conversationKey) return [];
+    return storeFor(target.system).loadMessageTexts(
+      conversationKey,
+      target.beforeTimestamp,
+    );
   },
 
   async deleteTurnMessages(target: DeleteTurnMessagesParams): Promise<void> {

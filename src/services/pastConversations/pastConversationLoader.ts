@@ -37,15 +37,7 @@ import {
   type PastConversationSearchFilters,
 } from "./pastConversationSearch";
 import { collapseWhitespace } from "../../core/values";
-
-/**
- * Every stored message of a chat. The stores read "the newest N"; a past
- * chat is read whole, since past_chat_read pages through it and the
- * attached-chat block has its own token budget. A cap here made the oldest
- * messages of a long chat unreachable, and those are the ones a fresh
- * session's history note points to.
- */
-const ALL_STORED_MESSAGES = Number.MAX_SAFE_INTEGER;
+import type { StoredMessageText } from "../../shared/conversationMessageSql";
 
 /** The catalog facts a past chat is checked against. */
 export type PastConversationCatalogEntry = {
@@ -72,6 +64,18 @@ export type PastConversationSource = {
     conversationKey: number;
     limit?: number;
   }): Promise<ReadonlyArray<Record<string, unknown>>>;
+  /**
+   * Every message of a chat as text, oldest first, before `beforeTimestamp`
+   * when given. A past chat is read whole (past_chat_read pages through it,
+   * and the attached-chat block has its own token budget), so a long chat's
+   * oldest messages stay reachable; as text only, a read does not carry the
+   * chat's screenshots, attachments or context data.
+   */
+  loadMessageTexts(target: {
+    system: ConversationSystem;
+    conversationKey: number;
+    beforeTimestamp?: number;
+  }): Promise<ReadonlyArray<StoredMessageText>>;
   isPendingDeletion(conversationKey: number): boolean | Promise<boolean>;
   resolvePaperTitle?(paperItemID: number): string | undefined;
   /**
@@ -123,6 +127,11 @@ export const defaultPastConversationSource: PastConversationSource = {
     return (await conversationRepository.loadMessages(target)) as ReadonlyArray<
       Record<string, unknown>
     >;
+  },
+  async loadMessageTexts(target) {
+    const { conversationRepository } =
+      await import("../../core/conversations/repository");
+    return conversationRepository.loadMessageTexts(target);
   },
   async isPendingDeletion(conversationKey) {
     const { pendingDeletionStore } =
@@ -211,16 +220,14 @@ export async function loadPastConversation(
       collapseWhitespace(entry.title || "") ||
       collapseWhitespace(ref.title) ||
       `Conversation ${ref.conversationKey}`;
-    const stored = await source.loadMessages({
-      system: ref.system,
-      conversationKey: ref.conversationKey,
-      limit: ALL_STORED_MESSAGES,
-    });
-    const before = options.beforeTimestamp;
     const messages = cleanPastConversationMessages(
-      before === undefined
-        ? stored
-        : stored.filter((row) => Number(row.timestamp) < before),
+      await source.loadMessageTexts({
+        system: ref.system,
+        conversationKey: ref.conversationKey,
+        ...(options.beforeTimestamp !== undefined
+          ? { beforeTimestamp: options.beforeTimestamp }
+          : {}),
+      }),
     );
     const paperItemID = entry.paperItemID || ref.paperItemID;
     const paperLabel =

@@ -1,3 +1,6 @@
+import type { StoredMessageText } from "./types";
+
+export type { StoredMessageText };
 export type StoredMessageOrderDirection = "asc" | "desc";
 
 export function storedMessageRoleOrderSql(roleColumn = "role"): string {
@@ -34,6 +37,38 @@ export function buildLatestStoredMessagesQuery(params: {
       LIMIT ?
     )
     ORDER BY ${storedMessageDisplayOrderSql({ direction: "asc" })}`;
+}
+
+/**
+ * Every stored message of a conversation as text, oldest first, before
+ * `beforeTimestamp` when given: no screenshot, attachment or context data.
+ * `compactMarkerColumn` names the store's compaction-marker column, if any.
+ */
+export function buildStoredMessageTextsQuery(params: {
+  tableName: string;
+  whereSql: string;
+  compactMarkerColumn?: string;
+  before: boolean;
+}): string {
+  // Every row has the column: a Zotero DB row throws on an unknown one.
+  return `SELECT role, text, timestamp, ${
+    params.compactMarkerColumn || "0"
+  } AS compactMarker
+    FROM ${params.tableName}
+    WHERE ${params.whereSql}${params.before ? " AND timestamp < ?" : ""}
+    ORDER BY ${storedMessageDisplayOrderSql({ direction: "asc" })}`;
+}
+
+/** Rows of buildStoredMessageTextsQuery as StoredMessageText. */
+export function readStoredMessageTexts(
+  rows: ReadonlyArray<Record<string, unknown>> | undefined,
+): StoredMessageText[] {
+  return (rows || []).map((row) => ({
+    role: String(row.role || ""),
+    text: typeof row.text === "string" ? row.text : String(row.text ?? ""),
+    timestamp: Number(row.timestamp) || 0,
+    ...(Number(row.compactMarker) === 1 ? { compactMarker: true } : {}),
+  }));
 }
 
 /** Which stored user row an "update latest user message" write targets. */

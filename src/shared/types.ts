@@ -358,3 +358,12 @@ export type CodexConversationSummary = {
   effort?: string;
   userTurnCount: number;
 };
+
+/** A stored message as text: what a reader of a past chat needs. */
+export type StoredMessageText = {
+  role: string;
+  text: string;
+  timestamp: number;
+  /** A compaction marker row (runtime stores only). */
+  compactMarker?: boolean;
+};
