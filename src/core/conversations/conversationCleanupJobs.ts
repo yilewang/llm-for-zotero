@@ -443,50 +443,46 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
 }
 
 /**
- * A pending Claude invalidation is a lifecycle barrier: a new turn must force
- * a fresh provider session instead of resuming the session it names. An
- * empty-session job is a mapping Clear could not drop inline. A job naming a
- * session is one a Retry or Edit could not drop, which still holds the turns
- * being replaced; it bars only while that is still the chat's session
- * (`currentSessionId`), so a replacement session started since is resumed.
+ * The Claude invalidations still pending for a conversation: a lifecycle
+ * barrier for its next turn. `emptySession`: a mapping Clear could not drop
+ * inline, so the turn must start fresh. `sessionIds`: sessions a Retry or
+ * Edit could not drop, which still hold the turns being replaced; the bridge
+ * starts fresh only if one of them is the session it would resume
+ * (metadata.pendingResetSessionIds), so a replacement started since is kept.
  */
-export async function hasPendingClaudeCleanupJob(params: {
+export async function listPendingClaudeCleanups(params: {
   conversationKey: number;
   instanceID?: string;
-  /** The session the chat would resume ("" or unset: none). */
-  currentSessionId?: string;
-}): Promise<boolean> {
+}): Promise<{ emptySession: boolean; sessionIds: string[] }> {
+  const none = { emptySession: false, sessionIds: [] };
   const db = getZoteroDb();
   const conversationKey = positiveIntOrZero(params.conversationKey);
   const instanceID = String(params.instanceID || "").trim();
-  if (!db || !conversationKey) return false;
+  if (!db || !conversationKey) return none;
   try {
     await initConversationCleanupJobs();
     const instancePredicate = instanceID ? "AND instance_id = ?" : "";
-    const currentSessionId = String(params.currentSessionId || "").trim();
     const rows = (await queryCleanupDb(
       db,
-      `SELECT 1
+      `SELECT provider_session_id AS sessionId
        FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
        WHERE operation = 'claude_invalidate'
          AND system = 'claude_code'
          AND conversation_key = ?
          ${instancePredicate}
-         AND (provider_session_id = ''${currentSessionId ? " OR provider_session_id = ?" : ""})
          AND (provider_cleanup_state = 'pending'
-              OR provider_cleanup_state = 'attention_required')
-       LIMIT 1`,
-      [
-        conversationKey,
-        ...(instanceID ? [instanceID] : []),
-        ...(currentSessionId ? [currentSessionId] : []),
-      ],
-    )) as unknown[] | undefined;
-    return Boolean(rows?.length);
+              OR provider_cleanup_state = 'attention_required')`,
+      instanceID ? [conversationKey, instanceID] : [conversationKey],
+    )) as Array<{ sessionId?: unknown }> | undefined;
+    const ids = (rows || []).map((row) => String(row.sessionId || "").trim());
+    return {
+      emptySession: ids.some((id) => !id),
+      sessionIds: [...new Set(ids.filter(Boolean))],
+    };
   } catch (error) {
     // A missing/temporarily unavailable cleanup table must not make a normal
     // turn fail; the durable deletion worker remains responsible for retry.
-    if (/no such table|no table/i.test(String(error))) return false;
+    if (/no such table|no table/i.test(String(error))) return none;
     throw error;
   }
 }

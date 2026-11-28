@@ -2245,6 +2245,48 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     }
   });
 
+  it("starts fresh only when a pending reset names the session it would resume", async () => {
+    const resumed: Array<string | undefined> = [];
+    let calls = 0;
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        calls += 1;
+        resumed.push((args.options as { resume?: string }).resume);
+        return makeStream([
+          {
+            type: "result",
+            session_id: `session-${calls}`,
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const sessionMapper = new InMemorySessionMapper();
+    const adapter = new ClaudeCodeRuntimeAdapter({
+      runtimeClient: runtime,
+      sessionMapper,
+    });
+    await adapter.runTurn({
+      conversationKey: "conv-pending-reset",
+      userMessage: "Pick a number.",
+    });
+    // The plugin could not drop session-1 (it holds a replaced answer).
+    await adapter.runTurn({
+      conversationKey: "conv-pending-reset",
+      userMessage: "What did you pick?",
+      metadata: { pendingResetSessionIds: ["session-1"] },
+    });
+    // session-2 replaced it; the reset of session-1 is still pending.
+    await adapter.runTurn({
+      conversationKey: "conv-pending-reset",
+      userMessage: "And another?",
+      metadata: { pendingResetSessionIds: ["session-1"] },
+    });
+
+    expect(resumed).toEqual([undefined, undefined, "session-2"]);
+  });
+
   it("preserves history-gap continuity across compact and skill commands", async () => {
     const pdfPath = await createPdfFile();
     const seenPrompts: unknown[] = [];

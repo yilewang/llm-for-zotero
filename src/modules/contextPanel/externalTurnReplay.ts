@@ -128,22 +128,26 @@ export type ExternalTurnResult = {
     invalidateCalls: number;
     /** The panel's status line when the retry ended. */
     status: string;
-    payload: {
-      providerSessionId: string;
-      forceFreshSession: boolean;
-      userText: string;
-    } | null;
+    payload: ExternalTurnResult["retryTurnPayload"];
   }>;
   /** What each follow-up's `/run-turn` asked of the bridge (null: none). */
   followUpPayloads: Array<{
     providerSessionId: string;
     forceFreshSession: boolean;
+    /** Sessions a pending reset names (metadata.pendingResetSessionIds). */
+    pendingResetSessionIds: string[];
+    /** Whether the fake bridge started a fresh session for this turn. */
+    startedFresh: boolean;
     userText: string;
   } | null>;
   /** What the last retry's `/run-turn` asked of the bridge; null without retry. */
   retryTurnPayload: {
     providerSessionId: string;
     forceFreshSession: boolean;
+    /** Sessions a pending reset names (metadata.pendingResetSessionIds). */
+    pendingResetSessionIds: string[];
+    /** Whether the fake bridge started a fresh session for this turn. */
+    startedFresh: boolean;
     userText: string;
   } | null;
   /** How many times the runtime's runTurn was called. */
@@ -162,6 +166,8 @@ type ScriptState = {
    * `/session-info` reports a new session id, as the real bridge does.
    */
   sessionGeneration: number;
+  /** For each `/run-turn`: whether the fake started a fresh session. */
+  startedFresh: boolean[];
   payload: Record<string, unknown> | null;
   localDocumentPaths: string[][];
   confirmationAnswers: Array<{ requestId: string; approved: boolean }>;
@@ -170,6 +176,13 @@ type ScriptState = {
   abort: () => void;
   bump: () => void;
 };
+
+/** The session the fake holds for a chat: a new one after each reset. */
+function fakeSessionId(state: ScriptState, conversationKey: string): string {
+  return `fake-claude-session-${conversationKey}${
+    state.sessionGeneration ? `-${state.sessionGeneration}` : ""
+  }`;
+}
 
 function scopeTokenFromPayload(payload: Record<string, unknown> | null): {
   token: string;
@@ -356,8 +369,18 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     if (path === "/run-turn") {
       state.runTurnCalls += 1;
       state.payload = body;
+      // As the bridge adapter decides: fresh when the plugin says so, or
+      // when a pending reset names the session it would resume.
       const runMetadata = (body.metadata || {}) as Record<string, unknown>;
-      if (runMetadata.forceFreshSession === true) state.sessionGeneration += 1;
+      const conversationKey = String(body.conversationKey ?? "");
+      const pendingReset = Array.isArray(runMetadata.pendingResetSessionIds)
+        ? (runMetadata.pendingResetSessionIds as unknown[]).map(String)
+        : [];
+      const startsFresh =
+        runMetadata.forceFreshSession === true ||
+        pendingReset.includes(fakeSessionId(state, conversationKey));
+      if (startsFresh) state.sessionGeneration += 1;
+      state.startedFresh.push(startsFresh);
       const runtimeRequest = (body.runtimeRequest || {}) as {
         localDocuments?: unknown;
       };
@@ -380,9 +403,7 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
         session: {
           originalConversationKey: conversationKey,
           scopedConversationKey: conversationKey,
-          providerSessionId: `fake-claude-session-${conversationKey}${
-            state.sessionGeneration ? `-${state.sessionGeneration}` : ""
-          }`,
+          providerSessionId: fakeSessionId(state, conversationKey),
           scopeType: query.get("scopeType") || undefined,
           scopeId: query.get("scopeId") || undefined,
           scopeLabel: query.get("scopeLabel") || undefined,
@@ -452,6 +473,7 @@ export async function exerciseClaudeBridgeTurn(
     invalidateSessionCalls: 0,
     invalidateFails: false,
     sessionGeneration: 0,
+    startedFresh: [],
     localDocumentPaths: [],
     payload: null,
     confirmationAnswers: [],
@@ -589,6 +611,12 @@ export async function exerciseClaudeBridgeTurn(
         ? {
             providerSessionId: String(retried.providerSessionId ?? ""),
             forceFreshSession: metadata.forceFreshSession === true,
+            pendingResetSessionIds: Array.isArray(
+              metadata.pendingResetSessionIds,
+            )
+              ? (metadata.pendingResetSessionIds as unknown[]).map(String)
+              : [],
+            startedFresh: state.startedFresh.at(-1) === true,
             userText: String(retried.userText ?? ""),
           }
         : null;
@@ -617,6 +645,12 @@ export async function exerciseClaudeBridgeTurn(
           ? {
               providerSessionId: String(sent.providerSessionId ?? ""),
               forceFreshSession: metadata.forceFreshSession === true,
+              pendingResetSessionIds: Array.isArray(
+                metadata.pendingResetSessionIds,
+              )
+                ? (metadata.pendingResetSessionIds as unknown[]).map(String)
+                : [],
+              startedFresh: state.startedFresh.at(-1) === true,
               userText: String(sent.userText ?? ""),
             }
           : null,

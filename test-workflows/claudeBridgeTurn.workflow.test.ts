@@ -385,7 +385,7 @@ describe("workflow: Claude Code turn host", function () {
     // The bridge still maps the chat to the session holding "417": the
     // second retry must drop it there, or start a fresh session.
     assert.isTrue(
-      again.invalidateCalls >= 1 || again.payload!.forceFreshSession,
+      again.invalidateCalls >= 1 || again.payload!.startedFresh,
       JSON.stringify(result.retries),
     );
     assert.equal(again.payload!.providerSessionId, "");
@@ -434,10 +434,12 @@ describe("workflow: Claude Code turn host", function () {
     assert.isNull(result.retries[0].payload, JSON.stringify(result.retries));
     const [first, second] = result.followUpPayloads;
     const log = JSON.stringify(result.followUpPayloads);
-    // The bridge still holds the session with the replaced answer.
-    assert.isTrue(first?.forceFreshSession, log);
+    // The bridge still holds the session with the replaced answer: the
+    // plugin names it, and the bridge, about to resume it, starts fresh.
+    assert.lengthOf(first?.pendingResetSessionIds || [], 1, log);
+    assert.isTrue(first?.startedFresh, log);
     // The next message continues the session that replaced it (the bridge
     // resumes its own mapping of the chat, now that session).
-    assert.isFalse(second?.forceFreshSession, log);
+    assert.isFalse(second?.startedFresh, log);
   });
 });
