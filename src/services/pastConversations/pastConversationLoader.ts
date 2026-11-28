@@ -236,7 +236,7 @@ export async function loadPastConversation(
             ? collapseWhitespace(source.resolvePaperTitle(paperItemID) || "")
             : "") || "Paper chat"
         : "Library chat";
-    const chat = {
+    return {
       status: "ok" as const,
       ref,
       id,
@@ -245,10 +245,6 @@ export async function loadPastConversation(
       date: isoDate(entry.lastActivityAt || entry.createdAt || 0),
       paperLabel,
       messages,
-    };
-    return {
-      ...chat,
-      tokenEstimate: estimatePastConversationTokens(chat),
     };
   } catch {
     return unavailable("error");
@@ -284,15 +280,19 @@ export function renderPastChatSections(
   return results.map((result) => {
     if (result.status !== "ok")
       return formatPastChatUnavailableSection(result, { readTool: true });
+    // Sized here, where it decides full text or an outline: past_chat_read
+    // loads chats too and has no use for it.
+    const tokenEstimate = estimatePastConversationTokens(result);
     if (
-      result.tokenEstimate <= PAST_CHAT_FULL_TEXT_MAX_TOKENS &&
-      used + result.tokenEstimate <= budget
+      tokenEstimate <= PAST_CHAT_FULL_TEXT_MAX_TOKENS &&
+      used + tokenEstimate <= budget
     ) {
-      used += result.tokenEstimate;
+      used += tokenEstimate;
       return formatPastConversationFull(result);
     }
     return formatPastConversationOutline(result, {
       maxTokens: outlineMaxTokens,
+      tokenEstimate,
     });
   });
 }
