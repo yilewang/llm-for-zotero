@@ -11,6 +11,7 @@ import {
   getCurrentProfileSignature,
 } from "./conversationRegistry";
 import {
+  CONVERSATION_SYSTEMS,
   normalizeConversationSystem,
   type ConversationSystem,
   type RuntimeConversationSystem,
@@ -128,10 +129,10 @@ function parseCanonicalConversationID(
   conversationID: string,
 ): ParsedCanonicalConversationID | null {
   const match =
-    /^lfz:([^:]+):(upstream|claude_code|codex):(global|paper):lib-(\d+):paper-(\d+):legacy-(\d+)$/.exec(
+    /^lfz:([^:]+):([a-z_]+):(global|paper):lib-(\d+):paper-(\d+):legacy-(\d+)$/.exec(
       conversationID,
     );
-  if (!match) return null;
+  if (!match || !normalizeSystem(match[2])) return null;
   const [
     ,
     profileSignature,
@@ -661,9 +662,9 @@ export async function deleteConversationSearchIndexRow(params: {
 export async function refreshConversationSearchIndex(): Promise<boolean> {
   const initialized = await initConversationSearchIndexStore();
   if (!initialized) return false;
-  await refreshConversationSearchIndexForSystem("upstream");
-  await refreshConversationSearchIndexForSystem("claude_code");
-  await refreshConversationSearchIndexForSystem("codex");
+  for (const system of CONVERSATION_SYSTEMS) {
+    await refreshConversationSearchIndexForSystem(system);
+  }
   return true;
 }
 

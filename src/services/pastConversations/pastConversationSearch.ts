@@ -13,12 +13,11 @@
  * imports.
  */
 import type { ConversationSystem } from "../../shared/types";
+import { CONVERSATION_SYSTEMS } from "../../core/conversations/conversationSystems";
 
-export const PAST_CONVERSATION_SYSTEMS: readonly ConversationSystem[] = [
-  "upstream",
-  "claude_code",
-  "codex",
-];
+/** Every conversation system's chats can be found and attached. */
+export const PAST_CONVERSATION_SYSTEMS: readonly ConversationSystem[] =
+  CONVERSATION_SYSTEMS;
 
 /** One chat as the agent's search reads it. */
 export type PastConversationCandidate = {

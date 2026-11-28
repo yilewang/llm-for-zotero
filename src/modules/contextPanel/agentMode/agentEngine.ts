@@ -142,8 +142,8 @@ import type { StoredChatMessage } from "../../../utils/chatStore";
 import type { Message } from "../types";
 import { isClaudeBlockStreamingEnabled } from "../../../claudeCode/prefs";
 import {
-  assertNeverConversationSystem,
   isRuntimeConversationSystem,
+  sendsLocalPdfFiles,
 } from "../../../core/conversations/conversationSystems";
 import { recordContextCacheTelemetry } from "../../../contextCache/manager";
 import {
@@ -1400,6 +1400,11 @@ export type AgentEngineDeps = {
     activePaperContext?: PaperContextRef;
   };
   findLatestRetryPair: (history: Message[]) => LatestRetryPairShape | null;
+  /**
+   * Detaches the conversation's runtime session before a retry re-sends the
+   * turn it holds (runtimeSessionReset.ts); false when it could not be.
+   */
+  detachRuntimeSessionForResend: (conversationKey: number) => Promise<boolean>;
   reconstructRetryPayload: (userMessage: Message) => ReconstructedRetryPayload;
   isReasoningExpandedByDefault: () => boolean;
   createQueuedRefresh: (refresh: () => void) => () => void;
@@ -2137,24 +2142,19 @@ export async function sendAgentTurn(
   }
 }
 
-/** Whether a retry sends the turn's PDFs as local files to its runtime. */
+/**
+ * Whether a retry sends the turn's PDFs as local files to its runtime, as
+ * the first send does (sendsLocalPdfFiles). A Codex conversation runs on
+ * the Codex runtime only through the app server.
+ */
 function runtimeUsesLocalPdfTransport(
   conversationSystem: string,
   authMode: string | undefined,
 ): boolean {
   if (!isRuntimeConversationSystem(conversationSystem)) return false;
-  switch (conversationSystem) {
-    case "claude_code":
-      return true;
-    case "codex":
-      return authMode === "codex_app_server";
-    // Antigravity's PDF transport is Phase 4+ work; until then a retry sends
-    // no local PDF files.
-    case "antigravity":
-      return false;
-    default:
-      return assertNeverConversationSystem(conversationSystem);
-  }
+  if (conversationSystem === "codex" && authMode !== "codex_app_server")
+    return false;
+  return sendsLocalPdfFiles(conversationSystem);
 }
 
 // ---------------------------------------------------------------------------
@@ -2269,6 +2269,22 @@ export async function retryAgentTurn(
       // Best-effort status update without full createPanelUpdateHelpers
       ui.status.textContent = "No retryable response found";
     }
+    releaseRequest();
+    return;
+  }
+  // The runtime's session holds the turn this retry replaces.
+  if (
+    isRuntimeConversationSystem(deps.getConversationSystem()) &&
+    !(await deps.detachRuntimeSessionForResend(conversationKey))
+  ) {
+    if (ui.status) {
+      ui.status.textContent =
+        "Could not reset the conversation's session for the retry.";
+    }
+    releaseRequest();
+    return;
+  }
+  if (!requestIsActive()) {
     releaseRequest();
     return;
   }

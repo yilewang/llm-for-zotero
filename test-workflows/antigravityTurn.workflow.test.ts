@@ -334,6 +334,143 @@ describe("workflow: Antigravity turns", function () {
       (update) => update.sessionUpdate === "user_message_chunk",
     );
     assert.lengthOf(asked, 1, JSON.stringify(session?.history));
+    // The new session holds none of the chat, so its first prompt carries
+    // the chat so far before the turn (A7).
+    const sentText = asked
+      .map((update) =>
+        update.sessionUpdate === "user_message_chunk" &&
+        update.content.type === "text"
+          ? update.content.text
+          : "",
+      )
+      .join("\n");
+    assert.include(sentText, "Local Zotero conversation history");
+    assert.include(sentText, "1. user: Say hello.");
+    assert.include(sentText, "2. assistant: Hello from Antigravity.");
+    assert.isBelow(
+      sentText.indexOf("Local Zotero conversation history"),
+      sentText.indexOf("Say hello again."),
+    );
+  });
+
+  it("retries in a new agy session that has the chat so far but not the replaced answer", async function () {
+    const first = await run({ question: "Say hello." });
+    assert.equal(first.outcomeKind, "completed", JSON.stringify(first));
+    const retried = await run({
+      question: "Say hello again.",
+      conversationKey: first.conversationKey,
+      retry: true,
+    });
+    assert.equal(retried.outcomeKind, "completed", JSON.stringify(retried));
+    // The old session holds the answer the retry replaces.
+    assert.isString(retried.sessionIdBeforeRetry);
+    assert.notEqual(retried.storedSessionId, retried.sessionIdBeforeRetry);
+    const session = store.get(String(retried.storedSessionId));
+    const asked = (session?.history || []).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" &&
+      update.content.type === "text"
+        ? [update.content.text]
+        : [],
+    );
+    assert.lengthOf(asked, 1, JSON.stringify(asked));
+    assert.include(asked[0], "1. user: Say hello.");
+    assert.include(asked[0], "2. assistant: Hello from Antigravity.");
+    assert.notInclude(asked[0], "3. user:");
+    assert.include(asked[0], "Say hello again.");
+  });
+
+  it("sends the paper's PDF file again when a turn that sent it is retried", async function () {
+    const pdfPath = String(
+      Zotero.Items.get(fixture.pdfAttachmentId).getFilePath() || "",
+    );
+    assert.isNotEmpty(pdfPath, "the fixture has a PDF file");
+    const retried = await run({
+      question: "What does the PDF say?",
+      localPdf: true,
+      retry: true,
+    });
+    assert.equal(retried.outcomeKind, "completed", JSON.stringify(retried));
+    assert.deepEqual(
+      retried.localDocumentPaths,
+      [[pdfPath], [pdfPath]],
+      "the first turn and its retry both carry the PDF file",
+    );
+    // The retry's new agy session is given the file in its prompt.
+    const session = store.get(String(retried.storedSessionId));
+    const asked = (session?.history || []).flatMap((update) =>
+      update.sessionUpdate === "user_message_chunk" &&
+      update.content.type === "text"
+        ? [update.content.text]
+        : [],
+    );
+    assert.lengthOf(asked, 1, JSON.stringify(asked));
+    assert.include(asked[0], pdfPath);
+  });
+
+  it("sends agy a past chat the user attached, before the question", async function () {
+    const pastPaper = await api.createPaperWithPdfFixture({
+      title: "Antigravity past chat source",
+      pages: ["A disposable paper with a past chat."],
+    });
+    try {
+      const pastPanel = await api.renderPanelForItem(pastPaper.parentItemId);
+      const seeded = await api.seedPanelStoredTurn(
+        pastPanel.panelId,
+        "PASTAGY what was the lab rat called?",
+        "The lab rat was named BISCUIT.",
+      );
+      const result = await run({
+        question: "What was the rat called in my earlier chat?",
+        attachedConversations: [
+          {
+            system: "upstream",
+            conversationKey: seeded.conversationKey,
+            title: "PASTAGY",
+            libraryID: Zotero.Libraries.userLibraryID,
+            kind: "paper",
+            paperItemID: pastPaper.parentItemId,
+          },
+        ],
+      });
+      assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+      const sent = (
+        store.get(String(result.storedSessionId))?.history || []
+      ).flatMap((update) =>
+        update.sessionUpdate === "user_message_chunk" &&
+        update.content.type === "text"
+          ? [update.content.text]
+          : [],
+      );
+      assert.lengthOf(sent, 1, JSON.stringify(sent));
+      assert.include(sent[0], "Attached past conversations");
+      assert.include(sent[0], "The lab rat was named BISCUIT.");
+      assert.isBelow(
+        sent[0].indexOf("BISCUIT"),
+        sent[0].indexOf("What was the rat called in my earlier chat?"),
+      );
+    } finally {
+      await api.cleanupFixture(pastPaper);
+    }
+  });
+
+  it("lists an Antigravity chat in Add past conversation", async function () {
+    const first = await run({ question: "AGYPAST say hello." });
+    assert.equal(first.outcomeKind, "completed", JSON.stringify(first));
+    const other = await api.createPaperWithPdfFixture({
+      title: "Antigravity picker panel",
+      pages: ["A disposable paper."],
+    });
+    try {
+      const otherPanel = await api.renderPanelForItem(other.parentItemId);
+      const picker = await api.pickPastConversationInPanel(otherPanel.panelId);
+      assert.include(
+        picker.rowRuntimeLabels,
+        "Antigravity",
+        JSON.stringify(picker),
+      );
+    } finally {
+      await api.cleanupFixture(other);
+    }
   });
 
   it("shows agy's permission request as a review card and passes the answer on", async function () {
@@ -603,6 +740,8 @@ describe("workflow: Antigravity turns", function () {
     );
     assert.lengthOf(sent, 1, JSON.stringify(sent));
     assert.notInclude(sent[0], "Original agent-mode Zotero behavior");
+    // A chat's first turn has no history to carry.
+    assert.notInclude(sent[0], "Local Zotero conversation history");
     assert.include(sent[0], "Say hello.");
   });
 

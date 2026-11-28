@@ -52,6 +52,20 @@ async function createPdfFile(
   return path;
 }
 
+/** A prompt's text parts: the string itself, or each text block streamed. */
+async function readPromptParts(prompt: unknown): Promise<string[]> {
+  if (typeof prompt === "string") return [prompt];
+  const parts: string[] = [];
+  for await (const message of prompt as AsyncIterable<any>) {
+    const content = message?.message?.content;
+    if (typeof content === "string") parts.push(content);
+    else
+      for (const block of content || [])
+        if (block?.type === "text") parts.push(block.text);
+  }
+  return parts;
+}
+
 function stringifyJson(value: unknown): string {
   return JSON.stringify(value)
     .replace(/\u2028/g, "\\u2028")
@@ -531,13 +545,46 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     });
   });
 
+  it("sends a slash command after the turn's quoted context, as its own part", async () => {
+    const seen: unknown[] = [];
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        seen.push(args.prompt);
+        return makeStream([
+          { type: "result", session_id: "s", result: "ok", is_error: false },
+        ]);
+      },
+    });
+    const quoted = await runtime.startTurn({
+      conversationKey: "conv-slash-quote",
+      userMessage: "/explain-simply",
+      runtimeRequest: {
+        turnContext:
+          'Selected text 1 [source=model response]:\n"""\nAttention weighs tokens.\n"""',
+      },
+    });
+    for await (const _event of quoted.events) void _event;
+    const bare = await runtime.startTurn({
+      conversationKey: "conv-slash-bare",
+      userMessage: "/cost",
+    });
+    for await (const _event of bare.events) void _event;
+
+    expect(await readPromptParts(seen[0])).toEqual([
+      'Selected text 1 [source=model response]:\n"""\nAttention weighs tokens.\n"""',
+      "/explain-simply",
+    ]);
+    // With nothing to add, the command goes as it is.
+    expect(seen[1]).toBe("/cost");
+  });
+
   it("keeps an explicitly invoked skill on a PDF turn", async () => {
     const pdfPath = await createPdfFile();
-    let seenPrompt = "";
+    let seenPrompt: unknown;
     let seenOptions: Record<string, unknown> = {};
     const runtime = new ClaudeAgentSdkRuntimeClient({
       queryImpl(args) {
-        seenPrompt = typeof args.prompt === "string" ? args.prompt : "";
+        seenPrompt = args.prompt;
         seenOptions = args.options;
         return makeStream([
           {
@@ -571,8 +618,12 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     });
     for await (const _event of stream.events) void _event;
 
-    expect(seenPrompt).toContain("/my-pdf-skill answer with my format");
-    expect(seenPrompt).toContain(pdfPath);
+    // The command goes alone as the last part, so Claude Code runs it with
+    // its own arguments; the PDF goes in a part before it.
+    const parts = await readPromptParts(seenPrompt);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toContain(pdfPath);
+    expect(parts[1]).toBe("/my-pdf-skill answer with my format");
     expect(seenOptions.allowedTools).toEqual(["Skill"]);
     expect(seenOptions.settingSources).toEqual(["user", "project", "local"]);
   });
@@ -1968,6 +2019,43 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(String(seenPrompt)).toContain("notes.txt");
   });
 
+  it("replays the plugin's fallback history whole and says what it left out", async () => {
+    let prompt: unknown;
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        prompt = args.prompt;
+        return makeStream([
+          { type: "result", session_id: "s", result: "ok", is_error: false },
+        ]);
+      },
+    });
+    const longAnswer = `${"evidence ".repeat(600)}END-OF-ANSWER`;
+    const history = Array.from({ length: 30 }, (_value, index) => ({
+      role: index % 2 ? "assistant" : "user",
+      content: index === 1 ? longAnswer : `message ${index}`,
+    }));
+    const stream = await runtime.startTurn({
+      conversationKey: "conv-fallback-whole",
+      userMessage: "continue",
+      metadata: { claudeResumeFallbackHistory: true },
+      runtimeRequest: {
+        history,
+        historyOmitted: 4,
+        historyChatId: "claude_code:3000000000000042",
+      } as Record<string, unknown>,
+    });
+    for await (const _event of stream.events) void _event;
+
+    const text = String(prompt);
+    // Every entry the plugin chose, including the first and a long one.
+    expect(text).toContain("1. user: message 0");
+    expect(text).toContain("END-OF-ANSWER");
+    expect(text).toContain("30. assistant: message 29");
+    expect(text).toContain(
+      '(4 earlier messages did not fit and are not shown. Read them with past_chat_read({ chat: "claude_code:3000000000000042" })',
+    );
+  });
+
   it("injects local Zotero history only for resume fallback turns", async () => {
     let fallbackPrompt: unknown;
     let normalPrompt: unknown;
@@ -2031,16 +2119,81 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(String(normalPrompt)).not.toContain("old answer");
   });
 
+  it("gives a new Claude session the chat's history after its session was dropped", async () => {
+    const prompts: unknown[] = [];
+    const resumed: Array<string | undefined> = [];
+    let calls = 0;
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        calls += 1;
+        prompts.push(args.prompt);
+        resumed.push((args.options as { resume?: string }).resume);
+        return makeStream([
+          {
+            type: "result",
+            session_id: `session-${calls}`,
+            result: "ok",
+            is_error: false,
+          },
+        ]);
+      },
+    });
+    const sessionMapper = new InMemorySessionMapper();
+    const adapter = new ClaudeCodeRuntimeAdapter({
+      runtimeClient: runtime,
+      sessionMapper,
+    });
+    await adapter.runTurn({
+      conversationKey: "conv-retry",
+      userMessage: "Pick a number.",
+      runtimeRequest: { history: [] },
+    });
+    // A retry of that turn: the plugin dropped the session first.
+    await adapter.invalidateConversationSession("conv-retry");
+    await adapter.runTurn({
+      conversationKey: "conv-retry",
+      userMessage: "Pick a number.",
+      runtimeRequest: {
+        history: [
+          { role: "user", content: "Hello." },
+          { role: "assistant", content: "Hi there." },
+        ],
+      },
+    });
+    // A follow-up continues the new session, without the history again.
+    await adapter.runTurn({
+      conversationKey: "conv-retry",
+      userMessage: "And another?",
+      runtimeRequest: {
+        history: [
+          { role: "user", content: "Hello." },
+          { role: "assistant", content: "Hi there." },
+          { role: "user", content: "Pick a number." },
+          { role: "assistant", content: "ok" },
+        ],
+      },
+    });
+
+    expect(String(prompts[0])).not.toContain(
+      "Local Zotero conversation history",
+    );
+    expect(resumed[1]).toBeUndefined();
+    expect(String(prompts[1])).toContain("Local Zotero conversation history");
+    expect(String(prompts[1])).toContain("2. assistant: Hi there.");
+    expect(resumed[2]).toBe("session-2");
+    expect(String(prompts[2])).not.toContain(
+      "Local Zotero conversation history",
+    );
+  });
+
   it("preserves history-gap continuity across compact and skill commands", async () => {
     const pdfPath = await createPdfFile();
-    const seenPrompts: string[] = [];
+    const seenPrompts: unknown[] = [];
     let queryCalls = 0;
     const runtime = new ClaudeAgentSdkRuntimeClient({
       queryImpl(args) {
         queryCalls += 1;
-        seenPrompts.push(
-          typeof args.prompt === "string" ? args.prompt : "[stream]",
-        );
+        seenPrompts.push(args.prompt);
         return makeStream([
           {
             type: "result",
@@ -2104,9 +2257,11 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
       runtimeRequest: { history },
     });
 
-    expect(seenPrompts[1]).toMatch(/^\/my-skill compare the result/);
-    expect(seenPrompts[1]).toContain("Local Zotero conversation history");
-    expect(seenPrompts[1]).toContain("PDF summary");
+    const parts = await readPromptParts(seenPrompts[1]);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toContain("Local Zotero conversation history");
+    expect(parts[0]).toContain("PDF summary");
+    expect(parts[1]).toBe("/my-skill compare the result");
     expect(
       await sessionMapper.get("conv-gap-command::local-pdf-history-gap"),
     ).toBeUndefined();

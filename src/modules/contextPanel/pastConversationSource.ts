@@ -2,7 +2,7 @@
  * Data source for the "Add past conversation" picker and for the chips that
  * show an attached past chat.
  *
- * The picker lists chats of all three conversation systems for one library.
+ * The picker lists chats of every conversation system for one library.
  * Pure merge, filter, and sort rules are exported so they can be unit tested.
  * The async loaders read the catalog and the search index.
  */

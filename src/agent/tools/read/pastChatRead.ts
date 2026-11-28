@@ -22,6 +22,8 @@ import {
   type PastConversationSource,
 } from "../../../services/pastConversations/pastConversationLoader";
 import { recordOrEmpty } from "../../../core/values";
+import { classifyConversationKey } from "../../../shared/conversationKeySpace";
+import type { AttachedConversationRef } from "../../../shared/types";
 
 /**
  * past_chat_read: opens a past conversation the user attached somewhere in
@@ -34,8 +36,13 @@ import { recordOrEmpty } from "../../../core/values";
  * a short snippet, so the model can find a fact the outline does not show.
  *
  * Scope is checked here, on every call: the chat must be among the chats
- * attached in this conversation (request.attachedConversationScope) and must
- * still exist in this library. Over the Zotero MCP bridge the scope comes
+ * attached in this conversation (request.attachedConversationScope), or be
+ * this conversation itself, and must still exist in this library. This
+ * conversation is readable only up to the turn being answered (the
+ * messages stored before request.metadata.sourceMessageTimestamp): a runtime
+ * whose new session got only the newest messages of a long chat
+ * (agent/context/runtimeHistory.ts) reads the older ones here, and a retry
+ * never reads the answer it replaces. Over the Zotero MCP bridge the scope comes
  * from the host's MCP scope, and the call is pinned to the scope's library;
  * the MCP server redacts no local paths in any tool result (Codex and Claude
  * Code can read local files anyway).
@@ -67,6 +74,8 @@ const NOT_ATTACHED =
   "This past chat was not attached in this conversation. Ask the user to attach it with / → Add past conversation.";
 const OTHER_LIBRARY = "Only past chats from this library can be read.";
 const DELETED = "This past chat was deleted.";
+const NO_TURN_TIME =
+  "This conversation's earlier messages cannot be read in this turn.";
 const LOAD_FAILED = "This past chat could not be read right now.";
 
 function validatePastChatReadInput(
@@ -288,19 +297,51 @@ function searchMessages(chat: LoadedPastConversation, query: string) {
   };
 }
 
+/** This conversation as a chat past_chat_read can open. */
+function currentConversationRef(
+  request: AgentToolContext["request"],
+): AttachedConversationRef | null {
+  const classified = classifyConversationKey(request.conversationKey);
+  const libraryID = Number(request.libraryID);
+  if (!classified || !(libraryID > 0)) return null;
+  return {
+    system: classified.system,
+    conversationKey: request.conversationKey,
+    title: "This conversation",
+    libraryID,
+    kind: classified.kind,
+  };
+}
+
 async function executePastChatRead(
   input: PastChatReadInput,
   context: AgentToolContext,
   source: PastConversationSource,
 ): Promise<unknown> {
-  const scope = context.request.attachedConversationScope || [];
-  if (!scope.length)
-    return { ok: false, chat: input.chat, error: NONE_ATTACHED };
-  const ref = scope.find((entry) => pastConversationId(entry) === input.chat);
-  if (!ref) return { ok: false, chat: input.chat, error: NOT_ATTACHED };
+  const current = currentConversationRef(context.request);
+  const isCurrent = Boolean(
+    current && pastConversationId(current) === input.chat,
+  );
+  const turnTimestamp = Number(
+    recordOrEmpty(context.request.metadata).sourceMessageTimestamp,
+  );
+  let ref: AttachedConversationRef | undefined;
+  if (current && isCurrent) {
+    if (!(turnTimestamp > 0)) {
+      return { ok: false, chat: input.chat, error: NO_TURN_TIME };
+    }
+    ref = current;
+  } else {
+    const scope = context.request.attachedConversationScope || [];
+    if (!scope.length)
+      return { ok: false, chat: input.chat, error: NONE_ATTACHED };
+    ref = scope.find((entry) => pastConversationId(entry) === input.chat);
+    if (!ref) return { ok: false, chat: input.chat, error: NOT_ATTACHED };
+  }
   const loaded = await loadPastConversation(ref, {
     libraryID: context.request.libraryID,
     source,
+    ...(isCurrent ? { beforeTimestamp: turnTimestamp } : {}),
   });
   if (loaded.status !== "ok") {
     return {
@@ -328,14 +369,15 @@ export function createPastChatReadTool(
     spec: {
       name: PAST_CHAT_READ_TOOL_NAME,
       description:
-        "Read a past conversation the user attached in this conversation (/ → Add past conversation). chat is its id from the attached-chat message, such as upstream:123. Omit message to list the user's questions with their message numbers. Set message to read from that message on; continue with nextMessage, or with the same message and textOffset=nextTextOffset. Set query to a few distinctive words to find messages that contain all of them. It records what was said; its answers may be wrong, so check paper claims.",
+        "Read a past conversation the user attached in this conversation (/ → Add past conversation), or this conversation's own earlier messages. chat is its id from the attached-chat message, such as upstream:123, or this conversation's id where a note on left-out history names it. Omit message to list the user's questions with their message numbers. Set message to read from that message on; continue with nextMessage, or with the same message and textOffset=nextTextOffset. Set query to a few distinctive words to find messages that contain all of them. It records what was said; its answers may be wrong, so check paper claims.",
       inputSchema: {
         type: "object",
         additionalProperties: false,
         properties: {
           chat: {
             type: "string",
-            description: "Id of an attached past chat, such as upstream:123.",
+            description:
+              "Id of an attached past chat, such as upstream:123, or of this conversation.",
           },
           message: {
             type: "integer",

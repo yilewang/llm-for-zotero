@@ -1,4 +1,5 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
+import { resolveSharedCodexAppServerPath } from "./binaryPath";
 import { appLogger } from "../core/logging";
 import {
   buildZoteroMcpConfigValue,
@@ -18,7 +19,6 @@ import { MCP_METHODS } from "../agent/mcp/protocol";
 import {
   extractCodexAppServerThreadId,
   getOrCreateCodexAppServerProcess,
-  resolveCodexAppServerBinaryPath,
   type CodexAppServerProcess,
 } from "../utils/codexAppServerProcess";
 import { resolveCodexPermissionExecution } from "./permissionProfiles";
@@ -117,7 +117,7 @@ async function resolveProcess(
   params: SetupParams,
 ): Promise<CodexAppServerProcess> {
   if (params.proc) return params.proc;
-  const codexPath = resolveCodexAppServerBinaryPath(params.codexPath);
+  const codexPath = resolveSharedCodexAppServerPath(params.codexPath);
   return getOrCreateCodexAppServerProcess(
     params.processKey || DEFAULT_CODEX_APP_SERVER_NATIVE_PROCESS_KEY,
     { codexPath },

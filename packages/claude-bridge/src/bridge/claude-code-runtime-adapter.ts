@@ -35,6 +35,16 @@ type ResumeSource =
   | "history_gap"
   | "local_pdf";
 
+/** True when the plugin sent chat history this turn can be given. */
+function hasReplayableHistory(request: RunTurnRequest): boolean {
+  const runtimeRequest = request.runtimeRequest as
+    | { history?: unknown }
+    | undefined;
+  return (
+    Array.isArray(runtimeRequest?.history) && runtimeRequest.history.length > 0
+  );
+}
+
 export class ClaudeCodeRuntimeAdapter {
   get supportsStructuredCompletion(): boolean {
     return typeof this.runtimeClient.completeStructured === "function";
@@ -529,8 +539,16 @@ export class ClaudeCodeRuntimeAdapter {
     if (this.lifecycleEpoch(request.conversationKey) !== lifecycleEpoch) {
       throw new Error("Conversation lifecycle changed before provider start");
     }
+    // A turn that starts a new Claude session (the first turn, or one after
+    // an edit, a retry or a forced fresh start dropped the old session) gets
+    // the chat's history, which the plugin sends with every turn; on the
+    // first turn there is none. /compact has nothing to compact there.
+    const startsWithoutHistory =
+      !providerSessionId &&
+      hasReplayableHistory(request) &&
+      !/^\/compact(?:\s|$)/i.test(request.userMessage.trim());
     const effectiveRequest =
-      isLocalPdfTurn || hasHistoryGap
+      isLocalPdfTurn || hasHistoryGap || startsWithoutHistory
         ? this.withResumeFallbackHistory(request)
         : request;
 

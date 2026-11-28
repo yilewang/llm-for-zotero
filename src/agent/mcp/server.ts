@@ -69,6 +69,7 @@ import {
   type JsonRpcRequest,
   type McpServerInfo,
   type McpToolCallParams,
+  type McpImageContent,
   type McpToolCallResult,
   type McpToolDefinition,
   type McpToolsListResult,
@@ -76,6 +77,9 @@ import {
 import type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 export type { ZoteroMcpToolActivityEvent } from "./activityTypes";
 import { buildPagedModelView } from "../execution/modelView";
+import { appLogger } from "../../core/logging";
+import { readAttachmentBytes } from "../../services/attachmentStorage";
+import { encodeBytesBase64 } from "../model/shared";
 import {
   createAgentToolResultHandleRecord,
   getAgentToolResultHandle,
@@ -1348,7 +1352,7 @@ function cloneMcpResultWithDuplicateMarker(
   result: McpToolCallResult,
 ): McpToolCallResult {
   const content = result.content.map((part, index) => {
-    if (index !== 0) return { ...part };
+    if (index !== 0 || part.type !== "text") return { ...part };
     try {
       const parsed = JSON.parse(part.text) as Record<string, unknown>;
       return {
@@ -2550,9 +2554,39 @@ async function formatToolResult(params: {
           2,
         ),
       },
+      ...(result.ok ? await loadImageArtifactContent(result.artifacts) : []),
     ],
     ...(result.ok ? {} : { isError: true }),
   };
+}
+
+/**
+ * A result's image artifacts (a figure crop, a rendered page) as MCP image
+ * content, so the client's model sees each image, as the plugin Agent's
+ * model does (toolArtifactDelivery.ts). The JSON text keeps their paths.
+ * Claude Code, Codex and Antigravity each show the model an MCP image,
+ * large ones included (probed 2026-11-27 with a 1.7 MB image; agy saves a
+ * large one in its data folder and reads it there).
+ */
+async function loadImageArtifactContent(
+  artifacts: readonly AgentToolArtifact[] | undefined,
+): Promise<McpImageContent[]> {
+  const images: McpImageContent[] = [];
+  for (const artifact of artifacts || []) {
+    if (artifact.kind !== "image" || !artifact.storedPath) continue;
+    if (!artifact.mimeType) continue;
+    try {
+      const bytes = await readAttachmentBytes(artifact.storedPath);
+      images.push({
+        type: "image",
+        data: encodeBytesBase64(bytes),
+        mimeType: artifact.mimeType,
+      });
+    } catch (error) {
+      appLogger.warn("Zotero MCP: could not load an image artifact", error);
+    }
+  }
+  return images;
 }
 
 function rememberDocumentReadObservations(
@@ -2670,6 +2704,7 @@ function extractToolCallErrorText(
 ): string | undefined {
   if (!result.isError) return undefined;
   for (const part of result.content) {
+    if (part.type !== "text") continue;
     const text = normalizeText(part.text, 1000);
     if (!text) continue;
     try {

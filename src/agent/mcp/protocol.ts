@@ -65,8 +65,12 @@ export type McpToolCallParams = {
   arguments?: unknown;
 };
 
+export type McpTextContent = { type: "text"; text: string };
+export type McpImageContent = { type: "image"; data: string; mimeType: string };
+
 export type McpToolCallResult = {
-  content: Array<{ type: "text"; text: string }>;
+  /** The result's JSON text first; images, when the result has any, after it. */
+  content: Array<McpTextContent | McpImageContent>;
   isError?: boolean;
 };
 

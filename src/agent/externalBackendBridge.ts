@@ -1,5 +1,6 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
+import { selectRuntimeHistory } from "./context/runtimeHistory";
 import { createClaudeTurnStageTracker } from "./claudeTurnStages";
 import { config } from "../../package.json";
 import {
@@ -430,6 +431,10 @@ type BridgeRuntimeRequest = {
   attachments?: BridgeAttachment[];
   screenshots?: string[];
   history?: Array<{ role: string; content: string }>;
+  /** Earlier messages left out of `history` by its budget. */
+  historyOmitted?: number;
+  /** With `historyOmitted`: the chat id past_chat_read opens to read them. */
+  historyChatId?: string;
 };
 
 const lastRunBridgeContextByConversationKey = new Map<
@@ -1823,6 +1828,7 @@ async function buildBridgeRuntimeRequest(
           : undefined,
     }));
 
+  const history = selectRuntimeHistory(request);
   const screenshots = Array.isArray(request.screenshots)
     ? request.screenshots.filter(
         (entry): entry is string =>
@@ -1856,12 +1862,18 @@ async function buildBridgeRuntimeRequest(
       : undefined,
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
-    history: Array.isArray(request.history)
-      ? request.history.map((entry) => ({
-          role: typeof entry.role === "string" ? entry.role : "user",
-          content: typeof entry.content === "string" ? entry.content : "",
-        }))
-      : undefined,
+    // The bridge replays it only when the Claude session cannot be resumed.
+    ...(history.entries.length
+      ? {
+          history: history.entries,
+          ...(history.omitted
+            ? {
+                historyOmitted: history.omitted,
+                ...(history.chatId ? { historyChatId: history.chatId } : {}),
+              }
+            : {}),
+        }
+      : {}),
   };
 }
 

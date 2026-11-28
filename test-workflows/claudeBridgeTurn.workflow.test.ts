@@ -120,6 +120,51 @@ describe("workflow: Claude Code turn host", function () {
     );
   });
 
+  it("a retry starts Claude without the answer it replaces", async function () {
+    const firstRun = `claude-run-${Date.now()}`;
+    const retryRun = `${firstRun}-retry`;
+    const result = await run({
+      question: "Pick a random whole number between 1 and 1000.",
+      steps: [start(firstRun), completed(firstRun, "417")],
+      retry: { steps: [start(retryRun), completed(retryRun, "88")] },
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.isNotNull(result.retryTurnPayload, JSON.stringify(result));
+    // The Claude session holds the replaced question and answer, so the
+    // retry has the bridge drop it before the new answer starts.
+    assert.isAtLeast(
+      result.invalidateSessionCalls.afterRetry,
+      1,
+      JSON.stringify(result),
+    );
+    assert.equal(result.retryTurnPayload!.providerSessionId, "");
+    assert.equal(
+      result.retryTurnPayload!.userText,
+      "Pick a random whole number between 1 and 1000.",
+    );
+  });
+
+  it("sends the paper's PDF file again when a turn that sent it is retried", async function () {
+    const pdfPath = String(
+      Zotero.Items.get(fixture.pdfAttachmentId).getFilePath() || "",
+    );
+    assert.isNotEmpty(pdfPath, "the fixture has a PDF file");
+    const firstRun = `claude-run-${Date.now()}`;
+    const retryRun = `${firstRun}-retry`;
+    const result = await run({
+      question: "What does the PDF say?",
+      localPdf: true,
+      steps: [start(firstRun), completed(firstRun, "It says A.")],
+      retry: { steps: [start(retryRun), completed(retryRun, "It says B.")] },
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.deepEqual(
+      result.localDocumentPaths,
+      [[pdfPath], [pdfPath]],
+      "the first turn and its retry both send the PDF file",
+    );
+  });
+
   it("shows a bridge permission request as a review card and sends the answer back", async function () {
     const runId = `claude-run-${Date.now()}`;
     const requestId = `confirm-${Date.now()}`;

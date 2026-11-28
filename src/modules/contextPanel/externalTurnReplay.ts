@@ -4,8 +4,9 @@
  *
  * The bridge server is the only fake. Its address is a fake custom bridge
  * URL, and `fetch` answers that address from a script: `/run-turn` streams
- * the script's lines, `/resolve-confirmation` records the answer, and other
- * paths answer 404. Every other request (the plugin's own Zotero MCP server)
+ * the script's lines, `/resolve-confirmation` records the answer,
+ * `/session-info` reports a session for the chat, `/invalidate-session` counts
+ * the call, and other paths answer 404. Every other request (the plugin's own Zotero MCP server)
  * goes to the real `fetch`. A script step can also call a tool on the
  * plugin's MCP endpoint with the scope token the turn handed the bridge, as
  * Claude would, so the per-turn scope, tool activity, and review cards run
@@ -13,8 +14,11 @@
  */
 
 import { config } from "../../../package.json";
-import { sendAgentTurn } from "./agentMode/agentEngine";
+import { retryAgentTurn, sendAgentTurn } from "./agentMode/agentEngine";
 import { buildAgentEngineDepsForTests, getConversationKey } from "./chat";
+import { bindProvisionedConversationKey } from "./conversationIdentity";
+import { createClaudePaperConversation } from "../../claudeCode/store";
+import { panelPaperPdfContext } from "./antigravityTurnReplay";
 import { getCoreAgentRuntime } from "../../agent";
 import {
   bindClaudeBridgeConversationSystem,
@@ -62,6 +66,16 @@ export type ExternalTurnScenario = {
   approve?: boolean;
   /** Passages the user selected or quoted for the turn. */
   selectedTextContexts?: SelectedTextContext[];
+  /**
+   * After the turn, retries it through the agent engine's retry, as the
+   * panel's Retry does, against these bridge steps.
+   */
+  retry?: { steps: FakeBridgeStep[] };
+  /**
+   * Sends the panel paper's PDF file with the turn, as the paper chip's
+   * "PDF file" source does.
+   */
+  localPdf?: boolean;
 };
 
 export type ExternalTurnResult = {
@@ -92,14 +106,26 @@ export type ExternalTurnResult = {
   scopeLiveAfterTurn: boolean | null;
   /** How many times the plugin called `/run-turn`. */
   runTurnCalls: number;
+  /** Calls to the bridge's `/invalidate-session`, before the retry and after. */
+  invalidateSessionCalls: { beforeRetry: number; afterRetry: number };
+  /** What the retry's `/run-turn` asked of the bridge; null without retry. */
+  retryTurnPayload: {
+    providerSessionId: string;
+    forceFreshSession: boolean;
+    userText: string;
+  } | null;
   /** How many times the runtime's runTurn was called. */
   runtimeCalls: number;
+  /** The local PDF files each `/run-turn` payload carried, in order. */
+  localDocumentPaths: string[][];
 };
 
 type ScriptState = {
   steps: FakeBridgeStep[];
   runTurnCalls: number;
+  invalidateSessionCalls: number;
   payload: Record<string, unknown> | null;
+  localDocumentPaths: string[][];
   confirmationAnswers: Array<{ requestId: string; approved: boolean }>;
   confirmationWaiters: Array<() => void>;
   mcpCallResults: Array<{ ok: boolean; text: string }>;
@@ -292,7 +318,46 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     if (path === "/run-turn") {
       state.runTurnCalls += 1;
       state.payload = body;
+      const runtimeRequest = (body.runtimeRequest || {}) as {
+        localDocuments?: unknown;
+      };
+      state.localDocumentPaths.push(
+        (Array.isArray(runtimeRequest.localDocuments)
+          ? runtimeRequest.localDocuments
+          : []
+        ).map((document: { absolutePath?: unknown }) =>
+          String(document?.absolutePath || ""),
+        ),
+      );
       return streamScript(state, init?.signal || undefined);
+    }
+    if (path.startsWith("/session-info?")) {
+      // The session the real bridge reports after a turn; the panel saves
+      // its id on the chat.
+      const query = new URLSearchParams(path.slice("/session-info?".length));
+      const conversationKey = query.get("conversationKey") || "";
+      return jsonResponse(200, {
+        session: {
+          originalConversationKey: conversationKey,
+          scopedConversationKey: conversationKey,
+          providerSessionId: `fake-claude-session-${conversationKey}`,
+          scopeType: query.get("scopeType") || undefined,
+          scopeId: query.get("scopeId") || undefined,
+          scopeLabel: query.get("scopeLabel") || undefined,
+        },
+      });
+    }
+    if (path === "/healthz") {
+      // A bridge that reads local PDF paths, as the bundled one does.
+      return jsonResponse(200, {
+        ok: true,
+        protocolVersion: 2,
+        capabilities: ["local_pdf_paths"],
+      });
+    }
+    if (path === "/invalidate-session") {
+      state.invalidateSessionCalls += 1;
+      return jsonResponse(200, { invalidated: true });
     }
     if (path === "/resolve-confirmation") {
       state.confirmationAnswers.push({
@@ -320,6 +385,16 @@ export async function exerciseClaudeBridgeTurn(
   scenario: ExternalTurnScenario,
 ): Promise<ExternalTurnResult> {
   const { body, item } = panel;
+  if (scenario.retry) {
+    // A retry resets the chat's Claude Code session, which needs the chat's
+    // Claude Code record, as a real Claude Code chat has.
+    const created = await createClaudePaperConversation(
+      item.libraryID,
+      item.id,
+    );
+    if (!created) throw new Error("Could not create a Claude Code chat");
+    bindProvisionedConversationKey(item, created.conversationKey);
+  }
   const key = getConversationKey(item);
   const deps = buildAgentEngineDepsForTests(
     item,
@@ -330,6 +405,8 @@ export async function exerciseClaudeBridgeTurn(
   const state: ScriptState = {
     steps: scenario.steps,
     runTurnCalls: 0,
+    invalidateSessionCalls: 0,
+    localDocumentPaths: [],
     payload: null,
     confirmationAnswers: [],
     confirmationWaiters: [],
@@ -408,6 +485,13 @@ export async function exerciseClaudeBridgeTurn(
   const previousController = getAbortController(key);
   setAbortController(key, createAbortController());
   try {
+    // As the send flow does: the PDF paper, and its file resolved for the turn.
+    const pdfPaperContexts = scenario.localPdf
+      ? [panelPaperPdfContext(item)]
+      : undefined;
+    const localDocuments = pdfPaperContexts
+      ? await deps.resolveLocalPdfResources(pdfPaperContexts)
+      : undefined;
     await sendAgentTurn(
       {
         body,
@@ -416,11 +500,45 @@ export async function exerciseClaudeBridgeTurn(
         ...(scenario.selectedTextContexts
           ? { selectedTextContexts: scenario.selectedTextContexts }
           : {}),
+        ...(pdfPaperContexts ? { pdfPaperContexts, localDocuments } : {}),
       },
       deps,
     ).catch((error) => {
       threw ||= error instanceof Error ? error.message : String(error);
     });
+    const invalidatedBeforeRetry = state.invalidateSessionCalls;
+    let retryTurnPayload: ExternalTurnResult["retryTurnPayload"] = null;
+    if (scenario.retry) {
+      const firstPayload = state.payload;
+      state.steps = scenario.retry.steps;
+      setAbortController(key, createAbortController());
+      await retryAgentTurn(
+        body,
+        item,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deps,
+      ).catch((error) => {
+        threw ||= error instanceof Error ? error.message : String(error);
+      });
+      const retried = state.payload !== firstPayload ? state.payload : null;
+      const metadata = (retried?.metadata || {}) as Record<string, unknown>;
+      retryTurnPayload = retried
+        ? {
+            providerSessionId: String(retried.providerSessionId ?? ""),
+            forceFreshSession: metadata.forceFreshSession === true,
+            userText: String(retried.userText ?? ""),
+          }
+        : null;
+    }
     const { token, headerNames } = scopeTokenFromPayload(state.payload);
     const scopeLiveAfterTurn = token
       ? (await callMcpEndpoint(token, "library_search", { query: "x" })).ok
@@ -466,7 +584,13 @@ export async function exerciseClaudeBridgeTurn(
       mcpCallResults: state.mcpCallResults,
       scopeLiveAfterTurn,
       runTurnCalls: state.runTurnCalls,
+      invalidateSessionCalls: {
+        beforeRetry: invalidatedBeforeRetry,
+        afterRetry: state.invalidateSessionCalls - invalidatedBeforeRetry,
+      },
+      retryTurnPayload,
       runtimeCalls,
+      localDocumentPaths: state.localDocumentPaths,
     };
   } finally {
     setAbortController(key, previousController);

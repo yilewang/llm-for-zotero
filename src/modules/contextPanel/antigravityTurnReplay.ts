@@ -11,7 +11,7 @@
  */
 
 import { config } from "../../../package.json";
-import { sendAgentTurn } from "./agentMode/agentEngine";
+import { retryAgentTurn, sendAgentTurn } from "./agentMode/agentEngine";
 import { buildAgentEngineDepsForTests } from "./chat";
 import { bindProvisionedConversationKey } from "./conversationIdentity";
 import { getAbortController, setAbortController } from "./state";
@@ -44,7 +44,12 @@ import {
   startAgyClient,
   type AgyLaunchOptions,
 } from "../../antigravity/agyProcess";
-import type { ChatAttachment, SelectedTextContext } from "../../shared/types";
+import type {
+  AttachedConversationRef,
+  ChatAttachment,
+  PaperContextRef,
+  SelectedTextContext,
+} from "../../shared/types";
 import {
   encodeReaderSelection,
   READER_RUNTIME_KEYS,
@@ -87,6 +92,15 @@ export type AntigravityTurnScenario = {
   selectedTextContexts?: SelectedTextContext[];
   /** The reader model picked in the composer for each runtime. */
   readerSelections?: Partial<Record<ReaderRuntimeKey, ReaderSelection>>;
+  /** Retries the turn after it ends, as the panel's Retry does. */
+  retry?: boolean;
+  /** Past chats attached to the turn ("Add past conversation"). */
+  attachedConversations?: AttachedConversationRef[];
+  /**
+   * Sends the panel paper's PDF file with the turn, as the paper chip's
+   * "PDF file" source does.
+   */
+  localPdf?: boolean;
 };
 
 export type AntigravityTurnResult = {
@@ -102,6 +116,8 @@ export type AntigravityTurnResult = {
   runId: string;
   /** The chat's messages as the Antigravity store saved them. */
   storedMessages: Array<{ role: string; text: string; agentRunId?: string }>;
+  /** With `retry`: the chat's agy session before the retry. */
+  sessionIdBeforeRetry?: string;
   /** Review cards the turn showed. */
   confirmations: number;
   /** The agy session saved on the conversation after the turn. */
@@ -115,6 +131,8 @@ export type AntigravityTurnResult = {
   slashCommands: string[];
   /** The reader model the turn's request carried. */
   readerSelection?: ReaderSelection;
+  /** The local PDF files each runtime turn's request carried, in order. */
+  localDocumentPaths: string[][];
 };
 
 let replayClient: AcpClient | null = null;
@@ -134,6 +152,22 @@ function setPref(name: string, value: unknown): void {
   const key = `${config.prefsPrefix}.${name}`;
   if (value === undefined) Zotero.Prefs.clear(key, true);
   else Zotero.Prefs.set(key, value as boolean, true);
+}
+
+/** The panel paper with its first PDF, as the chip's "PDF file" source names it. */
+export function panelPaperPdfContext(item: Zotero.Item): PaperContextRef {
+  const paper = item.isAttachment() && item.parentItem ? item.parentItem : item;
+  const pdf = paper
+    .getAttachments()
+    .map((id) => Zotero.Items.get(id))
+    .find((attachment) => attachment?.isPDFAttachment?.());
+  if (!pdf) throw new Error("The panel paper has no PDF attachment");
+  return {
+    itemId: paper.id,
+    contextItemId: pdf.id,
+    title: String(paper.getField("title") || "Paper"),
+    contentSourceMode: "pdf",
+  };
 }
 
 export async function exerciseAntigravityTurn(
@@ -194,11 +228,17 @@ export async function exerciseAntigravityTurn(
   let triggered = false;
   let startedRunId = "";
   let readerSelection: ReaderSelection | undefined;
+  const localDocumentPaths: string[][] = [];
   deps.getAgentRuntime = () =>
     ({
       ...runtime,
       runTurn: async (params: Parameters<typeof runtime.runTurn>[0]) => {
         readerSelection = params.request.readerSelection;
+        localDocumentPaths.push(
+          (params.request.localDocuments || []).map(
+            (document) => document.absolutePath,
+          ),
+        );
         try {
           outcome = await runtime.runTurn({
             ...params,
@@ -275,6 +315,13 @@ export async function exerciseAntigravityTurn(
   const previousController = getAbortController(conversationKey);
   setAbortController(conversationKey, createAbortController());
   try {
+    // As the send flow does: the PDF paper, and its file resolved for the turn.
+    const pdfPaperContexts = scenario.localPdf
+      ? [panelPaperPdfContext(item)]
+      : undefined;
+    const localDocuments = pdfPaperContexts
+      ? await deps.resolveLocalPdfResources(pdfPaperContexts)
+      : undefined;
     await sendAgentTurn(
       {
         body,
@@ -285,6 +332,10 @@ export async function exerciseAntigravityTurn(
         ...(scenario.selectedTextContexts
           ? { selectedTextContexts: scenario.selectedTextContexts }
           : {}),
+        ...(scenario.attachedConversations
+          ? { attachedConversations: scenario.attachedConversations }
+          : {}),
+        ...(pdfPaperContexts ? { pdfPaperContexts, localDocuments } : {}),
         ...(scenario.model ? { model: scenario.model } : {}),
         ...(scenario.thoughtLevel
           ? {
@@ -299,6 +350,30 @@ export async function exerciseAntigravityTurn(
     ).catch((error) => {
       threw ||= error instanceof Error ? error.message : String(error);
     });
+    const sessionIdBeforeRetry = scenario.retry
+      ? (await antigravityConversationStore.getSummary(conversationKey))
+          ?.providerSessionId
+      : undefined;
+    if (scenario.retry) {
+      setAbortController(conversationKey, createAbortController());
+      await retryAgentTurn(
+        body,
+        item,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        deps,
+      ).catch((error) => {
+        threw ||= error instanceof Error ? error.message : String(error);
+      });
+    }
     const message = deps.chatHistory.get(conversationKey)?.at(-1);
     const runId = startedRunId;
     const trace = runId ? await getAgentRunTrace(runId) : null;
@@ -334,6 +409,7 @@ export async function exerciseAntigravityTurn(
       })),
       confirmations,
       storedSessionId: summary?.providerSessionId,
+      ...(scenario.retry ? { sessionIdBeforeRetry } : {}),
       storedCwd: summary?.cwd,
       launches,
       processes: processCount,
@@ -341,6 +417,7 @@ export async function exerciseAntigravityTurn(
         (command) => command.name,
       ),
       ...(readerSelection ? { readerSelection } : {}),
+      localDocumentPaths,
     };
   } finally {
     setAbortController(conversationKey, previousController);

@@ -1823,6 +1823,12 @@ export type WorkflowTestApi = {
     >,
   ) => Promise<{ conversationKey: number; sendSettledSequenceBefore: number }>;
   /**
+   * Lets every panel Send continue into the real `sendQuestion` until the
+   * next `reset`, which captures sends again. For tests that drive the
+   * panel's own buttons against a real or scripted runtime.
+   */
+  passPanelSendsThrough: () => void;
+  /**
    * Runs the real `retryLatestAssistantResponse` for the panel with
    * `entryId` (default: the selected model entry), as the retry model menu
    * does, and resolves with its return value when the retry ends.
@@ -2111,6 +2117,12 @@ export type WorkflowTestApi = {
   configureCodexModelCatalogs: (
     responses: WorkflowTestCodexModelCatalogResponse[],
   ) => void;
+  /**
+   * Routes Codex app-server spawns to `launch` (a scripted app server, see
+   * test/helpers/fakeCodexAppServer.ts); no argument restores codex. Stops
+   * the cached app servers either way, so the next turn starts a new one.
+   */
+  useCodexAppServerChildForTests: (launch?: () => unknown) => Promise<void>;
   /**
    * Sets the Antigravity model catalog the pickers read, so a test never
    * starts agy; null forgets it.
