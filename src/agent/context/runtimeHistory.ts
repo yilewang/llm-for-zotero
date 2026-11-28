@@ -114,15 +114,22 @@ export function renderOmittedHistoryNote(
     : `(${count} did not fit and are not shown.)`;
 }
 
+/** Whether a history has anything to tell a fresh session. */
+export function hasRuntimeHistory(history: RuntimeHistory): boolean {
+  return history.entries.length > 0 || history.omitted > 0;
+}
+
 /**
  * The history as a transcript for a runtime's first prompt, worded as the
  * Claude Code bridge words its fallback history; "" when there is none.
+ * When no message fits, the note on the omitted ones still goes, so the
+ * session can read them with past_chat_read.
  */
 export function renderRuntimeHistoryTranscript(
   history: RuntimeHistory,
   reason: string,
 ): string {
-  if (!history.entries.length) return "";
+  if (!hasRuntimeHistory(history)) return "";
   return [
     `Local Zotero conversation history for continuity because ${reason}:`,
     ...(history.omitted

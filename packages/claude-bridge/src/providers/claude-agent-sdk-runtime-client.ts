@@ -624,12 +624,13 @@ function formatFallbackHistory(
     .filter((entry): entry is { role: "assistant" | "user"; content: string } =>
       Boolean(entry),
     );
-  if (!entries.length) return [];
   const omitted =
     typeof runtimeRequest.historyOmitted === "number" &&
     runtimeRequest.historyOmitted > 0
       ? Math.floor(runtimeRequest.historyOmitted)
       : 0;
+  // With no message that fit, the note on the omitted ones still goes.
+  if (!entries.length && !omitted) return [];
   const chatId =
     typeof runtimeRequest.historyChatId === "string"
       ? runtimeRequest.historyChatId.trim()

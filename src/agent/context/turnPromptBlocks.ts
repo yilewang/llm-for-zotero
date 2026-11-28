@@ -242,7 +242,8 @@ const ANTIGRAVITY_DELIVERY: RuntimePromptDeliveryTable = {
   agentFiles: turn,
   rawPdfPolicy: turn,
   sideChatReadOnly: standing,
-  skillInventory: standing,
+  // Skills are added, removed and refreshed while a chat goes on.
+  skillInventory: turn,
   runtimePlatform: {
     kind: "replaced",
     by: "agy's own environment description",

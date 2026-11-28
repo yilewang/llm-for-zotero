@@ -35,13 +35,19 @@ type ResumeSource =
   | "history_gap"
   | "local_pdf";
 
-/** True when the plugin sent chat history this turn can be given. */
+/**
+ * True when the plugin sent chat history this turn can be given: messages,
+ * or only the count of those that did not fit (the note on them still goes).
+ */
 function hasReplayableHistory(request: RunTurnRequest): boolean {
   const runtimeRequest = request.runtimeRequest as
-    | { history?: unknown }
+    | { history?: unknown; historyOmitted?: unknown }
     | undefined;
   return (
-    Array.isArray(runtimeRequest?.history) && runtimeRequest.history.length > 0
+    (Array.isArray(runtimeRequest?.history) &&
+      runtimeRequest.history.length > 0) ||
+    (typeof runtimeRequest?.historyOmitted === "number" &&
+      runtimeRequest.historyOmitted > 0)
   );
 }
 

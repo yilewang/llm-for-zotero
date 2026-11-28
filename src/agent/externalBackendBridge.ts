@@ -1,6 +1,9 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
-import { selectRuntimeHistory } from "./context/runtimeHistory";
+import {
+  hasRuntimeHistory,
+  selectRuntimeHistory,
+} from "./context/runtimeHistory";
 import { createClaudeTurnStageTracker } from "./claudeTurnStages";
 import { config } from "../../package.json";
 import {
@@ -1863,7 +1866,7 @@ async function buildBridgeRuntimeRequest(
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
     // The bridge replays it only when the Claude session cannot be resumed.
-    ...(history.entries.length
+    ...(hasRuntimeHistory(history)
       ? {
           history: history.entries,
           ...(history.omitted

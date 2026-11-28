@@ -2056,6 +2056,33 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     );
   });
 
+  it("still says where the history is when none of it fit", async () => {
+    let prompt: unknown;
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        prompt = args.prompt;
+        return makeStream([
+          { type: "result", session_id: "s", result: "ok", is_error: false },
+        ]);
+      },
+    });
+    const stream = await runtime.startTurn({
+      conversationKey: "conv-fallback-none-fit",
+      userMessage: "continue",
+      metadata: { claudeResumeFallbackHistory: true },
+      runtimeRequest: {
+        history: [],
+        historyOmitted: 2,
+        historyChatId: "claude_code:3000000000000043",
+      } as Record<string, unknown>,
+    });
+    for await (const _event of stream.events) void _event;
+
+    expect(String(prompt)).toContain(
+      '(2 earlier messages did not fit and are not shown. Read them with past_chat_read({ chat: "claude_code:3000000000000043" })',
+    );
+  });
+
   it("injects local Zotero history only for resume fallback turns", async () => {
     let fallbackPrompt: unknown;
     let normalPrompt: unknown;
@@ -2183,6 +2210,36 @@ describe("ClaudeAgentSdkRuntimeClient", () => {
     expect(resumed[2]).toBe("session-2");
     expect(String(prompts[2])).not.toContain(
       "Local Zotero conversation history",
+    );
+  });
+
+  it("tells a new Claude session where the history is when none of it fit", async () => {
+    const prompts: unknown[] = [];
+    const runtime = new ClaudeAgentSdkRuntimeClient({
+      queryImpl(args) {
+        prompts.push(args.prompt);
+        return makeStream([
+          { type: "result", session_id: "s", result: "ok", is_error: false },
+        ]);
+      },
+    });
+    const adapter = new ClaudeCodeRuntimeAdapter({
+      runtimeClient: runtime,
+      sessionMapper: new InMemorySessionMapper(),
+    });
+    // The one earlier message was larger than the history budget.
+    await adapter.runTurn({
+      conversationKey: "conv-none-fit",
+      userMessage: "Summarize what I pasted.",
+      runtimeRequest: {
+        history: [],
+        historyOmitted: 1,
+        historyChatId: "claude_code:3000000000000044",
+      },
+    });
+
+    expect(String(prompts[0])).toContain(
+      '(1 earlier message did not fit and are not shown. Read them with past_chat_read({ chat: "claude_code:3000000000000044" })',
     );
   });
 

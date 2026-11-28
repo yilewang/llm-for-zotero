@@ -169,7 +169,8 @@ describe("workflow: Antigravity turns", function () {
       ],
     },
     {
-      match: /^\/compact$/,
+      // The command is the prompt's first block; the turn's context follows.
+      match: /^\/compact(\n|$)/,
       title: "Compact",
       steps: [{ type: "text", text: "Compacted." }],
     },
@@ -843,17 +844,78 @@ describe("workflow: Antigravity turns", function () {
     assert.notInclude(result.deliveredText, "codename HARBOR");
   });
 
-  it("sends a slash message to agy alone and offers agy's commands", async function () {
+  const sentBlocks = (result: { storedSessionId?: string }) =>
+    (store.get(String(result.storedSessionId))?.history || []).flatMap(
+      (update) =>
+        update.sessionUpdate === "user_message_chunk" ? [update.content] : [],
+    );
+
+  it("sends a slash message to agy first and on its own, and offers agy's commands", async function () {
     const result = await run({ question: "/compact" });
     assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
     assert.equal(result.outcomeText, "Compacted.");
-    const sent = (
-      store.get(String(result.storedSessionId))?.history || []
-    ).flatMap((update) =>
-      update.sessionUpdate === "user_message_chunk" ? [update.content] : [],
+    const sent = sentBlocks(result);
+    // The command is its own first block; the turn's context follows it.
+    assert.deepEqual(sent[0], { type: "text", text: "/compact" });
+    assert.lengthOf(sent, 2, JSON.stringify(sent));
+    assert.include(
+      sent[1].type === "text" ? sent[1].text : "",
+      "Zotero context for this turn:",
     );
-    assert.deepEqual(sent, [{ type: "text", text: "/compact" }]);
     assert.includeMembers(result.slashCommands, ["goal", "compact", "plan"]);
+  });
+
+  it("gives a fresh agy session the chat so far when its first message is a slash command", async function () {
+    const first = await run({ question: "Say hello." });
+    assert.equal(first.outcomeKind, "completed", JSON.stringify(first));
+    store = createMemoryFakeAcpSessionStore();
+    const second = await run({
+      question: "/compact",
+      conversationKey: first.conversationKey,
+      newProcess: true,
+    });
+    assert.equal(second.outcomeKind, "completed", JSON.stringify(second));
+    const sent = sentBlocks(second);
+    assert.deepEqual(sent[0], { type: "text", text: "/compact" });
+    const context = sent[1]?.type === "text" ? sent[1].text : "";
+    assert.include(context, "Local Zotero conversation history");
+    assert.include(context, "1. user: Say hello.");
+  });
+
+  it("sends the PDF file and its read permission with a slash command", async function () {
+    const pdfPath = String(
+      Zotero.Items.get(fixture.pdfAttachmentId).getFilePath() || "",
+    );
+    // agy reads the selected PDF while running the command; reading a file
+    // outside its folder asks, unless the plugin allowed that file.
+    const readsPdf: FakeAcpScenario = {
+      match: /^\/plan(\n|$)/,
+      title: "Plan",
+      steps: [
+        {
+          type: "tool",
+          name: "read_file",
+          kind: "read",
+          title: "File paper.pdf",
+          askPermission: true,
+          locations: [pdfPath],
+          result: "the PDF",
+        },
+        { type: "text", text: "Planned." },
+      ],
+    };
+    const result = await run({
+      question: "/plan",
+      localPdf: true,
+      createChild: (launch) => fakeAgy(launch, { scenarios: [readsPdf] }),
+    });
+    assert.equal(result.outcomeKind, "completed", JSON.stringify(result));
+    assert.equal(result.outcomeText, "Planned.");
+    assert.equal(result.confirmations, 0, "the PDF is read without asking");
+    assert.deepEqual(result.localDocumentPaths, [[pdfPath]]);
+    const sent = sentBlocks(result);
+    assert.deepEqual(sent[0], { type: "text", text: "/plan" });
+    assert.include(sent[1]?.type === "text" ? sent[1].text : "", pdfPath);
   });
 
   it("ends a stopped turn as cancelled", async function () {
