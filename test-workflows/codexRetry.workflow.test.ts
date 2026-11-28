@@ -46,6 +46,8 @@ describe("workflow: Codex retry", function () {
   let api: WorkflowTestApi;
   let fixture: WorkflowTestFixture | null = null;
   let previous: Map<string, unknown>;
+  /** Panels this test opened; their chats' cleanup jobs go after it. */
+  let openedPanels: string[] = [];
   const settings: Record<string, string | boolean> = {
     enableCodexAppServerMode: true,
     conversationSystem: "codex",
@@ -72,7 +74,13 @@ describe("workflow: Codex retry", function () {
 
   afterEach(async function () {
     // Failed scripted archives leave jobs; never retry them against codex.
-    await api.clearCleanupJobsForTests();
+    const keys = await Promise.all(
+      openedPanels.map(async (panelId) =>
+        Number((await api.getDiagnostics(panelId)).conversationKey),
+      ),
+    );
+    openedPanels = [];
+    await api.clearCleanupJobsForTests(keys);
     await api.useCodexAppServerChildForTests();
     await api.reset();
     if (fixture) await api.cleanupFixture(fixture);
@@ -98,6 +106,7 @@ describe("workflow: Codex retry", function () {
       pages,
     });
     const panel = await api.renderPanelForItem(fixture.parentItemId);
+    openedPanels.push(panel.panelId);
     const diag = await api.getDiagnostics(panel.panelId);
     assert.equal(diag.conversationSystem, "codex", "the panel runs Codex");
     return panel.panelId;
@@ -324,7 +333,9 @@ describe("workflow: Codex retry", function () {
     const { panelId, oldThread } = await afterFailedArchive(server);
     server.setArchiveFails(false);
     // The background worker, not the next send, finishes the archive.
-    await api.runCleanupJobsNowForTests();
+    await api.runCleanupJobsNowForTests(
+      Number((await api.getDiagnostics(panelId)).conversationKey),
+    );
     const archived = server
       .requests()
       .filter(
@@ -359,5 +370,55 @@ describe("workflow: Codex retry", function () {
     server.setArchiveFails(true);
     const next = await sendTurn(panelId, "And now?", TIMEOUT_MS);
     assert.include(next.text, "SECOND", "the send is not held for it");
+  });
+  it("keeps the chat's thread when the worker finishes an ordinary archive of it", async function () {
+    const server = createFakeCodexAppServer({ answers: ["FIRST", "SECOND"] });
+    const panelId = await openCodexPanel(server, ["A page for the panel."]);
+    await sendTurn(panelId, "Hello.", TIMEOUT_MS);
+    const key = Number((await api.getDiagnostics(panelId)).conversationKey);
+    const thread = String(server.turnStarts()[0]?.params.threadId || "");
+    // Codex's own resume recovery queues such an archive; its replacement
+    // thread is the recovery's to save.
+    await api.enqueueSessionCleanupJobForTests({
+      system: "codex",
+      conversationKey: key,
+      providerSessionId: thread,
+    });
+    await api.runCleanupJobsNowForTests(key);
+    const requestsBefore = server.requests().length;
+    await sendTurn(panelId, "And now?", TIMEOUT_MS);
+    const after = server.requests().slice(requestsBefore);
+    assert.isTrue(
+      after.some(
+        (request) =>
+          request.method === "thread/resume" &&
+          request.params.threadId === thread,
+      ),
+      `the chat still names its thread\n${describeRequests(after)}`,
+    );
+  });
+
+  it("leaves the other chat's draft alone after a stopped send's reset returns", async function () {
+    const server = createFakeCodexAppServer({
+      answers: ["OLD-ANSWER-4711", "MUST-NOT-RUN"],
+    });
+    const { panelId } = await afterFailedArchive(server);
+    server.setArchiveFails(false);
+    server.setArchiveDelayMs(4_000);
+    const sending = sendTurn(panelId, "And now?", 8_000).catch(() => null);
+    await Zotero.Promise.delay(200);
+    panelBody(panelId).querySelector<HTMLButtonElement>("#llm-cancel")?.click();
+    await api.togglePanelConversationMode(panelId);
+    await Zotero.Promise.delay(1_000);
+    const input =
+      panelBody(panelId).querySelector<HTMLTextAreaElement>("#llm-input")!;
+    input.value = "LIBRARY DRAFT";
+    await sending;
+    await Zotero.Promise.delay(4_000);
+    assert.equal(
+      input.value,
+      "LIBRARY DRAFT",
+      "the library chat's draft stays",
+    );
   });
 });

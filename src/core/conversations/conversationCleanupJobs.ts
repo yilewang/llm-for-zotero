@@ -330,6 +330,25 @@ export async function enqueueConversationCleanupJob(params: {
 }
 
 /**
+ * The same obligation, now also a reset a re-send waits for: an existing job
+ * (an ordinary archive of the same session, or a concurrent insert that won)
+ * takes the requested purpose.
+ */
+async function withRequestedPurpose(
+  db: NonNullable<ReturnType<typeof getZoteroDb>>,
+  job: ConversationCleanupJob,
+  purpose: ConversationCleanupJobPurpose | undefined,
+): Promise<ConversationCleanupJob> {
+  if (!purpose || job.purpose === purpose) return job;
+  await queryCleanupDb(
+    db,
+    `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE} SET purpose = ? WHERE id = ?`,
+    [purpose, job.id],
+  );
+  return { ...job, purpose };
+}
+
+/**
  * Insert a provider cleanup job using the caller's active transaction. The
  * cleanup-jobs table must already have been initialized before the outer
  * transaction starts; this helper deliberately performs no DDL and opens no
@@ -392,16 +411,7 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     if (!requestedInstanceID && current.instanceID) {
       throw new Error("Provider cleanup job identity is required");
     }
-    // The same obligation, now also a reset a re-send waits for.
-    if (params.purpose && current.purpose !== params.purpose) {
-      await queryCleanupDb(
-        db,
-        `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE} SET purpose = ? WHERE id = ?`,
-        [params.purpose, current.id],
-      );
-      return { ...current, purpose: params.purpose };
-    }
-    return current;
+    return withRequestedPurpose(db, current, params.purpose);
   }
   const job: ConversationCleanupJob = {
     id: generateJobID(),
@@ -466,7 +476,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
       ],
     )) as CleanupJobRow[] | undefined;
     if (!raced?.[0]) throw error;
-    return rowToJob(raced[0]);
+    const winner = rowToJob(raced[0]);
+    return winner ? withRequestedPurpose(db, winner, params.purpose) : null;
   }
   return job;
 }

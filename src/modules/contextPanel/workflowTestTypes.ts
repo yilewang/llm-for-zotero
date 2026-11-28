@@ -1832,15 +1832,16 @@ export type WorkflowTestApi = {
     fullTextBudgetTokens: number;
   }) => Promise<{ section: string; tokens: number }>;
   /**
-   * Removes every provider cleanup job, so one a test left (a failed
-   * scripted archive) is never retried against a real runtime later.
+   * Removes the provider cleanup jobs of these conversations, so one a test
+   * left (a failed scripted archive) is never retried against a real
+   * runtime later. Other conversations' jobs stay.
    */
-  clearCleanupJobsForTests: () => Promise<void>;
+  clearCleanupJobsForTests: (conversationKeys: number[]) => Promise<void>;
   /**
-   * Makes every pending provider cleanup job due and runs the background
-   * cleanup worker once (processPendingConversationCleanupJobs).
+   * Makes this conversation's pending provider cleanup jobs due and runs the
+   * background cleanup worker once (processPendingConversationCleanupJobs).
    */
-  runCleanupJobsNowForTests: () => Promise<void>;
+  runCleanupJobsNowForTests: (conversationKey: number) => Promise<void>;
   /**
    * Stores a provider cleanup job naming `providerSessionId` for the
    * conversation, as a reset that did not reach the provider leaves one.

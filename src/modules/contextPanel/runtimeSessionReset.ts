@@ -68,16 +68,17 @@ async function attemptSessionCleanup(
           // A thread Codex no longer has is already detached.
           if (!isProviderNotFoundError(error)) throw error;
         }
+        // Inside the attempt: the job ends only once the chat forgot the
+        // thread, so a failure here leaves it to retry.
+        await forgetArchivedCodexThread({
+          conversationKey,
+          threadId: providerSessionId,
+          instanceID,
+        });
       },
       USER_ATTEMPT,
     );
-    if (!attempt.ok) return false;
-    await forgetArchivedCodexThread({
-      conversationKey,
-      threadId: providerSessionId,
-      instanceID,
-    });
-    return true;
+    return attempt.ok;
   }
   const attempt = await performConversationCleanupJobAttempt(
     job,

@@ -900,12 +900,17 @@ export async function processPendingConversationCleanupJobs(
             } catch (error) {
               if (!isProviderNotFoundError(error)) throw error;
             }
-            // A chat that still names the archived thread must not resume it.
-            await forgetArchivedCodexThread({
-              conversationKey: job.conversationKey,
-              threadId: job.providerSessionId,
-              instanceID: job.instanceID || undefined,
-            });
+            // A Retry or Edit reset: the chat must not resume the archived
+            // thread. Another archive (Codex's own resume recovery) is of a
+            // thread whose replacement may not be saved yet; the chat's
+            // record is the recovery's to change.
+            if (job.purpose === "resend_reset") {
+              await forgetArchivedCodexThread({
+                conversationKey: job.conversationKey,
+                threadId: job.providerSessionId,
+                instanceID: job.instanceID || undefined,
+              });
+            }
             return;
           }
           if (job.operation === "claude_invalidate") {

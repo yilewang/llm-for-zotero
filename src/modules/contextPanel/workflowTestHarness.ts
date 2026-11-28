@@ -12588,15 +12588,19 @@ export function installWorkflowTestHarness(targetAddon: {
     sendLiveChatTurn,
     startPanelChatSend,
     retryLatestPanelResponse,
-    clearCleanupJobsForTests: async () => {
+    clearCleanupJobsForTests: async (conversationKeys) => {
       assertWorkflowTestEnabled();
+      const keys = conversationKeys.filter((key) => key > 0);
+      if (!keys.length) return;
       const { CONVERSATION_CLEANUP_JOBS_TABLE } =
         await import("../../core/conversations/conversationCleanupJobs");
       await Zotero.DB.queryAsync(
-        `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}`,
+        `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+         WHERE conversation_key IN (${keys.map(() => "?").join(", ")})`,
+        keys,
       ).catch(() => undefined);
     },
-    runCleanupJobsNowForTests: async () => {
+    runCleanupJobsNowForTests: async (conversationKey) => {
       assertWorkflowTestEnabled();
       const [
         { CONVERSATION_CLEANUP_JOBS_TABLE },
@@ -12606,7 +12610,9 @@ export function installWorkflowTestHarness(targetAddon: {
         import("./conversationDeletion"),
       ]);
       await Zotero.DB.queryAsync(
-        `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE} SET next_attempt_at = 0`,
+        `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE} SET next_attempt_at = 0
+         WHERE conversation_key = ?`,
+        [conversationKey],
       );
       await processPendingConversationCleanupJobs();
     },
