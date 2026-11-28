@@ -680,12 +680,15 @@ export async function exerciseClaudeBridgeTurn(
     };
   } finally {
     setAbortController(key, previousController);
-    // A failed reset leaves a cleanup job for this chat; the background
-    // worker would send it to the real bridge once the fake is gone.
-    await Zotero.DB.queryAsync(
-      `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE} WHERE conversation_key = ?`,
-      [key],
-    ).catch(() => undefined);
+    // A failed reset leaves a cleanup job for the chat this fixture made;
+    // the background worker would send it to the real bridge once the fake
+    // is gone. A chat the fixture did not make keeps its jobs.
+    if (scenario.retry) {
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE} WHERE conversation_key = ?`,
+        [key],
+      ).catch(() => undefined);
+    }
     restoreFetch();
     setNativeZoteroMcpToolsEnabled(mcpBefore);
     setPrefRaw("claudeCodeBridgeMode", prefsBefore.claudeCodeBridgeMode);
