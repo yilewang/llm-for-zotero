@@ -242,17 +242,23 @@ export async function invalidateClaudeConversationSessionWithinWriteLock(
     conversationKey: params.conversationKey,
     instanceID: expectedInstanceID || undefined,
   });
+  // The bridge drops its session first. The chat's saved session id is the
+  // witness that the bridge still holds one: cleared before a bridge call
+  // that then fails, a later reset would find nothing to drop and let the
+  // bridge resume the old session. So it is cleared only once the bridge
+  // has dropped it, and a failure keeps it for the next attempt.
+  if (bridgeUrl.trim()) {
+    await getClaudeBridgeRuntime(coreRuntime).invalidateSessionWithinWriteLock({
+      conversationKey: params.conversationKey,
+      scope: params.scope || undefined,
+      metadata: params.metadata,
+    });
+  }
   await clearClaudeConversationSessionMetadata(
     params.conversationKey,
     expectedProviderSessionId || undefined,
     expectedInstanceID || undefined,
   );
-  if (!bridgeUrl.trim()) return;
-  await getClaudeBridgeRuntime(coreRuntime).invalidateSessionWithinWriteLock({
-    conversationKey: params.conversationKey,
-    scope: params.scope || undefined,
-    metadata: params.metadata,
-  });
 }
 
 export async function fetchClaudeSessionInfo(

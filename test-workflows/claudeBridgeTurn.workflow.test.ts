@@ -346,4 +346,48 @@ describe("workflow: Claude Code turn host", function () {
     ]);
     assert.isFalse(result.scopeLiveAfterTurn, "the scope closes with the turn");
   });
+  it("does not let a retry after a failed session reset resume the replaced session", async function () {
+    // Its own paper, and last in the file: after a third retried chat in one
+    // run, this fixture's next turn is not saved (seen 2026-11-27, also with
+    // a plain retry here; the panel's own retry saves, live R4).
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude failed reset fixture",
+      pages: ["A disposable paper for a failed session reset."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const firstRun = `claude-run-${Date.now()}`;
+    const retryRun = `${firstRun}-retry`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(firstRun), completed(firstRun, "417")],
+          retry: [
+            // The bridge cannot drop the session: the retry must not go out.
+            {
+              steps: [start(`${retryRun}-1`), completed(`${retryRun}-1`, "1")],
+              invalidateFails: true,
+            },
+            // The user retries again once the bridge is back.
+            {
+              steps: [start(`${retryRun}-2`), completed(`${retryRun}-2`, "88")],
+            },
+          ],
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    const [failed, again] = result.retries;
+    assert.isNull(failed.payload, JSON.stringify(result.retries));
+    assert.isAtLeast(failed.invalidateCalls, 1);
+    assert.isNotNull(again.payload, JSON.stringify(result.retries));
+    // The bridge still maps the chat to the session holding "417": the
+    // second retry must drop it there, or start a fresh session.
+    assert.isTrue(
+      again.invalidateCalls >= 1 || again.payload!.forceFreshSession,
+      JSON.stringify(result.retries),
+    );
+    assert.equal(again.payload!.providerSessionId, "");
+  });
 });

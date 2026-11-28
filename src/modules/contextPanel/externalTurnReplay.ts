@@ -57,6 +57,13 @@ export type FakeBridgeStep =
   /** Moves the conversation to a new write generation, as Clear does. */
   | { bumpGeneration: true };
 
+/** One retry after the turn; several run in order. */
+export type ExternalTurnRetry = {
+  steps: FakeBridgeStep[];
+  /** The bridge's `/invalidate-session` answers 500 during this retry. */
+  invalidateFails?: boolean;
+};
+
 export type ExternalTurnScenario = {
   question: string;
   steps: FakeBridgeStep[];
@@ -70,7 +77,7 @@ export type ExternalTurnScenario = {
    * After the turn, retries it through the agent engine's retry, as the
    * panel's Retry does, against these bridge steps.
    */
-  retry?: { steps: FakeBridgeStep[] };
+  retry?: ExternalTurnRetry | ExternalTurnRetry[];
   /**
    * Sends the panel paper's PDF file with the turn, as the paper chip's
    * "PDF file" source does.
@@ -79,6 +86,8 @@ export type ExternalTurnScenario = {
 };
 
 export type ExternalTurnResult = {
+  /** The chat the turn ran in. */
+  conversationKey: number;
   outcomeKind: AgentRuntimeOutcome["kind"] | "threw";
   outcomeText: string;
   /** Types of the events the panel received, in order. */
@@ -108,7 +117,21 @@ export type ExternalTurnResult = {
   runTurnCalls: number;
   /** Calls to the bridge's `/invalidate-session`, before the retry and after. */
   invalidateSessionCalls: { beforeRetry: number; afterRetry: number };
-  /** What the retry's `/run-turn` asked of the bridge; null without retry. */
+  /**
+   * Each retry in order: its `/invalidate-session` calls, and what its
+   * `/run-turn` asked of the bridge (null when it sent none).
+   */
+  retries: Array<{
+    invalidateCalls: number;
+    /** The panel's status line when the retry ended. */
+    status: string;
+    payload: {
+      providerSessionId: string;
+      forceFreshSession: boolean;
+      userText: string;
+    } | null;
+  }>;
+  /** What the last retry's `/run-turn` asked of the bridge; null without retry. */
   retryTurnPayload: {
     providerSessionId: string;
     forceFreshSession: boolean;
@@ -124,6 +147,7 @@ type ScriptState = {
   steps: FakeBridgeStep[];
   runTurnCalls: number;
   invalidateSessionCalls: number;
+  invalidateFails: boolean;
   payload: Record<string, unknown> | null;
   localDocumentPaths: string[][];
   confirmationAnswers: Array<{ requestId: string; approved: boolean }>;
@@ -357,6 +381,7 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     }
     if (path === "/invalidate-session") {
       state.invalidateSessionCalls += 1;
+      if (state.invalidateFails) return jsonResponse(500, { error: "down" });
       return jsonResponse(200, { invalidated: true });
     }
     if (path === "/resolve-confirmation") {
@@ -406,6 +431,7 @@ export async function exerciseClaudeBridgeTurn(
     steps: scenario.steps,
     runTurnCalls: 0,
     invalidateSessionCalls: 0,
+    invalidateFails: false,
     localDocumentPaths: [],
     payload: null,
     confirmationAnswers: [],
@@ -508,9 +534,17 @@ export async function exerciseClaudeBridgeTurn(
     });
     const invalidatedBeforeRetry = state.invalidateSessionCalls;
     let retryTurnPayload: ExternalTurnResult["retryTurnPayload"] = null;
-    if (scenario.retry) {
+    const retries: ExternalTurnResult["retries"] = [];
+    const retryList = Array.isArray(scenario.retry)
+      ? scenario.retry
+      : scenario.retry
+        ? [scenario.retry]
+        : [];
+    for (const retry of retryList) {
       const firstPayload = state.payload;
-      state.steps = scenario.retry.steps;
+      const invalidatedBefore = state.invalidateSessionCalls;
+      state.steps = retry.steps;
+      state.invalidateFails = Boolean(retry.invalidateFails);
       setAbortController(key, createAbortController());
       await retryAgentTurn(
         body,
@@ -538,6 +572,12 @@ export async function exerciseClaudeBridgeTurn(
             userText: String(retried.userText ?? ""),
           }
         : null;
+      retries.push({
+        invalidateCalls: state.invalidateSessionCalls - invalidatedBefore,
+        status: body.querySelector("#llm-status")?.textContent?.trim() || "",
+        payload: retryTurnPayload,
+      });
+      state.invalidateFails = false;
     }
     const { token, headerNames } = scopeTokenFromPayload(state.payload);
     const scopeLiveAfterTurn = token
@@ -548,6 +588,7 @@ export async function exerciseClaudeBridgeTurn(
     const trace = runId ? await getAgentRunTrace(runId) : null;
     const finished = outcome as AgentRuntimeOutcome | null;
     return {
+      conversationKey: key,
       outcomeKind: finished ? finished.kind : "threw",
       outcomeText: finished
         ? finished.kind === "completed"
@@ -589,6 +630,7 @@ export async function exerciseClaudeBridgeTurn(
         afterRetry: state.invalidateSessionCalls - invalidatedBeforeRetry,
       },
       retryTurnPayload,
+      retries,
       runtimeCalls,
       localDocumentPaths: state.localDocumentPaths,
     };

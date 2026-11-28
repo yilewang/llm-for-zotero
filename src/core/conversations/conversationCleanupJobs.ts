@@ -612,6 +612,14 @@ export async function failConversationCleanupJob(
 export function performConversationCleanupJobAttempt(
   job: ConversationCleanupJob,
   operation: () => Promise<void>,
+  options: {
+    /**
+     * Attempts now even inside the retry delay a failed attempt set. For an
+     * attempt the user asked for (a Retry): the delay paces the background
+     * scheduler, and the user's action must not wait out a failure.
+     */
+    ignoreRetryDelay?: boolean;
+  } = {},
 ): Promise<ConversationCleanupJobAttemptResult> {
   const existing = cleanupJobAttempts.get(job.id);
   if (existing) return existing;
@@ -622,7 +630,7 @@ export function performConversationCleanupJobAttempt(
     // retry deadline with stale attempts/nextAttemptAt values.
     const current = await getConversationCleanupJobByID(job.id);
     if (!current) return { ok: true };
-    if (current.nextAttemptAt > Date.now()) {
+    if (!options.ignoreRetryDelay && current.nextAttemptAt > Date.now()) {
       return {
         ok: false,
         deferred: true,

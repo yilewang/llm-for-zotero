@@ -41,6 +41,12 @@ import {
   withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
 
+/**
+ * A reset runs because the user retried or edited a turn, so it attempts
+ * the provider cleanup now, even after an earlier attempt failed.
+ */
+const USER_ATTEMPT = { ignoreRetryDelay: true } as const;
+
 async function detachRuntimeProviderSession(
   conversationKey: number,
   catalog: Awaited<ReturnType<typeof conversationRepository.getCatalogEntry>>,
@@ -71,6 +77,7 @@ async function detachRuntimeProviderSession(
             if (!isProviderNotFoundError(error)) throw error;
           }
         },
+        USER_ATTEMPT,
       );
       if (!attempt.ok) return false;
       await clearCodexConversationSessionMetadata(
@@ -115,6 +122,7 @@ async function detachRuntimeProviderSession(
               },
             },
           ),
+        USER_ATTEMPT,
       );
       if (!attempt.ok) return false;
       return true;
