@@ -202,4 +202,54 @@ describe("workflow: past_chat_read on the current conversation", function () {
       api.clearScopedMcpScope(scope.token);
     }
   });
+  it("reads a chat once per turn, and checks access on every call", async function () {
+    fixture = await api.createPaperWithPdfFixture({
+      title: "Turn cache fixture",
+      pages: ["A disposable paper."],
+    });
+    const panel = await api.renderPanelForItem(fixture.parentItemId);
+    const first = await api.seedPanelStoredTurn(
+      panel.panelId,
+      "FIRST question",
+      "FIRST answer",
+    );
+    const key = first.conversationKey;
+    const turnTime = first.assistantTimestamp + 10_000;
+    const paper = Zotero.Items.get(fixture.parentItemId);
+    const scopeFor = (tag: string) =>
+      api.registerScopedMcpScope({
+        conversationKey: key,
+        libraryID: paper.libraryID,
+        kind: "paper",
+        runId: `turn-cache-${tag}:${Date.now()}`,
+        runtimeAuthority: "claude",
+        sourceMessageTimestamp: turnTime,
+      });
+    const turn = scopeFor("a");
+    const chat = `upstream:${key}`;
+    try {
+      const before = await callPastChatRead(turn.token, { chat, message: 1 });
+      assert.equal(before.totalMessages, 2, JSON.stringify(before));
+      // A message stored before the turn's time while the turn runs.
+      await api.seedStoredConversationTurns(key, [
+        { role: "user", text: "LATE question", timestamp: turnTime - 5 },
+      ]);
+      const page = await callPastChatRead(turn.token, { chat, message: 2 });
+      assert.equal(page.totalMessages, 2, "the turn keeps the chat it read");
+      // Access is still checked on each call of the turn.
+      const other = await callPastChatRead(turn.token, {
+        chat: `upstream:${key + 1}`,
+      });
+      assert.isFalse(other.ok, JSON.stringify(other));
+    } finally {
+      api.clearScopedMcpScope(turn.token);
+    }
+    const next = scopeFor("b");
+    try {
+      const fresh = await callPastChatRead(next.token, { chat, message: 1 });
+      assert.equal(fresh.totalMessages, 3, "a new turn reads the chat again");
+    } finally {
+      api.clearScopedMcpScope(next.token);
+    }
+  });
 });

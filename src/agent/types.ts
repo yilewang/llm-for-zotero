@@ -1411,6 +1411,12 @@ export type AgentToolContext = {
   extendAttachedConversationScope?: (ref: AttachedConversationRef) => void;
   /** Durable identity of the execution that owns any journalled writes. */
   runId?: string;
+  /**
+   * Values a tool keeps for the rest of this turn, dropped when the turn
+   * ends: the native runtime makes one per run, the MCP server one per turn
+   * scope. A cached value never stands in for an access check.
+   */
+  turnCache?: Map<string, unknown>;
   item: Zotero.Item | null;
   currentAnswerText: string;
   modelName: string;

@@ -1159,6 +1159,24 @@ export function registerScopedZoteroMcpScope(
   };
 }
 
+/**
+ * Each turn scope's tool cache (AgentToolContext.turnCache). Keyed by the
+ * scope object, so it goes when the scope is released and collected.
+ */
+const turnCachesByScope = new WeakMap<
+  ZoteroMcpActiveScope,
+  Map<string, unknown>
+>();
+
+function turnCacheForScope(scope: ZoteroMcpActiveScope): Map<string, unknown> {
+  let cache = turnCachesByScope.get(scope);
+  if (!cache) {
+    cache = new Map();
+    turnCachesByScope.set(scope, cache);
+  }
+  return cache;
+}
+
 function releaseScopedMcpScope(token: string): void {
   scopedZoteroMcpScopes.get(token)?.controller.abort();
   scopedZoteroMcpScopes.delete(token);
@@ -2426,6 +2444,7 @@ function createToolContext(
       : undefined,
     signal: scope?.signal,
     runId,
+    ...(scope ? { turnCache: turnCacheForScope(scope) } : {}),
     item,
     currentAnswerText: "",
     modelName: scope?.model || "external-mcp",

@@ -1285,6 +1285,7 @@ export class AgentRuntime {
       const context: AgentToolContext = {
         request,
         runId,
+        turnCache: new Map(),
         item,
         currentAnswerText,
         modelName: request.model || "unknown",

@@ -26,6 +26,7 @@ import {
   pastConversationId,
   pastConversationModeLabel,
   type PastConversationLoadResult,
+  type PastConversationMessage,
 } from "./pastConversationText";
 import {
   catalogEntryToPastConversationCandidate,
@@ -184,6 +185,48 @@ export async function findPastConversationCatalogEntry(
 }
 
 /**
+ * A past chat's cleaned messages, read once per turn and cut-off when the
+ * turn has a cache: past_chat_read pages through a long chat in several
+ * calls, and each would read the whole chat again.
+ */
+async function readPastChatMessages(
+  ref: AttachedConversationRef,
+  source: PastConversationSource,
+  options: { beforeTimestamp?: number; turnCache?: Map<string, unknown> },
+): Promise<PastConversationMessage[]> {
+  const read = async () =>
+    cleanPastConversationMessages(
+      await source.loadMessageTexts({
+        system: ref.system,
+        conversationKey: ref.conversationKey,
+        ...(options.beforeTimestamp !== undefined
+          ? { beforeTimestamp: options.beforeTimestamp }
+          : {}),
+      }),
+    );
+  const cache = options.turnCache;
+  if (!cache) return read();
+  const key = [
+    "past-chat-messages",
+    ref.system,
+    ref.conversationKey,
+    ref.conversationID || "",
+    options.beforeTimestamp ?? "all",
+  ].join(":");
+  const cached = cache.get(key) as
+    | Promise<PastConversationMessage[]>
+    | undefined;
+  if (cached) return cached;
+  const pending = read();
+  cache.set(key, pending);
+  // A failed read is not kept: the next call tries again.
+  pending.catch(() => {
+    if (cache.get(key) === pending) cache.delete(key);
+  });
+  return pending;
+}
+
+/**
  * Reads one attached past chat after checking it again in the catalog.
  * Never throws: a chat that cannot be read comes back with its reason.
  */
@@ -194,6 +237,12 @@ export async function loadPastConversation(
     source?: PastConversationSource;
     /** Only the messages stored before this time (ms), when set. */
     beforeTimestamp?: number;
+    /**
+     * The turn's cache (AgentToolContext.turnCache): a chat's messages are
+     * read once per turn and cut-off, while the checks above them (library,
+     * deletion, catalog) still run on every call.
+     */
+    turnCache?: Map<string, unknown>;
   },
 ): Promise<PastConversationLoadResult> {
   const source = options.source || defaultPastConversationSource;
@@ -220,15 +269,7 @@ export async function loadPastConversation(
       collapseWhitespace(entry.title || "") ||
       collapseWhitespace(ref.title) ||
       `Conversation ${ref.conversationKey}`;
-    const messages = cleanPastConversationMessages(
-      await source.loadMessageTexts({
-        system: ref.system,
-        conversationKey: ref.conversationKey,
-        ...(options.beforeTimestamp !== undefined
-          ? { beforeTimestamp: options.beforeTimestamp }
-          : {}),
-      }),
-    );
+    const messages = await readPastChatMessages(ref, source, options);
     const paperItemID = entry.paperItemID || ref.paperItemID;
     const paperLabel =
       entry.kind === "paper"

@@ -342,6 +342,7 @@ async function executePastChatRead(
     libraryID: context.request.libraryID,
     source,
     ...(isCurrent ? { beforeTimestamp: turnTimestamp } : {}),
+    ...(context.turnCache ? { turnCache: context.turnCache } : {}),
   });
   if (loaded.status !== "ok") {
     return {
