@@ -51,20 +51,6 @@ function hasReplayableHistory(request: RunTurnRequest): boolean {
   );
 }
 
-/** The plugin's `metadata.pendingResetSessionIds`, as non-empty strings. */
-function readPendingResetSessionIds(request: RunTurnRequest): string[] {
-  const metadata =
-    request.metadata && typeof request.metadata === "object"
-      ? (request.metadata as Record<string, unknown>)
-      : {};
-  const ids = metadata.pendingResetSessionIds;
-  return Array.isArray(ids)
-    ? ids.filter(
-        (id): id is string => typeof id === "string" && id.trim().length > 0,
-      )
-    : [];
-}
-
 export class ClaudeCodeRuntimeAdapter {
   get supportsStructuredCompletion(): boolean {
     return typeof this.runtimeClient.completeStructured === "function";
@@ -513,23 +499,11 @@ export class ClaudeCodeRuntimeAdapter {
         },
       });
     }
-    let forceFreshSession = Boolean(
+    const forceFreshSession = Boolean(
       request.metadata &&
       typeof request.metadata === "object" &&
       (request.metadata as Record<string, unknown>).forceFreshSession === true,
     );
-    // Sessions the plugin is still trying to drop (a Retry or Edit whose
-    // reset failed): they hold the turns being replaced, so the turn starts
-    // fresh if one of them is the session it would resume. Compared here,
-    // against this bridge's own resume candidate, not the plugin's record.
-    const pendingResetSessionIds = readPendingResetSessionIds(request);
-    if (!forceFreshSession && pendingResetSessionIds.length) {
-      const candidate = (await this.resolveProviderSessionId(request))
-        .providerSessionId;
-      if (candidate && pendingResetSessionIds.includes(candidate)) {
-        forceFreshSession = true;
-      }
-    }
     const sessionMapKey = this.buildSessionMapKey(request);
     const historyGapKey = this.buildLocalPdfHistoryGapKey(
       request.conversationKey,

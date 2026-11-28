@@ -28,7 +28,7 @@ import {
 } from "../claudeCode/bridgeProcess";
 import { buildScopedConversationKey } from "../shared/conversationScopedKey";
 import { getClaudeConversationSummary } from "../claudeCode/store";
-import { listPendingClaudeCleanups } from "../core/conversations/conversationCleanupJobs";
+import { hasPendingClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
 import type { ConversationSystem } from "../shared/types";
 import { getClaudePermissionModePref } from "../claudeCode/prefs";
@@ -2384,28 +2384,18 @@ export function createExternalBackendBridgeRuntime(options: {
           : "";
       if (request.conversationKey <= 0) return request;
       try {
-        const pending = await listPendingClaudeCleanups({
-          conversationKey: request.conversationKey,
-          ...(conversationInstanceID
-            ? { instanceID: conversationInstanceID }
-            : {}),
-        });
-        if (!pending.emptySession) {
-          if (!pending.sessionIds.length) return request;
-          // A Retry or Edit could not drop these sessions. The bridge starts
-          // fresh if it would resume one of them; a session that replaced
-          // them since is resumed (claude-code-runtime-adapter.ts).
-          return {
-            ...request,
-            metadata: {
-              ...requestMetadata,
-              pendingResetSessionIds: pending.sessionIds,
-            },
-          };
-        }
-        // Clear deferred an empty-session invalidation while the catalog had
-        // no provider ID. Do not resume the old bridge mapping; the adapter
-        // invalidates it before starting fresh.
+        if (
+          !(await hasPendingClaudeCleanupJob({
+            conversationKey: request.conversationKey,
+            ...(conversationInstanceID
+              ? { instanceID: conversationInstanceID }
+              : {}),
+          }))
+        )
+          return request;
+        // An invalidation is still pending: Clear deferred an empty-session
+        // one, or a Retry or Edit could not drop the session it replaces.
+        // Do not resume it; the adapter invalidates it before starting fresh.
       } catch {
         // A pending invalidation is a lifecycle boundary, not an
         // advisory hint. If the cleanup table cannot be read, fail closed

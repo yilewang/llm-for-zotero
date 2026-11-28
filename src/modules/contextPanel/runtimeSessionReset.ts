@@ -19,7 +19,9 @@
 import { conversationRepository } from "../../core/conversations/repository";
 import {
   enqueueConversationCleanupJob,
+  listPendingSessionCleanupJobs,
   performConversationCleanupJobAttempt,
+  type ConversationCleanupJob,
 } from "../../core/conversations/conversationCleanupJobs";
 import {
   assertNeverConversationSystem,
@@ -47,6 +49,55 @@ import {
  */
 const USER_ATTEMPT = { ignoreRetryDelay: true } as const;
 
+/**
+ * Runs one session cleanup job now: the Codex thread archive or the Claude
+ * Code session invalidation, then forgets the session on the chat. False
+ * when the provider could not be reached; the job stays for the next try.
+ */
+async function attemptSessionCleanup(
+  job: ConversationCleanupJob,
+): Promise<boolean> {
+  const { conversationKey, instanceID, providerSessionId } = job;
+  if (job.operation === "codex_archive") {
+    const attempt = await performConversationCleanupJobAttempt(
+      job,
+      async () => {
+        try {
+          await archiveCodexAppServerThread({ threadId: providerSessionId });
+        } catch (error) {
+          // A thread Codex no longer has is already detached.
+          if (!isProviderNotFoundError(error)) throw error;
+        }
+      },
+      USER_ATTEMPT,
+    );
+    if (!attempt.ok) return false;
+    await clearCodexConversationSessionMetadata(
+      conversationKey,
+      providerSessionId,
+      instanceID,
+    );
+    return true;
+  }
+  const attempt = await performConversationCleanupJobAttempt(
+    job,
+    async () =>
+      invalidateClaudeConversationSessionWithinWriteLock(
+        await initAgentSubsystem(),
+        {
+          conversationKey,
+          scope: job.providerScope,
+          metadata: {
+            ...(providerSessionId ? { providerSessionId } : {}),
+            instanceID,
+          },
+        },
+      ),
+    USER_ATTEMPT,
+  );
+  return attempt.ok;
+}
+
 async function detachRuntimeProviderSession(
   conversationKey: number,
   catalog: Awaited<ReturnType<typeof conversationRepository.getCatalogEntry>>,
@@ -66,26 +117,7 @@ async function detachRuntimeProviderSession(
         paperItemID: catalog.paperItemID,
         providerSessionId,
       });
-      if (!job) return false;
-      const attempt = await performConversationCleanupJobAttempt(
-        job,
-        async () => {
-          try {
-            await archiveCodexAppServerThread({ threadId: providerSessionId });
-          } catch (error) {
-            // A thread Codex no longer has is already detached.
-            if (!isProviderNotFoundError(error)) throw error;
-          }
-        },
-        USER_ATTEMPT,
-      );
-      if (!attempt.ok) return false;
-      await clearCodexConversationSessionMetadata(
-        conversationKey,
-        providerSessionId,
-        catalog.instanceID,
-      );
-      return true;
+      return job ? attemptSessionCleanup(job) : false;
     }
     case "claude_code": {
       const scope = buildClaudeScope({
@@ -107,25 +139,7 @@ async function detachRuntimeProviderSession(
         providerScope: scope,
         providerSessionId,
       });
-      if (!job) return false;
-      const attempt = await performConversationCleanupJobAttempt(
-        job,
-        async () =>
-          invalidateClaudeConversationSessionWithinWriteLock(
-            await initAgentSubsystem(),
-            {
-              conversationKey,
-              scope,
-              metadata: {
-                ...(providerSessionId ? { providerSessionId } : {}),
-                instanceID: catalog.instanceID,
-              },
-            },
-          ),
-        USER_ATTEMPT,
-      );
-      if (!attempt.ok) return false;
-      return true;
+      return job ? attemptSessionCleanup(job) : false;
     }
     case "antigravity": {
       // ACP cannot delete a session or its turns, so there is no provider
@@ -188,4 +202,33 @@ export async function detachRuntimeSessionForResend(params: {
       conversationGeneration,
     );
   });
+}
+
+/**
+ * Finishes the resets a Retry or Edit started on this conversation but could
+ * not complete (the provider was unreachable), before its next turn starts.
+ * Until then the runtime still holds the session with the replaced turns,
+ * and the chat still names it, so a turn would resume it. True when none is
+ * left; false when the provider still cannot be reached: the caller must not
+ * start the turn then.
+ */
+export async function finishPendingRuntimeSessionResets(params: {
+  conversationKey: number;
+  storageSystem: ConversationSystem;
+}): Promise<boolean> {
+  const operation =
+    params.storageSystem === "codex"
+      ? "codex_archive"
+      : params.storageSystem === "claude_code"
+        ? "claude_invalidate"
+        : null;
+  if (!operation) return true;
+  const jobs = await listPendingSessionCleanupJobs({
+    conversationKey: params.conversationKey,
+    operation,
+  });
+  for (const job of jobs) {
+    if (!(await attemptSessionCleanup(job))) return false;
+  }
+  return true;
 }

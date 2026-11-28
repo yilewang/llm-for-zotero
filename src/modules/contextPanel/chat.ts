@@ -45,7 +45,10 @@ import {
   updateLatestCodexUserMessage,
 } from "../../codexAppServer/store";
 import { updateClaudeAssistantMessageQuoteLocations } from "../../claudeCode/store";
-import { detachRuntimeSessionForResend } from "./runtimeSessionReset";
+import {
+  detachRuntimeSessionForResend,
+  finishPendingRuntimeSessionResets,
+} from "./runtimeSessionReset";
 import { antigravityConversationStore } from "../../antigravity/store";
 import {
   appendAntigravityConversationMessageWithinWriteLock,
@@ -492,6 +495,7 @@ import {
   sendAgentTurn,
   retryAgentTurn,
   type AgentEngineDeps,
+  PENDING_RESET_REFUSAL,
 } from "./agentMode/agentEngine";
 import {
   buildQueuedFollowUpThreadKey,
@@ -8517,6 +8521,16 @@ function buildAgentEngineDeps(
     normalizePaperContexts,
     includeAutoLoadedPaperContext,
     findLatestRetryPair,
+    finishPendingRuntimeSessionResets: (conversationKey: number) =>
+      finishPendingRuntimeSessionResets({
+        conversationKey,
+        storageSystem: currentItem
+          ? resolveConversationStorageSystemForItem({
+              item: currentItem,
+              conversationSystem: effectiveConversationSystem,
+            }) || effectiveConversationSystem
+          : effectiveConversationSystem,
+      }),
     detachRuntimeSessionForResend: (conversationKey: number) =>
       currentItem
         ? detachRuntimeSessionForResend({
@@ -9158,6 +9172,23 @@ export async function sendQuestion(
       "Conversation identity mismatch; open a new chat.",
       "error",
     );
+    if (claimedHere)
+      finishPanelRequest(body, item, conversationKey, thisRequestId);
+    return;
+  }
+  // Codex may still hold a thread a failed reset should have archived, with
+  // the turns it replaced; the turn waits for that reset (runtimeSessionReset).
+  if (
+    effectiveConversationSystem === "codex" &&
+    !(await finishPendingRuntimeSessionResets({
+      conversationKey,
+      storageSystem: effectiveStorageSystem,
+    }))
+  ) {
+    removeMessageReference(provisionalHistory, optimisticUserMessage);
+    removeMessageReference(provisionalHistory, optimisticAssistantMessage);
+    optimisticHelpers.refreshChatSafely();
+    optimisticHelpers.setStatusSafely(PENDING_RESET_REFUSAL, "error");
     if (claimedHere)
       finishPanelRequest(body, item, conversationKey, thisRequestId);
     return;

@@ -443,46 +443,41 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
 }
 
 /**
- * The Claude invalidations still pending for a conversation: a lifecycle
- * barrier for its next turn. `emptySession`: a mapping Clear could not drop
- * inline, so the turn must start fresh. `sessionIds`: sessions a Retry or
- * Edit could not drop, which still hold the turns being replaced; the bridge
- * starts fresh only if one of them is the session it would resume
- * (metadata.pendingResetSessionIds), so a replacement started since is kept.
+ * A pending Claude invalidation is a lifecycle barrier. Until the bridge has
+ * dropped the session, a new turn on the conversation must force a fresh
+ * provider session instead of resuming it: an empty-session job is a mapping
+ * Clear could not drop inline, and a job naming a session is one a Retry or
+ * Edit could not drop, which still holds the turns being replaced.
  */
-export async function listPendingClaudeCleanups(params: {
+export async function hasPendingClaudeCleanupJob(params: {
   conversationKey: number;
   instanceID?: string;
-}): Promise<{ emptySession: boolean; sessionIds: string[] }> {
-  const none = { emptySession: false, sessionIds: [] };
+}): Promise<boolean> {
   const db = getZoteroDb();
   const conversationKey = positiveIntOrZero(params.conversationKey);
   const instanceID = String(params.instanceID || "").trim();
-  if (!db || !conversationKey) return none;
+  if (!db || !conversationKey) return false;
   try {
     await initConversationCleanupJobs();
     const instancePredicate = instanceID ? "AND instance_id = ?" : "";
     const rows = (await queryCleanupDb(
       db,
-      `SELECT provider_session_id AS sessionId
+      `SELECT 1
        FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
        WHERE operation = 'claude_invalidate'
          AND system = 'claude_code'
          AND conversation_key = ?
          ${instancePredicate}
          AND (provider_cleanup_state = 'pending'
-              OR provider_cleanup_state = 'attention_required')`,
+              OR provider_cleanup_state = 'attention_required')
+       LIMIT 1`,
       instanceID ? [conversationKey, instanceID] : [conversationKey],
-    )) as Array<{ sessionId?: unknown }> | undefined;
-    const ids = (rows || []).map((row) => String(row.sessionId || "").trim());
-    return {
-      emptySession: ids.some((id) => !id),
-      sessionIds: [...new Set(ids.filter(Boolean))],
-    };
+    )) as unknown[] | undefined;
+    return Boolean(rows?.length);
   } catch (error) {
     // A missing/temporarily unavailable cleanup table must not make a normal
     // turn fail; the durable deletion worker remains responsible for retry.
-    if (/no such table|no table/i.test(String(error))) return none;
+    if (/no such table|no table/i.test(String(error))) return false;
     throw error;
   }
 }
@@ -506,6 +501,39 @@ export async function listDueConversationCleanupJobs(
             OR (? = 1 AND provider_cleanup_state = 'attention_required'))
      ORDER BY next_attempt_at ASC, id ASC`,
     [now, options.includeAttentionRequired ? 1 : 0],
+  )) as CleanupJobRow[] | undefined;
+  return (rows || [])
+    .map(rowToJob)
+    .filter((job): job is ConversationCleanupJob => Boolean(job));
+}
+
+/**
+ * A conversation's pending provider cleanups that name a session (a Retry or
+ * Edit whose reset did not reach the provider), whatever their retry delay:
+ * the next turn of the conversation finishes them first
+ * (runtimeSessionReset.finishPendingRuntimeSessionResets).
+ */
+export async function listPendingSessionCleanupJobs(params: {
+  conversationKey: number;
+  operation: "codex_archive" | "claude_invalidate";
+}): Promise<ConversationCleanupJob[]> {
+  const db = getZoteroDb();
+  const conversationKey = positiveIntOrZero(params.conversationKey);
+  if (!db || !conversationKey) return [];
+  await initConversationCleanupJobs();
+  const rows = (await queryCleanupDb(
+    db,
+    `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
+            conversation_kind, library_id, paper_item_id,
+            provider_scope_type, provider_scope_id, provider_scope_label,
+            attempts, next_attempt_at, last_error, provider_cleanup_state
+     FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+     WHERE operation = ? AND conversation_key = ?
+       AND provider_session_id != ''
+       AND (provider_cleanup_state = 'pending'
+            OR provider_cleanup_state = 'attention_required')
+     ORDER BY id ASC`,
+    [params.operation, conversationKey],
   )) as CleanupJobRow[] | undefined;
   return (rows || [])
     .map(rowToJob)

@@ -31,6 +31,8 @@ export type FakeCodexAppServer = {
   turnText: (request: FakeCodexRequest) => string;
   /** How many children were launched. */
   launches: () => number;
+  /** While true, `thread/archive` fails, as when codex cannot be reached. */
+  setArchiveFails: (fails: boolean) => void;
 };
 
 const USER_AGENT = "codex_cli_rs/0.164.0 (Mac OS 15.0.0; arm64) workflow-test";
@@ -45,6 +47,7 @@ export function createFakeCodexAppServer(script: {
   let threads = 0;
   let turns = 0;
   let launches = 0;
+  let archiveFails = false;
 
   const answerFor = (index: number) =>
     script.answers[Math.min(index, script.answers.length - 1)] || "";
@@ -116,6 +119,10 @@ export function createFakeCodexAppServer(script: {
       }
       case "thread/archive": {
         const threadId = String(params.threadId || "");
+        if (archiveFails) {
+          fail("codex app-server is not answering");
+          return;
+        }
         const writer = writers.get(threadId);
         if (!writer) {
           fail(`no rollout found for thread id ${threadId}`);
@@ -168,5 +175,8 @@ export function createFakeCodexAppServer(script: {
         .filter(Boolean)
         .join("\n"),
     launches: () => launches,
+    setArchiveFails: (fails) => {
+      archiveFails = fails;
+    },
   };
 }

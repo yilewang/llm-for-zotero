@@ -196,4 +196,54 @@ describe("workflow: Codex retry", function () {
       );
     }
   });
+  /** A Codex chat whose re-send could not archive the thread it replaces. */
+  async function afterFailedArchive(server: FakeCodexAppServer) {
+    const panelId = await openCodexPanel(server, ["A page for the panel."]);
+    await sendTurn(panelId, "Pick a number.", TIMEOUT_MS);
+    const [firstStart] = server.turnStarts();
+    const oldThread = String(firstStart?.params.threadId || "");
+    server.setArchiveFails(true);
+    let refused = "";
+    await resendLatestTurn(panelId, "Pick a number.", TIMEOUT_MS).catch(
+      (error) => {
+        refused = String(error);
+      },
+    );
+    assert.include(refused, "Could not reset", "the re-send waits");
+    return { panelId, oldThread };
+  }
+
+  it("archives the old thread before the next message, which runs on a new thread", async function () {
+    const server = createFakeCodexAppServer({
+      answers: ["OLD-ANSWER-4711", "NEXT-ANSWER"],
+    });
+    const { panelId, oldThread } = await afterFailedArchive(server);
+    server.setArchiveFails(false);
+    const requestsBefore = server.requests().length;
+    const next = await sendTurn(panelId, "And now?", TIMEOUT_MS);
+    assert.include(next.text, "NEXT-ANSWER");
+    const after = server.requests().slice(requestsBefore);
+    const log = describeRequests(after);
+    const archive = after.findIndex(
+      (request) =>
+        request.method === "thread/archive" &&
+        request.params.threadId === oldThread,
+    );
+    const start = after.findIndex((request) => request.method === "turn/start");
+    assert.isAtLeast(archive, 0, `the old thread is archived\n${log}`);
+    assert.isAbove(start, archive, `before the turn starts\n${log}`);
+    assert.notEqual(after[start].params.threadId, oldThread, log);
+  });
+
+  it("does not send the next message while the old thread still cannot be archived", async function () {
+    const server = createFakeCodexAppServer({ answers: ["OLD-ANSWER-4711"] });
+    const { panelId } = await afterFailedArchive(server);
+    const startsBefore = server.turnStarts().length;
+    let refused = "";
+    await sendTurn(panelId, "And now?", TIMEOUT_MS).catch((error) => {
+      refused = String(error);
+    });
+    assert.include(refused, "Could not reset this chat's earlier session");
+    assert.equal(server.turnStarts().length, startsBefore, "no turn started");
+  });
 });

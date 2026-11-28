@@ -385,12 +385,15 @@ describe("workflow: Claude Code turn host", function () {
     // The bridge still maps the chat to the session holding "417": the
     // second retry must drop it there, or start a fresh session.
     assert.isTrue(
-      again.invalidateCalls >= 1 || again.payload!.startedFresh,
+      again.invalidateCalls >= 1 || again.payload!.forceFreshSession,
       JSON.stringify(result.retries),
     );
     assert.equal(again.payload!.providerSessionId, "");
   });
-  it("starts a fresh Claude session for the next message while a failed reset is pending", async function () {
+  /** A Claude chat on its own paper whose Retry could not reset the session. */
+  async function afterFailedReset(
+    followUps: NonNullable<ExternalTurnScenario["followUps"]>,
+  ): Promise<ExternalTurnResult> {
     // Its own paper, as the failed-reset test above.
     const paper = await api.createPaperWithPdfFixture({
       title: "Claude pending reset fixture",
@@ -399,7 +402,7 @@ describe("workflow: Claude Code turn host", function () {
     const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
       .panelId;
     const firstRun = `claude-run-${Date.now()}`;
-    const result = await api
+    return api
       .exerciseClaudeBridgeTurn({
         panelId: ownPanelId,
         scenario: {
@@ -410,36 +413,54 @@ describe("workflow: Claude Code turn host", function () {
             steps: [start(`${firstRun}-r`), completed(`${firstRun}-r`, "1")],
             invalidateFails: true,
           },
-          // The user moves on with new messages instead of retrying, while
-          // the reset still waits to be retried.
-          followUps: [
-            {
-              question: "What number did you pick?",
-              steps: [
-                start(`${firstRun}-f1`),
-                completed(`${firstRun}-f1`, "?"),
-              ],
-            },
-            {
-              question: "And another one?",
-              steps: [
-                start(`${firstRun}-f2`),
-                completed(`${firstRun}-f2`, "5"),
-              ],
-            },
-          ],
+          followUps,
         },
       })
       .finally(() => api.cleanupFixture(paper));
+  }
+
+  it("finishes a failed reset before the next message, which then continues normally", async function () {
+    const run = `claude-run-${Date.now()}`;
+    const result = await afterFailedReset([
+      {
+        question: "What number did you pick?",
+        steps: [start(`${run}-f1`), completed(`${run}-f1`, "?")],
+      },
+      {
+        question: "And another one?",
+        steps: [start(`${run}-f2`), completed(`${run}-f2`, "5")],
+      },
+    ]);
+    const log = JSON.stringify(result.followUps);
     assert.isNull(result.retries[0].payload, JSON.stringify(result.retries));
-    const [first, second] = result.followUpPayloads;
-    const log = JSON.stringify(result.followUpPayloads);
-    // The bridge still holds the session with the replaced answer: the
-    // plugin names it, and the bridge, about to resume it, starts fresh.
-    assert.lengthOf(first?.pendingResetSessionIds || [], 1, log);
-    assert.isTrue(first?.startedFresh, log);
-    // The next message continues the session that replaced it (the bridge
-    // resumes its own mapping of the chat, now that session).
-    assert.isFalse(second?.startedFresh, log);
+    const [first, second] = result.followUps;
+    // The session with the replaced answer is dropped before the turn goes.
+    assert.isAtLeast(first.invalidateCalls, 1, log);
+    assert.isNotNull(first.payload, log);
+    assert.equal(first.payload!.providerSessionId, "", log);
+    // Nothing is left to reset: the next message continues that session.
+    assert.equal(second.invalidateCalls, 0, log);
+    assert.isNotNull(second.payload, log);
+    assert.isFalse(second.payload!.forceFreshSession, log);
+  });
+
+  it("does not send the next message while the failed reset still cannot reach the bridge", async function () {
+    const run = `claude-run-${Date.now()}`;
+    const result = await afterFailedReset([
+      {
+        question: "What number did you pick?",
+        steps: [start(`${run}-f1`), completed(`${run}-f1`, "?")],
+        invalidateFails: true,
+      },
+    ]);
+    const [first] = result.followUps;
+    const log = JSON.stringify(result.followUps);
+    assert.isAtLeast(first.invalidateCalls, 1, log);
+    assert.isNull(first.payload, log);
+    assert.include(
+      first.status,
+      "Could not reset this chat's earlier session",
+      log,
+    );
   });
 });

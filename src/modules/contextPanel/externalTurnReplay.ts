@@ -80,7 +80,12 @@ export type ExternalTurnScenario = {
    */
   retry?: ExternalTurnRetry | ExternalTurnRetry[];
   /** After the retries, the user sends these next messages, in order. */
-  followUps?: Array<{ question: string; steps: FakeBridgeStep[] }>;
+  followUps?: Array<{
+    question: string;
+    steps: FakeBridgeStep[];
+    /** The bridge's `/invalidate-session` answers 500 during this turn. */
+    invalidateFails?: boolean;
+  }>;
   /**
    * Sends the panel paper's PDF file with the turn, as the paper chip's
    * "PDF file" source does.
@@ -130,24 +135,20 @@ export type ExternalTurnResult = {
     status: string;
     payload: ExternalTurnResult["retryTurnPayload"];
   }>;
-  /** What each follow-up's `/run-turn` asked of the bridge (null: none). */
-  followUpPayloads: Array<{
-    providerSessionId: string;
-    forceFreshSession: boolean;
-    /** Sessions a pending reset names (metadata.pendingResetSessionIds). */
-    pendingResetSessionIds: string[];
-    /** Whether the fake bridge started a fresh session for this turn. */
-    startedFresh: boolean;
-    userText: string;
-  } | null>;
+  /**
+   * Each follow-up in order: its `/invalidate-session` calls, the panel's
+   * status line when it ended, and what its `/run-turn` asked of the bridge
+   * (null when it sent none).
+   */
+  followUps: Array<{
+    invalidateCalls: number;
+    status: string;
+    payload: ExternalTurnResult["retryTurnPayload"];
+  }>;
   /** What the last retry's `/run-turn` asked of the bridge; null without retry. */
   retryTurnPayload: {
     providerSessionId: string;
     forceFreshSession: boolean;
-    /** Sessions a pending reset names (metadata.pendingResetSessionIds). */
-    pendingResetSessionIds: string[];
-    /** Whether the fake bridge started a fresh session for this turn. */
-    startedFresh: boolean;
     userText: string;
   } | null;
   /** How many times the runtime's runTurn was called. */
@@ -166,8 +167,7 @@ type ScriptState = {
    * `/session-info` reports a new session id, as the real bridge does.
    */
   sessionGeneration: number;
-  /** For each `/run-turn`: whether the fake started a fresh session. */
-  startedFresh: boolean[];
+
   payload: Record<string, unknown> | null;
   localDocumentPaths: string[][];
   confirmationAnswers: Array<{ requestId: string; approved: boolean }>;
@@ -369,18 +369,8 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
     if (path === "/run-turn") {
       state.runTurnCalls += 1;
       state.payload = body;
-      // As the bridge adapter decides: fresh when the plugin says so, or
-      // when a pending reset names the session it would resume.
       const runMetadata = (body.metadata || {}) as Record<string, unknown>;
-      const conversationKey = String(body.conversationKey ?? "");
-      const pendingReset = Array.isArray(runMetadata.pendingResetSessionIds)
-        ? (runMetadata.pendingResetSessionIds as unknown[]).map(String)
-        : [];
-      const startsFresh =
-        runMetadata.forceFreshSession === true ||
-        pendingReset.includes(fakeSessionId(state, conversationKey));
-      if (startsFresh) state.sessionGeneration += 1;
-      state.startedFresh.push(startsFresh);
+      if (runMetadata.forceFreshSession === true) state.sessionGeneration += 1;
       const runtimeRequest = (body.runtimeRequest || {}) as {
         localDocuments?: unknown;
       };
@@ -473,7 +463,7 @@ export async function exerciseClaudeBridgeTurn(
     invalidateSessionCalls: 0,
     invalidateFails: false,
     sessionGeneration: 0,
-    startedFresh: [],
+
     localDocumentPaths: [],
     payload: null,
     confirmationAnswers: [],
@@ -611,12 +601,6 @@ export async function exerciseClaudeBridgeTurn(
         ? {
             providerSessionId: String(retried.providerSessionId ?? ""),
             forceFreshSession: metadata.forceFreshSession === true,
-            pendingResetSessionIds: Array.isArray(
-              metadata.pendingResetSessionIds,
-            )
-              ? (metadata.pendingResetSessionIds as unknown[]).map(String)
-              : [],
-            startedFresh: state.startedFresh.at(-1) === true,
             userText: String(retried.userText ?? ""),
           }
         : null;
@@ -627,10 +611,12 @@ export async function exerciseClaudeBridgeTurn(
       });
       state.invalidateFails = false;
     }
-    const followUpPayloads: ExternalTurnResult["followUpPayloads"] = [];
+    const followUps: ExternalTurnResult["followUps"] = [];
     for (const followUp of scenario.followUps || []) {
       const beforePayload = state.payload;
+      const invalidatedBefore = state.invalidateSessionCalls;
       state.steps = followUp.steps;
+      state.invalidateFails = Boolean(followUp.invalidateFails);
       setAbortController(key, createAbortController());
       await sendAgentTurn(
         { body, item, question: followUp.question },
@@ -640,21 +626,18 @@ export async function exerciseClaudeBridgeTurn(
       });
       const sent = state.payload !== beforePayload ? state.payload : null;
       const metadata = (sent?.metadata || {}) as Record<string, unknown>;
-      followUpPayloads.push(
-        sent
+      followUps.push({
+        invalidateCalls: state.invalidateSessionCalls - invalidatedBefore,
+        status: body.querySelector("#llm-status")?.textContent?.trim() || "",
+        payload: sent
           ? {
               providerSessionId: String(sent.providerSessionId ?? ""),
               forceFreshSession: metadata.forceFreshSession === true,
-              pendingResetSessionIds: Array.isArray(
-                metadata.pendingResetSessionIds,
-              )
-                ? (metadata.pendingResetSessionIds as unknown[]).map(String)
-                : [],
-              startedFresh: state.startedFresh.at(-1) === true,
               userText: String(sent.userText ?? ""),
             }
           : null,
-      );
+      });
+      state.invalidateFails = false;
     }
     const { token, headerNames } = scopeTokenFromPayload(state.payload);
     const scopeLiveAfterTurn = token
@@ -708,7 +691,7 @@ export async function exerciseClaudeBridgeTurn(
       },
       retryTurnPayload,
       retries,
-      followUpPayloads,
+      followUps,
       runtimeCalls,
       localDocumentPaths: state.localDocumentPaths,
     };
