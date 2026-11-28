@@ -346,4 +346,215 @@ describe("workflow: Claude Code turn host", function () {
     ]);
     assert.isFalse(result.scopeLiveAfterTurn, "the scope closes with the turn");
   });
+  it("does not let a retry after a failed session reset resume the replaced session", async function () {
+    // Its own paper, and last in the file: after a third retried chat in one
+    // run, this fixture's next turn is not saved (seen 2026-11-27, also with
+    // a plain retry here; the panel's own retry saves, live R4).
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude failed reset fixture",
+      pages: ["A disposable paper for a failed session reset."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const firstRun = `claude-run-${Date.now()}`;
+    const retryRun = `${firstRun}-retry`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(firstRun), completed(firstRun, "417")],
+          retry: [
+            // The bridge cannot drop the session: the retry must not go out.
+            {
+              steps: [start(`${retryRun}-1`), completed(`${retryRun}-1`, "1")],
+              invalidateFails: true,
+            },
+            // The user retries again once the bridge is back.
+            {
+              steps: [start(`${retryRun}-2`), completed(`${retryRun}-2`, "88")],
+            },
+          ],
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    const [failed, again] = result.retries;
+    assert.isNull(failed.payload, JSON.stringify(result.retries));
+    assert.isAtLeast(failed.invalidateCalls, 1);
+    assert.isNotNull(again.payload, JSON.stringify(result.retries));
+    // The bridge still maps the chat to the session holding "417": the
+    // second retry must drop it there, or start a fresh session.
+    assert.isTrue(
+      again.invalidateCalls >= 1 || again.payload!.forceFreshSession,
+      JSON.stringify(result.retries),
+    );
+    assert.equal(again.payload!.providerSessionId, "");
+  });
+  /** A Claude chat on its own paper whose Retry could not reset the session. */
+  async function afterFailedReset(
+    followUps: NonNullable<ExternalTurnScenario["followUps"]>,
+  ): Promise<ExternalTurnResult> {
+    // Its own paper, as the failed-reset test above.
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude pending reset fixture",
+      pages: ["A disposable paper for a pending session reset."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const firstRun = `claude-run-${Date.now()}`;
+    return api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(firstRun), completed(firstRun, "417")],
+          // An edit or retry whose reset the bridge refused.
+          retry: {
+            steps: [start(`${firstRun}-r`), completed(`${firstRun}-r`, "1")],
+            invalidateFails: true,
+          },
+          followUps,
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+  }
+
+  it("finishes a failed reset before the next message, which then continues normally", async function () {
+    const run = `claude-run-${Date.now()}`;
+    const result = await afterFailedReset([
+      {
+        question: "What number did you pick?",
+        steps: [start(`${run}-f1`), completed(`${run}-f1`, "?")],
+      },
+      {
+        question: "And another one?",
+        steps: [start(`${run}-f2`), completed(`${run}-f2`, "5")],
+      },
+    ]);
+    const log = JSON.stringify(result.followUps);
+    assert.isNull(result.retries[0].payload, JSON.stringify(result.retries));
+    const [first, second] = result.followUps;
+    // The session with the replaced answer is dropped before the turn goes.
+    assert.isAtLeast(first.invalidateCalls, 1, log);
+    assert.isNotNull(first.payload, log);
+    assert.equal(first.payload!.providerSessionId, "", log);
+    // Nothing is left to reset: the next message continues that session.
+    assert.equal(second.invalidateCalls, 0, log);
+    assert.isNotNull(second.payload, log);
+    assert.isFalse(second.payload!.forceFreshSession, log);
+  });
+
+  it("does not send the next message while the failed reset still cannot reach the bridge", async function () {
+    const run = `claude-run-${Date.now()}`;
+    const result = await afterFailedReset([
+      {
+        question: "What number did you pick?",
+        steps: [start(`${run}-f1`), completed(`${run}-f1`, "?")],
+        invalidateFails: true,
+      },
+    ]);
+    const [first] = result.followUps;
+    const log = JSON.stringify(result.followUps);
+    assert.isAtLeast(first.invalidateCalls, 1, log);
+    assert.isNull(first.payload, log);
+    assert.include(
+      first.status,
+      "Could not reset this chat's earlier session",
+      log,
+    );
+  });
+  it("does not let a keep-warm request bring back a session a reset dropped", async function () {
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude retain race fixture",
+      pages: ["A disposable paper for a retain during a reset."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const run = `claude-run-${Date.now()}`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(run), completed(run, "417")],
+          retainDuringReset: true,
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    const race = result.retainRace!;
+    assert.isTrue(race.resetOk, JSON.stringify(race));
+    // The session with the replaced answer is gone at the bridge and in the
+    // chat, whichever ran first.
+    assert.isNull(race.bridgeMapping, JSON.stringify(race));
+    assert.equal(race.savedSessionId, "", JSON.stringify(race));
+  });
+  it("does not offer a session whose drop is still pending to keep warm", async function () {
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude pending drop fixture",
+      pages: ["A disposable paper for a pending session drop."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const run = `claude-run-${Date.now()}`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(run), completed(run, "417")],
+          // The bridge did not confirm the drop: the chat still names it.
+          retry: {
+            steps: [start(`${run}-r`), completed(`${run}-r`, "1")],
+            invalidateFails: true,
+          },
+          retainAfterRetries: true,
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    assert.isNull(result.retries[0].payload, JSON.stringify(result.retries));
+    assert.equal(
+      result.retainHint,
+      "",
+      "no hint for the session on its way out",
+    );
+  });
+  it("starts fresh and does not keep warm while the chat's session waits to be dropped", async function () {
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude pending drop fresh-start fixture",
+      pages: ["A disposable paper for a pending session drop."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const run = `claude-run-${Date.now()}`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(run), completed(run, "417")],
+          // A turn deletion's drop the bridge never confirmed.
+          plantPendingDrop: true,
+          retainAfterRetries: true,
+          followUps: [
+            {
+              question: "What did you pick?",
+              steps: [start(`${run}-f`), completed(`${run}-f`, "?")],
+            },
+          ],
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    // The bridge would warm or resume its own mapping of that session.
+    assert.isFalse(result.retainReachedBridge, "no keep-warm for it");
+    const [next] = result.followUps;
+    assert.isNotEmpty(result.plantedSession || "");
+    assert.isNotNull(next.payload, JSON.stringify(result.followUps));
+    // Whether the drop finished first or the turn started fresh, the next
+    // message never resumes the session that was being dropped.
+    assert.notEqual(
+      next.resumed,
+      result.plantedSession,
+      JSON.stringify(result.followUps),
+    );
+  });
 });

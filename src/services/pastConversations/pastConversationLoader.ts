@@ -37,9 +37,7 @@ import {
   type PastConversationSearchFilters,
 } from "./pastConversationSearch";
 import { collapseWhitespace } from "../../core/values";
-
-/** Most stored messages read from one past chat (the newest ones). */
-export const PAST_CHAT_LOAD_MESSAGE_LIMIT = 400;
+import type { StoredMessageText } from "../../shared/conversationMessageSql";
 
 /** The catalog facts a past chat is checked against. */
 export type PastConversationCatalogEntry = {
@@ -66,6 +64,18 @@ export type PastConversationSource = {
     conversationKey: number;
     limit?: number;
   }): Promise<ReadonlyArray<Record<string, unknown>>>;
+  /**
+   * Every message of a chat as text, oldest first, before `beforeTimestamp`
+   * when given. A past chat is read whole (past_chat_read pages through it,
+   * and the attached-chat block has its own token budget), so a long chat's
+   * oldest messages stay reachable; as text only, a read does not carry the
+   * chat's screenshots, attachments or context data.
+   */
+  loadMessageTexts(target: {
+    system: ConversationSystem;
+    conversationKey: number;
+    beforeTimestamp?: number;
+  }): Promise<ReadonlyArray<StoredMessageText>>;
   isPendingDeletion(conversationKey: number): boolean | Promise<boolean>;
   resolvePaperTitle?(paperItemID: number): string | undefined;
   /**
@@ -117,6 +127,11 @@ export const defaultPastConversationSource: PastConversationSource = {
     return (await conversationRepository.loadMessages(target)) as ReadonlyArray<
       Record<string, unknown>
     >;
+  },
+  async loadMessageTexts(target) {
+    const { conversationRepository } =
+      await import("../../core/conversations/repository");
+    return conversationRepository.loadMessageTexts(target);
   },
   async isPendingDeletion(conversationKey) {
     const { pendingDeletionStore } =
@@ -205,16 +220,14 @@ export async function loadPastConversation(
       collapseWhitespace(entry.title || "") ||
       collapseWhitespace(ref.title) ||
       `Conversation ${ref.conversationKey}`;
-    const stored = await source.loadMessages({
-      system: ref.system,
-      conversationKey: ref.conversationKey,
-      limit: PAST_CHAT_LOAD_MESSAGE_LIMIT,
-    });
-    const before = options.beforeTimestamp;
     const messages = cleanPastConversationMessages(
-      before === undefined
-        ? stored
-        : stored.filter((row) => Number(row.timestamp) < before),
+      await source.loadMessageTexts({
+        system: ref.system,
+        conversationKey: ref.conversationKey,
+        ...(options.beforeTimestamp !== undefined
+          ? { beforeTimestamp: options.beforeTimestamp }
+          : {}),
+      }),
     );
     const paperItemID = entry.paperItemID || ref.paperItemID;
     const paperLabel =
@@ -224,7 +237,7 @@ export async function loadPastConversation(
             : "") || "Paper chat"
         : "Library chat";
     return {
-      status: "ok",
+      status: "ok" as const,
       ref,
       id,
       title,
@@ -232,7 +245,6 @@ export async function loadPastConversation(
       date: isoDate(entry.lastActivityAt || entry.createdAt || 0),
       paperLabel,
       messages,
-      tokenEstimate: estimatePastConversationTokens(messages),
     };
   } catch {
     return unavailable("error");
@@ -268,15 +280,19 @@ export function renderPastChatSections(
   return results.map((result) => {
     if (result.status !== "ok")
       return formatPastChatUnavailableSection(result, { readTool: true });
+    // Sized here, where it decides full text or an outline: past_chat_read
+    // loads chats too and has no use for it.
+    const tokenEstimate = estimatePastConversationTokens(result);
     if (
-      result.tokenEstimate <= PAST_CHAT_FULL_TEXT_MAX_TOKENS &&
-      used + result.tokenEstimate <= budget
+      tokenEstimate <= PAST_CHAT_FULL_TEXT_MAX_TOKENS &&
+      used + tokenEstimate <= budget
     ) {
-      used += result.tokenEstimate;
+      used += tokenEstimate;
       return formatPastConversationFull(result);
     }
     return formatPastConversationOutline(result, {
       maxTokens: outlineMaxTokens,
+      tokenEstimate,
     });
   });
 }

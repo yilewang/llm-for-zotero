@@ -227,7 +227,7 @@ describe("workflow: runtime prompt parity", function () {
     assertSharedWithNative(result, ["visibleTurnContext", "turnMaterial"]);
   });
 
-  it("custom instructions reach Claude Code and Antigravity, and the skill inventory with them", async function () {
+  it("custom instructions and the skill inventory reach Claude Code and Antigravity where each keeps them current", async function () {
     const custom = "Always answer in exactly three sentences.";
     const result = await render("customInstructions", {
       userText: "Summarize attention.",
@@ -240,13 +240,20 @@ describe("workflow: runtime prompt parity", function () {
     // can change between turns, so they go with each turn.
     assert.include(result.runtimes.antigravity.turn, custom);
     assert.notInclude(result.runtimes.antigravity.standing, custom);
-    for (const system of ["claude_code", "antigravity"] as const) {
-      assert.include(
-        result.runtimes[system].standing,
-        "Installed skill inventory",
-        system,
-      );
-    }
+    // Claude Code re-sends its standing text every turn; agy keeps the one
+    // its session started with, so a skill added later goes with the turn.
+    assert.include(
+      result.runtimes.claude_code.standing,
+      "Installed skill inventory",
+    );
+    assert.include(
+      result.runtimes.antigravity.turn,
+      "Installed skill inventory",
+    );
+    assert.notInclude(
+      result.runtimes.antigravity.standing,
+      "Installed skill inventory",
+    );
     assertDeclaredBlocksSent(result);
     assertSharedWithNative(result, ["customInstructions", "skillInventory"]);
   });

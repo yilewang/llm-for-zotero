@@ -26,7 +26,10 @@ export type RuntimeHistory = {
   entries: RuntimeHistoryEntry[];
   /** Earlier messages left out because they did not fit the budget. */
   omitted: number;
-  /** With `omitted`: this chat's id, which past_chat_read opens. */
+  /**
+   * With `omitted`, when the turn has past_chat_read: this chat's id, which
+   * that tool opens.
+   */
   chatId?: string;
 };
 
@@ -62,9 +65,16 @@ function historyBudgetTokens(request: AgentRuntimeRequest): number | undefined {
   }
 }
 
-/** The turn's history that fits the model's budget, newest kept first. */
+/**
+ * The turn's history that fits the model's budget, newest kept first.
+ * `pastChatReadAvailable`: the turn has the Zotero tools. The note on
+ * omitted messages points to past_chat_read only then, and only when the
+ * turn carries its message time, which past_chat_read needs to open this
+ * conversation (metadata.sourceMessageTimestamp).
+ */
 export function selectRuntimeHistory(
   request: AgentRuntimeRequest,
+  options: { pastChatReadAvailable: boolean },
 ): RuntimeHistory {
   const all = (Array.isArray(request.history) ? request.history : [])
     .map((message) => ({
@@ -86,9 +96,11 @@ export function selectRuntimeHistory(
     used += cost;
     start -= 1;
   }
-  const classified = start
-    ? classifyConversationKey(request.conversationKey)
-    : null;
+  const readable =
+    options.pastChatReadAvailable &&
+    Number(request.metadata?.sourceMessageTimestamp) > 0;
+  const classified =
+    start && readable ? classifyConversationKey(request.conversationKey) : null;
   return {
     entries: all.slice(start),
     omitted: start,
@@ -114,15 +126,22 @@ export function renderOmittedHistoryNote(
     : `(${count} did not fit and are not shown.)`;
 }
 
+/** Whether a history has anything to tell a fresh session. */
+export function hasRuntimeHistory(history: RuntimeHistory): boolean {
+  return history.entries.length > 0 || history.omitted > 0;
+}
+
 /**
  * The history as a transcript for a runtime's first prompt, worded as the
  * Claude Code bridge words its fallback history; "" when there is none.
+ * When no message fits, the note on the omitted ones still goes, so the
+ * session can read them with past_chat_read.
  */
 export function renderRuntimeHistoryTranscript(
   history: RuntimeHistory,
   reason: string,
 ): string {
-  if (!history.entries.length) return "";
+  if (!hasRuntimeHistory(history)) return "";
   return [
     `Local Zotero conversation history for continuity because ${reason}:`,
     ...(history.omitted

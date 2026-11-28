@@ -31,6 +31,18 @@ export type FakeCodexAppServer = {
   turnText: (request: FakeCodexRequest) => string;
   /** How many children were launched. */
   launches: () => number;
+  /** While true, `thread/archive` fails, as when codex cannot be reached. */
+  setArchiveFails: (fails: boolean) => void;
+  /** `thread/archive` answers after this many ms (0: at once). */
+  setArchiveDelayMs: (ms: number) => void;
+  /** While true, a started turn does not finish until `releaseTurns`. */
+  setHoldTurns: (hold: boolean) => void;
+  /** Finishes the turns held so far. */
+  releaseTurns: () => void;
+  /** The next `count` thread starts fail, as when codex cannot start one. */
+  failThreadStarts: (count: number) => void;
+  /** `turn/interrupt` answers after this many ms (0: at once). */
+  setInterruptDelayMs: (ms: number) => void;
 };
 
 const USER_AGENT = "codex_cli_rs/0.164.0 (Mac OS 15.0.0; arm64) workflow-test";
@@ -45,6 +57,12 @@ export function createFakeCodexAppServer(script: {
   let threads = 0;
   let turns = 0;
   let launches = 0;
+  let archiveFails = false;
+  let archiveDelayMs = 0;
+  let holdTurns = false;
+  let failingThreadStarts = 0;
+  let interruptDelayMs = 0;
+  const heldTurns: Array<() => void> = [];
 
   const answerFor = (index: number) =>
     script.answers[Math.min(index, script.answers.length - 1)] || "";
@@ -67,6 +85,11 @@ export function createFakeCodexAppServer(script: {
         return;
       case "thread/start":
       case "thread/fork": {
+        if (method === "thread/start" && failingThreadStarts > 0) {
+          failingThreadStarts -= 1;
+          fail("could not start a thread");
+          return;
+        }
         threads += 1;
         writers.set(`fake-thread-${threads}`, child);
         respond({
@@ -82,7 +105,7 @@ export function createFakeCodexAppServer(script: {
         const text = answerFor(turns - 1);
         respond({ turn: { id: turnId, status: "inProgress" } });
         // After the response, as codex does: the turn's events.
-        setTimeout(() => {
+        const finish = () => {
           child.emit({
             method: "turn/started",
             params: { threadId, turn: { id: turnId, status: "inProgress" } },
@@ -111,24 +134,38 @@ export function createFakeCodexAppServer(script: {
             method: "turn/completed",
             params: { threadId, turn: { id: turnId, status: "completed" } },
           });
-        }, 20);
+        };
+        if (holdTurns) heldTurns.push(finish);
+        else setTimeout(finish, 20);
         return;
       }
       case "thread/archive": {
         const threadId = String(params.threadId || "");
-        const writer = writers.get(threadId);
-        if (!writer) {
-          fail(`no rollout found for thread id ${threadId}`);
-          return;
-        }
-        if (writer !== child) {
-          fail(`thread ${threadId} already has an active writer`);
-          return;
-        }
-        writers.delete(threadId);
-        respond({});
+        const answer = () => {
+          if (archiveFails) {
+            fail("codex app-server is not answering");
+            return;
+          }
+          const writer = writers.get(threadId);
+          if (!writer) {
+            fail(`no rollout found for thread id ${threadId}`);
+            return;
+          }
+          if (writer !== child) {
+            fail(`thread ${threadId} already has an active writer`);
+            return;
+          }
+          writers.delete(threadId);
+          respond({});
+        };
+        if (archiveDelayMs) setTimeout(answer, archiveDelayMs);
+        else answer();
         return;
       }
+      case "turn/interrupt":
+        if (interruptDelayMs) setTimeout(() => respond({}), interruptDelayMs);
+        else respond({});
+        return;
       case "permissionProfile/list":
         // The built-in profiles a current codex lists.
         respond({
@@ -168,5 +205,23 @@ export function createFakeCodexAppServer(script: {
         .filter(Boolean)
         .join("\n"),
     launches: () => launches,
+    setArchiveFails: (fails) => {
+      archiveFails = fails;
+    },
+    setArchiveDelayMs: (ms) => {
+      archiveDelayMs = ms;
+    },
+    setHoldTurns: (hold) => {
+      holdTurns = hold;
+    },
+    releaseTurns: () => {
+      for (const finish of heldTurns.splice(0)) finish();
+    },
+    failThreadStarts: (count) => {
+      failingThreadStarts = count;
+    },
+    setInterruptDelayMs: (ms) => {
+      interruptDelayMs = ms;
+    },
   };
 }

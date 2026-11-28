@@ -578,6 +578,11 @@ export class CodexAppServerProcess {
     return this.connection.onActivity(handler);
   }
 
+  /** Whether the app-server connection has closed. */
+  isClosed(): boolean {
+    return this.connection.isClosed();
+  }
+
   onClose(handler: (reason?: string) => void): () => void {
     return this.connection.onClose(handler);
   }
@@ -1162,6 +1167,12 @@ export function waitForCodexAppServerTurnCompletion(params: {
   }) => void | Promise<void>;
   signal?: AbortSignal;
   interruptOnAbort?: boolean;
+  /**
+   * Called when a stop sends `turn/interrupt`; the result is called once the
+   * interrupt settled. The caller keeps the conversation's turn in flight
+   * that long: codex runs on the thread until then.
+   */
+  holdWhileInterrupting?: () => () => void;
   cacheKey?: string;
   processOptions?: CodexAppServerProcessOptions;
   timeoutMs?: number;
@@ -1514,6 +1525,8 @@ export function waitForCodexAppServerTurnCompletion(params: {
         // The interrupted turn stays live on the server until the interrupt
         // answers, so it keeps its own hold for the decision below.
         const releaseHold = proc.holdActiveTurn();
+        const releaseCaller = params.holdWhileInterrupting?.();
+        let interruptFailed = false;
         void proc
           .sendRequest(
             "turn/interrupt",
@@ -1531,8 +1544,19 @@ export function waitForCodexAppServerTurnCompletion(params: {
               ),
             );
             retireProcess();
+            interruptFailed = true;
           })
-          .finally(releaseHold);
+          .finally(() => {
+            releaseHold();
+            // A failed interrupt is no proof the turn stopped: the retired
+            // process may still run it for a sibling's sake. The caller's
+            // hold lasts until that process has closed.
+            if (interruptFailed && !proc.isClosed()) {
+              proc.onClose(() => releaseCaller?.());
+            } else {
+              releaseCaller?.();
+            }
+          });
       } else {
         retireProcess();
       }

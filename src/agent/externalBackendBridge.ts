@@ -1,6 +1,9 @@
 import { fnv1a32Raw } from "../utils/fnv1a";
 import { appLogger } from "../core/logging";
-import { selectRuntimeHistory } from "./context/runtimeHistory";
+import {
+  hasRuntimeHistory,
+  selectRuntimeHistory,
+} from "./context/runtimeHistory";
 import { createClaudeTurnStageTracker } from "./claudeTurnStages";
 import { config } from "../../package.json";
 import {
@@ -25,7 +28,10 @@ import {
 } from "../claudeCode/bridgeProcess";
 import { buildScopedConversationKey } from "../shared/conversationScopedKey";
 import { getClaudeConversationSummary } from "../claudeCode/store";
-import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
+import {
+  hasPendingEmptyClaudeCleanupJob,
+  hasPendingSessionCleanupJob,
+} from "../core/conversations/conversationCleanupJobs";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
 import type { ConversationSystem } from "../shared/types";
 import { getClaudePermissionModePref } from "../claudeCode/prefs";
@@ -446,6 +452,29 @@ function isBridgeDebugEnabled(): boolean {
   return false;
 }
 
+/**
+ * Whether the bridge may still hold the chat's current session though its
+ * drop is pending (a reset or a deleted turn whose bridge reply was lost).
+ * The bridge resumes its own mapping without a hint, so a turn must start
+ * fresh and keep-warm must not run then. Fails closed.
+ */
+async function isClaudeSessionDropPending(
+  conversationKey: number,
+): Promise<boolean> {
+  try {
+    const summary = await getClaudeConversationSummary(conversationKey);
+    const providerSessionId = summary?.providerSessionId?.trim();
+    if (!providerSessionId) return false;
+    return await hasPendingSessionCleanupJob({
+      conversationKey,
+      operation: "claude_invalidate",
+      providerSessionId,
+    });
+  } catch {
+    return true;
+  }
+}
+
 async function resolveClaudeProviderSessionHint(
   conversationKey: number,
   scope?: BridgeScope,
@@ -455,6 +484,16 @@ async function resolveClaudeProviderSessionHint(
   );
   const providerSessionId = summary?.providerSessionId?.trim();
   if (!summary || !providerSessionId) return undefined;
+  // A session whose drop is still pending (a reset or a deleted turn whose
+  // bridge reply was lost) is never handed back to resume or keep warm.
+  if (
+    await hasPendingSessionCleanupJob({
+      conversationKey,
+      operation: "claude_invalidate",
+      providerSessionId,
+    }).catch(() => true)
+  )
+    return undefined;
   const expectedScopedConversationKey = buildScopedConversationKey(
     conversationKey,
     scope,
@@ -1647,6 +1686,8 @@ async function buildBridgeRuntimeRequest(
   request: AgentRuntimeRequest,
   /** The prompt's turn blocks (renderExternalRuntimePrompt). */
   turnContext: string,
+  /** The turn has the Zotero tools (past_chat_read among them). */
+  offersZoteroTools: boolean,
 ): Promise<BridgeRuntimeRequest> {
   const joinPath = (base: string, segment: string): string => {
     if (!base) return segment;
@@ -1828,7 +1869,9 @@ async function buildBridgeRuntimeRequest(
           : undefined,
     }));
 
-  const history = selectRuntimeHistory(request);
+  const history = selectRuntimeHistory(request, {
+    pastChatReadAvailable: offersZoteroTools,
+  });
   const screenshots = Array.isArray(request.screenshots)
     ? request.screenshots.filter(
         (entry): entry is string =>
@@ -1863,7 +1906,7 @@ async function buildBridgeRuntimeRequest(
     attachments: attachments.length ? attachments : undefined,
     screenshots: screenshots.length ? screenshots : undefined,
     // The bridge replays it only when the Claude session cannot be resumed.
-    ...(history.entries.length
+    ...(hasRuntimeHistory(history)
       ? {
           history: history.entries,
           ...(history.omitted
@@ -2378,6 +2421,7 @@ export function createExternalBackendBridgeRuntime(options: {
       if (request.conversationKey <= 0) return request;
       try {
         if (
+          !(await isClaudeSessionDropPending(request.conversationKey)) &&
           !(await hasPendingEmptyClaudeCleanupJob({
             conversationKey: request.conversationKey,
             ...(conversationInstanceID
@@ -2389,6 +2433,8 @@ export function createExternalBackendBridgeRuntime(options: {
         // Clear may have had to defer an empty-session invalidation while
         // the catalog had no provider ID. Do not resume the old bridge
         // mapping; the adapter will invalidate it before starting fresh.
+        // (A reset a Retry or Edit could not finish is finished before the
+        // chat's next send: runtimeSessionReset.finishPendingRuntimeSessionResets.)
       } catch {
         // A pending empty-session cleanup is a deletion boundary, not an
         // advisory hint. If the cleanup table cannot be read, fail closed
@@ -2401,7 +2447,12 @@ export function createExternalBackendBridgeRuntime(options: {
         metadata: { ...requestMetadata, forceFreshSession: true },
       };
     },
-    prepare: async ({ request, recordProfiling, writeAllowed }) => {
+    prepare: async ({
+      request,
+      offersZoteroTools,
+      recordProfiling,
+      writeAllowed,
+    }) => {
       const bridgeUrl = normalizeBaseUrl(getBridgeUrl());
       if (!bridgeUrl) {
         throw new Error(
@@ -2420,6 +2471,7 @@ export function createExternalBackendBridgeRuntime(options: {
       const runtimeRequest = await buildBridgeRuntimeRequest(
         request,
         runtimePrompt.turn,
+        offersZoteroTools,
       );
       await recordProfiling("frontend.bridge_runtime_request.ready");
       const scope = resolveBridgeScope(request);
@@ -2885,19 +2937,29 @@ export function createExternalBackendBridgeRuntime(options: {
       if (!bridgeUrl) {
         return null;
       }
-      return updateExternalRuntimeRetention({
-        baseUrl: bridgeUrl,
-        conversationKey,
-        scope,
-        mountId,
-        retain,
-        probeId,
-        providerSessionId:
-          providerSessionId ||
-          (retain
-            ? await resolveClaudeProviderSessionHint(conversationKey, scope)
-            : undefined),
-      });
+      const send = async () => {
+        // A session on its way out is not kept warm; the bridge would warm
+        // its own mapping of it even without a hint.
+        if (retain && (await isClaudeSessionDropPending(conversationKey)))
+          return null;
+        return updateExternalRuntimeRetention({
+          baseUrl: bridgeUrl,
+          conversationKey,
+          scope,
+          mountId,
+          retain,
+          probeId,
+          providerSessionId:
+            providerSessionId ||
+            (retain
+              ? await resolveClaudeProviderSessionHint(conversationKey, scope)
+              : undefined),
+        });
+      };
+      // A retain can map the chat's session at the bridge again. Under the
+      // conversation's lock it serializes with a reset: a reset after it
+      // drops what it mapped, and a retain after a reset finds no session.
+      return retain ? withConversationWriteLock(conversationKey, send) : send();
     },
     invalidateSession: ({ conversationKey, scope, metadata }) =>
       withConversationWriteLock(conversationKey, () =>

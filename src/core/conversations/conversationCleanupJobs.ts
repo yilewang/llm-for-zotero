@@ -44,7 +44,16 @@ export type ConversationCleanupJob = {
   nextAttemptAt: number;
   lastError?: string;
   providerCleanupState: "pending" | "attention_required";
+  /**
+   * Why the job exists. "resend_reset": a Retry or Edit had to drop this
+   * session before re-sending, so the chat's next send finishes it first
+   * (runtimeSessionReset.finishPendingRuntimeSessionResets). Unset: any
+   * other cleanup (a deleted chat, a replaced thread), the worker's alone.
+   */
+  purpose?: ConversationCleanupJobPurpose;
 };
+
+export type ConversationCleanupJobPurpose = "resend_reset";
 
 type CleanupJobRow = Record<string, unknown>;
 
@@ -185,6 +194,9 @@ function rowToJob(row: CleanupJobRow): ConversationCleanupJob | null {
       row.provider_cleanup_state === "attention_required"
         ? "attention_required"
         : "pending",
+    ...(row.purpose === "resend_reset"
+      ? { purpose: "resend_reset" as const }
+      : {}),
   };
 }
 
@@ -212,7 +224,8 @@ export async function initConversationCleanupJobs(): Promise<void> {
         attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt_at INTEGER NOT NULL,
         last_error TEXT,
-        provider_cleanup_state TEXT NOT NULL DEFAULT 'pending'
+        provider_cleanup_state TEXT NOT NULL DEFAULT 'pending',
+        purpose TEXT
       )`,
   )
     .then(async () => {
@@ -225,6 +238,7 @@ export async function initConversationCleanupJobs(): Promise<void> {
         "provider_scope_id TEXT",
         "provider_scope_label TEXT",
         "provider_cleanup_state TEXT NOT NULL DEFAULT 'pending'",
+        "purpose TEXT",
       ]) {
         try {
           await queryCleanupDb(
@@ -287,6 +301,8 @@ export async function enqueueConversationCleanupJob(params: {
   paperItemID?: number;
   providerScope?: ConversationCleanupProviderScope;
   providerSessionId: string;
+  /** Why the job exists (ConversationCleanupJob.purpose). */
+  purpose?: ConversationCleanupJobPurpose;
 }): Promise<ConversationCleanupJob | null> {
   const db = getZoteroDb();
   const conversationKey = positiveIntOrZero(params.conversationKey);
@@ -314,6 +330,25 @@ export async function enqueueConversationCleanupJob(params: {
 }
 
 /**
+ * The same obligation, now also a reset a re-send waits for: an existing job
+ * (an ordinary archive of the same session, or a concurrent insert that won)
+ * takes the requested purpose.
+ */
+async function withRequestedPurpose(
+  db: NonNullable<ReturnType<typeof getZoteroDb>>,
+  job: ConversationCleanupJob,
+  purpose: ConversationCleanupJobPurpose | undefined,
+): Promise<ConversationCleanupJob> {
+  if (!purpose || job.purpose === purpose) return job;
+  await queryCleanupDb(
+    db,
+    `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE} SET purpose = ? WHERE id = ?`,
+    [purpose, job.id],
+  );
+  return { ...job, purpose };
+}
+
+/**
  * Insert a provider cleanup job using the caller's active transaction. The
  * cleanup-jobs table must already have been initialized before the outer
  * transaction starts; this helper deliberately performs no DDL and opens no
@@ -331,6 +366,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
   paperItemID?: number;
   providerScope?: ConversationCleanupProviderScope;
   providerSessionId: string;
+  /** Why the job exists (ConversationCleanupJob.purpose). */
+  purpose?: ConversationCleanupJobPurpose;
 }): Promise<ConversationCleanupJob | null> {
   const db = getZoteroDb();
   const conversationKey = positiveIntOrZero(params.conversationKey);
@@ -352,7 +389,7 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
             conversation_kind, library_id, paper_item_id,
             provider_scope_type, provider_scope_id, provider_scope_label,
-            attempts, next_attempt_at, last_error, provider_cleanup_state
+            attempts, next_attempt_at, last_error, provider_cleanup_state, purpose
      FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
      WHERE operation = ? AND system = ? AND conversation_key = ?
        AND provider_session_id = ? AND instance_id = ?
@@ -374,7 +411,7 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     if (!requestedInstanceID && current.instanceID) {
       throw new Error("Provider cleanup job identity is required");
     }
-    return current;
+    return withRequestedPurpose(db, current, params.purpose);
   }
   const job: ConversationCleanupJob = {
     id: generateJobID(),
@@ -390,6 +427,7 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
     attempts: 0,
     nextAttemptAt: Date.now(),
     providerCleanupState: "pending",
+    ...(params.purpose ? { purpose: params.purpose } : {}),
   };
   try {
     await queryCleanupDb(
@@ -397,8 +435,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
       `INSERT INTO ${CONVERSATION_CLEANUP_JOBS_TABLE}
         (id, operation, system, conversation_key, instance_id, conversation_kind, library_id, paper_item_id,
          provider_scope_type, provider_scope_id, provider_scope_label,
-         provider_session_id, attempts, next_attempt_at, last_error, provider_cleanup_state)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending')`,
+         provider_session_id, attempts, next_attempt_at, last_error, provider_cleanup_state, purpose)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'pending', ?)`,
       [
         job.id,
         job.operation,
@@ -414,6 +452,7 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
         job.providerSessionId,
         job.attempts,
         job.nextAttemptAt,
+        job.purpose || null,
       ],
     );
   } catch (error) {
@@ -423,7 +462,7 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
       `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
               conversation_kind, library_id, paper_item_id,
               provider_scope_type, provider_scope_id, provider_scope_label,
-              attempts, next_attempt_at, last_error, provider_cleanup_state
+              attempts, next_attempt_at, last_error, provider_cleanup_state, purpose
        FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
        WHERE operation = ? AND system = ? AND conversation_key = ?
          AND provider_session_id = ? AND instance_id = ?
@@ -437,7 +476,8 @@ export async function enqueueConversationCleanupJobInTransaction(params: {
       ],
     )) as CleanupJobRow[] | undefined;
     if (!raced?.[0]) throw error;
-    return rowToJob(raced[0]);
+    const winner = rowToJob(raced[0]);
+    return winner ? withRequestedPurpose(db, winner, params.purpose) : null;
   }
   return job;
 }
@@ -493,13 +533,75 @@ export async function listDueConversationCleanupJobs(
     `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
             conversation_kind, library_id, paper_item_id,
             provider_scope_type, provider_scope_id, provider_scope_label,
-            attempts, next_attempt_at, last_error, provider_cleanup_state
+            attempts, next_attempt_at, last_error, provider_cleanup_state, purpose
      FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
      WHERE next_attempt_at <= ?
        AND (provider_cleanup_state = 'pending'
             OR (? = 1 AND provider_cleanup_state = 'attention_required'))
      ORDER BY next_attempt_at ASC, id ASC`,
     [now, options.includeAttentionRequired ? 1 : 0],
+  )) as CleanupJobRow[] | undefined;
+  return (rows || [])
+    .map(rowToJob)
+    .filter((job): job is ConversationCleanupJob => Boolean(job));
+}
+
+/**
+ * Whether a cleanup to drop exactly this session of the conversation is still
+ * pending, whatever its purpose (a reset, a deleted turn). Such a session is
+ * on its way out: it must not be offered to the provider to resume or keep
+ * warm, even while the chat still records it as the job's witness.
+ */
+export async function hasPendingSessionCleanupJob(params: {
+  conversationKey: number;
+  operation: "codex_archive" | "claude_invalidate";
+  providerSessionId: string;
+}): Promise<boolean> {
+  const db = getZoteroDb();
+  const conversationKey = positiveIntOrZero(params.conversationKey);
+  const sessionId = String(params.providerSessionId || "").trim();
+  if (!db || !conversationKey || !sessionId) return false;
+  await initConversationCleanupJobs();
+  const rows = (await queryCleanupDb(
+    db,
+    `SELECT 1 FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+     WHERE operation = ? AND conversation_key = ? AND provider_session_id = ?
+       AND (provider_cleanup_state = 'pending'
+            OR provider_cleanup_state = 'attention_required')
+     LIMIT 1`,
+    [params.operation, conversationKey, sessionId],
+  )) as unknown[] | undefined;
+  return Boolean(rows?.length);
+}
+
+/**
+ * A conversation's pending resend resets (purpose "resend_reset": a Retry or
+ * Edit whose reset did not reach the provider), whatever their retry delay:
+ * the next turn of the conversation finishes them first
+ * (runtimeSessionReset.finishPendingRuntimeSessionResets).
+ */
+export async function listPendingSessionCleanupJobs(params: {
+  conversationKey: number;
+  operation: "codex_archive" | "claude_invalidate";
+}): Promise<ConversationCleanupJob[]> {
+  const db = getZoteroDb();
+  const conversationKey = positiveIntOrZero(params.conversationKey);
+  if (!db || !conversationKey) return [];
+  await initConversationCleanupJobs();
+  const rows = (await queryCleanupDb(
+    db,
+    `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
+            conversation_kind, library_id, paper_item_id,
+            provider_scope_type, provider_scope_id, provider_scope_label,
+            attempts, next_attempt_at, last_error, provider_cleanup_state, purpose
+     FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+     WHERE operation = ? AND conversation_key = ?
+       AND provider_session_id != ''
+       AND purpose = 'resend_reset'
+       AND (provider_cleanup_state = 'pending'
+            OR provider_cleanup_state = 'attention_required')
+     ORDER BY id ASC`,
+    [params.operation, conversationKey],
   )) as CleanupJobRow[] | undefined;
   return (rows || [])
     .map(rowToJob)
@@ -543,7 +645,7 @@ async function getConversationCleanupJobByID(
     `SELECT id, operation, system, conversation_key, instance_id, provider_session_id,
             conversation_kind, library_id, paper_item_id,
             provider_scope_type, provider_scope_id, provider_scope_label,
-            attempts, next_attempt_at, last_error, provider_cleanup_state
+            attempts, next_attempt_at, last_error, provider_cleanup_state, purpose
      FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
      WHERE id = ?
      LIMIT 1`,
@@ -612,6 +714,14 @@ export async function failConversationCleanupJob(
 export function performConversationCleanupJobAttempt(
   job: ConversationCleanupJob,
   operation: () => Promise<void>,
+  options: {
+    /**
+     * Attempts now even inside the retry delay a failed attempt set. For an
+     * attempt the user asked for (a Retry): the delay paces the background
+     * scheduler, and the user's action must not wait out a failure.
+     */
+    ignoreRetryDelay?: boolean;
+  } = {},
 ): Promise<ConversationCleanupJobAttemptResult> {
   const existing = cleanupJobAttempts.get(job.id);
   if (existing) return existing;
@@ -622,7 +732,7 @@ export function performConversationCleanupJobAttempt(
     // retry deadline with stale attempts/nextAttemptAt values.
     const current = await getConversationCleanupJobByID(job.id);
     if (!current) return { ok: true };
-    if (current.nextAttemptAt > Date.now()) {
+    if (!options.ignoreRetryDelay && current.nextAttemptAt > Date.now()) {
       return {
         ok: false,
         deferred: true,

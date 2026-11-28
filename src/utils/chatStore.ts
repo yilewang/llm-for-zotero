@@ -26,6 +26,9 @@ import {
 } from "../shared/conversationKeySpace";
 import {
   buildLatestStoredMessagesQuery,
+  buildStoredMessageTextsQuery,
+  readStoredMessageTexts,
+  type StoredMessageText,
   buildUserRowExistsQuery,
   latestUserRowFilter,
   storedMessageDisplayOrderSql,
@@ -2124,6 +2127,31 @@ async function sweepWebchatSessionConversations(): Promise<void> {
       `Failed to sweep webchat session conversations: ${String(err)}`,
     );
   }
+}
+
+/**
+ * Every message of a conversation as text, oldest first, before
+ * `beforeTimestamp` when given (buildStoredMessageTextsQuery).
+ */
+export async function loadConversationTexts(
+  conversationKey: number,
+  beforeTimestamp?: number,
+): Promise<StoredMessageText[]> {
+  const normalizedKey = normalizeConversationKey(conversationKey);
+  if (!normalizedKey || !isUpstreamStoreConversationKey(normalizedKey))
+    return [];
+  const selector =
+    await resolveRepairingMessageConversationSelector(normalizedKey);
+  const before = beforeTimestamp !== undefined;
+  const rows = (await Zotero.DB.queryAsync(
+    buildStoredMessageTextsQuery({
+      tableName: CHAT_MESSAGES_TABLE,
+      whereSql: selector.whereSql,
+      before,
+    }),
+    [...selector.params, ...(before ? [beforeTimestamp] : [])],
+  )) as Array<Record<string, unknown>> | undefined;
+  return readStoredMessageTexts(rows);
 }
 
 export async function loadConversation(

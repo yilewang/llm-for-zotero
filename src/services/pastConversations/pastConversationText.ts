@@ -79,7 +79,6 @@ export type LoadedPastConversation = {
   /** Paper title, "Paper chat" when it cannot be resolved, or "Library chat". */
   paperLabel: string;
   messages: PastConversationMessage[];
-  tokenEstimate: number;
 };
 
 /** A past chat that cannot be read; it renders as one line. */
@@ -342,12 +341,16 @@ export function cleanPastConversationMessages(
   return out;
 }
 
+/**
+ * The tokens of the chat's full-text section as formatPastConversationFull
+ * renders it: the header, and each message with its number and role label.
+ * The choice between full text and an outline is made on this size; the
+ * message texts alone undercount a chat of many short messages.
+ */
 export function estimatePastConversationTokens(
-  messages: readonly PastConversationMessage[],
+  chat: LoadedPastConversation,
 ): number {
-  return estimateTextTokens(
-    messages.map((message) => message.text).join("\n\n"),
-  );
+  return estimateTextTokens(formatPastConversationFull(chat));
 }
 
 function formatHeader(chat: LoadedPastConversation): string {
@@ -423,7 +426,11 @@ export function previewPastChatText(text: string): string {
  */
 export function formatPastConversationOutline(
   chat: LoadedPastConversation,
-  options: { maxTokens?: number } = {},
+  options: {
+    maxTokens?: number;
+    /** The chat's full-text size (estimatePastConversationTokens). */
+    tokenEstimate?: number;
+  } = {},
 ): string {
   const maxTokens = Math.max(
     OUTLINE_MIN_TOKENS,
@@ -432,7 +439,7 @@ export function formatPastConversationOutline(
   const questions = chat.messages.filter((message) => message.role === "user");
   const head = [
     formatHeader(chat),
-    `This chat is long (${chat.messages.length} messages, about ${chat.tokenEstimate} tokens), so only the user's questions are listed:`,
+    `This chat is long (${chat.messages.length} messages, about ${options.tokenEstimate ?? estimatePastConversationTokens(chat)} tokens), so only the user's questions are listed:`,
   ].join("\n\n");
   const footer = `Open messages with ${PAST_CHAT_READ_TOOL_NAME} (chat: "${chat.id}", message: <number>), or search with query.`;
   let used = estimateTextTokens(head) + estimateTextTokens(footer) + 12;

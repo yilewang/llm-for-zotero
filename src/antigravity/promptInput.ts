@@ -83,30 +83,31 @@ function fileUri(path: string): string {
 }
 
 /**
- * The turn's content blocks. A slash message goes alone, so agy reads it as
- * a command; otherwise the prompt's turn blocks (renderExternalRuntimePrompt:
- * the turn context, the material the user attached, the instructions that
- * can change between turns) come before the user's text.
+ * The turn's content blocks. The prompt's turn blocks
+ * (renderExternalRuntimePrompt: the turn context, the material the user
+ * attached, the instructions that can change between turns, and a fresh
+ * session's history) go with every turn. A slash message goes first and on
+ * its own, so agy reads it as a command; the turn blocks follow it in a
+ * block of their own (agy 1.5.17 runs `/plan` with a context block after
+ * it and reads that block, probed 2026-11-27). Otherwise they come before
+ * the user's words, as in the original agent's prompt.
  */
 export async function buildAntigravityPromptInput(
   request: AgentRuntimeRequest,
   turnContext: string,
 ): Promise<AntigravityPromptInput> {
-  if (isSlashCommandText(request.userText)) {
-    return {
-      blocks: [
-        { type: "text", text: await buildExternalRuntimeUserText(request) },
-      ],
-      attachedPaths: [],
-    };
-  }
   const userText = await buildExternalRuntimeUserText(request);
-  const blocks: AcpContentBlock[] = [
-    {
-      type: "text",
-      text: [turnContext, userText].filter(Boolean).join("\n\n"),
-    },
-  ];
+  const blocks: AcpContentBlock[] = isSlashCommandText(request.userText)
+    ? [
+        { type: "text", text: userText },
+        ...(turnContext ? [{ type: "text" as const, text: turnContext }] : []),
+      ]
+    : [
+        {
+          type: "text",
+          text: [turnContext, userText].filter(Boolean).join("\n\n"),
+        },
+      ];
   const attachedPaths: string[] = [];
 
   for (const screenshot of request.screenshots || []) {

@@ -98,6 +98,12 @@ export async function loadClaudeConversation(
   return store.loadConversation(...args);
 }
 
+export async function loadClaudeConversationTexts(
+  ...args: Parameters<typeof store.loadConversationTexts>
+) {
+  return store.loadConversationTexts(...args);
+}
+
 export async function deleteClaudeTurnMessages(
   ...args: Parameters<typeof store.deleteTurnMessages>
 ) {

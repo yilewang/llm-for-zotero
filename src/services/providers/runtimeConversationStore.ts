@@ -22,6 +22,9 @@ import {
   storedMessageDisplayOrderSql,
   type UpdateLatestAssistantMessageOptions,
   type UpdateLatestUserMessageOptions,
+  buildStoredMessageTextsQuery,
+  readStoredMessageTexts,
+  type StoredMessageText,
 } from "../../shared/conversationMessageSql";
 import {
   copyConversationMessagesThroughAssistantAnchor,
@@ -612,6 +615,31 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
       summaries,
       expectedPaperItemID,
     );
+  }
+
+  /**
+   * Every message of a conversation as text, oldest first, before
+   * `beforeTimestamp` when given (buildStoredMessageTextsQuery).
+   */
+  async function loadConversationTexts(
+    conversationKey: number,
+    beforeTimestamp?: number,
+  ): Promise<StoredMessageText[]> {
+    const normalizedKey = normalizeConversationKey(conversationKey);
+    if (!normalizedKey || !isStoreConversationKey(normalizedKey)) return [];
+    const selector =
+      await resolveRepairingMessageConversationSelector(normalizedKey);
+    const before = beforeTimestamp !== undefined;
+    const rows = (await Zotero.DB.queryAsync(
+      buildStoredMessageTextsQuery({
+        tableName: tables.messages,
+        whereSql: selector.whereSql,
+        compactMarkerColumn: "compact_marker",
+        before,
+      }),
+      [...selector.params, ...(before ? [beforeTimestamp] : [])],
+    )) as Array<Record<string, unknown>> | undefined;
+    return readStoredMessageTexts(rows);
   }
 
   async function loadConversation(
@@ -2942,6 +2970,7 @@ export function createRuntimeConversationStore(config: RuntimeStoreConfig) {
     repairConversationIdentityRegistry,
     appendMessage,
     loadConversation,
+    loadConversationTexts,
     clearConversation,
     deleteTurnMessages,
     pruneConversation,

@@ -1,3 +1,4 @@
+import { forgetCodexThread } from "../../codexAppServer/store";
 import type { ConversationSystem } from "../../shared/types";
 import {
   isRuntimeConversationSystem,
@@ -874,11 +875,19 @@ export async function finalizeConversationDeletion(
 export async function processPendingConversationCleanupJobs(
   deps: ConversationDeletionDeps & {
     includeAttentionRequired?: boolean;
+    /** Only this conversation's jobs (a workflow test's own chat). */
+    onlyConversationKey?: number;
   } = {},
 ): Promise<void> {
-  const jobs = await listDueConversationCleanupJobs(Date.now(), {
-    includeAttentionRequired: deps.includeAttentionRequired,
-  });
+  const jobs = (
+    await listDueConversationCleanupJobs(Date.now(), {
+      includeAttentionRequired: deps.includeAttentionRequired,
+    })
+  ).filter(
+    (job) =>
+      deps.onlyConversationKey === undefined ||
+      job.conversationKey === deps.onlyConversationKey,
+  );
   if (!jobs.length) return;
   const operations = buildOperations(deps);
   const invalidateClaudeWithinWriteLock =
@@ -898,6 +907,17 @@ export async function processPendingConversationCleanupJobs(
               await operations.archiveCodexThread(job.providerSessionId);
             } catch (error) {
               if (!isProviderNotFoundError(error)) throw error;
+            }
+            // A Retry or Edit reset: the chat must not resume the archived
+            // thread. Another archive (Codex's own resume recovery) is of a
+            // thread whose replacement may not be saved yet; the chat's
+            // record is the recovery's to change.
+            if (job.purpose === "resend_reset") {
+              await forgetCodexThread({
+                conversationKey: job.conversationKey,
+                threadId: job.providerSessionId,
+                instanceID: job.instanceID || undefined,
+              });
             }
             return;
           }

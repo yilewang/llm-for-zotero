@@ -21,6 +21,7 @@
  * that runs the turn.
  */
 
+import { beginRuntimeTurn } from "./runtimeTurnsInFlight";
 import { appLogger } from "../core/logging";
 import { resolveAgentRuntimeRequest } from "./context/resolvedAgentRequest";
 import { validateLocalPdfDocumentBatch } from "./context/localDocumentBatch";
@@ -241,6 +242,11 @@ export function buildMcpToolActivityEvent(
 /** What the host hands a transport while it prepares the turn. */
 export type ExternalTurnPrepareContext = {
   request: AgentRuntimeRequest;
+  /**
+   * Whether this turn gives the runtime the Zotero tools (past_chat_read
+   * among them); decided once, before the prompt is built.
+   */
+  offersZoteroTools: boolean;
   /** Records and delivers a profiling stage before the run exists. */
   recordProfiling(stage: string): Promise<void>;
   writeAllowed(): boolean;
@@ -312,6 +318,22 @@ export type ExternalRuntimeTransport<TPrepared, TServers> = {
 };
 
 export async function runExternalRuntimeTurn<TPrepared, TServers>(
+  rawParams: ExternalRunTurnParams,
+  options: {
+    coreRuntime: AgentRuntime;
+    transport: ExternalRuntimeTransport<TPrepared, TServers>;
+  },
+): Promise<AgentRuntimeOutcome> {
+  // In flight until it settles, so the chat's session is not reset under it.
+  const settled = beginRuntimeTurn(rawParams.request.conversationKey);
+  try {
+    return await runRegisteredExternalRuntimeTurn(rawParams, options);
+  } finally {
+    settled();
+  }
+}
+
+async function runRegisteredExternalRuntimeTurn<TPrepared, TServers>(
   rawParams: ExternalRunTurnParams,
   options: {
     coreRuntime: AgentRuntime;
@@ -421,8 +443,11 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
       await notifyIfLive(makeProfilingEvent(stage));
     };
     await recordProfiling("frontend.run_turn.enter");
+    const offersZoteroTools =
+      Boolean(transport.zoteroMcp) && isNativeZoteroMcpToolsEnabled();
     const prepared = await transport.prepare({
       request: params.request,
+      offersZoteroTools,
       recordProfiling,
       writeAllowed,
     });
@@ -483,7 +508,7 @@ export async function runExternalRuntimeTurn<TPrepared, TServers>(
     let scopedMcpToken = "";
     const hostReceipts: AgentActionReceipt[] = [];
     try {
-      if (transport.zoteroMcp && isNativeZoteroMcpToolsEnabled()) {
+      if (transport.zoteroMcp && offersZoteroTools) {
         const mcp = transport.zoteroMcp;
         const rawPdfMode = requestLocalDocuments(params.request).length > 0;
         const profileSignature = mcp.profileSignature();

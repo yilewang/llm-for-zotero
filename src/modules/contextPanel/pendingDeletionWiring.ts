@@ -367,11 +367,15 @@ export function configurePendingDeletionSubsystem(): void {
                 throw attempt.error;
               }
             }
-            await clearCodexConversationSessionMetadata(
-              turn.conversationKey,
-              providerSessionId || undefined,
-              turn.instanceID,
-            );
+            // Only the session the deleted turn ran on; with none, the chat
+            // may name a later session, which is not this turn's to drop.
+            if (providerSessionId) {
+              await clearCodexConversationSessionMetadata(
+                turn.conversationKey,
+                providerSessionId,
+                turn.instanceID,
+              );
+            }
             return;
           }
           if (turn.system === "claude_code") {

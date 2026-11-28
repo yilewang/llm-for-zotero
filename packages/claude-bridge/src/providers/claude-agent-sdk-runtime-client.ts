@@ -603,8 +603,12 @@ function formatPaperPathLines(entries: RuntimePaperPathEntry[]): string[] {
 function formatFallbackHistory(
   runtimeRequest: RuntimeRequestShape | undefined,
 ): string[] {
-  if (!runtimeRequest || !Array.isArray(runtimeRequest.history)) return [];
-  const entries = runtimeRequest.history
+  if (!runtimeRequest) return [];
+  // No list is no messages; the note on omitted ones can still go.
+  const history = Array.isArray(runtimeRequest.history)
+    ? runtimeRequest.history
+    : [];
+  const entries = history
     .map((entry) => {
       const record = asRecord(entry);
       if (!record) return null;
@@ -624,12 +628,13 @@ function formatFallbackHistory(
     .filter((entry): entry is { role: "assistant" | "user"; content: string } =>
       Boolean(entry),
     );
-  if (!entries.length) return [];
   const omitted =
     typeof runtimeRequest.historyOmitted === "number" &&
     runtimeRequest.historyOmitted > 0
       ? Math.floor(runtimeRequest.historyOmitted)
       : 0;
+  // With no message that fit, the note on the omitted ones still goes.
+  if (!entries.length && !omitted) return [];
   const chatId =
     typeof runtimeRequest.historyChatId === "string"
       ? runtimeRequest.historyChatId.trim()

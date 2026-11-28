@@ -1,3 +1,4 @@
+import { beginRuntimeTurn } from "../agent/runtimeTurnsInFlight";
 import { appLogger } from "../core/logging";
 import { resolveSharedCodexAppServerPath } from "./binaryPath";
 import { createAbortController } from "../utils/apiHelpers";
@@ -62,6 +63,7 @@ import {
 } from "../utils/codexAppServerProcess";
 import {
   clearCodexConversationSessionMetadata,
+  forgetCodexThread,
   getCodexConversationSummary,
   upsertCodexConversationSummary,
 } from "./store";
@@ -2048,6 +2050,7 @@ async function loadStoredProviderSession(params: {
 async function clearStoredProviderSession(params: {
   conversationKey: number;
   expectedProviderSessionId?: string;
+  instanceID?: string;
   hooks?: CodexNativeStoreHooks;
 }): Promise<void> {
   if (params.hooks?.clearProviderSessionId) {
@@ -2059,11 +2062,14 @@ async function clearStoredProviderSession(params: {
       "Codex cannot clear the prior provider session after a raw-PDF turn.",
     );
   }
-  const current = await getCodexConversationSummary(params.conversationKey);
-  await clearCodexConversationSessionMetadata(
-    params.conversationKey,
-    params.expectedProviderSessionId,
-    current?.instanceID,
+  // The turn's own instance: a chat cleared and reused meanwhile keeps its
+  // new session. Under the lock, as every change of the chat's session.
+  await withConversationWriteLock(params.conversationKey, () =>
+    clearCodexConversationSessionMetadata(
+      params.conversationKey,
+      params.expectedProviderSessionId,
+      params.instanceID,
+    ),
   );
 }
 
@@ -2559,15 +2565,37 @@ async function resolveNativeThread(params: {
     }
   }
 
-  const thread = await startNativeThread({
-    proc: params.proc,
-    model: params.model,
-    developerInstructions:
-      params.newThreadDeveloperInstructions ?? params.developerInstructions,
-    config: params.config,
-    cwd: params.cwd,
-    permissionExecution: params.permissionExecution,
-  });
+  let thread: Awaited<ReturnType<typeof startNativeThread>>;
+  try {
+    thread = await startNativeThread({
+      proc: params.proc,
+      model: params.model,
+      developerInstructions:
+        params.newThreadDeveloperInstructions ?? params.developerInstructions,
+      config: params.config,
+      cwd: params.cwd,
+      permissionExecution: params.permissionExecution,
+    });
+  } catch (error) {
+    // The stored thread could not be resumed and has an archive queued; with
+    // no replacement either, the chat must not keep naming it, or the next
+    // turn resumes an archived thread with what it had read.
+    if (storedThreadId && !params.forceReplacement) {
+      await withConversationWriteLock(params.scope.conversationKey, () =>
+        forgetCodexThread({
+          conversationKey: params.scope.conversationKey,
+          threadId: storedThreadId,
+          instanceID: params.scope.instanceID,
+        }),
+      ).catch((forgetError) =>
+        appLogger.warn(
+          "Codex app-server native: could not forget the unresumable thread",
+          forgetError,
+        ),
+      );
+    }
+    throw error;
+  }
   if (
     areConversationWritesFrozen(params.scope.conversationKey) ||
     !isConversationWriteGenerationCurrent(
@@ -3121,7 +3149,19 @@ function buildNativeDiagnostics(params: {
   };
 }
 
-export async function runCodexAppServerNativeTurn(input: {
+export async function runCodexAppServerNativeTurn(
+  input: CodexAppServerNativeTurnInput,
+): Promise<CodexNativeTurnResult> {
+  // In flight until it settles, so the chat's thread is not archived under it.
+  const settled = beginRuntimeTurn(input.scope.conversationKey);
+  try {
+    return await runRegisteredCodexAppServerNativeTurn(input);
+  } finally {
+    settled();
+  }
+}
+
+type CodexAppServerNativeTurnInput = {
   executionRequest: import("../agent/types").AgentRuntimeRequest;
   eventJournal: import("../agent/store/traceStore").AgentRunEventJournal;
   scope: CodexNativeConversationScope;
@@ -3164,7 +3204,11 @@ export async function runCodexAppServerNativeTurn(input: {
   onApprovalRequest?: (
     request: CodexNativeApprovalRequest,
   ) => unknown | Promise<unknown>;
-}): Promise<CodexNativeTurnResult> {
+};
+
+async function runRegisteredCodexAppServerNativeTurn(
+  input: CodexAppServerNativeTurnInput,
+): Promise<CodexNativeTurnResult> {
   const params = {
     ...input,
     sourceMessageTimestamp:
@@ -3593,6 +3637,10 @@ export async function runCodexAppServerNativeTurn(input: {
             text = await waitForCodexAppServerTurnCompletion({
               proc,
               threadId: args.thread.threadId,
+              // A stop's interrupt keeps the turn in flight until codex has
+              // stopped on the thread, so a Retry cannot archive it sooner.
+              holdWhileInterrupting: () =>
+                beginRuntimeTurn(params.scope.conversationKey),
               childThreadIds,
               startTurn: async () => {
                 const turnResult = await proc.sendRequest("turn/start", {
@@ -4164,6 +4212,8 @@ export async function runCodexAppServerNativeTurn(input: {
           await clearStoredProviderSession({
             conversationKey: params.scope.conversationKey,
             expectedProviderSessionId: storedThreadId,
+            // The instance the turn started on (the panel's scope has none).
+            instanceID: scopeWithProfile.instanceID,
             hooks: params.hooks,
           });
         }

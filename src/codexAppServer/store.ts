@@ -1,6 +1,7 @@
 declare const Zotero: any;
 
 import { getRuntimeConversationKeySpan } from "../shared/conversationKeySpace";
+import { clearCodexNativeReadLedgerForConversation } from "./nativeContextLedger";
 import { cleanupRememberedConversationKeyPrefs } from "../shared/conversationKeyPrefCleanup";
 import {
   CODEX_HISTORY_LIMIT,
@@ -486,6 +487,12 @@ export async function loadCodexConversation(
   return store.loadConversation(...args);
 }
 
+export async function loadCodexConversationTexts(
+  ...args: Parameters<typeof store.loadConversationTexts>
+) {
+  return store.loadConversationTexts(...args);
+}
+
 export async function deleteCodexTurnMessages(
   ...args: Parameters<typeof store.deleteTurnMessages>
 ) {
@@ -604,4 +611,30 @@ export async function deleteCodexConversationLocalRows(
   ...args: Parameters<typeof store.deleteConversationLocalRows>
 ) {
   return store.deleteConversationLocalRows(...args);
+}
+
+/**
+ * The chat forgets a Codex thread it is done with (archived by a reset or
+ * the cleanup worker, or abandoned by a recovery that could not replace it),
+ * if it still names that thread: its saved thread id, and what the thread
+ * had already read (the native read ledger). A chat that moved on to another
+ * thread keeps it. The caller holds the conversation's write lock.
+ */
+export async function forgetCodexThread(params: {
+  conversationKey: number;
+  threadId: string;
+  instanceID?: string;
+}): Promise<void> {
+  const summary = await store.getSummary(params.conversationKey);
+  if (String(summary?.providerSessionId || "").trim() !== params.threadId)
+    return;
+  await store.clearConversationSessionMetadata(
+    params.conversationKey,
+    params.threadId,
+    params.instanceID,
+  );
+  clearCodexNativeReadLedgerForConversation({
+    conversationKey: params.conversationKey,
+    instanceID: params.instanceID,
+  });
 }

@@ -242,17 +242,23 @@ export async function invalidateClaudeConversationSessionWithinWriteLock(
     conversationKey: params.conversationKey,
     instanceID: expectedInstanceID || undefined,
   });
+  // The bridge drops its session first. The chat's saved session id is the
+  // witness that the bridge still holds one: cleared before a bridge call
+  // that then fails, a later reset would find nothing to drop and let the
+  // bridge resume the old session. So it is cleared only once the bridge
+  // has dropped it, and a failure keeps it for the next attempt.
+  if (bridgeUrl.trim()) {
+    await getClaudeBridgeRuntime(coreRuntime).invalidateSessionWithinWriteLock({
+      conversationKey: params.conversationKey,
+      scope: params.scope || undefined,
+      metadata: params.metadata,
+    });
+  }
   await clearClaudeConversationSessionMetadata(
     params.conversationKey,
     expectedProviderSessionId || undefined,
     expectedInstanceID || undefined,
   );
-  if (!bridgeUrl.trim()) return;
-  await getClaudeBridgeRuntime(coreRuntime).invalidateSessionWithinWriteLock({
-    conversationKey: params.conversationKey,
-    scope: params.scope || undefined,
-    metadata: params.metadata,
-  });
 }
 
 export async function fetchClaudeSessionInfo(
@@ -409,41 +415,41 @@ export async function touchClaudeConversation(
   );
 }
 
+/**
+ * Saves the session the bridge reports for the chat after a turn. The read
+ * of the chat's record, the bridge's report and the write are one step under
+ * the conversation's lock, so a reset cannot run between them: after a reset
+ * the bridge reports no session and nothing is written back.
+ */
 export async function captureClaudeSessionInfo(
   conversationKey: number,
   scope?: ClaudeBridgeScope | null,
   expectedGeneration = getConversationWriteGeneration(conversationKey),
 ): Promise<ClaudeBridgeSessionInfo | null> {
-  const before = await getClaudeConversationSummary(conversationKey);
-  if (!before) return null;
-  const session = await fetchClaudeSessionInfo(conversationKey, scope);
-  if (!session) return null;
-  if (
-    areConversationWritesFrozen(conversationKey) ||
-    !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
-  ) {
+  return withConversationWriteLock(conversationKey, async () => {
+    const before = await getClaudeConversationSummary(conversationKey);
+    if (!before) return null;
+    const session = await fetchClaudeSessionInfo(conversationKey, scope);
+    if (!session) return null;
+    if (
+      areConversationWritesFrozen(conversationKey) ||
+      !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+    ) {
+      return session;
+    }
+    await touchClaudeConversationWithinWriteLock(conversationKey, {
+      providerSessionId: session.providerSessionId,
+      scopedConversationKey: session.scopedConversationKey,
+      scopeType: session.scopeType,
+      scopeId: session.scopeId,
+      scopeLabel: session.scopeLabel,
+      cwd: session.cwd,
+      updatedAt: Date.now(),
+      instanceID: before.instanceID,
+      expectedGeneration,
+    });
     return session;
-  }
-  const current = await getClaudeConversationSummary(conversationKey);
-  if (
-    !current ||
-    current.instanceID !== before.instanceID ||
-    current.providerSessionId !== before.providerSessionId
-  ) {
-    return session;
-  }
-  await touchClaudeConversation(conversationKey, {
-    providerSessionId: session.providerSessionId,
-    scopedConversationKey: session.scopedConversationKey,
-    scopeType: session.scopeType,
-    scopeId: session.scopeId,
-    scopeLabel: session.scopeLabel,
-    cwd: session.cwd,
-    updatedAt: Date.now(),
-    instanceID: before.instanceID,
-    expectedGeneration,
   });
-  return session;
 }
 
 export function resolveRememberedClaudeConversationKey(params: {

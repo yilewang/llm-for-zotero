@@ -1823,6 +1823,41 @@ export type WorkflowTestApi = {
     >,
   ) => Promise<{ conversationKey: number; sendSettledSequenceBefore: number }>;
   /**
+   * Loads a scripted past chat of these messages through the real loader
+   * and renders its attached-chat section for the built-in agent with this
+   * full-text budget (pastConversationLoader.renderPastChatSections).
+   */
+  renderPastChatSectionForTests: (input: {
+    messages: Array<{ role: "user" | "assistant"; text: string }>;
+    fullTextBudgetTokens: number;
+  }) => Promise<{ section: string; tokens: number }>;
+  /**
+   * Resets the runtime session of the panel's chat as a Retry or Edit does
+   * (runtimeSessionReset.detachRuntimeSessionForResend); resolves with
+   * whether it could.
+   */
+  resetPanelRuntimeSessionForTests: (panelId: string) => Promise<boolean>;
+  /**
+   * Removes the provider cleanup jobs of these conversations, so one a test
+   * left (a failed scripted archive) is never retried against a real
+   * runtime later. Other conversations' jobs stay.
+   */
+  clearCleanupJobsForTests: (conversationKeys: number[]) => Promise<void>;
+  /**
+   * Makes this conversation's pending provider cleanup jobs due and runs the
+   * background cleanup worker once (processPendingConversationCleanupJobs).
+   */
+  runCleanupJobsNowForTests: (conversationKey: number) => Promise<void>;
+  /**
+   * Stores a provider cleanup job naming `providerSessionId` for the
+   * conversation, as a reset that did not reach the provider leaves one.
+   */
+  enqueueSessionCleanupJobForTests: (input: {
+    system: "codex" | "claude_code";
+    conversationKey: number;
+    providerSessionId: string;
+  }) => Promise<void>;
+  /**
    * Lets every panel Send continue into the real `sendQuestion` until the
    * next `reset`, which captures sends again. For tests that drive the
    * panel's own buttons against a real or scripted runtime.

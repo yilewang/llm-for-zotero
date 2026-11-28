@@ -12588,6 +12588,136 @@ export function installWorkflowTestHarness(targetAddon: {
     sendLiveChatTurn,
     startPanelChatSend,
     retryLatestPanelResponse,
+    resetPanelRuntimeSessionForTests: async (panelId) => {
+      assertWorkflowTestEnabled();
+      const panel = getPanel(panelId);
+      const item = activeContextPanels.get(panel.body)?.() || panel.item;
+      const conversationKey = getConversationKey(item);
+      const main = panel.body.querySelector("#llm-main") as HTMLElement | null;
+      const system = (main?.dataset.conversationSystem ||
+        "upstream") as import("../../core/conversations/conversationSystems").ConversationSystem;
+      const [
+        { detachRuntimeSessionForResend },
+        { resolveDisplayConversationKind },
+      ] = await Promise.all([
+        import("./runtimeSessionReset"),
+        import("./portalScope"),
+      ]);
+      return detachRuntimeSessionForResend({
+        conversationKey,
+        conversationGeneration: getConversationWriteGeneration(conversationKey),
+        storageSystem: system,
+        kind:
+          resolveDisplayConversationKind(item) === "paper" ? "paper" : "global",
+      });
+    },
+    clearCleanupJobsForTests: async (conversationKeys) => {
+      assertWorkflowTestEnabled();
+      const keys = conversationKeys.filter((key) => key > 0);
+      if (!keys.length) return;
+      const { CONVERSATION_CLEANUP_JOBS_TABLE } =
+        await import("../../core/conversations/conversationCleanupJobs");
+      await Zotero.DB.queryAsync(
+        `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE}
+         WHERE conversation_key IN (${keys.map(() => "?").join(", ")})`,
+        keys,
+      ).catch(() => undefined);
+    },
+    runCleanupJobsNowForTests: async (conversationKey) => {
+      assertWorkflowTestEnabled();
+      if (!(Number.isInteger(conversationKey) && conversationKey > 0))
+        throw new Error("runCleanupJobsNowForTests needs a conversation key");
+      const [
+        { CONVERSATION_CLEANUP_JOBS_TABLE },
+        { processPendingConversationCleanupJobs },
+      ] = await Promise.all([
+        import("../../core/conversations/conversationCleanupJobs"),
+        import("./conversationDeletion"),
+      ]);
+      await Zotero.DB.queryAsync(
+        `UPDATE ${CONVERSATION_CLEANUP_JOBS_TABLE} SET next_attempt_at = 0
+         WHERE conversation_key = ?`,
+        [conversationKey],
+      );
+      await processPendingConversationCleanupJobs({
+        onlyConversationKey: conversationKey,
+      });
+    },
+    enqueueSessionCleanupJobForTests: async ({
+      system,
+      conversationKey,
+      providerSessionId,
+    }) => {
+      assertWorkflowTestEnabled();
+      const [{ enqueueConversationCleanupJob }, { conversationRepository }] =
+        await Promise.all([
+          import("../../core/conversations/conversationCleanupJobs"),
+          import("../../core/conversations/repository"),
+        ]);
+      const catalog = await conversationRepository.getCatalogEntry({
+        system,
+        conversationKey,
+      });
+      if (!catalog) throw new Error("No catalog entry for the conversation");
+      await enqueueConversationCleanupJob({
+        operation: system === "codex" ? "codex_archive" : "claude_invalidate",
+        system,
+        conversationKey,
+        instanceID: catalog.instanceID,
+        conversationKind: catalog.kind,
+        libraryID: catalog.libraryID,
+        paperItemID: catalog.paperItemID,
+        providerSessionId,
+      });
+    },
+    renderPastChatSectionForTests: async ({
+      messages,
+      fullTextBudgetTokens,
+    }) => {
+      assertWorkflowTestEnabled();
+      const [
+        { loadPastConversation, renderPastChatSections },
+        { estimateTextTokens },
+      ] = await Promise.all([
+        import("../../services/pastConversations/pastConversationLoader"),
+        import("../../utils/modelInputCap"),
+      ]);
+      const at = 1_700_000_000_000;
+      const loaded = await loadPastConversation(
+        {
+          system: "upstream",
+          conversationKey: 1,
+          title: "Scripted past chat",
+          libraryID: Zotero.Libraries.userLibraryID,
+          kind: "global",
+        },
+        {
+          libraryID: Zotero.Libraries.userLibraryID,
+          source: {
+            getCatalogEntry: async () => ({
+              conversationID: "scripted-past-chat",
+              libraryID: Zotero.Libraries.userLibraryID,
+              kind: "global",
+              title: "Scripted past chat",
+              lastActivityAt: at,
+              createdAt: at,
+            }),
+            loadMessages: async () => [],
+            loadMessageTexts: async () =>
+              messages.map((message, index) => ({
+                ...message,
+                timestamp: at + index,
+              })),
+            isPendingDeletion: () => false,
+          },
+        },
+      );
+      const [section] = renderPastChatSections([loaded], {
+        kind: "agent",
+        fullTextBudgetTokens,
+      });
+      return { section, tokens: estimateTextTokens(section) };
+    },
     passPanelSendsThrough: () => {
       assertWorkflowTestEnabled();
       setWorkflowTestSendInterceptor((opts) => {

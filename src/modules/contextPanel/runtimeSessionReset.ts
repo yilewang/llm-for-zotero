@@ -16,16 +16,19 @@
  * cannot turn the reset into an untracked provider leak.
  */
 
+import { isRuntimeTurnInFlight } from "../../agent/runtimeTurnsInFlight";
 import { conversationRepository } from "../../core/conversations/repository";
 import {
   enqueueConversationCleanupJob,
+  listPendingSessionCleanupJobs,
   performConversationCleanupJobAttempt,
+  type ConversationCleanupJob,
 } from "../../core/conversations/conversationCleanupJobs";
 import {
   assertNeverConversationSystem,
   type ConversationSystem,
 } from "../../core/conversations/conversationSystems";
-import { clearCodexConversationSessionMetadata } from "../../codexAppServer/store";
+import { forgetCodexThread } from "../../codexAppServer/store";
 import { archiveCodexAppServerThread } from "../../codexAppServer/nativeClient";
 import { isProviderNotFoundError } from "./conversationDeletion";
 import { clearCodexNativeReadLedgerForConversation } from "../../codexAppServer/nativeContextLedger";
@@ -40,6 +43,62 @@ import {
   isConversationWriteGenerationCurrent,
   withConversationWriteLock,
 } from "../../shared/conversationWriteFence";
+
+/**
+ * A reset runs because the user retried or edited a turn, so it attempts
+ * the provider cleanup now, even after an earlier attempt failed.
+ */
+const USER_ATTEMPT = { ignoreRetryDelay: true } as const;
+
+/**
+ * Runs one session cleanup job now: the Codex thread archive or the Claude
+ * Code session invalidation, then forgets the session on the chat. False
+ * when the provider could not be reached; the job stays for the next try.
+ */
+async function attemptSessionCleanup(
+  job: ConversationCleanupJob,
+): Promise<boolean> {
+  const { conversationKey, instanceID, providerSessionId } = job;
+  if (job.operation === "codex_archive") {
+    const attempt = await performConversationCleanupJobAttempt(
+      job,
+      async () => {
+        try {
+          await archiveCodexAppServerThread({ threadId: providerSessionId });
+        } catch (error) {
+          // A thread Codex no longer has is already detached.
+          if (!isProviderNotFoundError(error)) throw error;
+        }
+        // Inside the attempt: the job ends only once the chat forgot the
+        // thread, so a failure here leaves it to retry.
+        await forgetCodexThread({
+          conversationKey,
+          threadId: providerSessionId,
+          instanceID,
+        });
+      },
+      USER_ATTEMPT,
+    );
+    return attempt.ok;
+  }
+  const attempt = await performConversationCleanupJobAttempt(
+    job,
+    async () =>
+      invalidateClaudeConversationSessionWithinWriteLock(
+        await initAgentSubsystem(),
+        {
+          conversationKey,
+          scope: job.providerScope,
+          metadata: {
+            ...(providerSessionId ? { providerSessionId } : {}),
+            instanceID,
+          },
+        },
+      ),
+    USER_ATTEMPT,
+  );
+  return attempt.ok;
+}
 
 async function detachRuntimeProviderSession(
   conversationKey: number,
@@ -59,26 +118,9 @@ async function detachRuntimeProviderSession(
         libraryID: catalog.libraryID,
         paperItemID: catalog.paperItemID,
         providerSessionId,
+        purpose: "resend_reset",
       });
-      if (!job) return false;
-      const attempt = await performConversationCleanupJobAttempt(
-        job,
-        async () => {
-          try {
-            await archiveCodexAppServerThread({ threadId: providerSessionId });
-          } catch (error) {
-            // A thread Codex no longer has is already detached.
-            if (!isProviderNotFoundError(error)) throw error;
-          }
-        },
-      );
-      if (!attempt.ok) return false;
-      await clearCodexConversationSessionMetadata(
-        conversationKey,
-        providerSessionId,
-        catalog.instanceID,
-      );
-      return true;
+      return job ? attemptSessionCleanup(job) : false;
     }
     case "claude_code": {
       const scope = buildClaudeScope({
@@ -99,25 +141,9 @@ async function detachRuntimeProviderSession(
         paperItemID: catalog.paperItemID,
         providerScope: scope,
         providerSessionId,
+        purpose: "resend_reset",
       });
-      if (!job) return false;
-      const attempt = await performConversationCleanupJobAttempt(
-        job,
-        async () =>
-          invalidateClaudeConversationSessionWithinWriteLock(
-            await initAgentSubsystem(),
-            {
-              conversationKey,
-              scope,
-              metadata: {
-                ...(providerSessionId ? { providerSessionId } : {}),
-                instanceID: catalog.instanceID,
-              },
-            },
-          ),
-      );
-      if (!attempt.ok) return false;
-      return true;
+      return job ? attemptSessionCleanup(job) : false;
     }
     case "antigravity": {
       // ACP cannot delete a session or its turns, so there is no provider
@@ -152,6 +178,10 @@ export async function detachRuntimeSessionForResend(params: {
 }): Promise<boolean> {
   const { conversationKey, conversationGeneration } = params;
   return withConversationWriteLock(conversationKey, async () => {
+    // A turn still winding down (a Stop the runtime has not finished) would
+    // keep or write back the session being reset. Checked under the lock,
+    // as the reset's own writes are.
+    if (isRuntimeTurnInFlight(conversationKey)) return false;
     if (
       areConversationWritesFrozen(conversationKey) ||
       !isConversationWriteGenerationCurrent(
@@ -179,5 +209,55 @@ export async function detachRuntimeSessionForResend(params: {
       conversationKey,
       conversationGeneration,
     );
+  });
+}
+
+/** Shown when a send waits for a reset the runtime still cannot take. */
+export const PENDING_RESET_REFUSAL =
+  "Could not reset this chat's earlier session yet: the runtime is still finishing a turn or did not answer. Try again in a moment.";
+
+/**
+ * Finishes a reset a Retry or Edit started on this conversation but could
+ * not complete (the provider was unreachable), before its next turn starts.
+ * Until then the runtime still holds the session with the replaced turns,
+ * and the chat still names it, so the turn would resume it. Only a reset of
+ * the session the chat names is this turn's: others (an old thread a
+ * replacement superseded) are the background worker's. Runs under the
+ * conversation's write lock, as a reset does. True when the turn may start;
+ * false when the runtime still cannot be reached.
+ */
+export async function finishPendingRuntimeSessionResets(params: {
+  conversationKey: number;
+  storageSystem: ConversationSystem;
+}): Promise<boolean> {
+  const { conversationKey, storageSystem } = params;
+  const operation =
+    storageSystem === "codex"
+      ? "codex_archive"
+      : storageSystem === "claude_code"
+        ? "claude_invalidate"
+        : null;
+  if (!operation) return true;
+  return withConversationWriteLock(conversationKey, async () => {
+    const catalog = await conversationRepository.getCatalogEntry({
+      system: storageSystem,
+      conversationKey,
+    });
+    const sessionId = String(catalog?.providerSessionId || "").trim();
+    if (!sessionId) return true;
+    const jobs = (
+      await listPendingSessionCleanupJobs({ conversationKey, operation })
+    ).filter(
+      (job) =>
+        job.providerSessionId === sessionId &&
+        (!catalog?.instanceID || job.instanceID === catalog.instanceID),
+    );
+    if (!jobs.length) return true;
+    // A reset of the chat's own session waits for a turn still winding down.
+    if (isRuntimeTurnInFlight(conversationKey)) return false;
+    for (const job of jobs) {
+      if (!(await attemptSessionCleanup(job))) return false;
+    }
+    return true;
   });
 }
