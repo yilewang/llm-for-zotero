@@ -38,7 +38,6 @@ import {
   type PastConversationSearchFilters,
 } from "./pastConversationSearch";
 import { collapseWhitespace } from "../../core/values";
-import { getConversationWriteGeneration } from "../../shared/conversationWriteFence";
 import type { StoredMessageText } from "../../shared/conversationMessageSql";
 
 /** The catalog facts a past chat is checked against. */
@@ -78,6 +77,16 @@ export type PastConversationSource = {
     conversationKey: number;
     beforeTimestamp?: number;
   }): Promise<ReadonlyArray<StoredMessageText>>;
+  /**
+   * A revision of the rows loadMessageTexts reads: it changes when a message
+   * is added, removed or rewritten. A turn's copy of a chat is kept while it
+   * holds.
+   */
+  loadMessageTextsRevision(target: {
+    system: ConversationSystem;
+    conversationKey: number;
+    beforeTimestamp?: number;
+  }): Promise<string>;
   isPendingDeletion(conversationKey: number): boolean | Promise<boolean>;
   resolvePaperTitle?(paperItemID: number): string | undefined;
   /**
@@ -134,6 +143,11 @@ export const defaultPastConversationSource: PastConversationSource = {
     const { conversationRepository } =
       await import("../../core/conversations/repository");
     return conversationRepository.loadMessageTexts(target);
+  },
+  async loadMessageTextsRevision(target) {
+    const { conversationRepository } =
+      await import("../../core/conversations/repository");
+    return conversationRepository.loadMessageTextsRevision(target);
   },
   async isPendingDeletion(conversationKey) {
     const { pendingDeletionStore } =
@@ -195,28 +209,28 @@ async function readPastChatMessages(
   source: PastConversationSource,
   options: { beforeTimestamp?: number; turnCache?: Map<string, unknown> },
 ): Promise<PastConversationMessage[]> {
+  const target = {
+    system: ref.system,
+    conversationKey: ref.conversationKey,
+    ...(options.beforeTimestamp !== undefined
+      ? { beforeTimestamp: options.beforeTimestamp }
+      : {}),
+  };
   const read = async () =>
-    cleanPastConversationMessages(
-      await source.loadMessageTexts({
-        system: ref.system,
-        conversationKey: ref.conversationKey,
-        ...(options.beforeTimestamp !== undefined
-          ? { beforeTimestamp: options.beforeTimestamp }
-          : {}),
-      }),
-    );
+    cleanPastConversationMessages(await source.loadMessageTexts(target));
   const cache = options.turnCache;
   if (!cache) return read();
-  // The write generation moves when the chat is cleared or loses turns, so
-  // a cached copy never outlives a destructive change; new messages do not
-  // move it, and paging stays on the copy the turn first read.
+  // The copy is kept while the rows' revision holds (a cheap aggregate read):
+  // a Clear, a deleted turn, an edit's truncation or a new message makes it
+  // read again. A new message only adds at the end, so the numbers of the
+  // messages already paged stay the same.
   const key = [
     "past-chat-messages",
     ref.system,
     ref.conversationKey,
     ref.conversationID || "",
     options.beforeTimestamp ?? "all",
-    getConversationWriteGeneration(ref.conversationKey),
+    await source.loadMessageTextsRevision(target),
   ].join(":");
   const cached = cache.get(key) as
     | Promise<PastConversationMessage[]>

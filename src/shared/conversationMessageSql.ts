@@ -59,6 +59,31 @@ export function buildStoredMessageTextsQuery(params: {
     ORDER BY ${storedMessageDisplayOrderSql({ direction: "asc" })}`;
 }
 
+/**
+ * A revision of the rows buildStoredMessageTextsQuery reads: their count,
+ * last id and total text length. It changes when a message is added,
+ * removed (a Clear, a deleted turn, an edit's truncation) or rewritten.
+ */
+export function buildStoredMessageTextsRevisionQuery(params: {
+  tableName: string;
+  whereSql: string;
+  before: boolean;
+}): string {
+  return `SELECT COUNT(*) AS count, MAX(id) AS lastId, TOTAL(LENGTH(text)) AS chars
+    FROM ${params.tableName}
+    WHERE ${params.whereSql}${params.before ? " AND timestamp < ?" : ""}`;
+}
+
+/** The row of buildStoredMessageTextsRevisionQuery as one string. */
+export function readStoredMessageTextsRevision(
+  rows: ReadonlyArray<Record<string, unknown>> | undefined,
+): string {
+  const row = rows?.[0];
+  return row
+    ? `${Number(row.count) || 0}:${Number(row.lastId) || 0}:${Number(row.chars) || 0}`
+    : "0:0:0";
+}
+
 /** Rows of buildStoredMessageTextsQuery as StoredMessageText. */
 export function readStoredMessageTexts(
   rows: ReadonlyArray<Record<string, unknown>> | undefined,

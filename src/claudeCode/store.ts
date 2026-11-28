@@ -104,6 +104,12 @@ export async function loadClaudeConversationTexts(
   return store.loadConversationTexts(...args);
 }
 
+export async function loadClaudeConversationTextsRevision(
+  ...args: Parameters<typeof store.loadConversationTextsRevision>
+) {
+  return store.loadConversationTextsRevision(...args);
+}
+
 export async function deleteClaudeTurnMessages(
   ...args: Parameters<typeof store.deleteTurnMessages>
 ) {

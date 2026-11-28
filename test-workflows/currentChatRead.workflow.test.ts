@@ -202,7 +202,7 @@ describe("workflow: past_chat_read on the current conversation", function () {
       api.clearScopedMcpScope(scope.token);
     }
   });
-  it("reads a chat once per turn, and checks access on every call", async function () {
+  it("keeps a turn's reads current with the chat, and checks access on every call", async function () {
     fixture = await api.createPaperWithPdfFixture({
       title: "Turn cache fixture",
       pages: ["A disposable paper."],
@@ -235,7 +235,7 @@ describe("workflow: past_chat_read on the current conversation", function () {
         { role: "user", text: "LATE question", timestamp: turnTime - 5 },
       ]);
       const page = await callPastChatRead(turn.token, { chat, message: 2 });
-      assert.equal(page.totalMessages, 2, "the turn keeps the chat it read");
+      assert.equal(page.totalMessages, 3, "a changed chat is read again");
       // Access is still checked on each call of the turn.
       const other = await callPastChatRead(turn.token, {
         chat: `upstream:${key + 1}`,
@@ -252,7 +252,7 @@ describe("workflow: past_chat_read on the current conversation", function () {
       api.clearScopedMcpScope(next.token);
     }
   });
-  it("reads an attached chat again in the turn once it was changed destructively", async function () {
+  it("reads an attached chat again in the turn once it changed", async function () {
     fixture = await api.createPaperWithPdfFixture({
       title: "Turn cache main fixture",
       pages: ["A disposable paper."],
@@ -296,7 +296,7 @@ describe("workflow: past_chat_read on the current conversation", function () {
       try {
         const read = await callPastChatRead(turn.token, { chat, message: 1 });
         assert.equal(read.totalMessages, 2, JSON.stringify(read));
-        // In the past chat's own panel: a new message, then a turn deleted.
+        // A message stored in the past chat while the turn runs.
         await api.seedStoredConversationTurns(pastTurn.conversationKey, [
           {
             role: "user",
@@ -304,18 +304,11 @@ describe("workflow: past_chat_read on the current conversation", function () {
             timestamp: pastTurn.assistantTimestamp + 5,
           },
         ]);
-        const appended = await callPastChatRead(turn.token, { chat });
-        assert.equal(appended.totalMessages, 2, "an append keeps the copy");
-        await api.deletePanelTurn(
-          pastPanel.panelId,
-          pastTurn.userTimestamp,
-          pastTurn.assistantTimestamp,
-        );
         const changed = await callPastChatRead(turn.token, { chat });
-        assert.notEqual(
+        assert.equal(
           changed.totalMessages,
-          2,
-          "a destructive change drops the copy: " +
+          3,
+          "a changed chat is read again: " +
             JSON.stringify(changed).slice(0, 300),
         );
       } finally {
@@ -324,5 +317,24 @@ describe("workflow: past_chat_read on the current conversation", function () {
     } finally {
       await api.cleanupFixture(pastPaper);
     }
+  });
+  it("reads an unchanged chat from storage once per turn, however many pages", async function () {
+    const messages = Array.from({ length: 6 }, (_value, index) => ({
+      role: (index % 2 ? "assistant" : "user") as "user" | "assistant",
+      text: `message ${index + 1}`,
+    }));
+    const unchanged = await api.countPastChatReadLoadsForTests({
+      messages,
+      pages: [1, 3, 5],
+    });
+    assert.equal(unchanged.loads, 1, JSON.stringify(unchanged));
+    assert.deepEqual(unchanged.totals, [6, 6, 6]);
+    const appended = await api.countPastChatReadLoadsForTests({
+      messages,
+      pages: [1, 3],
+      appendBefore: { 1: { role: "user", text: "message 7" } },
+    });
+    assert.equal(appended.loads, 2, JSON.stringify(appended));
+    assert.deepEqual(appended.totals, [6, 7]);
   });
 });
