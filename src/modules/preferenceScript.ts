@@ -115,6 +115,11 @@ import {
   setOriginalAgentPermissionMode,
 } from "../agent/originalAgentPermissionMode";
 import {
+  readTurnSafetyPref,
+  TURN_SAFETY_PREF_SPECS,
+  writeTurnSafetyPref,
+} from "../agent/loop/turnSafetyPrefs";
+import {
   startCopilotDeviceFlow,
   pollCopilotDeviceAuth,
   resolveCopilotAccessToken,
@@ -5637,6 +5642,33 @@ export async function registerPrefsScripts(_window: Window | undefined | null) {
       updateOriginalPermissionDescription();
     });
   }
+
+  for (const spec of TURN_SAFETY_PREF_SPECS) {
+    const input = doc.querySelector(
+      `#${config.addonRef}-${spec.elementSuffix}`,
+    ) as HTMLInputElement | null;
+    if (!input) continue;
+    input.min = String(spec.min);
+    input.max = String(spec.max);
+    input.step = "1";
+    input.value = String(readTurnSafetyPref(spec));
+    input.addEventListener("change", () => {
+      const stored = readTurnSafetyPref(spec);
+      const raw = `${input.value ?? ""}`.trim();
+      const next = raw ? Number(raw) : NaN;
+      if (
+        !Number.isFinite(next) ||
+        next < spec.min ||
+        next > spec.max ||
+        Math.round(next) !== next
+      ) {
+        input.value = String(stored);
+        return;
+      }
+      input.value = String(writeTurnSafetyPref(spec, next));
+    });
+  }
+
   if (claudeCodeModelSelect) {
     claudeCodeModelSelect.addEventListener("change", () => {
       const selectedKey = claudeCodeModelSelect.value;

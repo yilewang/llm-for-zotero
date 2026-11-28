@@ -1037,6 +1037,12 @@ const zhCN: Record<string, string> = {
   "Index size limit (MB)": "索引大小上限（MB）",
   "Least-recently-searched papers are dropped from the index above this size.":
     "超过此大小时，最久未被检索的论文会从索引中移除。",
+  "Turn safety limits": "轮次安全上限",
+  "Model calls per turn window": "每个轮次窗口的模型调用次数",
+  "Input tokens per turn window": "每个轮次窗口的输入 token 数",
+  "Wall-clock minutes per turn window": "每个轮次窗口的墙钟时间（分钟）",
+  "A turn stops when any of these windows is reached; finishing a paper in a long job starts a new window. Changes take effect after the agent runtime reloads (restart Zotero or reload the plugin).":
+    "达到任一窗口上限时，当前轮次会停止；长任务中完成一篇论文会开启新的窗口。更改在 Agent 运行时重新加载后生效（重启 Zotero 或重新加载插件）。",
   "Rebuild index": "重建索引",
   "Clear index": "清除索引",
   "Clear library index": "清除文献库索引",

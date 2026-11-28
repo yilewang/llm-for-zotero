@@ -48,6 +48,9 @@ declare namespace _ZoteroTypes {
       "temperatureQuaternary": string;
       "maxTokensQuaternary": string;
       "enableAgentMode": boolean;
+      "agentTurnSafetyModelCalls": number;
+      "agentTurnSafetyInputTokens": number;
+      "agentTurnSafetyWallClockMinutes": number;
       "contextCacheTelemetry": string;
       "enableClaudeCodeMode": boolean;
       "agentBackendBridgeUrl": string;
