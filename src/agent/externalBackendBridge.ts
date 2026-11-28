@@ -28,7 +28,7 @@ import {
 } from "../claudeCode/bridgeProcess";
 import { buildScopedConversationKey } from "../shared/conversationScopedKey";
 import { getClaudeConversationSummary } from "../claudeCode/store";
-import { hasPendingClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
+import { hasPendingEmptyClaudeCleanupJob } from "../core/conversations/conversationCleanupJobs";
 import type { ClaudePermissionMode } from "../shared/claudePermissionMode";
 import type { ConversationSystem } from "../shared/types";
 import { getClaudePermissionModePref } from "../claudeCode/prefs";
@@ -2385,7 +2385,7 @@ export function createExternalBackendBridgeRuntime(options: {
       if (request.conversationKey <= 0) return request;
       try {
         if (
-          !(await hasPendingClaudeCleanupJob({
+          !(await hasPendingEmptyClaudeCleanupJob({
             conversationKey: request.conversationKey,
             ...(conversationInstanceID
               ? { instanceID: conversationInstanceID }
@@ -2393,11 +2393,13 @@ export function createExternalBackendBridgeRuntime(options: {
           }))
         )
           return request;
-        // An invalidation is still pending: Clear deferred an empty-session
-        // one, or a Retry or Edit could not drop the session it replaces.
-        // Do not resume it; the adapter invalidates it before starting fresh.
+        // Clear may have had to defer an empty-session invalidation while
+        // the catalog had no provider ID. Do not resume the old bridge
+        // mapping; the adapter will invalidate it before starting fresh.
+        // (A reset a Retry or Edit could not finish is finished before the
+        // chat's next send: runtimeSessionReset.finishPendingRuntimeSessionResets.)
       } catch {
-        // A pending invalidation is a lifecycle boundary, not an
+        // A pending empty-session cleanup is a deletion boundary, not an
         // advisory hint. If the cleanup table cannot be read, fail closed
         // by forcing a fresh provider session; reusing a hot mapping here
         // could resurrect the pre-Clear runtime while the durable worker

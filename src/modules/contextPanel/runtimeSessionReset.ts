@@ -204,31 +204,47 @@ export async function detachRuntimeSessionForResend(params: {
   });
 }
 
+/** Shown when a send waits for a reset the runtime still cannot take. */
+export const PENDING_RESET_REFUSAL =
+  "Could not reset this chat's earlier session: the runtime did not answer. Try again when it is available.";
+
 /**
- * Finishes the resets a Retry or Edit started on this conversation but could
+ * Finishes a reset a Retry or Edit started on this conversation but could
  * not complete (the provider was unreachable), before its next turn starts.
  * Until then the runtime still holds the session with the replaced turns,
- * and the chat still names it, so a turn would resume it. True when none is
- * left; false when the provider still cannot be reached: the caller must not
- * start the turn then.
+ * and the chat still names it, so the turn would resume it. Only a reset of
+ * the session the chat names is this turn's: others (an old thread a
+ * replacement superseded) are the background worker's. Runs under the
+ * conversation's write lock, as a reset does. True when the turn may start;
+ * false when the runtime still cannot be reached.
  */
 export async function finishPendingRuntimeSessionResets(params: {
   conversationKey: number;
   storageSystem: ConversationSystem;
 }): Promise<boolean> {
+  const { conversationKey, storageSystem } = params;
   const operation =
-    params.storageSystem === "codex"
+    storageSystem === "codex"
       ? "codex_archive"
-      : params.storageSystem === "claude_code"
+      : storageSystem === "claude_code"
         ? "claude_invalidate"
         : null;
   if (!operation) return true;
-  const jobs = await listPendingSessionCleanupJobs({
-    conversationKey: params.conversationKey,
-    operation,
+  return withConversationWriteLock(conversationKey, async () => {
+    const catalog = await conversationRepository.getCatalogEntry({
+      system: storageSystem,
+      conversationKey,
+    });
+    const sessionId = String(catalog?.providerSessionId || "").trim();
+    if (!sessionId) return true;
+    const jobs = await listPendingSessionCleanupJobs({
+      conversationKey,
+      operation,
+    });
+    for (const job of jobs) {
+      if (job.providerSessionId !== sessionId) continue;
+      if (!(await attemptSessionCleanup(job))) return false;
+    }
+    return true;
   });
-  for (const job of jobs) {
-    if (!(await attemptSessionCleanup(job))) return false;
-  }
-  return true;
 }

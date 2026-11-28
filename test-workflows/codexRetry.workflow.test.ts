@@ -245,5 +245,48 @@ describe("workflow: Codex retry", function () {
     });
     assert.include(refused, "Could not reset this chat's earlier session");
     assert.equal(server.turnStarts().length, startsBefore, "no turn started");
+    // The refused send keeps what the user wrote.
+    assert.equal(
+      panelBody(panelId).querySelector<HTMLTextAreaElement>("#llm-input")
+        ?.value,
+      "And now?",
+    );
+  });
+  function panelBody(panelId: string): HTMLElement {
+    return Zotero.getMainWindow().document.querySelector(
+      `[data-workflow-panel-id="${panelId}"]`,
+    ) as HTMLElement;
+  }
+
+  it("leaves an archive of a thread the chat no longer uses to the background worker", async function () {
+    const server = createFakeCodexAppServer({ answers: ["FIRST", "SECOND"] });
+    const panelId = await openCodexPanel(server, ["A page for the panel."]);
+    await sendTurn(panelId, "Hello.", TIMEOUT_MS);
+    const key = Number((await api.getDiagnostics(panelId)).conversationKey);
+    // An old thread a replacement superseded, whose archive keeps failing.
+    await api.enqueueSessionCleanupJobForTests({
+      system: "codex",
+      conversationKey: key,
+      providerSessionId: "fake-thread-superseded",
+    });
+    server.setArchiveFails(true);
+    const next = await sendTurn(panelId, "And now?", TIMEOUT_MS);
+    assert.include(next.text, "SECOND", "the chat's own thread is not blocked");
+  });
+
+  it("does not send a message the user stopped while its reset was running", async function () {
+    const server = createFakeCodexAppServer({
+      answers: ["OLD-ANSWER-4711", "MUST-NOT-RUN"],
+    });
+    const { panelId } = await afterFailedArchive(server);
+    server.setArchiveFails(false);
+    server.setArchiveDelayMs(1_500);
+    const startsBefore = server.turnStarts().length;
+    const sending = sendTurn(panelId, "And now?", 4_000).catch(() => null);
+    await Zotero.Promise.delay(300);
+    panelBody(panelId).querySelector<HTMLButtonElement>("#llm-cancel")?.click();
+    await sending;
+    await Zotero.Promise.delay(2_000);
+    assert.equal(server.turnStarts().length, startsBefore, "no turn started");
   });
 });

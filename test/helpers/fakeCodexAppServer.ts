@@ -33,6 +33,8 @@ export type FakeCodexAppServer = {
   launches: () => number;
   /** While true, `thread/archive` fails, as when codex cannot be reached. */
   setArchiveFails: (fails: boolean) => void;
+  /** `thread/archive` answers after this many ms (0: at once). */
+  setArchiveDelayMs: (ms: number) => void;
 };
 
 const USER_AGENT = "codex_cli_rs/0.164.0 (Mac OS 15.0.0; arm64) workflow-test";
@@ -48,6 +50,7 @@ export function createFakeCodexAppServer(script: {
   let turns = 0;
   let launches = 0;
   let archiveFails = false;
+  let archiveDelayMs = 0;
 
   const answerFor = (index: number) =>
     script.answers[Math.min(index, script.answers.length - 1)] || "";
@@ -119,21 +122,25 @@ export function createFakeCodexAppServer(script: {
       }
       case "thread/archive": {
         const threadId = String(params.threadId || "");
-        if (archiveFails) {
-          fail("codex app-server is not answering");
-          return;
-        }
-        const writer = writers.get(threadId);
-        if (!writer) {
-          fail(`no rollout found for thread id ${threadId}`);
-          return;
-        }
-        if (writer !== child) {
-          fail(`thread ${threadId} already has an active writer`);
-          return;
-        }
-        writers.delete(threadId);
-        respond({});
+        const answer = () => {
+          if (archiveFails) {
+            fail("codex app-server is not answering");
+            return;
+          }
+          const writer = writers.get(threadId);
+          if (!writer) {
+            fail(`no rollout found for thread id ${threadId}`);
+            return;
+          }
+          if (writer !== child) {
+            fail(`thread ${threadId} already has an active writer`);
+            return;
+          }
+          writers.delete(threadId);
+          respond({});
+        };
+        if (archiveDelayMs) setTimeout(answer, archiveDelayMs);
+        else answer();
         return;
       }
       case "permissionProfile/list":
@@ -177,6 +184,9 @@ export function createFakeCodexAppServer(script: {
     launches: () => launches,
     setArchiveFails: (fails) => {
       archiveFails = fails;
+    },
+    setArchiveDelayMs: (ms) => {
+      archiveDelayMs = ms;
     },
   };
 }

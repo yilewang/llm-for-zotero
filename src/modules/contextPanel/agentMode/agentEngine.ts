@@ -1405,14 +1405,6 @@ export type AgentEngineDeps = {
    * turn it holds (runtimeSessionReset.ts); false when it could not be.
    */
   detachRuntimeSessionForResend: (conversationKey: number) => Promise<boolean>;
-  /**
-   * Finishes resets an earlier Retry or Edit could not complete, before a
-   * runtime turn starts (runtimeSessionReset.ts); false when the runtime
-   * still cannot be reached, and the turn must not start.
-   */
-  finishPendingRuntimeSessionResets: (
-    conversationKey: number,
-  ) => Promise<boolean>;
   reconstructRetryPayload: (userMessage: Message) => ReconstructedRetryPayload;
   isReasoningExpandedByDefault: () => boolean;
   createQueuedRefresh: (refresh: () => void) => () => void;
@@ -1535,10 +1527,6 @@ function quoteCitationsForAgentPersistence(
 // sendAgentTurn — extracted from sendAgentQuestion in chat.ts
 // ---------------------------------------------------------------------------
 
-/** Shown when a turn waits for a reset the runtime still cannot take. */
-export const PENDING_RESET_REFUSAL =
-  "Could not reset this chat's earlier session: the runtime did not answer. Try again when it is available.";
-
 export async function sendAgentTurn(
   opts: {
     body: Element;
@@ -1642,18 +1630,6 @@ export async function sendAgentTurn(
   }
   deps.setRequestUIBusy(body, ui, conversationKey, "Preparing agent...");
   if (ui.inputBox) ui.inputBox.disabled = true;
-  // The runtime may still hold a session a failed reset should have
-  // dropped, with the turns it replaced; the turn waits for that reset.
-  if (
-    isRuntimeConversationSystem(deps.getConversationSystem()) &&
-    !(await deps.finishPendingRuntimeSessionResets(conversationKey))
-  ) {
-    if (ui.status) ui.status.textContent = PENDING_RESET_REFUSAL;
-    if (deps.finishRequest(conversationKey, thisRequestId)) {
-      deps.restoreRequestUIIdle(body, conversationKey, thisRequestId);
-    }
-    return;
-  }
 
   const selectedTextContextsForMessage = synthesizeSelectedTextContexts({
     selectedTextContexts,

@@ -1,3 +1,4 @@
+import { PENDING_RESET_REFUSAL } from "../../runtimeSessionReset";
 import { appLogger } from "../../../../core/logging";
 import {
   usesExternalTurnHost,
@@ -192,6 +193,15 @@ type SendFlowControllerDeps = {
   isCodexConversationSystem: () => boolean;
   /** The panel's runtime, or null for the plugin's own systems. */
   getRuntimeConversationSystem: () => RuntimeConversationSystem | null;
+  /**
+   * Finishes a reset an earlier Retry or Edit of the chat could not complete
+   * (runtimeSessionReset.finishPendingRuntimeSessionResets); false when the
+   * runtime still cannot be reached, and the send must not start.
+   */
+  finishPendingRuntimeSessionResets?: (
+    conversationKey: number,
+    system: RuntimeConversationSystem,
+  ) => Promise<boolean>;
   normalizeConversationTitleSeed: (raw: unknown) => string;
   getConversationKey: (item: Zotero.Item) => number;
   getConversationWriteGeneration?: (conversationKey: number) => number;
@@ -363,6 +373,23 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
       deps.onComposerDraftRestored?.();
     };
     try {
+      // The runtime may still hold a session a failed reset should have
+      // dropped, with the turns it replaced. The send waits for that reset,
+      // before it clears the draft or takes the composer's one-shot state, so
+      // a refused send leaves all of it in place.
+      if (panel.runtimeSystem && deps.finishPendingRuntimeSessionResets) {
+        const ready = await deps
+          .finishPendingRuntimeSessionResets(
+            request.conversationKey,
+            panel.runtimeSystem,
+          )
+          .catch(() => false);
+        if (!requestIsActive()) return;
+        if (!ready) {
+          deps.setStatusMessage?.(PENDING_RESET_REFUSAL, "error");
+          return;
+        }
+      }
       if (shouldClearDraft) {
         deps.inputBox.value = "";
         deps.onComposerDraftCleared?.();

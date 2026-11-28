@@ -1832,6 +1832,26 @@ export type WorkflowTestApi = {
     fullTextBudgetTokens: number;
   }) => Promise<{ section: string; tokens: number }>;
   /**
+   * Runs the real past_chat_read over a scripted attached chat, one call per
+   * entry of `pages` (each a `message` number), all in one turn; between the
+   * calls `appendBefore[i]` adds a message first. Returns how often the chat
+   * was read from storage and each call's totalMessages.
+   */
+  countPastChatReadLoadsForTests: (input: {
+    messages: Array<{ role: "user" | "assistant"; text: string }>;
+    pages: number[];
+    appendBefore?: Record<number, { role: "user" | "assistant"; text: string }>;
+  }) => Promise<{ loads: number; totals: number[] }>;
+  /**
+   * Stores a provider cleanup job naming `providerSessionId` for the
+   * conversation, as a reset that did not reach the provider leaves one.
+   */
+  enqueueSessionCleanupJobForTests: (input: {
+    system: "codex" | "claude_code";
+    conversationKey: number;
+    providerSessionId: string;
+  }) => Promise<void>;
+  /**
    * Lets every panel Send continue into the real `sendQuestion` until the
    * next `reset`, which captures sends again. For tests that drive the
    * panel's own buttons against a real or scripted runtime.

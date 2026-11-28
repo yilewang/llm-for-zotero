@@ -12588,6 +12588,96 @@ export function installWorkflowTestHarness(targetAddon: {
     sendLiveChatTurn,
     startPanelChatSend,
     retryLatestPanelResponse,
+    countPastChatReadLoadsForTests: async ({
+      messages,
+      pages,
+      appendBefore,
+    }) => {
+      assertWorkflowTestEnabled();
+      const { createPastChatReadTool } =
+        await import("../../agent/tools/read/pastChatRead");
+      const at = 1_700_000_000_000;
+      const rows = messages.map((message, index) => ({
+        ...message,
+        timestamp: at + index,
+      }));
+      let loads = 0;
+      const libraryID = Zotero.Libraries.userLibraryID;
+      const ref = {
+        system: "upstream" as const,
+        conversationKey: 2,
+        title: "Scripted past chat",
+        libraryID,
+        kind: "global" as const,
+      };
+      const tool = createPastChatReadTool({
+        getCatalogEntry: async () => ({
+          conversationID: "scripted-past-chat",
+          libraryID,
+          kind: "global",
+          title: "Scripted past chat",
+          lastActivityAt: at,
+          createdAt: at,
+        }),
+        loadMessages: async () => [],
+        loadMessageTexts: async () => {
+          loads += 1;
+          return rows.map((row) => ({ ...row }));
+        },
+        loadMessageTextsRevision: async () => `${rows.length}`,
+        isPendingDeletion: () => false,
+      });
+      const context = {
+        request: {
+          conversationKey: 1,
+          libraryID,
+          attachedConversationScope: [ref],
+          metadata: {},
+        },
+        turnCache: new Map<string, unknown>(),
+        item: null,
+        currentAnswerText: "",
+        modelName: "workflow-test",
+      } as never;
+      const totals: number[] = [];
+      for (const [index, message] of pages.entries()) {
+        const extra = appendBefore?.[index];
+        if (extra) rows.push({ ...extra, timestamp: at + rows.length });
+        const result = (await tool.execute(
+          { chat: "upstream:2", message, textOffset: 0, maxTokens: 4_000 },
+          context,
+        )) as { totalMessages?: number };
+        totals.push(Number(result?.totalMessages) || 0);
+      }
+      return { loads, totals };
+    },
+    enqueueSessionCleanupJobForTests: async ({
+      system,
+      conversationKey,
+      providerSessionId,
+    }) => {
+      assertWorkflowTestEnabled();
+      const [{ enqueueConversationCleanupJob }, { conversationRepository }] =
+        await Promise.all([
+          import("../../core/conversations/conversationCleanupJobs"),
+          import("../../core/conversations/repository"),
+        ]);
+      const catalog = await conversationRepository.getCatalogEntry({
+        system,
+        conversationKey,
+      });
+      if (!catalog) throw new Error("No catalog entry for the conversation");
+      await enqueueConversationCleanupJob({
+        operation: system === "codex" ? "codex_archive" : "claude_invalidate",
+        system,
+        conversationKey,
+        instanceID: catalog.instanceID,
+        conversationKind: catalog.kind,
+        libraryID: catalog.libraryID,
+        paperItemID: catalog.paperItemID,
+        providerSessionId,
+      });
+    },
     renderPastChatSectionForTests: async ({
       messages,
       fullTextBudgetTokens,
@@ -12621,6 +12711,7 @@ export function installWorkflowTestHarness(targetAddon: {
               createdAt: at,
             }),
             loadMessages: async () => [],
+            loadMessageTextsRevision: async () => `${messages.length}`,
             loadMessageTexts: async () =>
               messages.map((message, index) => ({
                 ...message,

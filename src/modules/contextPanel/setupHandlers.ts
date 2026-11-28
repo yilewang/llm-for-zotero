@@ -1,3 +1,4 @@
+import { finishPendingRuntimeSessionResets } from "./runtimeSessionReset";
 import { appLogger } from "../../core/logging";
 import { copyNoteEditingSelectedTextContext } from "./noteEditing/selectionController";
 import {
@@ -8447,6 +8448,11 @@ export function setupHandlers(
     isClaudeConversationSystem,
     isCodexConversationSystem,
     getRuntimeConversationSystem,
+    finishPendingRuntimeSessionResets: (conversationKey, system) =>
+      finishPendingRuntimeSessionResets({
+        conversationKey,
+        storageSystem: system,
+      }),
     normalizeConversationTitleSeed,
     getConversationKey,
     getConversationWriteGeneration,

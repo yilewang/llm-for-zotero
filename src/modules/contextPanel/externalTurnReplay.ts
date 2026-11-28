@@ -19,6 +19,10 @@ import { buildAgentEngineDepsForTests, getConversationKey } from "./chat";
 import { bindProvisionedConversationKey } from "./conversationIdentity";
 import { createClaudePaperConversation } from "../../claudeCode/store";
 import { panelPaperPdfContext } from "./antigravityTurnReplay";
+import {
+  finishPendingRuntimeSessionResets,
+  PENDING_RESET_REFUSAL,
+} from "./runtimeSessionReset";
 import { CONVERSATION_CLEANUP_JOBS_TABLE } from "../../core/conversations/conversationCleanupJobs";
 import { getCoreAgentRuntime } from "../../agent";
 import {
@@ -618,6 +622,21 @@ export async function exerciseClaudeBridgeTurn(
       state.steps = followUp.steps;
       state.invalidateFails = Boolean(followUp.invalidateFails);
       setAbortController(key, createAbortController());
+      // The first step of the panel's send (sendFlowController) for a
+      // runtime chat: finish a reset an earlier Retry left pending.
+      const ready = await finishPendingRuntimeSessionResets({
+        conversationKey: key,
+        storageSystem: "claude_code",
+      }).catch(() => false);
+      if (!ready) {
+        followUps.push({
+          invalidateCalls: state.invalidateSessionCalls - invalidatedBefore,
+          status: PENDING_RESET_REFUSAL,
+          payload: null,
+        });
+        state.invalidateFails = false;
+        continue;
+      }
       await sendAgentTurn(
         { body, item, question: followUp.question },
         deps,
