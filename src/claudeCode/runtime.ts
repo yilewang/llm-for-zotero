@@ -415,41 +415,41 @@ export async function touchClaudeConversation(
   );
 }
 
+/**
+ * Saves the session the bridge reports for the chat after a turn. The read
+ * of the chat's record, the bridge's report and the write are one step under
+ * the conversation's lock, so a reset cannot run between them: after a reset
+ * the bridge reports no session and nothing is written back.
+ */
 export async function captureClaudeSessionInfo(
   conversationKey: number,
   scope?: ClaudeBridgeScope | null,
   expectedGeneration = getConversationWriteGeneration(conversationKey),
 ): Promise<ClaudeBridgeSessionInfo | null> {
-  const before = await getClaudeConversationSummary(conversationKey);
-  if (!before) return null;
-  const session = await fetchClaudeSessionInfo(conversationKey, scope);
-  if (!session) return null;
-  if (
-    areConversationWritesFrozen(conversationKey) ||
-    !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
-  ) {
+  return withConversationWriteLock(conversationKey, async () => {
+    const before = await getClaudeConversationSummary(conversationKey);
+    if (!before) return null;
+    const session = await fetchClaudeSessionInfo(conversationKey, scope);
+    if (!session) return null;
+    if (
+      areConversationWritesFrozen(conversationKey) ||
+      !isConversationWriteGenerationCurrent(conversationKey, expectedGeneration)
+    ) {
+      return session;
+    }
+    await touchClaudeConversationWithinWriteLock(conversationKey, {
+      providerSessionId: session.providerSessionId,
+      scopedConversationKey: session.scopedConversationKey,
+      scopeType: session.scopeType,
+      scopeId: session.scopeId,
+      scopeLabel: session.scopeLabel,
+      cwd: session.cwd,
+      updatedAt: Date.now(),
+      instanceID: before.instanceID,
+      expectedGeneration,
+    });
     return session;
-  }
-  const current = await getClaudeConversationSummary(conversationKey);
-  if (
-    !current ||
-    current.instanceID !== before.instanceID ||
-    current.providerSessionId !== before.providerSessionId
-  ) {
-    return session;
-  }
-  await touchClaudeConversation(conversationKey, {
-    providerSessionId: session.providerSessionId,
-    scopedConversationKey: session.scopedConversationKey,
-    scopeType: session.scopeType,
-    scopeId: session.scopeId,
-    scopeLabel: session.scopeLabel,
-    cwd: session.cwd,
-    updatedAt: Date.now(),
-    instanceID: before.instanceID,
-    expectedGeneration,
   });
-  return session;
 }
 
 export function resolveRememberedClaudeConversationKey(params: {

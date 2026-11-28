@@ -463,4 +463,29 @@ describe("workflow: Claude Code turn host", function () {
       log,
     );
   });
+  it("does not let a keep-warm request bring back a session a reset dropped", async function () {
+    const paper = await api.createPaperWithPdfFixture({
+      title: "Claude retain race fixture",
+      pages: ["A disposable paper for a retain during a reset."],
+    });
+    const ownPanelId = (await api.renderPanelForItem(paper.parentItemId))
+      .panelId;
+    const run = `claude-run-${Date.now()}`;
+    const result = await api
+      .exerciseClaudeBridgeTurn({
+        panelId: ownPanelId,
+        scenario: {
+          question: "Pick a random whole number between 1 and 1000.",
+          steps: [start(run), completed(run, "417")],
+          retainDuringReset: true,
+        },
+      })
+      .finally(() => api.cleanupFixture(paper));
+    const race = result.retainRace!;
+    assert.isTrue(race.resetOk, JSON.stringify(race));
+    // The session with the replaced answer is gone at the bridge and in the
+    // chat, whichever ran first.
+    assert.isNull(race.bridgeMapping, JSON.stringify(race));
+    assert.equal(race.savedSessionId, "", JSON.stringify(race));
+  });
 });

@@ -2900,19 +2900,24 @@ export function createExternalBackendBridgeRuntime(options: {
       if (!bridgeUrl) {
         return null;
       }
-      return updateExternalRuntimeRetention({
-        baseUrl: bridgeUrl,
-        conversationKey,
-        scope,
-        mountId,
-        retain,
-        probeId,
-        providerSessionId:
-          providerSessionId ||
-          (retain
-            ? await resolveClaudeProviderSessionHint(conversationKey, scope)
-            : undefined),
-      });
+      const send = async () =>
+        updateExternalRuntimeRetention({
+          baseUrl: bridgeUrl,
+          conversationKey,
+          scope,
+          mountId,
+          retain,
+          probeId,
+          providerSessionId:
+            providerSessionId ||
+            (retain
+              ? await resolveClaudeProviderSessionHint(conversationKey, scope)
+              : undefined),
+        });
+      // A retain can map the chat's session at the bridge again. Under the
+      // conversation's lock it serializes with a reset: a reset after it
+      // drops what it mapped, and a retain after a reset finds no session.
+      return retain ? withConversationWriteLock(conversationKey, send) : send();
     },
     invalidateSession: ({ conversationKey, scope, metadata }) =>
       withConversationWriteLock(conversationKey, () =>

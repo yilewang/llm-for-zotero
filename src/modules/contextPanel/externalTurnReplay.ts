@@ -20,9 +20,16 @@ import { bindProvisionedConversationKey } from "./conversationIdentity";
 import { createClaudePaperConversation } from "../../claudeCode/store";
 import { panelPaperPdfContext } from "./antigravityTurnReplay";
 import {
+  detachRuntimeSessionForResend,
   finishPendingRuntimeSessionResets,
   PENDING_RESET_REFUSAL,
 } from "./runtimeSessionReset";
+import {
+  buildClaudeScope,
+  updateClaudeRuntimeRetention,
+} from "../../claudeCode/runtime";
+import { getClaudeConversationSummary } from "../../claudeCode/store";
+import { buildScopedConversationKey } from "../../shared/conversationScopedKey";
 import { CONVERSATION_CLEANUP_JOBS_TABLE } from "../../core/conversations/conversationCleanupJobs";
 import { getCoreAgentRuntime } from "../../agent";
 import {
@@ -83,6 +90,11 @@ export type ExternalTurnScenario = {
    * panel's Retry does, against these bridge steps.
    */
   retry?: ExternalTurnRetry | ExternalTurnRetry[];
+  /**
+   * After the turn, a "keep warm" retain of the chat's session is held at
+   * the bridge while a Retry/Edit reset runs, then let through.
+   */
+  retainDuringReset?: boolean;
   /** After the retries, the user sends these next messages, in order. */
   followUps?: Array<{
     question: string;
@@ -149,6 +161,15 @@ export type ExternalTurnResult = {
     status: string;
     payload: ExternalTurnResult["retryTurnPayload"];
   }>;
+  /**
+   * With `retainDuringReset`: whether the reset succeeded, the session the
+   * fake bridge maps the chat to afterwards, and the chat's saved session.
+   */
+  retainRace?: {
+    resetOk: boolean;
+    bridgeMapping: string | null;
+    savedSessionId: string;
+  };
   /** What the last retry's `/run-turn` asked of the bridge; null without retry. */
   retryTurnPayload: {
     providerSessionId: string;
@@ -171,6 +192,11 @@ type ScriptState = {
    * `/session-info` reports a new session id, as the real bridge does.
    */
   sessionGeneration: number;
+  /** The session the fake bridge maps the chat to, as the real one keeps. */
+  bridgeMapping: string | null;
+  /** While set, a retain waits for it before the bridge maps its session. */
+  retainGate: Promise<void> | null;
+  retentionRequests: number;
 
   payload: Record<string, unknown> | null;
   localDocumentPaths: string[][];
@@ -375,6 +401,10 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
       state.payload = body;
       const runMetadata = (body.metadata || {}) as Record<string, unknown>;
       if (runMetadata.forceFreshSession === true) state.sessionGeneration += 1;
+      state.bridgeMapping = fakeSessionId(
+        state,
+        String(body.conversationKey ?? ""),
+      );
       const runtimeRequest = (body.runtimeRequest || {}) as {
         localDocuments?: unknown;
       };
@@ -393,15 +423,23 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
       // its id on the chat.
       const query = new URLSearchParams(path.slice("/session-info?".length));
       const conversationKey = query.get("conversationKey") || "";
+      const scopeType = query.get("scopeType") || undefined;
+      const scopeId = query.get("scopeId") || undefined;
+      // The session the bridge maps the chat to; none after a reset.
       return jsonResponse(200, {
-        session: {
-          originalConversationKey: conversationKey,
-          scopedConversationKey: conversationKey,
-          providerSessionId: fakeSessionId(state, conversationKey),
-          scopeType: query.get("scopeType") || undefined,
-          scopeId: query.get("scopeId") || undefined,
-          scopeLabel: query.get("scopeLabel") || undefined,
-        },
+        session: state.bridgeMapping
+          ? {
+              originalConversationKey: conversationKey,
+              scopedConversationKey: buildScopedConversationKey(
+                Number(conversationKey),
+                { scopeType, scopeId },
+              ),
+              providerSessionId: state.bridgeMapping,
+              scopeType,
+              scopeId,
+              scopeLabel: query.get("scopeLabel") || undefined,
+            }
+          : null,
       });
     }
     if (path === "/healthz") {
@@ -412,10 +450,24 @@ function installFakeBridgeFetch(state: ScriptState): () => void {
         capabilities: ["local_pdf_paths"],
       });
     }
+    if (path === "/runtime-retention") {
+      state.retentionRequests += 1;
+      if (body.retain === true) {
+        if (state.retainGate) await state.retainGate;
+        // A retain with a session hint maps it, as the bridge adapter does.
+        if (
+          typeof body.providerSessionId === "string" &&
+          body.providerSessionId
+        )
+          state.bridgeMapping = body.providerSessionId;
+      }
+      return jsonResponse(200, { retained: body.retain === true });
+    }
     if (path === "/invalidate-session") {
       state.invalidateSessionCalls += 1;
       if (state.invalidateFails) return jsonResponse(500, { error: "down" });
       state.sessionGeneration += 1;
+      state.bridgeMapping = null;
       return jsonResponse(200, { invalidated: true });
     }
     if (path === "/resolve-confirmation") {
@@ -444,7 +496,7 @@ export async function exerciseClaudeBridgeTurn(
   scenario: ExternalTurnScenario,
 ): Promise<ExternalTurnResult> {
   const { body, item } = panel;
-  if (scenario.retry) {
+  if (scenario.retry || scenario.retainDuringReset) {
     // A retry resets the chat's Claude Code session, which needs the chat's
     // Claude Code record, as a real Claude Code chat has.
     const created = await createClaudePaperConversation(
@@ -467,6 +519,9 @@ export async function exerciseClaudeBridgeTurn(
     invalidateSessionCalls: 0,
     invalidateFails: false,
     sessionGeneration: 0,
+    bridgeMapping: null,
+    retainGate: null,
+    retentionRequests: 0,
 
     localDocumentPaths: [],
     payload: null,
@@ -568,6 +623,42 @@ export async function exerciseClaudeBridgeTurn(
     ).catch((error) => {
       threw ||= error instanceof Error ? error.message : String(error);
     });
+    let retainRace: ExternalTurnResult["retainRace"];
+    if (scenario.retainDuringReset) {
+      let release!: () => void;
+      state.retainGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const retaining = updateClaudeRuntimeRetention(getCoreAgentRuntime(), {
+        conversationKey: key,
+        scope: buildClaudeScope({
+          libraryID: item.libraryID,
+          kind: "paper",
+          paperItemID: item.id,
+        }),
+        mountId: "fixture-mount",
+        retain: true,
+      }).catch(() => false);
+      for (let i = 0; i < 100 && !state.retentionRequests; i += 1)
+        await Zotero.Promise.delay(20);
+      const resetting = detachRuntimeSessionForResend({
+        conversationKey: key,
+        conversationGeneration: getConversationWriteGeneration(key),
+        storageSystem: "claude_code",
+        kind: "paper",
+      }).catch(() => false);
+      await Zotero.Promise.delay(200);
+      release();
+      const [, resetOk] = await Promise.all([retaining, resetting]);
+      state.retainGate = null;
+      retainRace = {
+        resetOk,
+        bridgeMapping: state.bridgeMapping,
+        savedSessionId: String(
+          (await getClaudeConversationSummary(key))?.providerSessionId || "",
+        ),
+      };
+    }
     const invalidatedBeforeRetry = state.invalidateSessionCalls;
     let retryTurnPayload: ExternalTurnResult["retryTurnPayload"] = null;
     const retries: ExternalTurnResult["retries"] = [];
@@ -711,6 +802,7 @@ export async function exerciseClaudeBridgeTurn(
       retryTurnPayload,
       retries,
       followUps,
+      ...(retainRace ? { retainRace } : {}),
       runtimeCalls,
       localDocumentPaths: state.localDocumentPaths,
     };
@@ -719,7 +811,7 @@ export async function exerciseClaudeBridgeTurn(
     // A failed reset leaves a cleanup job for the chat this fixture made;
     // the background worker would send it to the real bridge once the fake
     // is gone. A chat the fixture did not make keeps its jobs.
-    if (scenario.retry) {
+    if (scenario.retry || scenario.retainDuringReset) {
       await Zotero.DB.queryAsync(
         `DELETE FROM ${CONVERSATION_CLEANUP_JOBS_TABLE} WHERE conversation_key = ?`,
         [key],
