@@ -385,6 +385,15 @@ export function createSendFlowController(deps: SendFlowControllerDeps): {
           )
           .catch(() => false);
         if (!requestIsActive()) return;
+        // The panel may show another chat by now: its composer and status
+        // are that chat's. The send stops and leaves them alone; this chat's
+        // draft was never cleared, so it is still there when the user
+        // returns to it.
+        const shownItem = deps.getItem() || item;
+        if (deps.getConversationKey(shownItem) !== request.conversationKey) {
+          submittedInputRestored = true;
+          return;
+        }
         if (!ready) {
           deps.setStatusMessage?.(PENDING_RESET_REFUSAL, "error");
           return;

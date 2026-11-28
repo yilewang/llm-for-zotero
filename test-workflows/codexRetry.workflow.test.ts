@@ -289,4 +289,30 @@ describe("workflow: Codex retry", function () {
     await Zotero.Promise.delay(2_000);
     assert.equal(server.turnStarts().length, startsBefore, "no turn started");
   });
+  it("leaves the other chat's draft alone when the panel switches during a reset", async function () {
+    const server = createFakeCodexAppServer({
+      answers: ["OLD-ANSWER-4711", "MUST-NOT-RUN"],
+    });
+    const { panelId } = await afterFailedArchive(server);
+    server.setArchiveFails(false);
+    server.setArchiveDelayMs(4_000);
+    const startsBefore = server.turnStarts().length;
+    const sending = sendTurn(panelId, "And now?", 8_000).catch(() => null);
+    await Zotero.Promise.delay(200);
+    // The panel moves to its library chat, where the user starts typing.
+    await api.togglePanelConversationMode(panelId);
+    // Let the switch finish loading the library chat before typing.
+    await Zotero.Promise.delay(1_000);
+    const input =
+      panelBody(panelId).querySelector<HTMLTextAreaElement>("#llm-input")!;
+    input.value = "LIBRARY DRAFT";
+    await sending;
+    await Zotero.Promise.delay(2_000);
+    assert.equal(
+      input.value,
+      "LIBRARY DRAFT",
+      "the library chat's draft stays",
+    );
+    assert.equal(server.turnStarts().length, startsBefore, "no turn started");
+  });
 });
